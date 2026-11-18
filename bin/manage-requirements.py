@@ -14,13 +14,14 @@ import subprocess
 import sys
 from pathlib import Path
 
+from packaging.utils import canonicalize_name
 from packaging.version import Version
 
 PINNED_FILE = Path("installer/requirements-pinned.txt")
 
 
 def get_installed_versions():
-    """Return a dict of package_name_lower -> (canonical_name, version) from pip freeze."""
+    """Return a dict of canonical (PEP 503) package name -> (canonical_name, version) from pip freeze."""
     result = subprocess.run(
         ["pip", "freeze"],
         capture_output=True,
@@ -38,7 +39,7 @@ def get_installed_versions():
             base_name = m.group(1)
             extras = m.group(2) or ""
             version = m.group(3)
-            versions[base_name.lower()] = (base_name + extras, version)
+            versions[canonicalize_name(base_name)] = (base_name + extras, version)
     return versions
 
 
@@ -73,7 +74,7 @@ def generate_pinned_lines(lines, installed):
             output.append(line)
             continue
         base, extras = parsed
-        key = base.lower()
+        key = canonicalize_name(base)
         if key not in installed:
             # Package not installed; keep original line
             output.append(line)
@@ -113,7 +114,7 @@ def do_check():
             continue
         base = m.group(1)
         pinned_version = m.group(3)
-        key = base.lower()
+        key = canonicalize_name(base)
         if key not in installed:
             continue
         _, installed_version = installed[key]

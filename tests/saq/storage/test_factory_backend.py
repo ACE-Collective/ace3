@@ -1,4 +1,4 @@
-"""Unit tests for the storage factory and its pluggable backend (storage.target: custom).
+"""Unit tests for the pluggable storage backend (storage.target: custom).
 
 The factory loads the backend class from config, validates the YAML `config:` sub-dict against
 the class's own get_config_class() model, and passes that model to the constructor. These use a
@@ -7,17 +7,17 @@ attribute lookup, pydantic validation, construction -- actually runs.
 """
 
 from typing import Optional, Type
+from unittest.mock import patch
 
 import pytest
 from pydantic import Field, ValidationError
 
 from saq.configuration.config import get_config
-from saq.configuration.schema import StorageBackendSpec, StorageConfig
+from saq.configuration.schema import S3Config, StorageBackendSpec, StorageConfig
 from saq.storage.adapter import StorageAdapter
 from saq.storage.error import StorageError
 from saq.storage.factory import StorageFactory
 from saq.storage.interface import StorageBackendConfig
-from saq.storage.local import LocalStorage
 
 pytestmark = pytest.mark.unit
 
@@ -50,6 +50,7 @@ _ = BackendWithoutConfigClass
 
 def _configure(monkeypatch, target: str = "custom", backend: Optional[StorageBackendSpec] = None):
     monkeypatch.setattr(get_config(), "storage", StorageConfig(target=target, backend=backend))
+    monkeypatch.setattr(get_config(), "s3", None)
 
 
 def _spec(python_class: str = "SampleBackend", **config) -> StorageBackendSpec:
@@ -59,25 +60,17 @@ def _spec(python_class: str = "SampleBackend", **config) -> StorageBackendSpec:
 
 
 def test_custom_backend_is_loaded_and_wrapped(monkeypatch):
-    """The class named in config is constructed and handed back inside a StorageAdapter."""
+    """The class named in config is constructed and handed back inside a StorageAdapter, with
+    the `config:` sub-dict validated by the backend's own get_config_class(), not the base."""
     spec = _spec(required_setting="value")
     _configure(monkeypatch, backend=spec)
     adapter = StorageFactory.get_storage_system()
 
     assert isinstance(adapter, StorageAdapter)
     assert isinstance(adapter._storage, SampleBackend)
+    # only SampleBackendConfig has these fields; the base model would drop them
     assert adapter._storage.config.required_setting == "value"
     assert adapter._storage.config.optional_setting is None
-
-
-def test_backend_config_is_validated_by_its_own_model(monkeypatch):
-    """The `config:` sub-dict goes through the backend's get_config_class(), not the base."""
-    spec = _spec(required_setting="a", optional_setting="b")
-    _configure(monkeypatch, backend=spec)
-    adapter = StorageFactory.get_storage_system()
-
-    assert isinstance(adapter._storage.config, SampleBackendConfig)
-    assert adapter._storage.config.optional_setting == "b"
 
 
 def test_invalid_backend_config_is_a_storage_error(monkeypatch):
@@ -126,24 +119,23 @@ def test_backend_without_get_config_class_is_rejected(monkeypatch):
         StorageFactory.get_storage_system()
 
 
-def test_local_target_builds_local_storage_under_base_dir(monkeypatch, tmp_path):
-    monkeypatch.setattr(get_config(), "storage", StorageConfig(target="local", base_dir=str(tmp_path)))
-    adapter = StorageFactory.get_storage_system()
+@pytest.mark.parametrize("secure, cert_check, scheme", [
+    (True, False, "https"),
+    (False, True, "http"),
+])
+def test_s3_backend_honors_tls_cert_check_and_region(secure, cert_check, scheme, monkeypatch):
+    """target: s3 builds its client from the same s3 settings get_s3_client() honors: it used
+    to hardcode plain HTTP and ignore cert_check and region (F-13)."""
+    pytest.importorskip("boto3")
+    monkeypatch.setattr(get_config(), "storage", StorageConfig(target="s3"))
+    monkeypatch.setattr(get_config(), "s3", S3Config(
+        host="s3.example", port=443, access_key="key", secret_key="secret",
+        secure=secure, cert_check=cert_check, region="us-east-2",
+    ))
+    with patch("saq.storage.s3.boto3") as mock_boto3:
+        StorageFactory.get_storage_system()
 
-    assert isinstance(adapter._storage, LocalStorage)
-    source = tmp_path / "source"
-    source.write_bytes(b"x")
-    adapter.upload_file(source, "bucket", "key")
-    assert (tmp_path / "bucket" / "key").read_bytes() == b"x"
-
-
-def test_s3_target_is_rejected_by_name():
-    """The built-in s3 backend is gone. A deployment still configured for it must fail at config
-    validation, saying what to do, rather than quietly fall back to every node's own disk."""
-    with pytest.raises(ValidationError, match="storage.target s3 is no longer supported"):
-        StorageConfig(target="s3")
-
-
-def test_unknown_target_is_rejected():
-    with pytest.raises(ValidationError):
-        StorageConfig(target="nfs")
+    kwargs = mock_boto3.client.call_args.kwargs
+    assert kwargs["endpoint_url"] == f"{scheme}://s3.example:443"
+    assert kwargs["verify"] is cert_check
+    assert kwargs["region_name"] == "us-east-2"

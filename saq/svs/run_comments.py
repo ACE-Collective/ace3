@@ -2,14 +2,15 @@
 only its author changes or deletes it. Each change is an AUDIT record. svs_run_comments is written
 here only."""
 
-import logging
 from datetime import datetime
 from typing import Optional
 
 from sqlalchemy import select
 
+from saq.auth import ApiAuthResult
 from saq.database.model import SVSRunComment
 from saq.database.pool import get_db
+from saq.logging import log_audit
 from saq.svs.run_events import run_log_fields
 from saq.svs.runs import get_run
 
@@ -45,17 +46,21 @@ def list_comments(run_uuid: str) -> list[SVSRunComment]:
         select(SVSRunComment).where(SVSRunComment.run_id == run.id).order_by(SVSRunComment.id)).scalars())
 
 
-def add_comment(run_uuid: str, user_id: int, actor: str, comment: str, now: Optional[datetime] = None) -> SVSRunComment:
-    """Raises UnknownRun, InvalidComment."""
+def add_comment(run_uuid: str, auth: ApiAuthResult, comment: str, now: Optional[datetime] = None) -> SVSRunComment:
+    """auth's comment on the run. Raises UnknownRun, InvalidComment."""
     run = get_run(run_uuid)
-    row = SVSRunComment(run_id=run.id, user_id=user_id, comment=_text(comment), created_at=now or datetime.now())
+    row = SVSRunComment(run_id=run.id, user_id=auth.auth_user_id, comment=_text(comment),
+                        created_at=now or datetime.now())
     db = get_db()
     db.add(row)
     db.commit()
     db.refresh(row)
-    logging.info("AUDIT: svs run comment added", extra={**run_log_fields(run), "comment_id": row.id, "actor": actor,
-                                                        "actor_user_id": user_id})
+    _audit("svs run comment added", run, row.id, auth)
     return row
+
+
+def _audit(message: str, run, comment_id: int, auth: ApiAuthResult) -> None:
+    log_audit(message, auth=auth, **run_log_fields(run), comment_id=comment_id)
 
 
 def _own_comment(run_uuid: str, comment_id: int, user_id: int):
@@ -69,23 +74,21 @@ def _own_comment(run_uuid: str, comment_id: int, user_id: int):
     return run, row
 
 
-def update_comment(run_uuid: str, comment_id: int, user_id: int, actor: str, comment: str) -> SVSRunComment:
+def update_comment(run_uuid: str, comment_id: int, auth: ApiAuthResult, comment: str) -> SVSRunComment:
     """Raises UnknownRun, UnknownComment, NotTheAuthor, InvalidComment."""
-    run, row = _own_comment(run_uuid, comment_id, user_id)
+    run, row = _own_comment(run_uuid, comment_id, auth.auth_user_id)
     row.comment = _text(comment)
     db = get_db()
     db.commit()
     db.refresh(row)
-    logging.info("AUDIT: svs run comment changed", extra={**run_log_fields(run), "comment_id": row.id, "actor": actor,
-                                                          "actor_user_id": user_id})
+    _audit("svs run comment changed", run, row.id, auth)
     return row
 
 
-def delete_comment(run_uuid: str, comment_id: int, user_id: int, actor: str) -> None:
+def delete_comment(run_uuid: str, comment_id: int, auth: ApiAuthResult) -> None:
     """Raises UnknownRun, UnknownComment, NotTheAuthor."""
-    run, row = _own_comment(run_uuid, comment_id, user_id)
+    run, row = _own_comment(run_uuid, comment_id, auth.auth_user_id)
     db = get_db()
     db.delete(row)
     db.commit()
-    logging.info("AUDIT: svs run comment deleted", extra={**run_log_fields(run), "comment_id": comment_id,
-                                                          "actor": actor, "actor_user_id": user_id})
+    _audit("svs run comment deleted", run, comment_id, auth)

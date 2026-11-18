@@ -9,6 +9,7 @@ var QA_PAGE = null;
 var QA_API = null;
 var QA_ALERT_URL = null;
 var QA_CAN_DOWNLOAD = false;
+var QA_CAN_PURGE = false;
 var QA_MATCH_PAGE_SIZE = 25;
 
 var qa_state = {
@@ -52,6 +53,10 @@ function qa_show_error(message) {
     $("#qa_error").text(message).toggleClass("d-none", !message);
 }
 
+function qa_show_notice(message) {
+    $("#qa_notice").text(message).toggleClass("d-none", !message);
+}
+
 // every value placed in the page came from rule files or analyzed data: always text, never markup
 function qa_text(value) {
     return $("<div>").text(value === null || value === undefined ? "" : String(value)).html();
@@ -79,7 +84,29 @@ function qa_size(bytes) {
 }
 
 function qa_short_version(version) {
-    return /^[0-9a-f]{40}$/.test(version) ? version.substring(0, 10) : version;
+    return /^[0-9a-f]{40}([0-9a-f]{24})?$/.test(version || "") ? version.substring(0, 10) : version;
+}
+
+// a content version is the rule's own hash (docs/YARA_QA.md, Versions); a commit version is the
+// rule repository's commit, for matches recorded without a hash
+function qa_version_label(version, current_content_hash) {
+    var label;
+    if (version.version_kind === "content") {
+        label = "rule " + qa_short_version(version.signature_version);
+        if (version.first_commit) {
+            label += " (commits " + qa_short_version(version.first_commit);
+            if (version.last_commit && version.last_commit !== version.first_commit) {
+                label += " … " + qa_short_version(version.last_commit);
+            }
+            label += ")";
+        }
+    } else {
+        label = "commit " + qa_short_version(version.signature_version);
+    }
+    if (current_content_hash && version.signature_version === current_content_hash) {
+        label += " [current]";
+    }
+    return label;
 }
 
 var QA_STATUS_LABELS = {
@@ -185,7 +212,7 @@ function qa_render_detail(cell, signature) {
     select.append($("<option>").val("").text("all versions"));
     signature.versions.forEach(function(version) {
         select.append($("<option>").val(version.signature_version).text(
-            qa_short_version(version.signature_version) + " — " + version.match_count + " matches, " +
+            qa_version_label(version, signature.current_content_hash) + " — " + version.match_count + " matches, " +
             version.stored_count + " stored, last " + qa_date(version.last_match_at)));
     });
     select.val(qa_state.version);
@@ -193,16 +220,72 @@ function qa_render_detail(cell, signature) {
     var toolbar = $('<div class="d-flex flex-wrap align-items-center gap-2 mb-2">');
     toolbar.append($('<label class="small text-muted mb-0">').text("Version"));
     toolbar.append(select);
-    if (signature.current_version) {
-        toolbar.append($('<span class="small text-muted">').text("loaded now: " + qa_short_version(signature.current_version)));
+    if (signature.current_content_hash) {
+        toolbar.append($('<span class="small text-muted">').text(
+            "loaded now: rule " + qa_short_version(signature.current_content_hash) +
+            (signature.current_version ? " at commit " + qa_short_version(signature.current_version) : "")));
     }
     if (QA_CAN_DOWNLOAD) {
         toolbar.append('<button type="button" class="btn btn-sm btn-outline-dark qa-download-selected" disabled>Download selected</button>');
         toolbar.append('<a class="btn btn-sm btn-outline-dark qa-download-all" title="password: infected">Download all (this version)</a>');
     }
+    if (QA_CAN_PURGE) {
+        var older = qa_older_versions(signature);
+        toolbar.append('<button type="button" class="btn btn-sm btn-outline-danger qa-purge-selected" disabled>Purge selected</button>');
+        toolbar.append($('<button type="button" class="btn btn-sm btn-outline-danger qa-purge-version">Purge this version</button>')
+            .prop("disabled", !qa_state.version));
+        toolbar.append($('<button type="button" class="btn btn-sm btn-outline-danger qa-purge-older">Purge older versions</button>')
+            .prop("disabled", older.length === 0)
+            .attr("title", "every version but the one loaded now"));
+    }
 
-    cell.empty().append(toolbar).append('<div class="qa-matches"></div>');
+    cell.empty().data("signature", signature).append(toolbar).append('<div class="qa-matches"></div>');
     qa_update_download_all(cell, signature.signature_uuid);
+}
+
+// the versions that still have stored files, other than the one loaded now (every version when the
+// rule is no longer loaded)
+function qa_older_versions(signature) {
+    return signature.versions.filter(function(version) {
+        return version.stored_count > 0 && version.signature_version !== signature.current_content_hash;
+    });
+}
+
+function qa_purge(cell, body, description) {
+    var signature_uuid = qa_state.expanded;
+    if (!window.confirm("Purge " + description + "?\n\nFiles that match again are stored again. " +
+                        "Files another rule or version still holds stay.")) {
+        return;
+    }
+
+    qa_show_error("");
+    qa_show_notice("");
+    fetch(QA_API + "/" + encodeURIComponent(signature_uuid) + "/purge", {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+    }).then(function(response) {
+        if (!response.ok) {
+            return response.text().then(function(text) {
+                throw new Error(qa_error_message(text, response));
+            });
+        }
+        return response.json();
+    }).then(function(result) {
+        var message = "Purged " + result.deleted + " stored file" + (result.deleted === 1 ? "" : "s") + ".";
+        if (result.remaining) {
+            message += " " + result.remaining + " could not be purged because they were being renewed; purge again to remove them.";
+        }
+        qa_show_notice(message);
+        if (body.versions && body.versions.indexOf(qa_state.version) !== -1) {
+            qa_state.version = "";
+        }
+        qa_state.match_offset = 0;
+        qa_load_signatures();
+    }).catch(function(error) {
+        qa_show_error("Unable to purge: " + error.message);
+    });
 }
 
 function qa_update_download_all(cell, signature_uuid) {
@@ -240,9 +323,10 @@ function qa_render_matches(target, signature_uuid, page) {
     }
 
     var table = $('<table class="table table-sm table-bordered qa-match-table mb-2">');
+    var selectable = QA_CAN_DOWNLOAD || QA_CAN_PURGE;
     var head = $("<tr>");
-    if (QA_CAN_DOWNLOAD) {
-        head.append('<th style="width: 2rem"><input type="checkbox" class="form-check-input qa-select-all" title="select all local files"></th>');
+    if (selectable) {
+        head.append('<th style="width: 2rem"><input type="checkbox" class="form-check-input qa-select-all" title="select all"></th>');
     }
     ["File", "SHA256", "Size", "Version", "Hits", "First seen", "Last seen", "Expires", "Node", ""].forEach(function(label) {
         head.append($("<th>").text(label));
@@ -252,9 +336,10 @@ function qa_render_matches(target, signature_uuid, page) {
     var body = $("<tbody>");
     page.data.forEach(function(match) {
         var row = $("<tr>").attr("data-match-id", match.id);
-        if (QA_CAN_DOWNLOAD) {
+        if (selectable) {
             var box = $('<input type="checkbox" class="form-check-input qa-select">').val(match.id);
-            if (!match.local) {
+            // a purge needs no bytes, so a file stored on another node can still be selected for one
+            if (!match.local && !QA_CAN_PURGE) {
                 box.prop("disabled", true).attr("title", "stored on node " + match.node);
             }
             row.append($("<td>").append(box));
@@ -262,7 +347,9 @@ function qa_render_matches(target, signature_uuid, page) {
         row.append($('<td class="qa-file-name">').text(match.file_name));
         row.append($('<td class="qa-sha256">').append($("<code>").text(match.sha256.substring(0, 16) + "…").attr("title", match.sha256)));
         row.append($("<td>").text(qa_size(match.file_size)));
-        row.append($("<td>").append($("<code>").text(qa_short_version(match.signature_version)).attr("title", match.signature_version)));
+        row.append($("<td>").append($("<code>").text(
+            (match.version_kind === "content" ? "rule " : "commit ") + qa_short_version(match.signature_version))
+            .attr("title", match.signature_version)));
         row.append($("<td>").text(match.hit_count));
         row.append($("<td>").text(qa_date(match.first_seen)));
         row.append($("<td>").text(qa_date(match.last_seen)));
@@ -306,6 +393,8 @@ function qa_update_selection(cell) {
     var count = qa_selected_ids(cell).length;
     cell.find(".qa-download-selected").prop("disabled", count === 0)
         .text(count ? "Download selected (" + count + ")" : "Download selected");
+    cell.find(".qa-purge-selected").prop("disabled", count === 0)
+        .text(count ? "Purge selected (" + count + ")" : "Purge selected");
 }
 
 function qa_show_match(match_id) {
@@ -359,6 +448,7 @@ $(document).ready(function() {
     QA_API = QA_PAGE.data("api");
     QA_ALERT_URL = QA_PAGE.data("alert-url");
     QA_CAN_DOWNLOAD = String(QA_PAGE.data("can-download")) === "true";
+    QA_CAN_PURGE = String(QA_PAGE.data("can-purge")) === "true";
 
     $("#qa_filters").on("submit", function(event) {
         event.preventDefault();
@@ -409,6 +499,7 @@ $(document).ready(function() {
         var cell = $(this).closest("td");
         qa_state.version = $(this).val();
         qa_state.match_offset = 0;
+        cell.find(".qa-purge-version").prop("disabled", !qa_state.version);
         qa_update_download_all(cell, qa_state.expanded);
         qa_load_matches(cell, qa_state.expanded);
     });
@@ -435,6 +526,28 @@ $(document).ready(function() {
     });
     rows.on("click", ".qa-view-match", function() {
         qa_show_match($(this).closest("tr").data("match-id"));
+    });
+    rows.on("click", ".qa-purge-selected", function() {
+        var cell = $(this).closest("tr.qa-detail-row > td");
+        var ids = qa_selected_ids(cell).map(function(id) { return parseInt(id, 10); });
+        qa_purge(cell, { match_ids: ids }, ids.length + " selected file" + (ids.length === 1 ? "" : "s"));
+    });
+    rows.on("click", ".qa-purge-version", function() {
+        var cell = $(this).closest("tr.qa-detail-row > td");
+        var version = (cell.data("signature").versions || []).filter(function(v) {
+            return v.signature_version === qa_state.version;
+        })[0];
+        if (version) {
+            qa_purge(cell, { versions: [version.signature_version] },
+                     "the " + version.stored_count + " stored files of version " + qa_short_version(version.signature_version));
+        }
+    });
+    rows.on("click", ".qa-purge-older", function() {
+        var cell = $(this).closest("tr.qa-detail-row > td");
+        var older = qa_older_versions(cell.data("signature"));
+        var files = older.reduce(function(total, v) { return total + v.stored_count; }, 0);
+        qa_purge(cell, { versions: older.map(function(v) { return v.signature_version; }) },
+                 "the " + files + " stored files of " + older.length + " older version" + (older.length === 1 ? "" : "s"));
     });
 
     qa_load_signatures();

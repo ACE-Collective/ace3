@@ -19,12 +19,15 @@ def request_analyst_analysis(root: "RootAnalysis"):
        already worked: the alert may be sitting in a post-correlation analysis mode such as
        dispositioned (which enables almost no modules), and the engine short-circuits analysis of
        dispositioned alerts. This switches back to correlation mode and sets the consume-once flag
-       the engine honors, so the requested analysis actually runs.
+       the engine honors, so the requested analysis actually runs. A module that failed before it
+       created its analysis (root.analysis_failures) gets another chance: the failure may have been
+       transient, or the module fixed since. One whose analysis holds an error does not.
 
        The caller is still responsible for syncing the alert and calling add_workload()."""
 
     root.analysis_mode = ANALYSIS_MODE_CORRELATION
     root.state[STATE_ANALYST_REQUESTED_ANALYSIS] = True
+    root.analysis_failures = {}
 
 
 def add_workload(root: "RootAnalysis"):
@@ -62,21 +65,3 @@ ON DUPLICATE KEY UPDATE uuid=uuid""", (root.uuid, get_global_runtime_settings().
         logging.info("added {} to workload with analysis mode {} company_id {}".format(
                       root.uuid, root.analysis_mode, root.company_id))
 
-def clear_workload_by_pid(pid):
-    """Utility function that clears (deletes) any workload items currently being processed by the given process
-       identified by pid. This is accomplished by querying the lock_owner column of the locks table and then
-       find workload items for the uuids found.
-
-       This is typically used to clear out error conditions."""
-    
-    with get_db_connection() as db:
-        c = db.cursor()
-        c.execute("SELECT uuid FROM locks WHERE lock_owner LIKE CONCAT('%%-', %s)", (pid,))
-        for row in c:
-            uuid = row[0]
-            logging.warning(f"clearing workload item {uuid}")
-            execute_with_retry(db, c, "DELETE FROM workload WHERE uuid = %s", (uuid,))
-
-        logging.warning(f"clearing locks for pid {pid}")
-        execute_with_retry(db, c, "DELETE FROM locks WHERE lock_owner LIKE CONCAT('%%-', %s)", (pid,))
-        db.commit()

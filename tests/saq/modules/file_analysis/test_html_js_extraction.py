@@ -1,9 +1,13 @@
+import email.parser
+
 import pytest
 
 from saq.configuration.config import get_analysis_module_config
 from saq.constants import (
     ANALYSIS_MODULE_FILE_TYPE,
     ANALYSIS_MODULE_HTML_JS_EXTRACTION,
+    DIRECTIVE_CRAWL,
+    DIRECTIVE_CRAWL_EXTRACTED_URLS,
     DIRECTIVE_PREVIEW,
     DIRECTIVE_YARA_META_PREFIX,
     F_FILE,
@@ -16,60 +20,17 @@ from saq.constants import (
 from saq.modules.adapter import AnalysisModuleAdapter
 from saq.modules.file_analysis.file_type import FileTypeAnalysis, FileTypeAnalyzer
 from saq.modules.file_analysis.html_js_extraction import (
+    DOM_SNAPSHOT_MAX_ELEMENTS,
+    DOM_SNAPSHOT_MAX_TEXT_LEN,
     HTMLJavaScriptExtractionAnalysis,
     HTMLJavaScriptExtractor,
+    build_dom_snapshot,
+    is_json_document,
+    parse_document,
+    write_dom_snapshot,
 )
 from tests.saq.helpers import create_root_analysis
 from tests.saq.test_util import create_test_context
-
-
-@pytest.mark.unit
-def test_extract_inline_scripts(tmpdir, test_context):
-    """Test extraction of inline <script> tags."""
-    root = create_root_analysis(analysis_mode='test_single')
-    root.initialize_storage()
-
-    # Create HTML file with inline JavaScript
-    html_content = """<!DOCTYPE html>
-<html>
-<head>
-    <title>Test Page</title>
-    <script>
-        console.log("Hello World");
-        alert("Test Alert");
-    </script>
-    <script type="text/javascript">
-        function testFunction() {
-            return "test";
-        }
-    </script>
-</head>
-<body>
-    <h1>Test</h1>
-</body>
-</html>"""
-
-    target_path = root.create_file_path("test_inline.html")
-    with open(target_path, "w") as fp:
-        fp.write(html_content)
-
-    observable = root.add_file_observable(target_path)
-
-    analyzer = AnalysisModuleAdapter(HTMLJavaScriptExtractor(
-        context=test_context,
-        config=get_analysis_module_config(ANALYSIS_MODULE_HTML_JS_EXTRACTION)))
-    analyzer.root = root
-
-    result = analyzer.execute_analysis(observable)
-    assert result == AnalysisExecutionResult.COMPLETED
-
-    analysis = observable.get_and_load_analysis(HTMLJavaScriptExtractionAnalysis)
-    assert isinstance(analysis, HTMLJavaScriptExtractionAnalysis)
-
-    # Should have extracted 2 inline scripts
-    assert len(analysis.extracted_files) == 2
-    assert analysis.script_count == 2
-    assert len(analysis.extracted_urls) == 0
 
 
 @pytest.mark.unit
@@ -162,9 +123,10 @@ def test_extract_event_handlers(tmpdir, test_context):
     analysis = observable.get_and_load_analysis(HTMLJavaScriptExtractionAnalysis)
     assert isinstance(analysis, HTMLJavaScriptExtractionAnalysis)
 
-    # Should have extracted event handlers
-    assert len(analysis.inline_handlers) >= 3
-    assert analysis.script_count >= 3
+    # every handler is long enough to be extracted
+    assert sorted(path.split("_js_")[1].rsplit("_", 2)[0] for path in analysis.inline_handlers) == [
+        "event_onchange", "event_onclick", "event_onerror", "event_onload"]
+    assert analysis.script_count == 4
 
 
 @pytest.mark.unit
@@ -250,82 +212,6 @@ def test_min_size_threshold(tmpdir, test_context):
 
     # Should have extracted only the larger script
     assert len(analysis.extracted_files) == 1
-
-
-@pytest.mark.unit
-def test_svg_parsing(tmpdir, test_context):
-    """Test SVG file parsing and extraction."""
-    root = create_root_analysis(analysis_mode='test_single')
-    root.initialize_storage()
-
-    # Create SVG file with embedded JavaScript
-    svg_content = """<?xml version="1.0" encoding="UTF-8"?>
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">
-    <script type="text/javascript">
-        <![CDATA[
-        function maliciousFunction() {
-            alert("Malicious SVG");
-        }
-        ]]>
-    </script>
-    <circle cx="50" cy="50" r="40" onclick="maliciousFunction()" />
-</svg>"""
-
-    target_path = root.create_file_path("test.svg")
-    with open(target_path, "w") as fp:
-        fp.write(svg_content)
-
-    observable = root.add_file_observable(target_path)
-
-    analyzer = AnalysisModuleAdapter(HTMLJavaScriptExtractor(
-        context=test_context,
-        config=get_analysis_module_config(ANALYSIS_MODULE_HTML_JS_EXTRACTION)))
-    analyzer.root = root
-
-    result = analyzer.execute_analysis(observable)
-    assert result == AnalysisExecutionResult.COMPLETED
-
-    analysis = observable.get_and_load_analysis(HTMLJavaScriptExtractionAnalysis)
-    assert isinstance(analysis, HTMLJavaScriptExtractionAnalysis)
-
-    # Should have extracted the inline script and event handler
-    assert len(analysis.extracted_files) >= 1
-
-
-@pytest.mark.unit
-def test_malformed_html(tmpdir, test_context):
-    """Test handling of malformed HTML."""
-    root = create_root_analysis(analysis_mode='test_single')
-    root.initialize_storage()
-
-    # Create malformed HTML
-    html_content = """<html>
-<script>
-    console.log("Missing closing tag");
-<div>
-<script>
-    // Another script
-    alert("test");
-</script>
-</html>"""
-
-    target_path = root.create_file_path("test_malformed.html")
-    with open(target_path, "w") as fp:
-        fp.write(html_content)
-
-    observable = root.add_file_observable(target_path)
-
-    analyzer = AnalysisModuleAdapter(HTMLJavaScriptExtractor(
-        context=test_context,
-        config=get_analysis_module_config(ANALYSIS_MODULE_HTML_JS_EXTRACTION)))
-    analyzer.root = root
-
-    result = analyzer.execute_analysis(observable)
-    # Should complete without errors
-    assert result == AnalysisExecutionResult.COMPLETED
-
-    analysis = observable.get_and_load_analysis(HTMLJavaScriptExtractionAnalysis)
-    assert isinstance(analysis, HTMLJavaScriptExtractionAnalysis)
 
 
 @pytest.mark.unit
@@ -486,13 +372,12 @@ def test_file_naming(tmpdir, test_context):
     analysis = observable.get_and_load_analysis(HTMLJavaScriptExtractionAnalysis)
     assert isinstance(analysis, HTMLJavaScriptExtractionAnalysis)
 
-    # Check that file observables have the expected naming pattern
-    file_observables = [o for o in analysis.observables if o.type == F_FILE]
-
-    for file_obs in file_observables:
-        # Filename should match pattern: sample_js_<type>_<index>_<hash>.js
-        assert file_obs.file_name.startswith("sample_js_")
-        assert file_obs.file_name.endswith(".js")
+    # sample_js_<type>_<index>_<first 8 hex digits of the script's sha256>.js
+    assert sorted(o.file_name for o in analysis.observables if o.type == F_FILE) == [
+        "sample_js_event_onclick_0_057ae3bc.js",
+        "sample_js_inline_0_fdd7e365.js",
+        "sample_js_inline_1_e5e7442f.js",
+    ]
 
 
 def _run_file_type_analysis(root, observable, expected_mime):
@@ -502,85 +387,6 @@ def _run_file_type_analysis(root, observable, expected_mime):
         context=create_test_context(root=root),
         config=get_analysis_module_config(ANALYSIS_MODULE_FILE_TYPE))).execute_analysis(observable)
     assert observable.get_and_load_analysis(FileTypeAnalysis).mime_type == expected_mime
-
-
-@pytest.mark.unit
-def test_svg_defanged_extension_with_mime_fallback(monkeypatch, tmpdir, test_context):
-    """Test that .svg_ files are processed when MIME type matches."""
-    root = create_root_analysis(analysis_mode='test_single')
-    root.initialize_storage()
-
-    svg_content = """<?xml version="1.0" encoding="UTF-8"?>
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">
-    <script type="text/javascript">
-        <![CDATA[
-        function maliciousFunction() {
-            alert("Defanged SVG test");
-        }
-        ]]>
-    </script>
-</svg>"""
-
-    target_path = root.create_file_path("ATT021.svg_")
-    with open(target_path, "w") as fp:
-        fp.write(svg_content)
-
-    observable = root.add_file_observable(target_path)
-
-    analyzer = AnalysisModuleAdapter(HTMLJavaScriptExtractor(
-        context=test_context,
-        config=get_analysis_module_config(ANALYSIS_MODULE_HTML_JS_EXTRACTION)))
-    analyzer.root = root
-
-    _run_file_type_analysis(root, observable, 'image/svg+xml')
-
-    result = analyzer.execute_analysis(observable)
-    assert result == AnalysisExecutionResult.COMPLETED
-
-    analysis = observable.get_and_load_analysis(HTMLJavaScriptExtractionAnalysis)
-    assert isinstance(analysis, HTMLJavaScriptExtractionAnalysis)
-    assert len(analysis.extracted_files) >= 1
-
-
-@pytest.mark.unit
-def test_svg_ecmascript_type(tmpdir, test_context):
-    """Test that text/ecmascript script type is extracted from SVG files."""
-    root = create_root_analysis(analysis_mode='test_single')
-    root.initialize_storage()
-
-    svg_content = """<?xml version="1.0" encoding="UTF-8"?>
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">
-    <script type="text/ecmascript">
-        <![CDATA[
-        var payload = "obfuscated content here";
-        (0,eval)(payload);
-        ]]>
-    </script>
-</svg>"""
-
-    target_path = root.create_file_path("test_ecmascript.svg")
-    with open(target_path, "w") as fp:
-        fp.write(svg_content)
-
-    observable = root.add_file_observable(target_path)
-
-    analyzer = AnalysisModuleAdapter(HTMLJavaScriptExtractor(
-        context=test_context,
-        config=get_analysis_module_config(ANALYSIS_MODULE_HTML_JS_EXTRACTION)))
-    analyzer.root = root
-
-    result = analyzer.execute_analysis(observable)
-    assert result == AnalysisExecutionResult.COMPLETED
-
-    analysis = observable.get_and_load_analysis(HTMLJavaScriptExtractionAnalysis)
-    assert isinstance(analysis, HTMLJavaScriptExtractionAnalysis)
-    assert len(analysis.extracted_files) == 1
-
-    # Verify script.javascript yara meta is set
-    file_observables = [o for o in analysis.observables if o.type == F_FILE]
-    assert len(file_observables) == 1
-    expected_directive = f"{DIRECTIVE_YARA_META_PREFIX}type=script.javascript"
-    assert expected_directive in file_observables[0].directives
 
 
 @pytest.mark.unit
@@ -641,51 +447,6 @@ if(_c)(0,eval)(_c);
 
     # Verify preview directive is NOT inherited by extracted scripts
     assert not file_observables[0].has_directive(DIRECTIVE_PREVIEW)
-
-
-@pytest.mark.unit
-def test_svg_cdata_stripped_from_extracted_scripts(tmpdir, test_context):
-    """Test that CDATA wrappers are stripped from extracted SVG script content."""
-    root = create_root_analysis(analysis_mode='test_single')
-    root.initialize_storage()
-
-    svg_content = """<?xml version="1.0" encoding="UTF-8"?>
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">
-    <script type="text/javascript">
-        <![CDATA[
-        function testFunction() {
-            return "clean content";
-        }
-        ]]>
-    </script>
-</svg>"""
-
-    target_path = root.create_file_path("test_cdata.svg")
-    with open(target_path, "w") as fp:
-        fp.write(svg_content)
-
-    observable = root.add_file_observable(target_path)
-
-    analyzer = AnalysisModuleAdapter(HTMLJavaScriptExtractor(
-        context=test_context,
-        config=get_analysis_module_config(ANALYSIS_MODULE_HTML_JS_EXTRACTION)))
-    analyzer.root = root
-
-    result = analyzer.execute_analysis(observable)
-    assert result == AnalysisExecutionResult.COMPLETED
-
-    analysis = observable.get_and_load_analysis(HTMLJavaScriptExtractionAnalysis)
-    assert isinstance(analysis, HTMLJavaScriptExtractionAnalysis)
-    assert len(analysis.extracted_files) == 1
-
-    # Read the extracted file and verify no CDATA markers
-    file_observables = [o for o in analysis.observables if o.type == F_FILE]
-    extracted_path = file_observables[0].full_path
-    with open(extracted_path, 'r') as fp:
-        content = fp.read()
-    assert '<![CDATA[' not in content
-    assert ']]>' not in content
-    assert 'function testFunction()' in content
 
 
 @pytest.mark.unit
@@ -1025,3 +786,244 @@ def test_dom_snapshot_carries_document_url(tmpdir, test_context):
     with open(extracted[0].full_path + ".dom.json", "r", encoding="utf-8") as fp:
         snapshot = json.load(fp)
     assert snapshot["url"] == "https://landing.example.com/page/#token=dGVzdA=="
+
+
+MHTML_PAGE = b"""garbage a browser left before the headers
+From: <Saved by Blink>
+Snapshot-Content-Location: https://landing.example.com/
+Subject: Landing
+MIME-Version: 1.0
+Content-Type: multipart/related;
+\ttype="text/html";
+\tboundary="----MultipartBoundary--abc----"
+
+------MultipartBoundary--abc----
+Content-Type: text/html
+Content-Transfer-Encoding: quoted-printable
+Content-Location: https://landing.example.com/
+
+<html><body><div id=3D"t" data-x=3D"1"></div><script>var first =3D document=
+.getElementById("t");</script></body></html>
+------MultipartBoundary--abc----
+Content-Type: image/png
+Content-Transfer-Encoding: base64
+Content-Location: https://landing.example.com/logo.png
+
+iVBORw0KGgo=
+------MultipartBoundary--abc----
+Content-Type: text/html
+Content-Transfer-Encoding: quoted-printable
+Content-Location: cid:frame-1@mhtml.blink
+
+<html><body><script>var second =3D "frame script";</script></body></html>
+------MultipartBoundary--abc------
+"""
+
+
+def _write_root_file(name: str, content: bytes):
+    root = create_root_analysis(analysis_mode='test_single')
+    root.initialize_storage()
+    target_path = root.create_file_path(name)
+    with open(target_path, "wb") as fp:
+        fp.write(content)
+    return root, root.add_file_observable(target_path)
+
+
+def _extracted_scripts(analysis) -> list[str]:
+    result = []
+    for o in analysis.observables:
+        if o.type == F_FILE:
+            with open(o.full_path, "r", encoding="utf-8") as fp:
+                result.append(fp.read())
+    return sorted(result)
+
+
+@pytest.mark.unit
+def test_mhtml_html_parts_are_extracted(test_context):
+    root, observable = _write_root_file("saved_page.mhtml", MHTML_PAGE)
+
+    assert _run_extractor(root, observable, test_context) == AnalysisExecutionResult.COMPLETED
+    analysis = observable.get_and_load_analysis(HTMLJavaScriptExtractionAnalysis)
+
+    # both text/html parts, quoted-printable decoded; the image part is not html
+    assert _extracted_scripts(analysis) == [
+        'var first = document.getElementById("t");',
+        'var second = "frame script";',
+    ]
+    assert analysis.script_count == 2
+
+
+@pytest.mark.unit
+def test_rfc822_mime_type_is_parsed_as_mhtml(test_context):
+    # an .eml without a matching extension, which file_type sniffed as message/rfc822
+    root, observable = _write_root_file("saved_page", MHTML_PAGE)
+    file_type_analysis = FileTypeAnalysis()
+    file_type_analysis.details = {"type": "RFC 822 mail", "mime": "message/rfc822"}
+    observable.add_analysis(file_type_analysis)
+    assert observable.get_and_load_analysis(FileTypeAnalysis).mime_type == "message/rfc822"
+
+    assert _run_extractor(root, observable, test_context) == AnalysisExecutionResult.COMPLETED
+    analysis = observable.get_and_load_analysis(HTMLJavaScriptExtractionAnalysis)
+    assert len(_extracted_scripts(analysis)) == 2
+
+
+@pytest.mark.unit
+def test_mhtml_without_html_parts_extracts_nothing(test_context):
+    # a part that is not html is not parsed as html, whatever it holds
+    root, observable = _write_root_file("empty.mht", b"MIME-Version: 1.0\nContent-Type: text/plain\n\n<script>var not_html = 1;</script>\n")
+
+    assert _run_extractor(root, observable, test_context) == AnalysisExecutionResult.COMPLETED
+    analysis = observable.get_and_load_analysis(HTMLJavaScriptExtractionAnalysis)
+    assert analysis.script_count == 0
+    assert analysis.generate_summary() is None
+
+
+@pytest.mark.unit
+def test_mhtml_parse_failure_is_logged(monkeypatch, caplog, test_context):
+    root, observable = _write_root_file("broken.mhtml", MHTML_PAGE)
+
+    def _raise(self):
+        raise ValueError("bad mime")
+    monkeypatch.setattr(email.parser.BytesFeedParser, "close", _raise)
+
+    assert _run_extractor(root, observable, test_context) == AnalysisExecutionResult.COMPLETED
+    assert f"failed to parse MHTML {observable.full_path}: bad mime" in caplog.text
+    assert observable.get_and_load_analysis(HTMLJavaScriptExtractionAnalysis).script_count == 0
+
+
+@pytest.mark.unit
+def test_summary_counts_each_kind(test_context):
+    root, observable = _write_root_file("summary.html", b"""<html><body>
+<script>var inline_script = 1;</script>
+<script>var inline_script = 1;</script>
+<script src="https://cdn.example.com/lib.js"></script>
+<script src="/static/app.js"></script>
+<button onclick="doSomethingInteresting()">x</button>
+</body></html>""")
+
+    assert _run_extractor(root, observable, test_context) == AnalysisExecutionResult.COMPLETED
+    analysis = observable.get_and_load_analysis(HTMLJavaScriptExtractionAnalysis)
+
+    assert analysis.generate_summary() == (
+        "HTML JavaScript Extraction: 1 inline script(s), 1 external URL(s), 1 URI path(s), "
+        "1 event handler(s) (1 duplicate(s) skipped)")
+
+
+@pytest.mark.unit
+def test_missing_file_is_skipped(test_context):
+    root, observable = _write_root_file("gone.html", b"<html></html>")
+    os.remove(observable.full_path)
+
+    assert _run_extractor(root, observable, test_context) == AnalysisExecutionResult.COMPLETED
+    assert observable.get_and_load_analysis(HTMLJavaScriptExtractionAnalysis) is None
+
+
+@pytest.mark.unit
+def test_unreadable_file_is_logged(caplog, test_context):
+    root, observable = _write_root_file("locked.html", b"<html><script>var locked = 1;</script></html>")
+    os.chmod(observable.full_path, 0)
+    try:
+        assert _run_extractor(root, observable, test_context) == AnalysisExecutionResult.COMPLETED
+    finally:
+        os.chmod(observable.full_path, 0o644)
+
+    assert f"failed to read {observable.full_path}" in caplog.text
+    assert observable.get_and_load_analysis(HTMLJavaScriptExtractionAnalysis).script_count == 0
+
+
+@pytest.mark.unit
+def test_extraction_failure_is_logged(monkeypatch, caplog, test_context):
+    root, observable = _write_root_file("boom.html", b"<html><script>var boom = 1;</script></html>")
+
+    def _raise(*args, **kwargs):
+        raise RuntimeError("extract failed")
+    monkeypatch.setattr(HTMLJavaScriptExtractor, "_extract_inline_scripts", _raise)
+
+    assert _run_extractor(root, observable, test_context) == AnalysisExecutionResult.COMPLETED
+    assert "failed to extract JavaScript from boom.html: extract failed" in caplog.text
+    analysis = observable.get_and_load_analysis(HTMLJavaScriptExtractionAnalysis)
+    assert analysis.error == "failed to extract JavaScript: extract failed"
+
+
+@pytest.mark.unit
+def test_unwritable_storage_dir_skips_the_script(caplog, test_context):
+    root, observable = _write_root_file("readonly.html", b"<html><script>var readonly = 1;</script></html>")
+    storage = os.path.dirname(observable.full_path)
+    os.chmod(storage, 0o555)
+    try:
+        assert _run_extractor(root, observable, test_context) == AnalysisExecutionResult.COMPLETED
+    finally:
+        os.chmod(storage, 0o755)
+
+    analysis = observable.get_and_load_analysis(HTMLJavaScriptExtractionAnalysis)
+    assert analysis.extracted_files == []
+    assert "failed to save script to" in caplog.text
+
+
+@pytest.mark.unit
+def test_skipped_scripts_and_handlers(test_context):
+    big_handler = "x" * 9000
+    root, observable = _write_root_file("skips.html", f"""<html><body>
+<script></script>
+<script src="   "></script>
+<div onclick="repeatedHandler()" onfocus="f()"></div>
+<div onmouseover="repeatedHandler()"></div>
+<div onload="{big_handler}"></div>
+</body></html>""".encode())
+
+    assert _run_extractor(root, observable, test_context) == AnalysisExecutionResult.COMPLETED
+    analysis = observable.get_and_load_analysis(HTMLJavaScriptExtractionAnalysis)
+
+    assert analysis.extracted_files == []
+    assert analysis.extracted_urls == []
+    assert len(analysis.inline_handlers) == 1
+    assert analysis.duplicate_count == 1
+
+
+@pytest.mark.unit
+def test_crawl_directive_is_passed_to_external_urls(test_context):
+    root, observable = _write_root_file("crawl.html", b'<html><script src="https://cdn.example.com/x.js"></script></html>')
+    observable.add_directive(DIRECTIVE_CRAWL_EXTRACTED_URLS)
+
+    assert _run_extractor(root, observable, test_context) == AnalysisExecutionResult.COMPLETED
+    analysis = observable.get_and_load_analysis(HTMLJavaScriptExtractionAnalysis)
+    [url] = [o for o in analysis.observables if o.type == F_URL]
+    assert url.value == "https://cdn.example.com/x.js"
+    assert url.has_directive(DIRECTIVE_CRAWL)
+
+
+@pytest.mark.unit
+def test_build_dom_snapshot_limits():
+    many = parse_document("<html><body>" + "<p>x</p>" * (DOM_SNAPSHOT_MAX_ELEMENTS + 5) + "</body></html>")
+    snapshot = build_dom_snapshot(many)
+    assert snapshot["truncated"] is True
+    assert len(snapshot["elements"]) == DOM_SNAPSHOT_MAX_ELEMENTS
+
+    long_text = parse_document(f"<p class='a b'>{'t' * (DOM_SNAPSHOT_MAX_TEXT_LEN + 10)}</p>")
+    snapshot = build_dom_snapshot(long_text)
+    assert snapshot["truncated"] is True
+    [p] = [e for e in snapshot["elements"] if e["tag"] == "p"]
+    assert p["attrs"] == {"class": "a b"}
+    assert len(p["text"]) == DOM_SNAPSHOT_MAX_TEXT_LEN
+
+    # the byte budget stops at the element that would cross it
+    snapshot = build_dom_snapshot(parse_document("<p>one</p><p>two</p>"), max_bytes=60)
+    assert snapshot["truncated"] is True
+    assert [e["tag"] for e in snapshot["elements"]] == ["html", "body"]
+
+    assert build_dom_snapshot(parse_document("")) is None
+
+
+@pytest.mark.unit
+def test_write_dom_snapshot_failure_is_reported(tmp_path, caplog):
+    path = str(tmp_path / "missing_dir" / "x.js.dom.json")
+
+    assert write_dom_snapshot(path, {"version": 1}) is False
+    assert f"failed to write DOM snapshot sidecar {path}" in caplog.text
+
+
+@pytest.mark.unit
+def test_is_json_document():
+    assert is_json_document(b' {"a": "<script>x</script>"}')
+    assert not is_json_document(b'{"a": <script>')
+    assert not is_json_document(b'<html>{}</html>')

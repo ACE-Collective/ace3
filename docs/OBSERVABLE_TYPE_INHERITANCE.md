@@ -70,7 +70,7 @@ introduces a cycle) leaves the prior in-memory state intact and logs an
 error.
 
 Set `reload_check_interval_seconds` to `0` (or any non-positive value) to
-disable runtime reload entirely — the registry then loads once at startup
+disable runtime reload entirely — the registry then loads once, on first use,
 and never refreshes, matching the behavior before this feature shipped.
 
 The `/observable_types/` API endpoint applies its own short TTL cache
@@ -206,6 +206,27 @@ The `F_*` Python constant is only required if Python code needs to reference
 the type by symbolic name. Hunt rules and observable-modifier rules can refer
 to the YAML name directly.
 
+### Give a type a Python class
+
+A type without a class is a `DefaultObservable`. A type that needs its own
+validation, normalization or presenter gets an `Observable` subclass, named in
+`observable_types.classes` in the saq config (`etc/saq.default.yaml`, or an
+integration's `etc/saq.integration.yaml`) as `module:Class`:
+
+```yaml
+observable_types:
+  classes:
+    pdf_file: "vendor.observables:PDFFileObservable"
+```
+
+`create_observable()` and `create_observable_from_dict()` import the module
+the first time they build an observable of that type, so a process imports
+only the observable types it handles. A class that cannot be imported raises
+`ImportError` there rather than falling back to `DefaultObservable`, which
+would drop what the class keeps when the root is saved again. The class map is
+not part of `etc/observable_types.yaml`, because a deployment replaces that
+file with its own.
+
 ### Get consistent display labels for free
 
 Before this change, getting "Mail Return Path" to appear in the UI for a
@@ -229,6 +250,8 @@ only consulted when no setter has run.
 ACE has the ability to mark observables for detection such that ACE will add a detection point whenever the observable is seen. It's worth noting the difference in how that detection works between ACE itself and the external systems that ACE exports these observables to.
 
 ACE will add a detection point when the observable **and the type** match exactly.
+
+A new detection's default expiration does follow the tree. `observable_expiration_mappings` is checked for the type, then for each ancestor nearest first, and only then falls back to `observable_expiration_default`. So `email_address: "30:00:00:00"` gives `email_from` detections 30 days unless `email_from` has its own entry.
 
 When ACE exports observable detection information into the yara export, it **collapses the type to the parent type**. For example, observables with the type `email_reply_to` that are enabled for detection are exported as the `email_address` observable type. ACE often understands the context of observations because it did the analysis/parsing; a yara rule scanning an entire blob of data does not, so the context of an email address being used as the reply-to is not available there.
 
@@ -268,9 +291,10 @@ email addresses.
 | ---------------------------------------- | ----------------------------------------------------------------------------------------------- |
 | Built-in YAML                            | `etc/observable_types.yaml`                                                                     |
 | Config knob (`observable_types.config_path`) | `etc/saq.default.yaml`                                                                          |
+| Observable classes (`observable_types.classes`) | `etc/saq.default.yaml`, resolved by `saq/observables/generator.py` (`get_observable_class()`) |
 | Registry implementation                  | `saq/observables/type_hierarchy.py` (`get_type_hierarchy()`, `get_all_valid_types()`)           |
 | Module dispatch (subtype-aware)          | `saq/modules/base_module.py` (`AnalysisModule.accepts`, `valid_observable_subtypes`)            |
 | Display-label fallback                   | `saq/analysis/observable.py` (`Observable.display_type`)                                        |
 | `observable_modifier` rule matching      | `saq/modules/util/observable_modifier.py` (`RuleConditions.evaluate`, `evaluate_early`)         |
 | Detection export type selection          | `saq/observables/export/base.py` (`select_detections`), used by the yara and splunk targets      |
-| Bootstrap at startup                     | `saq/environment.py` (`initialize_environment` calls `bootstrap_type_hierarchy`)                |
+| Bootstrap on first use                   | `saq/observables/type_hierarchy.py` (`get_type_hierarchy()` and `get_all_valid_types()` call `bootstrap_type_hierarchy()` once the configuration is loaded) |

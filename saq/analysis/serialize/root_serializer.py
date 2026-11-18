@@ -7,6 +7,7 @@ import dateutil.parser
 
 from saq.analysis.io_tracking import _track_reads, _track_writes
 from saq.analysis.module_execution_delta import ModuleExecutionDelta
+from saq.constants import EventTimeSource
 from saq.json_encoding import _JSONEncoder
 from saq.util import parse_event_time
 
@@ -19,6 +20,7 @@ KEY_TOOL_INSTANCE = 'tool_instance'
 KEY_TYPE = 'type'
 KEY_DESCRIPTION = 'description'
 KEY_EVENT_TIME = 'event_time'
+KEY_EVENT_TIME_SOURCE = 'event_time_source'
 KEY_ACTION_COUNTERS = 'action_counters'
 KEY_DETAILS = 'details'
 KEY_OBSERVABLE_STORE = 'observable_store'
@@ -36,6 +38,9 @@ KEY_INSTRUCTIONS = 'instructions'
 KEY_ANALYSIS_FAILURES = 'analysis_failures'
 KEY_EXTENSIONS = 'extensions'
 KEY_MODULE_EXECUTIONS = 'module_executions'
+# how a hunt marked a root whose event_time was its query time before event_time_source was kept
+# (v3.0.132); roots on disk still carry it
+LEGACY_KEY_EVENT_TIME_FALLBACK = 'event_time_fallback'
 
 if TYPE_CHECKING:
     from saq.analysis.root import RootAnalysis
@@ -65,6 +70,7 @@ class RootAnalysisSerializer:
             KEY_TYPE: root_analysis.alert_type,
             KEY_DESCRIPTION: root_analysis.description,
             KEY_EVENT_TIME: root_analysis.event_time,
+            KEY_EVENT_TIME_SOURCE: root_analysis.event_time_source.value,
             KEY_ACTION_COUNTERS: root_analysis.action_counters,
             KEY_OBSERVABLE_STORE: root_analysis.analysis_tree_manager.serialize_observable_registry(),
             KEY_NAME: root_analysis.name,
@@ -146,6 +152,7 @@ class RootAnalysisSerializer:
             root_analysis._extensions = value[KEY_EXTENSIONS]
         if KEY_ANALYSIS_FAILURES in value:
             root_analysis._analysis_failures = value[KEY_ANALYSIS_FAILURES]
+        root_analysis._event_time_source = RootAnalysisSerializer._event_time_source(root_analysis, value)
         if KEY_MODULE_EXECUTIONS in value:
             root_analysis._module_executions = [
                 ModuleExecutionDelta.from_dict(d) for d in value[KEY_MODULE_EXECUTIONS]
@@ -154,6 +161,28 @@ class RootAnalysisSerializer:
         # Set the JSON size for computation in the total_bytes property
         #root_analysis.json_size = sys.getsizeof(value)
     
+    @staticmethod
+    def _event_time_source(root_analysis: "RootAnalysis", value: dict) -> EventTimeSource:
+        """The loaded root's event_time_source; for a root saved before it was kept, the event's own
+        time unless the hunt marked it as its query time."""
+        if root_analysis._event_time is None:
+            return EventTimeSource.UNSET
+
+        if value.get(KEY_EVENT_TIME_SOURCE) is not None:
+            try:
+                return EventTimeSource(value[KEY_EVENT_TIME_SOURCE])
+            except ValueError:
+                # a node running a newer version may know a source this one doesn't
+                logging.warning("root %s has an unknown event_time_source %r; treating it as the event's own",
+                                root_analysis.uuid, value[KEY_EVENT_TIME_SOURCE],
+                                extra={"root_uuid": root_analysis.uuid})
+                return EventTimeSource.EVENT
+
+        if (root_analysis._extensions or {}).get(LEGACY_KEY_EVENT_TIME_FALLBACK) == EventTimeSource.QUERY_TIME:
+            return EventTimeSource.QUERY_TIME
+
+        return EventTimeSource.EVENT
+
     @staticmethod
     def save_to_disk(root_analysis: "RootAnalysis") -> bool:
         """Saves the RootAnalysis JSON to disk with encoding and hashing."""

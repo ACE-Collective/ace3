@@ -4,6 +4,7 @@ import shutil
 import time
 
 from saq.alert_routing import RouteStage, route_alert
+from saq.auth import ApiAuthResult
 from saq.analysis.root import RootAnalysis
 from saq.configuration.config import (
     get_config,
@@ -248,10 +249,14 @@ class AnalysisOrchestrator:
             # save all the changes we've made
             execution_context.root.save()
 
-            # record the execution statistics
-            engine_config = get_engine_config()
-            if engine_config.metrics_logging.enabled:
-                execution_context.record_execution_statistics(elapsed_time, get_global_runtime_settings().module_stats_dir)
+            # record the execution statistics (a no-op unless metrics_logging is enabled). a
+            # cancelled analysis (shutdown, lost lock, a disposition stop) returns normally, but
+            # its tree is unfinished
+            execution_context.record_execution_statistics(
+                elapsed_time,
+                get_global_runtime_settings().module_stats_dir,
+                outcome="cancelled" if execution_context.cancel_analysis_flag else "completed",
+            )
 
         except Exception as e:
             elapsed_time = time.time() - start_time
@@ -267,6 +272,14 @@ class AnalysisOrchestrator:
                 execution_context.root.save()
             except Exception as save_error:
                 logging.error(f"unable to save failed analysis {execution_context.root}: {save_error}")
+
+            # the roots that time out are the biggest ones, so they must not be missing from the
+            # metrics. record_execution_statistics never raises, so the re-raise below still runs
+            execution_context.record_execution_statistics(
+                elapsed_time,
+                get_global_runtime_settings().module_stats_dir,
+                outcome="timed_out" if isinstance(e, AnalysisTimeoutError) else "failed",
+            )
 
             # analysis was aborted: the outstanding delayed-analysis requests are being
             # abandoned below, so the in-memory root.delayed flag is now stale and there
@@ -383,11 +396,6 @@ class AnalysisOrchestrator:
         if execution_context.root.analysis_mode in self.config.non_detectable_modes:
             return
 
-        # has this analysis been whitelisted?
-        if not get_global_runtime_settings().forced_alerts and execution_context.root.whitelisted:
-            logging.info(f"{execution_context.root} has been whitelisted")
-            return
-
         if (execution_context.root.has_detections() or get_global_runtime_settings().forced_alerts) and self.config.alerting_enabled:
             reason = f"{len(execution_context.root.all_detection_points)} detection points" if execution_context.root.has_detections() else "forced alerts enabled"
             logging.info(
@@ -502,14 +510,14 @@ class AnalysisOrchestrator:
                         execution_context.root.uuid, alert.storage_dir, execution_context.root.storage_dir,
                     )
                     alert.load()
-                # do not rebuild the index if there are outstanding analysis requests --
-                # a later non-delayed pass will do the final rebuild. But if analysis was
-                # aborted (timeout / exception) the delayed requests were abandoned and
-                # root.delayed is stale, so force the rebuild now or the observables never
-                # make it into observable_mapping (and the alert becomes unsearchable by them).
-                build_index = (not execution_context.root.delayed) or execution_context.analysis_aborted
-                self._route_post_analysis(execution_context, alert)
-                alert.sync(build_index=build_index)
+                # the alert's last pass: nothing delayed is outstanding, or analysis was aborted
+                # (timeout / exception), which abandoned the delayed requests and left
+                # root.delayed stale. Only the last pass rebuilds the index, or the observables
+                # never make it into observable_mapping (and the alert becomes unsearchable by
+                # them); routers are told too (AlertRouter.route).
+                final = (not execution_context.root.delayed) or execution_context.analysis_aborted
+                self._route_post_analysis(execution_context, alert, final)
+                alert.sync(build_index=final)
             else:
                 # every path that puts a root in correlation mode inserts its alerts row
                 # (ALERT()); a root here without one is an alert no analyst will ever see
@@ -521,7 +529,7 @@ class AnalysisOrchestrator:
             if session:
                 session.close()
 
-    def _route_post_analysis(self, execution_context: EngineExecutionContext, alert: Alert):
+    def _route_post_analysis(self, execution_context: EngineExecutionContext, alert: Alert, final: bool):
         """Let the alert routers move an existing alert after an analysis pass
         (RouteStage.POST_ANALYSIS): for an alert inserted before analysis (a hunt, an API
         submission) whose routing evidence only appears once it is analyzed.
@@ -530,7 +538,7 @@ class AnalysisOrchestrator:
         analyst working it is worse than leaving it; the automation user counts as nobody,
         because setting a disposition as automation also makes it the owner."""
         root = execution_context.root
-        decision = route_alert(root, RouteStage.POST_ANALYSIS)
+        decision = route_alert(root, RouteStage.POST_ANALYSIS, final=final)
         if decision is None or decision.queue == alert.queue:
             return
 
@@ -543,7 +551,8 @@ class AnalysisOrchestrator:
             return
 
         # checked again as the row is written: an analyst may take the alert while it is analyzed
-        if not move_alert_to_queue(alert, decision.queue, decision.reason, router=decision.router, root=root,
+        if not move_alert_to_queue(alert, decision.queue, decision.reason, ApiAuthResult.system(decision.router),
+                                   router=decision.router, root=root,
                                    open_unless_owned_by_others={get_config().global_settings.automation_user_id}):
             logging.info(f"not moving alert {root} to queue {decision.queue}: it was taken or dispositioned meanwhile",
                          extra={"alert_uuid": root.uuid, "queue": decision.queue, "router": decision.router})

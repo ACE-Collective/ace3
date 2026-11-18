@@ -230,7 +230,7 @@ When all conditions pass, every action below that is present gets applied.
 | `limit_analysis: ["short_module_name"]` | Restrict the observable to only the listed modules. Uses the **short module name** from the engine config (`module_config.name`), not a `path:Class` string. |
 | `reset_analysis: ["module.path:AnalysisClass"]` | Clear the "no analysis" sentinel a module recorded, giving it a second pass. Names the **Analysis class**. Must run in `post` phase. |
 | `set_display_type: "Phishing URL"` | Override the observable's display type in the GUI. |
-| `set_display_value: "decoded payload"` | Override the observable's display value in the GUI. |
+| `set_display_value: "decoded payload"` | Override the observable's display value in the GUI, shown as `decoded payload (<value>)`; a file observable shows its file path in place of its sha256 value. |
 | `ignore: true` | Remove the observable from matching parent analyses (and from the DB if no parents remain). In `pre` phase it also installs `exclude_all` so ACE skips all further work on it. |
 
 > **Naming gotcha:** `exclude_analysis` names the *Analyzer* class (`...:SandboxAnalyzer`),

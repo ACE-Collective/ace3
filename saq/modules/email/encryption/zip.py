@@ -1,16 +1,13 @@
 import logging
 import os
-from subprocess import PIPE, Popen
 from typing import Type, override
 import zipfile
 
 from pydantic import Field
-from html2text import html2text
 from saq.analysis.analysis import Analysis
 from saq.signatures.builtin import EMAIL_ENCRYPTED_DECRYPTED
-from saq.analysis.search import search_down
 from saq.constants import DIRECTIVE_EXTRACT_URLS, F_FILE, AnalysisExecutionResult
-from saq.cracking import crack_password, generate_wordlist
+from saq.cracking import crack_password, wordlist_from_email
 from saq.modules import AnalysisModule
 from saq.modules.config import AnalysisModuleConfig
 from saq.observables.file import FileObservable
@@ -21,7 +18,6 @@ KEY_EMAIL = 'email'
 KEY_EMAIL_BODY = 'email_body'
 KEY_WORD_LIST = 'word_list'
 KEY_PASSWORD = 'password'
-KEY_ERROR = 'error'
 
 class ZipEncryptionAnalysis(Analysis):
     def __init__(self, *args, **kwargs):
@@ -32,7 +28,6 @@ class ZipEncryptionAnalysis(Analysis):
             KEY_EMAIL_BODY: None,
             KEY_WORD_LIST: [],
             KEY_PASSWORD: None,
-            KEY_ERROR: None
         }
 
     @override
@@ -80,14 +75,6 @@ class ZipEncryptionAnalysis(Analysis):
     def password(self, value):
         self.details[KEY_PASSWORD] = value
 
-    @property
-    def error(self):
-        return self.details[KEY_ERROR]
-
-    @error.setter
-    def error(self, value):
-        self.details[KEY_ERROR] = value
-
     def generate_summary(self):
         if self.details is None:
             return None
@@ -112,7 +99,7 @@ class ZipEncryptionAnalysis(Analysis):
 class ZipEncryptionAnalyzerConfig(AnalysisModuleConfig):
     range_low: int = Field(..., description="The minimum size of the passwords to try.")
     range_high: int = Field(..., description="The maximum size of the passwords to try.")
-    byte_limit: int = Field(..., description="How many bytes into the email do you want to look?")
+    byte_limit: int = Field(..., description="How many characters of each email body part (html converted to text) to read for candidate passwords.")
     list_limit: int = Field(..., description="The maximum size of the word list created.")
     john_bin_path: str = Field(..., description="Full path to john the ripper binary.")
     extract_timeout: int = Field(default=5, description="The maximum amount of time (in seconds) to wait for 7z to complete.")
@@ -156,18 +143,15 @@ class ZipEncryptionAnalyzer(AnalysisModule):
 
     def execute_analysis(self, _file) -> AnalysisExecutionResult:
         assert isinstance(_file, FileObservable)
-        from saq.modules.email.rfc822 import EmailAnalysis
 
         # does this file exist as an attachment?
         if not _file.exists:
             return AnalysisExecutionResult.COMPLETED
 
-        # is this an encrypted zip file?
+        # is this an encrypted zip file? one encrypted entry is enough
         try:
             with zipfile.ZipFile(_file.full_path) as zip_fp:
-                for zip_info in zip_fp.infolist():
-                    is_encrypted = zip_info.flag_bits & 0x1
-                if not is_encrypted:
+                if not any(zip_info.flag_bits & 0x1 for zip_info in zip_fp.infolist()):
                     return AnalysisExecutionResult.COMPLETED
 
         # expected condition if it's not an zip archive
@@ -179,59 +163,49 @@ class ZipEncryptionAnalyzer(AnalysisModule):
         analysis = self.create_analysis(_file)
 
         # extract the hash for cracking
-        p = Popen([os.path.join(self.john_bin_path, 'zip2john'), _file.full_path], stdout=PIPE, stderr=PIPE)
-        stdout, stderr = p.communicate()
+        p = self.run_sandboxed_tool([os.path.join(self.john_bin_path, 'zip2john'), _file.full_path], _file.full_path)
+        if p is None:
+            analysis.error = "zip2john did not finish"
+            return AnalysisExecutionResult.COMPLETED
 
         # did we get the hash?
-        if not stdout:
-            analysis.error = f"zip2john failed: {stderr.decode()}"
+        if not p.stdout:
+            analysis.error = f"zip2john failed: {p.stderr}"
             return AnalysisExecutionResult.COMPLETED
 
         hash_file = f'{_file.full_path}.hash'
-        with open(hash_file, 'wb') as fp:
-            fp.write(stdout)
+        with open(hash_file, 'w') as fp:
+            fp.write(p.stdout)
 
-        # build wordlist for cracking password from email body text, if available
-        analysis.word_list = []
-        source_email = search_down(_file, lambda obj: isinstance(obj, EmailAnalysis) and obj.email is not None)
-        if source_email and source_email.body:
-            analysis.email = True
+        # build wordlist for cracking password from the email's body text, if available
+        try:
+            analysis.email, analysis.email_body, analysis.word_list = wordlist_from_email(
+                _file, range_low=self.range_low, range_high=self.range_high,
+                byte_limit=self.byte_limit, list_limit=self.list_limit)
+        except Exception as e:
+            logging.exception(f"unable to build the password wordlist for {_file}",
+                              extra={"path": _file.full_path, "root_uuid": self.get_root().uuid})
+            analysis.error = f"unable to build the password wordlist: {str(e) or type(e).__name__}"
+            return AnalysisExecutionResult.COMPLETED
 
-            # convert html to text
+        if analysis.word_list:
+            wordlist_path = f'{_file.full_path}.wordlist'
+            with open(wordlist_path, 'w') as fp:
+                for word in analysis.word_list:
+                    fp.write(f'{word}\n')
+
             try:
-                target_path = os.path.join(self.get_root().storage_dir, source_email.body.value)
-                if not os.path.exists(target_path):
-                    analysis.error = f"email body file {target_path} does not exist"
-                    return AnalysisExecutionResult.COMPLETED
-
-                with open(target_path, 'r', errors='ignore') as fp:
-                    logging.debug(f"parsing {source_email.body.value} for html")
-                    analysis.email_body = html2text(fp.read())[:self.byte_limit]
-
-                analysis.word_list.extend(generate_wordlist(text_content=analysis.email_body,
-                                                            range_low=self.range_low,
-                                                            range_high=self.range_high,
-                                                            byte_limit=self.byte_limit,
-                                                            list_limit=self.list_limit))
-
-                if analysis.word_list:
-                    wordlist_path = f'{_file.full_path}.wordlist'
-                    with open(wordlist_path, 'w') as fp:
-                        for word in analysis.word_list:
-                            fp.write(f'{word}\n')
-
-                    try:
-                        analysis.password = crack_password(self.john_bin_path, hash_file, _file.full_path, f'--wordlist={wordlist_path}')
-                    except Exception as e:
-                        logging.error(f"error encountered when trying to crack password for {_file}: {e}")
-                        return AnalysisExecutionResult.COMPLETED
-
+                analysis.password = crack_password(self, self.john_bin_path, hash_file, _file.full_path,
+                                                   f'--wordlist={os.path.abspath(wordlist_path)}',
+                                                   read_files=[wordlist_path])
             except Exception as e:
-                logging.error(f"error encountered when building password wordlist for {_file}: {e}")
+                logging.exception(f"unable to crack the password for {_file}",
+                                  extra={"path": _file.full_path, "root_uuid": self.get_root().uuid})
+                analysis.error = f"unable to crack the password: {str(e) or type(e).__name__}"
                 return AnalysisExecutionResult.COMPLETED
 
+        # none of the candidates was the password: the summary says so, and it is not an error
         if not analysis.password:
-            analysis.error = "ZipEncryptionAnalyzer was unable to crack the password"
             return AnalysisExecutionResult.COMPLETED
 
         # got the password!
@@ -245,12 +219,18 @@ class ZipEncryptionAnalyzer(AnalysisModule):
 
         # extract data from zip to output directory w/ 7zip
         # 'x' = extract, '-y' = assume yes to all queries
-        try:
-            p = Popen(['7z', 'x', '-y', f'-p{analysis.password}', f"-o{output_dir}", _file.full_path], stdout=PIPE, stderr=PIPE)
-            _, _ = p.communicate(timeout=self.extract_timeout)
-        except Exception as e:
-            logging.error(f"Unable to extract data from encrypted zip {_file}: {e}")
-            return AnalysisExecutionResult.COMPLETED
+        result = self.run_sandboxed_tool(['7z', 'x', '-y', f'-p{analysis.password}', f"-o{os.path.abspath(output_dir)}",
+                                          _file.full_path], _file.full_path, timeout=self.extract_timeout,
+                                         write_dirs=[output_dir])
+        if result is None:
+            # run_sandboxed_tool() logged why (a timeout, a member over the file size limit). What it
+            # extracted before it was stopped is still decrypted content and is still added: the last
+            # file may be cut short
+            analysis.error = "7z did not finish"
+        elif result.returncode > 1:
+            # 7z exits 1 for a warning; what it extracted before an error is still added
+            logging.warning(f"7z could not extract every file of encrypted zip {_file}: {result.stderr.strip()[-500:]}")
+            analysis.error = result.failure_reason("7z")
 
         # add files in the zip as observables
         for dirpath, dirnames, filenames in os.walk(output_dir):

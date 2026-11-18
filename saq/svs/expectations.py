@@ -16,13 +16,13 @@ recompute them, and is logged as an AUDIT record. svs_expectations, svs_ignores 
 svs_test_settings are written here only.
 """
 
-import logging
 from datetime import datetime, timedelta
 from typing import Optional
 
 from sqlalchemy import delete, select
 from sqlalchemy.dialects.mysql import insert as mysql_insert
 
+from saq.auth import ApiAuthResult
 from saq.configuration.config import get_config
 from saq.database.model import (
     SVSAttribution,
@@ -34,6 +34,7 @@ from saq.database.model import (
     SVSTestSettings,
 )
 from saq.database.pool import get_db
+from saq.logging import log_audit
 from saq.svs.catalog import platform_slugs
 from saq.svs.constants import GLOBAL_SCOPE_KEY, ExpectationState, IgnoreScope, ObservationSource, RunEventKind
 from saq.svs.preconditions import NONE, Precondition, StaleWrite
@@ -87,10 +88,6 @@ def _last_known(signature_uuid: str, run_id: Optional[int] = None) -> tuple[Opti
     return family, None
 
 
-def _audit(message: str, **fields) -> None:
-    logging.info(f"AUDIT: {message}", extra=fields)
-
-
 #
 # expectations (svs:run_manage)
 #
@@ -137,10 +134,9 @@ def get_expectation(test_guid: str, platform: str, signature_uuid: str) -> SVSEx
     return expectation
 
 
-def set_expectation(test_guid: str, signature_uuid: str, state: str, user_id: int, *,
+def set_expectation(test_guid: str, signature_uuid: str, state: str, auth: ApiAuthResult, *,
                     platform: Optional[str] = None, reason: Optional[str] = None, run_uuid: Optional[str] = None,
-                    actor: Optional[str] = None, precondition: Precondition = NONE,
-                    now: Optional[datetime] = None) -> SVSExpectation:
+                    precondition: Precondition = NONE, now: Optional[datetime] = None) -> SVSExpectation:
     """Decides a signature for a test on a platform: expected or rejected. With run_uuid (a run of
     the test), the decision was made from that run's result, it is about the run's platform, and the
     run's event log records it; without one, platform names one of the test's platforms. Raises
@@ -166,25 +162,23 @@ def set_expectation(test_guid: str, signature_uuid: str, state: str, user_id: in
 
     family, name = _last_known(signature_uuid, run.id if run else None)
     values = {"state": state.value, "signature_family": family, "signature_name": name, "reason": reason,
-              "decided_from_run_id": run.id if run else None, "decided_by_user_id": user_id, "decided_at": now}
+              "decided_from_run_id": run.id if run else None, "decided_by_user_id": auth.auth_user_id, "decided_at": now}
     _upsert(db, SVSExpectation, {"test_guid": test.guid, "platform": platform, "signature_uuid": signature_uuid},
             values, values, precondition, f"the decision about {name or signature_uuid} on {platform}")
     if run is not None:
-        db.add(new_run_event(run.id, RunEventKind.CANDIDATE_DECISION, actor or str(user_id), actor_user_id=user_id,
+        db.add(new_run_event(run.id, RunEventKind.CANDIDATE_DECISION, auth,
                              now=now, details={"signature_uuid": signature_uuid, "platform": platform,
                                                "state": state.value, "reason": reason}))
     mark_runs_stale(db, SVSRun.test_guid == test.guid, SVSRun.platform == platform)
     db.commit()
 
-    _audit("svs expectation decided", **{
+    log_audit("svs expectation decided", auth=auth, **{
         **(run_log_fields(run) if run is not None else {}), "svs_test": test.guid, "platform": platform,
-        "signature_uuid": signature_uuid, "state": state.value, "reason": reason, "actor": actor,
-        "actor_user_id": user_id})
+        "signature_uuid": signature_uuid, "state": state.value, "reason": reason})
     return get_expectation(test.guid, platform, signature_uuid)
 
 
-def remove_expectation(test_guid: str, platform: str, signature_uuid: str, user_id: int, *,
-                       actor: Optional[str] = None) -> None:
+def remove_expectation(test_guid: str, platform: str, signature_uuid: str, auth: ApiAuthResult) -> None:
     """Removes a decision: the signature is a candidate again the next time a run on the platform
     fires it. Raises UnknownTest, UnknownDecision, InvalidDecision."""
     test = _test(test_guid)
@@ -195,8 +189,8 @@ def remove_expectation(test_guid: str, platform: str, signature_uuid: str, user_
     db.delete(expectation)
     mark_runs_stale(db, SVSRun.test_guid == test.guid, SVSRun.platform == platform)
     db.commit()
-    _audit("svs expectation removed", svs_test=test.guid, platform=platform,
-           signature_uuid=expectation.signature_uuid, state=state, actor=actor, actor_user_id=user_id)
+    log_audit("svs expectation removed", auth=auth, svs_test=test.guid, platform=platform,
+              signature_uuid=expectation.signature_uuid, state=state)
 
 
 #
@@ -220,8 +214,8 @@ def _ignored_runs(test_guid: Optional[str]) -> tuple:
     return (SVSRun.test_guid == test_guid,) if test_guid is not None else ()
 
 
-def set_ignore(signature_uuid: str, user_id: int, *, test_guid: Optional[str] = None, reason: Optional[str] = None,
-               actor: Optional[str] = None, precondition: Precondition = NONE,
+def set_ignore(signature_uuid: str, auth: ApiAuthResult, *, test_guid: Optional[str] = None,
+               reason: Optional[str] = None, precondition: Precondition = NONE,
                now: Optional[datetime] = None) -> SVSIgnore:
     """Ignores a signature during the test's runs, or every test's (test_guid None). Setting it
     again replaces its reason. Raises UnknownTest, InvalidDecision, StaleWrite."""
@@ -234,21 +228,19 @@ def set_ignore(signature_uuid: str, user_id: int, *, test_guid: Optional[str] = 
     db = get_db()
     _upsert(db, SVSIgnore, {"scope_key": _scope_key(test_guid), "signature_uuid": signature_uuid},
             {"scope": (IgnoreScope.TEST if test_guid else IgnoreScope.GLOBAL).value, "test_guid": test_guid,
-             "signature_family": family, "signature_name": name, "reason": reason, "created_by_user_id": user_id,
-             "created_at": now},
+             "signature_family": family, "signature_name": name, "reason": reason,
+             "created_by_user_id": auth.auth_user_id, "created_at": now},
             {"reason": reason}, precondition,
             f"the ignore of {name or signature_uuid} {'for this test' if test_guid else 'for every test'}")
     mark_runs_stale(db, *_ignored_runs(test_guid))
     db.commit()
 
-    _audit("svs signature ignored", svs_test=test_guid, signature_uuid=signature_uuid,
-           scope=(IgnoreScope.TEST if test_guid else IgnoreScope.GLOBAL).value, reason=reason, actor=actor,
-           actor_user_id=user_id)
+    log_audit("svs signature ignored", auth=auth, svs_test=test_guid, signature_uuid=signature_uuid,
+              scope=(IgnoreScope.TEST if test_guid else IgnoreScope.GLOBAL).value, reason=reason)
     return get_ignore(signature_uuid, test_guid)
 
 
-def remove_ignore(signature_uuid: str, user_id: int, *, test_guid: Optional[str] = None,
-                  actor: Optional[str] = None) -> None:
+def remove_ignore(signature_uuid: str, auth: ApiAuthResult, *, test_guid: Optional[str] = None) -> None:
     """Stops ignoring a signature. Raises UnknownTest, UnknownDecision."""
     if test_guid is not None:
         test_guid = _test(test_guid).guid
@@ -257,8 +249,8 @@ def remove_ignore(signature_uuid: str, user_id: int, *, test_guid: Optional[str]
     db.delete(ignore)
     mark_runs_stale(db, *_ignored_runs(test_guid))
     db.commit()
-    _audit("svs signature no longer ignored", svs_test=test_guid, signature_uuid=ignore.signature_uuid,
-           scope=ignore.scope, actor=actor, actor_user_id=user_id)
+    log_audit("svs signature no longer ignored", auth=auth, svs_test=test_guid, signature_uuid=ignore.signature_uuid,
+              scope=ignore.scope)
 
 
 #
@@ -275,27 +267,32 @@ def get_test_settings(test_guid: str) -> Optional[SVSTestSettings]:
     return get_db().execute(select(SVSTestSettings).where(SVSTestSettings.test_guid == test.guid)).scalar_one_or_none()
 
 
-def set_test_settings(test_guid: str, user_id: int, *, observation_minutes: int,
-                      actor: Optional[str] = None) -> SVSTestSettings:
-    """Sets the observation window of the test's runs registered from now on: used as it is, with no
-    slack and no floor, up to the configured ceiling. Raises UnknownTest, InvalidDecision."""
+def set_test_settings(test_guid: str, auth: ApiAuthResult, *, observation_minutes: Optional[int] = None,
+                      holds_host: bool = False) -> SVSTestSettings:
+    """Sets the settings of the test's runs registered from now on, replacing what was set: an
+    observation window used as it is, with no slack and no floor, up to the configured ceiling (None
+    for the computed one), and whether a run holds its hosts for its whole attribution window.
+    Raises UnknownTest, InvalidDecision."""
     test = _test(test_guid)
     ceiling = max_observation_minutes()
-    if not isinstance(observation_minutes, int) or not 1 <= observation_minutes <= ceiling:
+    if observation_minutes is not None and (
+            not isinstance(observation_minutes, int) or not 1 <= observation_minutes <= ceiling):
         raise InvalidDecision(f"observation_minutes must be from 1 to {ceiling} (svs.runs.observation_window."
                               "ceiling_hours)")
 
     db = get_db()
-    values = {"observation_minutes": observation_minutes, "set_by_user_id": user_id}
+    values = {"observation_minutes": observation_minutes, "holds_host": bool(holds_host),
+              "set_by_user_id": auth.auth_user_id}
     db.execute(mysql_insert(SVSTestSettings).values(test_guid=test.guid, **values).on_duplicate_key_update(**values))
     db.commit()
-    _audit("svs test settings changed", svs_test=test.guid, observation_minutes=observation_minutes, actor=actor,
-           actor_user_id=user_id)
+    log_audit("svs test settings changed", auth=auth, svs_test=test.guid, observation_minutes=observation_minutes,
+              holds_host=bool(holds_host))
     return get_test_settings(test.guid)
 
 
-def remove_test_settings(test_guid: str, user_id: int, *, actor: Optional[str] = None) -> None:
-    """Back to the computed window. Raises UnknownTest, UnknownDecision."""
+def remove_test_settings(test_guid: str, auth: ApiAuthResult) -> None:
+    """Back to the computed window, and runs that hold their hosts only for their observation window.
+    Raises UnknownTest, UnknownDecision."""
     test = _test(test_guid)
     db = get_db()
     removed = db.execute(delete(SVSTestSettings).where(SVSTestSettings.test_guid == test.guid))
@@ -303,7 +300,7 @@ def remove_test_settings(test_guid: str, user_id: int, *, actor: Optional[str] =
         db.rollback()
         raise UnknownDecision(f"test {test.guid} has no settings")
     db.commit()
-    _audit("svs test settings removed", svs_test=test.guid, actor=actor, actor_user_id=user_id)
+    log_audit("svs test settings removed", auth=auth, svs_test=test.guid)
 
 
 #
@@ -321,6 +318,12 @@ def expected_signatures(test_guid: str, platform: str) -> set[str]:
     ignored = set(db.execute(select(SVSIgnore.signature_uuid).where(
         SVSIgnore.scope_key.in_([GLOBAL_SCOPE_KEY, test_guid]))).scalars())
     return expected - ignored
+
+
+def test_holds_host(test_guid: str) -> bool:
+    """Whether a run of the test registered now holds its hosts for its whole attribution window."""
+    return bool(get_db().execute(
+        select(SVSTestSettings.holds_host).where(SVSTestSettings.test_guid == test_guid)).scalar())
 
 
 def observation_for_test(test_guid: str, platform: str) -> tuple[timedelta, ObservationSource]:

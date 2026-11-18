@@ -12,10 +12,11 @@ from saq.cli.cli_main import get_cli_subparsers
 from saq.cli.cli_util import display_analysis
 from saq.configuration import get_config
 from saq.configuration.config import get_analysis_module_config
-from saq.constants import F_FILE
+from saq.constants import F_FILE, EventTimeSource
 from saq.environment import get_global_runtime_settings
 from saq.engine.engine_configuration import EngineConfiguration
 from saq.engine.enums import EngineExecutionMode, EngineType
+from saq.util.uuid import storage_dir_from_uuid
 
 
 def correlate(args):
@@ -101,7 +102,10 @@ def correlate(args):
 
         root.description = args.description if args.description else 'Command Line Correlation'
         root.instructions = args.instructions
-        root.event_time = datetime.datetime.now() if reference_time is None else reference_time
+        if reference_time is None:
+            root.set_event_time(datetime.datetime.now(), EventTimeSource.NOW)
+        else:
+            root.event_time = reference_time
         if args.load_details:
             with open(args.load_details, 'r') as fp:
                 root.details = json.load(fp)
@@ -144,7 +148,8 @@ def correlate(args):
 
         # are we creating a separate alert for each observable?
         if args.split:
-            subdir = os.path.join(root.storage_dir, current_root.uuid[0:3])
+            split_uuid = str(uuid.uuid4())
+            subdir = os.path.join(root.storage_dir, split_uuid[0:3])
             if not os.path.exists(subdir):
                 try:
                     os.mkdir(subdir)
@@ -152,7 +157,7 @@ def correlate(args):
                     logging.error("unable to create directory {}: {}".format(subdir, e))
                     sys.exit(1)
 
-            current_root = RootAnalysis(storage_dir=os.path.join(subdir, current_root.uuid))
+            current_root = RootAnalysis(uuid=split_uuid, storage_dir=os.path.join(subdir, split_uuid))
             try:
                 current_root.initialize_storage()
             except Exception as e:
@@ -171,7 +176,7 @@ def correlate(args):
             current_root.alert_type = root.alert_type
             current_root.analysis_mode = root.analysis_mode
             current_root.description = "{} - {}:{}".format(root.description, o_type, o_value)
-            current_root.event_time = root.event_time
+            current_root.set_event_time(root.event_time, root.event_time_source)
             current_root.details = root.details
             current_root.summary_details = list(root.summary_details)
 
@@ -244,10 +249,6 @@ def correlate(args):
         display_analysis(root, include_context=True)
 
         if args.alert or args.submit_alerts_local:
-            if root.whitelisted:
-                logging.info("{} was whitelisted".format(root))
-                continue
-
             if args.force or get_global_runtime_settings().forced_alerts or root.has_detections():
                 # need to switch the mode to correlation
                 root.analysis_mode = ANALYSIS_MODE_CORRELATION

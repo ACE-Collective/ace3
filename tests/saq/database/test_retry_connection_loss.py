@@ -15,7 +15,6 @@ from sqlalchemy.exc import DBAPIError
 from saq.database.model import Company
 from saq.database.pool import get_db
 from saq.database.retry import (
-    CONNECTION_LOST_ERROR_CODES,
     get_dbapi_error_code,
     is_connection_lost,
     retry_on_deadlock,
@@ -34,7 +33,9 @@ def _dbapi_error(*args) -> DBAPIError:
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize("code", sorted(CONNECTION_LOST_ERROR_CODES))
+# the codes MySQL reports for a connection that is gone or a server that is stopping, listed here
+# rather than read from CONNECTION_LOST_ERROR_CODES so that dropping one from the set fails a case
+@pytest.mark.parametrize("code", [2002, 2003, 2006, 2013, 1053, 1077, 1078, 1079])
 def test_connection_loss_codes_are_recognized(code):
     assert is_connection_lost(pymysql.err.OperationalError(code, "boom")) is True
 

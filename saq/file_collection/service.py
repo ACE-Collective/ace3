@@ -6,7 +6,7 @@ from saq.configuration.config import get_service_config
 from saq.configuration.schema import ServiceConfig
 from saq.constants import SERVICE_FILE_COLLECTION
 from saq.file_collection.manager import FileCollectionManager
-from saq.service import ACEServiceInterface
+from saq.queue_service import QueueService
 
 
 class FileCollectionServiceConfig(ServiceConfig):
@@ -27,35 +27,28 @@ class FileCollectionServiceConfig(ServiceConfig):
     )
     max_collection_time_seconds: int = Field(
         default=604800,
-        description="Maximum total time to keep retrying collection (7 days default)."
+        description="Maximum total time to keep retrying collection (7 days default). A collection "
+                    "still unfinished after it completes as FAILED."
+    )
+    retention_days: int = Field(
+        default=7,
+        description="Days to keep the files of collections no alert asked for (saq.file_collection.storage); "
+                    "an alert's collected files are kept as long as the alert."
     )
 
 
-class FileCollectionService(ACEServiceInterface):
+class FileCollectionService(QueueService):
     """ACE service that manages file collection workers."""
 
     @classmethod
     def get_config_class(cls) -> Type[ServiceConfig]:
         return FileCollectionServiceConfig
 
-    def start(self):
+    def create_manager(self) -> FileCollectionManager:
         config = get_service_config(SERVICE_FILE_COLLECTION)
-        self.manager = FileCollectionManager(
+        return FileCollectionManager(
             lock_timeout_seconds=config.lock_timeout_seconds,
             initial_retry_delay_seconds=config.initial_retry_delay_seconds,
             max_retry_delay_seconds=config.max_retry_delay_seconds,
             max_collection_time_seconds=config.max_collection_time_seconds,
         )
-        self.manager.start()
-
-    def wait_for_start(self, timeout: float = 5) -> bool:
-        return self.manager.wait_for_start(timeout)
-
-    def start_single_threaded(self):
-        self.manager.start_single_threaded()
-
-    def stop(self):
-        self.manager.stop()
-
-    def wait(self):
-        self.manager.wait()

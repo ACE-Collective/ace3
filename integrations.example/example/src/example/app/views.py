@@ -1,5 +1,5 @@
 from flask import render_template
-from example import example_bp
+from example.app.blueprint import example_bp
 
 @example_bp.route('/', methods=['GET', 'POST'])
 def index():

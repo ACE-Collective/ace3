@@ -1,18 +1,24 @@
 import logging
 import os
 import re
-from subprocess import PIPE, Popen, TimeoutExpired
-from typing import Type, override
+import shutil
+import tempfile
+from typing import TYPE_CHECKING, Optional, Type, override
 import zipfile
 from pydantic import Field
 from saq.analysis.analysis import Analysis
 from saq.signatures.builtin import ARCHIVE_SINGLE_DANGEROUS_FILE
+from saq.configuration.config import get_config
 from saq.constants import AnalysisExecutionResult, DIRECTIVE_EXTRACT_URLS, DIRECTIVE_SANDBOX, F_FILE, R_EXTRACTED_FROM
+from saq.environment import get_temp_dir
 from saq.modules import AnalysisModule
 from saq.modules.config import AnalysisModuleConfig
-from saq.modules.file_analysis.is_file_type import is_msi_file, is_office_file, is_ole_file
+from saq.modules.file_analysis.is_file_type import is_msi_file, is_office_file, is_ole_file, is_pcap_file
 from saq.observables.file import FileObservable
 from saq.util.strings import format_item_list_for_summary
+
+if TYPE_CHECKING:
+    from saq.sandbox.runner import SandboxResult
 
 def order_archive_file_list(file_list: list[str]) -> list[str]:
     """Order the list of file paths by priority of extraction."""
@@ -56,25 +62,63 @@ def order_archive_file_list(file_list: list[str]) -> list[str]:
 
 def normalize_extracted_permissions(extracted_path: str):
     """Makes everything under extracted_path readable by anyone (dirs 0o775, files 0o664).
-    The walk is top-down so a directory is fixed before os.walk tries to list it."""
+    The walk is top-down so a directory is fixed before os.walk tries to list it.
+    Symbolic links are skipped: chmod follows them, and the archive picked where they point."""
     try:
         for root, dirs, files in os.walk(extracted_path):
             for dir_name in dirs:
                 full_path = os.path.join(root, dir_name)
+                if os.path.islink(full_path):
+                    continue
+
                 try:
                     os.chmod(full_path, 0o775)
-                except Exception as e:
-                    logging.error("unable to adjust permissions on dir {}: {}".format(full_path, e))
+                except Exception:
+                    logging.exception("unable to adjust permissions on dir %s", full_path)
 
             for file_name in files:
                 full_path = os.path.join(root, file_name)
+                if os.path.islink(full_path):
+                    continue
+
                 try:
                     os.chmod(full_path, 0o664)
-                except Exception as e:
-                    logging.error("unable to adjust permissions on file {}: {}".format(full_path, e))
+                except Exception:
+                    logging.exception("unable to adjust permissions on file %s", full_path)
 
     except Exception as e:
         logging.exception("some error was reported when trying to recursively chmod {}: {}".format(extracted_path, e))
+
+
+# unrar does not die of SIGXFSZ: on a member past tool_sandbox.file_size_limit it stops with a write
+# error and exits with this. Without -kb it also deletes that member, which 7z keeps cut off at the
+# limit, and a single dangerous member padded past it would raise no detection
+UNRAR_WRITE_ERROR = 5
+
+# the name of the first volume of a multi-volume archive, and the pattern its other volumes' names follow
+_VOLUME_SETS = [
+    (re.compile(r"(?P<base>.+)\.\d{3}", re.IGNORECASE), r"\.\d{3}"),
+    (re.compile(r"(?P<base>.+)\.part\d+\.rar", re.IGNORECASE), r"\.part\d+\.rar"),
+    (re.compile(r"(?P<base>.+)\.rar", re.IGNORECASE), r"\.r\d{2}"),
+    (re.compile(r"(?P<base>.+)\.zip", re.IGNORECASE), r"\.z\d{2}"),
+    (re.compile(r"(?P<base>.+)\.ace", re.IGNORECASE), r"\.c\d{2}"),
+]
+
+
+def archive_volumes(path: str) -> list[str]:
+    """The other volumes of the multi-volume archive whose first volume is path, from the files next
+    to it. The extractor in the sandbox can read only what it is given, and a split archive does not
+    extract without them. A symlink is never one: it could point the extractor at a file of ACE's. A
+    hard link can be: ACE links every file it stores into its .hardcopy store, and a sandboxed tool
+    can create one only inside its own writable directories (Landlock's refer right)."""
+    directory, name = os.path.split(path)
+    for first, others in _VOLUME_SETS:
+        if m := first.fullmatch(name):
+            pattern = re.compile(re.escape(m["base"]) + others, re.IGNORECASE)
+            return sorted(entry.path for entry in os.scandir(directory or ".")
+                          if entry.name != name and pattern.fullmatch(entry.name) and entry.is_file(follow_symlinks=False))
+
+    return []
 
 
 KEY_FILE_COUNT = 'file_count'
@@ -119,6 +163,8 @@ class ArchiveAnalysis(Analysis):
         result = f"{self.display_name}: extracted {len(self.extracted_files)} of {self.file_count} files"
         if self.extracted_files:
             result += f": ({format_item_list_for_summary(self.extracted_files)})"
+        if self.error:
+            result += f" ({self.error})"
 
         return result
 
@@ -173,7 +219,8 @@ class ArchiveAnalyzer(AnalysisModule):
 
     @property
     def excluded_mime_types(self):
-        return [x.strip() for x in self.config.excluded_mime_types.split(',')]
+        # every mime type starts with an empty entry (a trailing comma, or "" for none at all)
+        return [x.strip() for x in self.config.excluded_mime_types.split(',') if x.strip()]
 
     @property
     def generated_analysis_type(self):
@@ -183,6 +230,32 @@ class ArchiveAnalyzer(AnalysisModule):
     def valid_observable_types(self):
         return F_FILE
         
+
+    def _list_files(self, params: list[str], local_file_path: str) -> Optional["SandboxResult"]:
+        """Returns what the archive listing command printed, or None if it did not finish in time. A
+        listing longer than the sandbox keeps of a tool's output is returned cut short, flagged
+        output_exceeded: an archive padded with entries is still extracted."""
+        return self.run_sandboxed_tool(params, local_file_path, timeout=self.timeout,
+                                       read_files=archive_volumes(local_file_path), partial_output=True)
+
+    def _run_unace(self, command: str, local_file_path: str, extracted_path: Optional[str] = None) -> Optional["SandboxResult"]:
+        """Runs unace l (list) or x (extract into extracted_path) on the archive and returns what it
+        printed, or None if it did not finish in time; a listing as _list_files() does. unace opens the directory the archive is in,
+        to look for its other volumes, and fails when it cannot, so it runs on a copy in a directory
+        of its own rather than being let into the directory of the alert's files."""
+        with tempfile.TemporaryDirectory(dir=get_temp_dir(), prefix="unace-") as staging_dir:
+            archive = os.path.join(staging_dir, os.path.basename(local_file_path))
+            for volume in [local_file_path, *archive_volumes(local_file_path)]:
+                shutil.copyfile(volume, os.path.join(staging_dir, os.path.basename(volume)))
+            if command == 'l':
+                args, write_dirs, cwd = ['unace', 'l', archive], [], None
+            else:
+                # unace does not take a full path to extract
+                args = ['unace', 'x', '-y', '-o', os.path.relpath(archive, start=extracted_path)]
+                write_dirs, cwd = [extracted_path], extracted_path
+
+            return self.run_sandboxed_tool(args, archive, timeout=self.timeout, read_dirs=[staging_dir],
+                                           write_dirs=write_dirs, cwd=cwd, partial_output=command == 'l')
 
     def execute_analysis(self, _file: FileObservable) -> AnalysisExecutionResult:
         from saq.modules.file_analysis.file_type import FileTypeAnalysis
@@ -197,6 +270,11 @@ class ArchiveAnalyzer(AnalysisModule):
             logging.error("cannot find local file path for {}".format(_file))
             return AnalysisExecutionResult.COMPLETED
 
+        # a capture is never an archive, but libmagic calls a pcapng application/octet-stream, which 7z
+        # then "extracts" junk from; the pcap modules dissect it instead
+        if is_pcap_file(local_file_path):
+            return AnalysisExecutionResult.COMPLETED
+
         # we need file type analysis first
         file_type_analysis = _file.get_and_load_analysis(FileTypeAnalysis)
         if not file_type_analysis or file_type_analysis.details is None:
@@ -208,10 +286,10 @@ class ArchiveAnalyzer(AnalysisModule):
                 logging.debug("skipping excluded mime type {} on archive file {}".format(excluded_mime_type, _file))
                 return AnalysisExecutionResult.COMPLETED
 
-            # we also do not extract OLE compound documents (we have other modules that do a better job)
-            if is_ole_file(local_file_path) and not is_msi_file(local_file_path):
-                logging.debug("skipping archive extraction of OLE file {}".format(_file))
-                return AnalysisExecutionResult.COMPLETED
+        # we also do not extract OLE compound documents (we have other modules that do a better job)
+        if is_ole_file(local_file_path) and not is_msi_file(local_file_path):
+            logging.debug("skipping archive extraction of OLE file {}".format(_file))
+            return AnalysisExecutionResult.COMPLETED
 
         # special logic for cab files
         is_cab_file = 'ms-cab' in file_type_analysis.mime_type.lower()
@@ -245,15 +323,16 @@ class ArchiveAnalyzer(AnalysisModule):
         is_ace_file |= _file.file_path.lower().endswith('.ace')
 
         count = 0
+        # the listings are parsed as bytes; a member name that is not UTF-8 only has to be counted
+        listing = None
 
         if is_rar_file:
             logging.debug("using unrar to extract files from {}".format(local_file_path))
-            p = Popen(['unrar', 'la', local_file_path], stdout=PIPE, stderr=PIPE)
-            try:
-                (stdout, stderr) = p.communicate(timeout=self.timeout)
-            except TimeoutExpired:
-                logging.error("timed out tryign to extract files from {} with unrar".format(local_file_path))
+            listing = self._list_files(['unrar', 'la', local_file_path], local_file_path)
+            if listing is None:
                 return AnalysisExecutionResult.COMPLETED
+
+            stdout = listing.stdout.encode()
 
             if b'is not RAR archive' in stdout:
                 return AnalysisExecutionResult.COMPLETED
@@ -276,20 +355,17 @@ class ArchiveAnalyzer(AnalysisModule):
             try:
                 with zipfile.ZipFile(local_file_path, "r") as zfile:
                     count = len(zfile.namelist())
-            except Exception:
-                logging.error("unable to read jar file")
+            except Exception as e:
+                # a broken jar is a problem with the sample, not with ACE: no traceback or error report
+                logging.warning("unable to read jar file %s: %s", local_file_path, e)
 
         elif is_zip_file:
             logging.debug("using unzip to extract files from {}".format(local_file_path))
-            p = Popen(['unzip', '-l', '-P', 'infected', local_file_path], stdout=PIPE, stderr=PIPE)
-            try:
-                (stdout, stderr) = p.communicate(timeout=self.timeout)
-            except TimeoutExpired:
-                logging.error("timed out trying to list files from {} with unzip".format(local_file_path))
+            listing = self._list_files(['unzip', '-l', '-P', 'infected', local_file_path], local_file_path)
+            if listing is None:
                 return AnalysisExecutionResult.COMPLETED
 
-            if b'End-of-central-directory signature not found.' in stdout:
-                return AnalysisExecutionResult.COMPLETED
+            stdout = listing.stdout.encode()
 
             start_flag = False
             for line in stdout.split(b'\n'):
@@ -327,13 +403,11 @@ class ArchiveAnalyzer(AnalysisModule):
             is_office_document |= (ole_object_regex.search(stdout) is not None)
                 
         elif is_ace_file:
-            p = Popen(['unace', 'l', local_file_path], stdout=PIPE, stderr=PIPE)
-
-            try:
-                (stdout, stderr) = p.communicate(timeout=self.timeout)
-            except TimeoutExpired:
-                logging.error("timed out trying to extract files from {} with 7z".format(local_file_path))
+            listing = self._run_unace('l', local_file_path)
+            if listing is None:
                 return AnalysisExecutionResult.COMPLETED
+
+            stdout = listing.stdout.encode()
 
             for line in stdout.split(b'\n'):
                 m = UNACE_SUMMARY_REGEX.match(line)
@@ -343,15 +417,11 @@ class ArchiveAnalyzer(AnalysisModule):
 
         else:
             logging.debug("using 7z to extract files from {}".format(local_file_path))
-            p = Popen(['7z', '-y', '-pinfected', 'l', local_file_path], stdout=PIPE, stderr=PIPE)
-            try:
-                (stdout, stderr) = p.communicate(timeout=self.timeout)
-            except TimeoutExpired:
-                logging.warning("timed out trying to extract files from {} with 7z".format(local_file_path))
+            listing = self._list_files(['7z', '-y', '-pinfected', 'l', local_file_path], local_file_path)
+            if listing is None:
                 return AnalysisExecutionResult.COMPLETED
 
-            if b'Error: Can not open file as archive' in stdout:
-                return AnalysisExecutionResult.COMPLETED
+            stdout = listing.stdout.encode()
 
             alt_count = 0
             for line in stdout.split(b'\n'):
@@ -390,12 +460,22 @@ class ArchiveAnalyzer(AnalysisModule):
             ole_object_regex = re.compile(b'word.embeddings.oleObject1\\.bin', re.M)
             is_office_document |= (ole_object_regex.search(stdout) is not None)
 
+        # an archive padded with entries until its listing is cut short has more files than any
+        # limit, so it is extracted under that limit, which takes the dangerous files first
+        listing_too_large = listing is not None and listing.output_exceeded
+        if listing_too_large:
+            count = max(count, self.max_file_count, self.max_jar_file_count) + 1
+
         if count == 0:
             logging.debug(f"no files found in {local_file_path}")
             return AnalysisExecutionResult.COMPLETED
 
         analysis = self.create_analysis(_file)
         analysis.file_count = count
+        extraction_errors = []
+        if listing_too_large:
+            extraction_errors.append(f"the listing was larger than {get_config().tool_sandbox.max_output_bytes} "
+                                     "bytes, so the file count is not known")
 
         # this deteremine if we're limiting the number of files extracted
         limit_file_extraction = False
@@ -421,16 +501,19 @@ class ArchiveAnalyzer(AnalysisModule):
             try:
                 os.makedirs(extracted_path)
             except Exception as e:
-                logging.error("unable to create directory {}: {}".format(extracted_path, e))
+                logging.exception("unable to create directory %s", extracted_path)
+                analysis.error = f"unable to create {extracted_path}: {e}"
                 return AnalysisExecutionResult.COMPLETED
 
         logging.debug("extracting {} files from archive {} into {}".format(count, local_file_path, extracted_path))
 
         params = []
-        kwargs = { 'stdout': PIPE, 'stderr': PIPE }
+        finished = True
 
         if is_rar_file:
-            params = ['unrar', 'e', '-y', '-o+', local_file_path, extracted_path]
+            # quiet, as unzip is: a line per member would stop an archive padded with entries
+            # -kb keeps a member cut off at the file size limit (UNRAR_WRITE_ERROR)
+            params = ['unrar', 'e', '-y', '-o+', '-idq', '-kb', local_file_path, extracted_path]
         elif is_jar_file:
             # Disabled on 02/17/2021 since the procyon_decompiler.jar version we have is old and busted. They moved
             # from Bitbucket to GitHub at some point and no longer have precompiled releases available.
@@ -445,28 +528,36 @@ class ArchiveAnalyzer(AnalysisModule):
             params = ['bin/unjar', local_file_path, '-d', extracted_path]
         elif is_zip_file:
             # avoid the numerious XML documents in excel files
-            params = ['unzip', local_file_path, '-x', 'xl/activeX/*', 
+            params = ['unzip', '-qq', local_file_path, '-x', 'xl/activeX/*', 
                                                 '-x', 'xl/activeX/_rels/*', 
                                                 '-x', 'xl/ctrlProps/*.xml',
                       '-d', extracted_path]
         elif is_msi_file(local_file_path):
-            params = ['7z', '-y', '-o{}'.format(extracted_path), 'x', local_file_path] 
+            params = ['7z', '-y', '-o{}'.format(os.path.abspath(extracted_path)), 'x', local_file_path]
         elif is_ace_file:
-            # for some reason, unace doesn't let you use a full path
-            params = ['unace', 'x', '-y', '-o', os.path.relpath(local_file_path, start=extracted_path)]
-            kwargs['cwd'] = extracted_path
+            # what it extracted before it was stopped is still analyzed
+            finished = self._run_unace('x', local_file_path, extracted_path) is not None
         else:
-            params = ['7z', '-y', '-pinfected', '-o{}'.format(extracted_path), 'x', local_file_path]
+            params = ['7z', '-y', '-pinfected', '-o{}'.format(os.path.abspath(extracted_path)), 'x', local_file_path]
 
         if params:
-            p = Popen(params, **kwargs)
+            # the extractor writes only extracted_path, whatever names the archive gives its members.
+            # what it extracted before it was stopped is still analyzed
+            result = self.run_sandboxed_tool(params, local_file_path, timeout=self.timeout,
+                                             read_files=archive_volumes(local_file_path), write_dirs=[extracted_path])
+            finished = result is not None
+            if is_rar_file and finished and result.returncode == UNRAR_WRITE_ERROR:
+                logging.warning("unrar could not write every file of %s: %s", local_file_path,
+                                result.stderr.strip()[-500:], extra={"path": local_file_path})
+                finished = False
 
-            try:
-                (stdout, stderr) = p.communicate(timeout=self.timeout)
-            except TimeoutExpired:
-                logging.warning(f"archive extraction timeout on {local_file_path}: params {params} kwargs {kwargs}")
-                p.kill()
-                (stdout, stderr) = p.communicate()
+        if not finished:
+            # run_sandboxed_tool() logged why: a timeout, a member over the file size limit
+            extraction_errors.append("the extractor did not finish")
+
+        if extraction_errors:
+            # what was extracted is still analyzed, as a partial result
+            analysis.error = "; ".join(extraction_errors)
 
         # the extractor may have honored stored mode bits that make files unreadable to us
         normalize_extracted_permissions(extracted_path)

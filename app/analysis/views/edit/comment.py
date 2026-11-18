@@ -3,12 +3,13 @@ import logging
 from flask import flash, redirect, request, session, url_for
 from flask_login import current_user
 
-from app.auth.permissions import require_permission
+from app.auth.permissions import current_user_auth, require_permission
 from app.blueprints import analysis
 from saq.constants import REDIRECT_MAP
 from saq.database.model import Comment
 from saq.database.pool import get_db
 from saq.database.util.alert import touch_alerts
+from saq.logging import log_audit
 from saq.search.tasks import submit_index_task
 
 
@@ -44,7 +45,8 @@ def add_comment():
         flash("comment cannot be empty")
         return redirection
 
-    logging.info(f"AUDIT: user {current_user} added comment {user_comment} to alerts {','.join(uuids)}")
+    log_audit("user %s added comment %s to alerts %s", current_user.username, user_comment, ",".join(uuids),
+              auth=current_user_auth(), alert_uuids=uuids)
 
     for uuid in uuids:
         comment = Comment(
@@ -85,7 +87,8 @@ def delete_comment():
         flash("invalid user for this comment")
         return redirect(url_for('analysis.index'))
 
-    logging.info(f"AUDIT: user {current_user} deleted comment {comment.comment} from alert {comment.uuid}")
+    log_audit("user %s deleted comment %s from alert %s", current_user.username, comment.comment, comment.uuid,
+              auth=current_user_auth(), alert_uuid=comment.uuid, comment_id=comment.comment_id)
 
     alert_uuid = comment.uuid
 

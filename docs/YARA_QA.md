@@ -36,7 +36,7 @@ writes to them.
 
 | Table | One row per | Holds |
 |---|---|---|
-| `yara_qa_signatures` | (signature uuid, signature version) | `match_count` (every match, including those past the cap), `stored_count` (files kept, which is the slot counter), first and last match |
+| `yara_qa_signatures` | (signature uuid, signature version) | `version_kind`; the first and last commit it matched under; `match_count` (every match, including those past the cap), `stored_count` (files kept, which is the slot counter), first and last match |
 | `yara_qa_matches` | stored file | the file's sha256, name and size; the analysis it came from; the node that stored it; `match_digest`; a `match_summary`; `hit_count`; `first_seen` / `last_seen`; `expires_at` |
 
 **The match summary.** `match_summary` is derived from the record: the rule, its meta and tags, and
@@ -48,9 +48,23 @@ is fetched only on request.
 the row's expiry. The same file matched by two rules, or under two versions of one rule, is stored
 once and held twice.
 
-**Versions.** The signature version is the one a detection point would carry: the commit of the
-rule's repository, or `unknown` for a rule directory that is not listed in
-`service_yara.git_repo_dirs`.
+**Versions.** A match is filed under the version of the rule that matched: its **content hash**,
+the same value the signature inventory gives the rule (`Signature.content_hash`). The yara service
+computes it when a generation compiles the rules and sends it with each match
+([YARA_SCANNER.md](YARA_SCANNER.md)), so it is the hash of the rule that was scanned with, not of
+the file as it is later. A commit that does not touch a rule keeps its version, and a file it
+matches again renews its existing row. Each version records the first and last commit of the
+rule's repository it matched under (`first_commit`, `last_commit`).
+
+The hash covers the rule's own lines, from the `rule` line through its closing brace, meta
+included. A change elsewhere that changes what the rule matches (a private rule its condition
+names, a global rule in its namespace, an `include`, an `import`) does not start a new version.
+
+A match that comes without a hash is filed under the commit of the rule's repository, or `unknown`
+for a rule directory that is not listed in `service_yara.git_repo_dirs`, which is how every match
+was filed before content versions. That happens when the rule's file could not be parsed with
+plyara, or changed while it compiled (both are logged by the yara service). Such a version has
+`version_kind` `commit`; a content version has `content`.
 
 **Rules without a uuid.** A rule with no `uuid` meta has nothing to be filed under, so its matches
 are not stored. The service does not spool them, and `record_qa_match()` logs a warning if it is
@@ -65,15 +79,29 @@ Two caps limit how many files are kept:
 - **`yara_qa.max_files_per_signature`** (default 250): distinct files per uuid, across all of its
   versions.
 
-Because the version is a repository commit, every commit to the signatures repository starts a new
-version of every rule in it. The per-uuid ceiling is what keeps that churn from growing storage
-without bound.
+Because a version is the rule's content, only an edit to the rule starts a new version. The per-uuid
+ceiling bounds the files a rule that is edited often keeps across its versions.
 
 A match past either cap is still counted in `match_count`, so the listing shows how noisy a rule
 really is even when no more files are being kept.
 
 A new match of a file that is already stored, under the same version, does not use another slot.
 It increments `hit_count` and renews the expiry.
+
+**Rollover.** When the per-uuid ceiling stops a file from being stored, older versions make room
+for it. The recorder deletes one stored file of a **superseded** version, then stores the new file.
+A version is superseded when it has not matched for an hour while another version of the rule is
+matching. The hour keeps two nodes that load different rules for a few minutes during a rollout
+from deleting each other's files. The version that went longest without matching goes first, and
+within it the file seen longest ago. Each rollover is logged at INFO with the match id, the
+`sha256` and both versions.
+
+Rollover only makes room under the per-uuid ceiling. It never touches the current version: once
+that has `max_files_per_version` files, it keeps them while they keep matching, and later files
+are counted but not stored. With the default caps rollover also never reaches the version just
+before the current one: the oldest versions are emptied first, and the current version needs at
+most 25 of the 250 slots. It reaches the previous version only when `max_files_per_signature` is
+less than twice `max_files_per_version`.
 
 **How the caps hold under concurrency.** Each node's recorder stores one match at a time, but the
 recorders of several nodes can store at once, and none of them waits on a lock for this. The slot
@@ -83,6 +111,9 @@ is reserved with a single conditional `UPDATE` of the counter row:
 - The per-uuid ceiling is read in the same statement. Two recorders storing under *different* versions
   of one uuid at the same instant can both pass it, so it can be exceeded by the number of versions
   racing, which in practice is one.
+- A rollover is its own short transaction. It selects the file it deletes `FOR UPDATE SKIP LOCKED`,
+  so it never waits on a renewal or a prune that holds that row (it stores nothing then), and runs
+  again if MySQL picks it as a deadlock victim.
 
 ## Retention
 
@@ -98,6 +129,16 @@ A stored file is kept for `yara_qa.retention_days` (default 30) after it **last*
 The hourly CAS GC then reclaims the bytes once the pool's grace period has passed.
 
 The holds carry the expiry themselves, so an object is collected even if a prune never runs.
+
+**Purging.** An analyst with `signature:qa_purge` can remove stored files before they expire: every
+file of chosen versions of a rule, or chosen files (`POST .../{uuid}/purge`, below). A purge works
+like a prune: batches of primary keys, rows selected `FOR UPDATE SKIP LOCKED` (a row a recorder is
+renewing at that moment is left and counted as `remaining`), slots given back, then holds
+released. It skips a row whose puts are still in flight. It touches only the YARA QA store: the
+`yara_qa_matches` rows and their `yara_qa` holds. A file another QA rule or version still holds
+stays, and SVS samples and the alerts' own copies are never touched. A purged file that matches
+again is stored again. Each purge is logged as an `AUDIT:` record naming who purged what, and a
+config API key with the permission may purge too (the record names the key).
 
 ## Nodes
 
@@ -139,6 +180,7 @@ These routes are served by `aceapi_v2/yara_qa/`, mounted at `/api/v2/signatures/
 | `GET /matches/{id}/record` | `signature:read` | The full match record (`application/json`), read from the CAS |
 | `GET /matches/{id}/download` | `signature:download` | The file and its record, zipped |
 | `GET /{uuid}/download?version=&match_id=…` | `signature:download` | Bulk download. With `match_id`s, the selection; otherwise every stored file of the signature, or of one version. Limited to `yara_qa.max_bulk_download_files` and `yara_qa.max_bulk_download_bytes`, with 413 past either |
+| `POST /{uuid}/purge` | `signature:qa_purge` | Purge stored files. The body is `{"versions": [...]}` or `{"match_ids": [...]}` (at most `yara_qa.max_bulk_download_files`), exactly one, and an optional `reason`. Returns `{deleted, remaining, release_failures}` |
 
 The status values mean:
 
@@ -175,11 +217,15 @@ The hub has one module, **Yara QA Results**. That page is a shell: all its data 
 above, fetched by `app/static/js/signatures_yara_qa.js`. It lets an analyst:
 
 - filter and sort the rules;
-- open a rule to see its versions and stored files;
+- open a rule to see its versions and stored files. Each version is labeled `rule <hash>` with the
+  commits it matched under (or `commit <hash>` for a commit version), and the one loaded now is
+  marked `[current]`;
 - view a match's summary and full record;
-- download files one at a time, as a selection, or all at once.
+- download files one at a time, as a selection, or all at once;
+- purge the selected files, the version picked, or every version but the current one.
 
-The download controls appear only with `signature:download`.
+The download controls appear only with `signature:download`, and the purge controls only with
+`signature:qa_purge`. A purge asks for confirmation first.
 
 ## CLI
 

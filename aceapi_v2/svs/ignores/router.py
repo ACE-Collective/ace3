@@ -88,12 +88,11 @@ async def set_global_ignore(signature_uuid: str, body: IgnoreRequest, auth: Admi
                             precondition: WritePrecondition) -> Ignore:
     """Ignore a signature during every test's runs; setting it again replaces its reason. 422 for a
     config key (an ignore records who added it); 412 when an If-Match or If-None-Match precondition no longer holds (docs/SVS_API.md, *Conflicting writes*)."""
-    return await run_db_in_thread(service.set_ignore, signature_uuid, body, auth.auth_user_id, auth.auth_name,
-                                  None, precondition)
+    return await run_db_in_thread(service.set_ignore, signature_uuid, body, auth, None, precondition)
 
 
 @router.delete("/global/{signature_uuid}", status_code=204)
 async def remove_global_ignore(signature_uuid: str, auth: AdminAuth) -> Response:
     """Stop ignoring a signature globally; 404 when it isn't."""
-    await run_db_in_thread(service.remove_ignore, signature_uuid, auth.auth_user_id, auth.auth_name)
+    await run_db_in_thread(service.remove_ignore, signature_uuid, auth)
     return Response(status_code=204)

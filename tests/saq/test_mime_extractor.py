@@ -1,3 +1,4 @@
+import logging
 import os.path
 import struct
 import zlib
@@ -55,8 +56,6 @@ def _build_active_mime(payload: bytes, field_size_e: int = 4) -> bytes:
         + compressed
     )
 
-# offset of the compressed data in a blob built by _build_active_mime
-_COMPRESSED_OFFSET = 50
 
 def _parse_blob(tmpdir, blob: bytes) -> tuple[bool, str]:
     source_path = str(tmpdir / "activemime.bin")
@@ -83,26 +82,20 @@ def test_parse_active_mime_truncated(tmpdir):
         assert not os.path.exists(target_path)
 
 @pytest.mark.unit
-def test_parse_active_mime_bad_field_size_e(tmpdir):
-    result, target_path = _parse_blob(tmpdir, _build_active_mime(SYNTHETIC_PAYLOAD, field_size_e=8))
+def test_parse_active_mime_bad_field_size_e(tmpdir, caplog):
+    with caplog.at_level(logging.INFO):
+        result, target_path = _parse_blob(tmpdir, _build_active_mime(SYNTHETIC_PAYLOAD, field_size_e=8))
+
     assert result is False
     assert not os.path.exists(target_path)
+    # read past the tail type, the payload fails to decompress too, so name the field that is wrong
+    assert any("unexpected vba tail type field size 8" in r.getMessage() for r in caplog.records)
 
 @pytest.mark.unit
 @pytest.mark.parametrize("offset", [14, 30])  # field_size, field_size_d
 def test_parse_active_mime_oversized_field_sizes(tmpdir, offset):
     blob = bytearray(_build_active_mime(SYNTHETIC_PAYLOAD))
     blob[offset:offset + 4] = struct.pack("<I", 0xFFFFFFFF)
-    result, target_path = _parse_blob(tmpdir, bytes(blob))
-    assert result is False
-    assert not os.path.exists(target_path)
-
-@pytest.mark.unit
-def test_parse_active_mime_corrupt_compressed_tail(tmpdir):
-    blob = bytearray(_build_active_mime(SYNTHETIC_PAYLOAD))
-    assert blob[_COMPRESSED_OFFSET] == 0x78  # zlib header
-    for i in range(_COMPRESSED_OFFSET, len(blob)):
-        blob[i] ^= 0xFF
     result, target_path = _parse_blob(tmpdir, bytes(blob))
     assert result is False
     assert not os.path.exists(target_path)

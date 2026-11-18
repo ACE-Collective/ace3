@@ -26,6 +26,7 @@ import os
 from dataclasses import replace
 
 import plyara
+import plyara.exceptions
 
 from saq.signatures.builtin import SIGNATURE_VERSION_UNKNOWN
 from saq.signatures.git_context import GitContext
@@ -86,16 +87,25 @@ def _rule_source(source_lines: list[str], parsed_rule: dict) -> str | None:
     return "".join(source_lines[start_line - 1:stop_line])
 
 
+def _parse(source: str) -> list[dict]:
+    # plyara accumulates parsed rules across calls, so it needs to be a new
+    # instance per file (see saq.submission_filter for the same pattern)
+    return plyara.Plyara().parse_string(source)
+
+
+def _read_and_parse(path: str) -> tuple[str, list[dict]]:
+    """The source of a rule file and the rules plyara parses out of it."""
+    with open(path, "r", encoding="utf-8", errors="surrogateescape") as fp:
+        source = fp.read()
+
+    return source, _parse(source)
+
+
 def parse_rule_file(path: str, git_context: GitContext) -> list[Signature]:
     """Returns every trackable rule in one .yar file. git_context stamps the version and makes
     source_path relative; SVS validation (saq/svs/yara/replay.py) passes its own for an exported
     commit, which is in no git repository."""
-    with open(path, "r", encoding="utf-8", errors="surrogateescape") as fp:
-        source = fp.read()
-
-    # plyara accumulates parsed rules across calls, so it needs to be a new
-    # instance per file (see saq.submission_filter for the same pattern)
-    parsed_rules = plyara.Plyara().parse_string(source)
+    source, parsed_rules = _read_and_parse(path)
     source_lines = source.splitlines(keepends=True)
     source_path = git_context.relative_path(path)
 
@@ -159,6 +169,107 @@ def _parse_rule_file_cached(path: str, git_context: GitContext, parse_cache: Par
         else replace(signature, version=git_context.version, git_remote=git_context.git_remote)
         for signature in cached[1]
     ]
+
+
+def _format_string_pattern(string: dict) -> str:
+    """Rebuilds a string's pattern as written in the rule. plyara keeps a text string's escapes but
+    drops its quotes; hex and regex values come back with their braces and slashes."""
+    value = string.get("value") or ""
+    if string.get("type") == "text":
+        value = f'"{value}"'
+
+    return " ".join([value, *(string.get("modifiers") or [])])
+
+
+# the largest rule source sent with a match, which keeps it in the alert; generated rules such as
+# observable_export's can hold thousands of strings
+MAX_RULE_SOURCE_BYTES = 50 * 1024
+
+# rule name -> {"patterns": {string identifier -> pattern}, "source": {"file", "start_line", "text"} or None,
+#               "content_hash": the inventory's Signature.content_hash for the rule, or None}
+RuleDetails = dict[str, dict]
+
+# (namespace, rule name) -> the details of the rules a scanner compiled
+CompiledRuleDetails = dict[tuple[str, str], dict]
+
+
+def _parse_rule_details(path: str, source: str) -> RuleDetails:
+    """The string patterns, source and content hash of every rule in the text compiled from one
+    rule file. Anonymous strings ($) get no pattern: a match names them only as $, so a match can't
+    tell them apart. A rule whose source is over MAX_RULE_SOURCE_BYTES gets no source, but still
+    gets its hash."""
+    source_lines = source.splitlines(keepends=True)
+    result = {}
+    for parsed_rule in _parse(source):
+        name = parsed_rule.get("rule_name")
+        rule_source = _rule_source(source_lines, parsed_rule)
+        # the same slice and hash parse_rule_file() gives the inventory, so a match names the version
+        # of the rule the scanner compiled (YARA QA keys its versions on it, docs/YARA_QA.md)
+        rule_hash = None if rule_source is None else content_hash(rule_source)
+        if rule_source is not None and len(rule_source.encode("utf-8")) > MAX_RULE_SOURCE_BYTES:
+            logging.info("yara rule %s in %s is over %d bytes: its source is not shown", name, path,
+                         MAX_RULE_SOURCE_BYTES, extra={"path": path, "yara_rule": name})
+            rule_source = None
+
+        result[name] = {
+            "patterns": {string["name"]: _format_string_pattern(string)
+                         for string in parsed_rule.get("strings") or []
+                         if string.get("name") and string["name"] != "$"},
+            "source": None if rule_source is None else {
+                "file": os.path.basename(path),
+                "start_line": parsed_rule["start_line"],
+                "text": rule_source,
+            },
+            "content_hash": rule_hash,
+        }
+
+    return result
+
+
+def compiled_rule_details(scanner) -> CompiledRuleDetails:
+    """The string patterns and source of the rules a yara_scanner.YaraScanner loaded, because yara
+    can't return them with a match. Call it right after load_rules(): they are parsed from the text
+    the scanner compiled (scanner.compiled_sources), not from the files, which may have changed
+    since. The details are only shown to analysts, so this never raises: a failure must not keep
+    the rules from loading."""
+    result = {}
+    for compiled in scanner.compiled_sources:
+        if compiled.error is not None:
+            # the file was left out of the rules
+            continue
+
+        # an include's rules are compiled into the namespace of the file that includes it
+        texts = [(compiled.path, compiled.source)]
+        texts.extend((included.path, included.source) for included in compiled.includes if included.error is None)
+        for path, source in texts:
+            try:
+                rules = _parse_rule_details(path, source)
+            except plyara.exceptions.ParseError as e:
+                # plyara lags yara's grammar, so a file yara compiles can still fail here: its rules
+                # are shown without details
+                logging.warning("unable to parse the yara rules in %s: %s", path, e, extra={"path": path})
+                continue
+            except Exception:
+                logging.exception("unable to parse the yara rules in %s", path, extra={"path": path})
+                continue
+
+            for rule_name, details in rules.items():
+                result[(compiled.namespace, rule_name)] = details
+
+    return result
+
+
+def attach_rule_details(matches: list[dict], rule_details: CompiledRuleDetails) -> None:
+    """Adds to each match in YaraScanner.scan_results string_patterns (identifier -> pattern, for
+    the strings that matched), rule_source (the rule's source, or None) and rule_content_hash (the
+    rule's content hash, or None)."""
+    for match in matches:
+        details = rule_details.get((match.get("namespace"), match.get("rule"))) or {}
+        matched = {string[1] for string in match.get("strings") or []}
+        match["string_patterns"] = {identifier: pattern for identifier, pattern in (details.get("patterns") or {}).items()
+                                    if identifier in matched}
+        match["rule_source"] = details.get("source")
+        match["rule_content_hash"] = details.get("content_hash")
 
 
 def _declared_repo_paths(signature_dir: str, git_repo_dirs: list[str]) -> set[str]:

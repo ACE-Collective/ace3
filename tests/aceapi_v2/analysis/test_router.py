@@ -2,7 +2,9 @@
 
 import hashlib
 import json
+import logging
 import os
+import uuid as uuidlib
 from datetime import datetime
 
 import pytest
@@ -16,16 +18,20 @@ from saq.constants import (
     EVENT_TIME_FORMAT_JSON_TZ,
     F_FILE,
     F_IP,
+    F_URL,
     F_USER,
     NODE_STATUS_DRAINING,
     NODE_STATUS_RUNNING,
+    EventTimeSource,
 )
 from saq.database.model import Alert
 from saq.database.pool import get_db, get_db_connection
 from saq.database.util.node import set_node_status
 from saq.environment import get_data_dir, get_global_runtime_settings, get_local_timezone
 from saq.json_encoding import _JSONEncoder
+from saq.util.filesystem import is_path_under
 from saq.util.uuid import get_storage_dir
+from tests.saq.helpers import audit_actor_of, audit_record
 
 pytestmark = pytest.mark.integration
 
@@ -58,6 +64,7 @@ def _submission(**overrides) -> dict:
 
 
 async def _submit(client: AsyncClient, submission: dict, files: list[tuple[str, bytes]] = ()):
+    # with no files this is a urlencoded form rather than multipart, as ace_api.submit() sends it
     return await client.post(
         "/analysis/",
         data={"analysis": json.dumps(submission, cls=_JSONEncoder)},
@@ -84,11 +91,15 @@ def _stored_roots() -> int:
 
 class TestSubmit:
     @pytest.mark.asyncio
-    async def test_the_root_with_its_observables_and_files(self, client: AsyncClient):
+    async def test_the_root_with_its_observables_and_files(self, client: AsyncClient, client_actor,
+                                                          caplog: pytest.LogCaptureFixture):
+        caplog.set_level(logging.INFO)
         response = await _submit(client, _submission(), [("sample.dat", b"Hello, world!")])
 
         assert response.status_code == 201
         uuid = response.json()["uuid"]
+        audit = audit_record(caplog, f"unittest submitted {uuid} (analysis, 1 files)")
+        assert (*audit_actor_of(audit), audit.root_uuid) == (*client_actor, uuid)
         root = _load(uuid)
         stored = _as_json(root.json)
         assert {key: stored[key] for key in ("analysis_mode", "tool", "tool_instance", "type", "description", "queue",
@@ -141,6 +152,21 @@ class TestSubmit:
                 assert (observable["added_by"], observable["added_time"]) == (None, None)
 
     @pytest.mark.asyncio
+    async def test_an_invalid_observable_value_is_skipped(self, client: AsyncClient, caplog: pytest.LogCaptureFixture):
+        response = await _submit(client, _submission(observables=[
+            {"type": F_IP, "value": "1.2.3.4"},
+            {"type": F_URL, "value": "https:.."},
+        ]))
+
+        assert response.status_code == 201
+        uuid = response.json()["uuid"]
+        stored = _load(uuid).json["observable_store"].values()
+        assert [(o["type"], o["value"]) for o in stored] == [(F_IP, "1.2.3.4")]
+        (record,) = [r for r in caplog.records if "skipped invalid observable" in r.getMessage()]
+        assert record.levelno == logging.WARNING
+        assert uuid in record.getMessage() and "https:.." in record.getMessage()
+
+    @pytest.mark.asyncio
     async def test_the_queue(self, client: AsyncClient):
         response = await _submit(client, _submission(queue="internal"))
 
@@ -162,14 +188,147 @@ class TestSubmit:
         response = await _submit(client, _submission(event_time=None))
 
         assert response.status_code == 201
-        assert _load(response.json()["uuid"]).event_time >= before.replace(microsecond=0)
+        root = _load(response.json()["uuid"])
+        assert root.event_time >= before.replace(microsecond=0)
+        assert root.event_time_source == EventTimeSource.NOW
 
     @pytest.mark.asyncio
-    async def test_without_files_as_a_plain_form(self, client: AsyncClient):
-        """ace_api.submit() with no files sends a urlencoded form rather than multipart."""
-        response = await client.post("/analysis/", data={"analysis": json.dumps(_submission(), cls=_JSONEncoder)})
+    async def test_the_event_time_source(self, client: AsyncClient):
+        response = await _submit(client, _submission())
+        assert _load(response.json()["uuid"]).event_time_source == EventTimeSource.EVENT
+
+        # a hunt run from the command line couldn't extract the event's time
+        response = await _submit(client, _submission(event_time_source="query_time"))
+        assert _load(response.json()["uuid"]).event_time_source == EventTimeSource.QUERY_TIME
+
+        # without a time there is nothing for it to describe
+        response = await _submit(client, _submission(event_time=None, event_time_source="query_time"))
+        assert _load(response.json()["uuid"]).event_time_source == EventTimeSource.NOW
+
+
+def _file_observables(root: RootAnalysis) -> list:
+    return [o for o in root.all_observables if o.type == F_FILE]
+
+
+class TestUploadNames:
+    """The upload's file name is the client's: it may name a subdirectory of the root's files
+    directory, but never a place outside it."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("name, stored", [
+        ("../../{name}", "_/_/{name}"),
+        ("sub/../../{name}", "sub/_/_/{name}"),
+        ("..", "_"),
+    ])
+    async def test_a_name_outside_the_root_is_kept_inside(self, client: AsyncClient, name, stored):
+        file_name = f"escaped-{uuidlib.uuid4().hex}.txt"
+        name = name.format(name=file_name)
+        stored = stored.format(name=file_name)
+
+        response = await _submit(client, _submission(), [(name, b"escaped")])
 
         assert response.status_code == 201
+        root = _load(response.json()["uuid"])
+        (file_observable,) = _file_observables(root)
+        assert file_observable.file_path == stored
+        assert is_path_under(file_observable.full_path, root.file_dir)
+        with open(file_observable.full_path, "rb") as fp:
+            assert fp.read() == b"escaped"
+
+        assert not os.path.exists(os.path.join(root.file_dir, "..", "..", file_name))
+
+    @pytest.mark.asyncio
+    async def test_an_absolute_name_is_kept_inside(self, client: AsyncClient, tmp_path):
+        target = tmp_path / "escaped.txt"
+
+        response = await _submit(client, _submission(), [(str(target), b"escaped")])
+
+        assert response.status_code == 201
+        root = _load(response.json()["uuid"])
+        (file_observable,) = _file_observables(root)
+        assert file_observable.file_path == str(target).lstrip("/")
+        assert is_path_under(file_observable.full_path, root.file_dir)
+        assert not target.exists()
+
+    @pytest.mark.asyncio
+    async def test_a_subdirectory_is_kept(self, client: AsyncClient):
+        """ace_api's relative_storage_path places a file in a subdirectory of the root."""
+        response = await _submit(client, _submission(), [("dest/test.txt", b"content")])
+
+        assert response.status_code == 201
+        root = _load(response.json()["uuid"])
+        (file_observable,) = _file_observables(root)
+        assert file_observable.file_path == "dest/test.txt"
+        assert os.path.realpath(file_observable.full_path) == os.path.realpath(os.path.join(root.file_dir, "dest", "test.txt"))
+        with open(file_observable.full_path, "rb") as fp:
+            assert fp.read() == b"content"
+
+    @pytest.mark.asyncio
+    async def test_the_observable_file_path_is_not_used(self, client: AsyncClient):
+        """The submission's description of the file names it too; only the upload's own name counts."""
+        name = f"escaped-{uuidlib.uuid4().hex}.txt"
+        file_sha256 = hashlib.sha256(b"escaped").hexdigest()
+
+        response = await _submit(client, _submission(observables=[
+            {"type": F_FILE, "value": file_sha256, "file_path": f"../../{name}", "tags": ["described"]},
+        ]), [("upload.txt", b"escaped")])
+
+        assert response.status_code == 201
+        root = _load(response.json()["uuid"])
+        (file_observable,) = _file_observables(root)
+        assert file_observable.file_path == "upload.txt"
+        assert file_observable.has_tag("described")
+        assert not os.path.exists(os.path.join(root.file_dir, "..", "..", name))
+
+    @pytest.mark.asyncio
+    async def test_a_name_with_spaces_and_unicode_is_kept(self, client: AsyncClient):
+        response = await _submit(client, _submission(), [("Quarterly Report é.pdf", b"content")])
+
+        assert response.status_code == 201
+        (file_observable,) = _file_observables(_load(response.json()["uuid"]))
+        assert file_observable.file_path == "Quarterly Report é.pdf"
+        with open(file_observable.full_path, "rb") as fp:
+            assert fp.read() == b"content"
+
+    @pytest.mark.asyncio
+    async def test_an_empty_name(self, client: AsyncClient):
+        """httpx leaves an empty file name out, which makes the part a plain field, so the body is
+        written out to send filename=""."""
+        boundary = "unittestboundary"
+        body = (f'--{boundary}\r\nContent-Disposition: form-data; name="analysis"\r\n\r\n'
+                f'{json.dumps(_submission(), cls=_JSONEncoder)}\r\n'
+                f'--{boundary}\r\nContent-Disposition: form-data; name="file"; filename=""\r\n'
+                f'Content-Type: application/octet-stream\r\n\r\ncontent\r\n--{boundary}--\r\n').encode()
+
+        response = await client.post("/analysis/", content=body,
+                                     headers={"content-type": f"multipart/form-data; boundary={boundary}"})
+
+        assert response.status_code == 201
+        (file_observable,) = _file_observables(_load(response.json()["uuid"]))
+        assert file_observable.file_path == "upload"
+
+
+    @pytest.mark.asyncio
+    async def test_uploads_with_the_same_name_are_kept_apart(self, client: AsyncClient):
+        """Every unnamed upload is stored as "upload", and two files can share a basename. The
+        second must not be written over the first, whose hardcopy is the same file."""
+        boundary = "unittestboundary"
+        parts = "".join(f'--{boundary}\r\nContent-Disposition: form-data; name="file"; filename=""\r\n'
+                        f'Content-Type: application/octet-stream\r\n\r\n{content}\r\n'
+                        for content in ("first", "second"))
+        body = (f'--{boundary}\r\nContent-Disposition: form-data; name="analysis"\r\n\r\n'
+                f'{json.dumps(_submission(), cls=_JSONEncoder)}\r\n{parts}--{boundary}--\r\n').encode()
+
+        response = await client.post("/analysis/", content=body,
+                                     headers={"content-type": f"multipart/form-data; boundary={boundary}"})
+
+        assert response.status_code == 201
+        file_observables = _file_observables(_load(response.json()["uuid"]))
+        assert sorted(o.file_path for o in file_observables) == ["upload", "upload_000"]
+        for file_observable in file_observables:
+            with open(file_observable.full_path, "rb") as fp:
+                assert hashlib.sha256(fp.read()).hexdigest() == file_observable.value
+        assert {o.value for o in file_observables} == {hashlib.sha256(c).hexdigest() for c in (b"first", b"second")}
 
 
 class TestInvalid:
@@ -180,6 +339,7 @@ class TestInvalid:
         ({key: value for key, value in _submission().items() if key != "description"}, 400,
          "missing description field in submission"),
         (_submission(event_time="20189-13-143"), 400, "invalid event time format"),
+        (_submission(event_time_source="unset"), 400, "invalid event_time_source unset"),
         (_submission(observables=[{"type": F_IP, "time": EVENT_TIME}]), 400, "invalid observable"),
         (_submission(observables=[{"value": "1.2.3.4"}]), 400, "invalid observable"),
         (_submission(observables=[{"type": F_IP, "value": "1.2.3.4", "time": "INVALID_TIME"}]), 400, "invalid observable"),

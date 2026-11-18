@@ -272,6 +272,8 @@ def _process_mapping_values(
                             interpolated_tags.append(tag_value)
 
                 file_contents.append(FileContent(
+                    # interpolated from the event, which can carry an attacker's file names; the
+                    # root's file manager cleans it when the file is stored
                     file_name=target_file_name,
                     content=decoded_observed_value,
                     directives=interpolated_directives,

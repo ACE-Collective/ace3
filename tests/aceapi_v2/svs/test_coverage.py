@@ -28,6 +28,7 @@ from tests.saq.svs.conftest import (
     write_hunt,
     write_yara_rule,
 )
+from tests.saq.helpers import person
 
 pytestmark = pytest.mark.integration
 
@@ -228,7 +229,7 @@ def drill_down(attack_catalog, hunt_dir, yara_dir, test_user):
     add_catalog_test(OTHER_GUID, technique="T1059", platforms=("linux",), name="Bash")
     add_catalog_test(REMOVED_GUID, technique="T1059.002", platforms=("macos",), removed=True, name="AppleScript")
 
-    expectations.set_expectation(GUID, SIGNATURE, "expected", test_user.id, platform="windows")
+    expectations.set_expectation(GUID, SIGNATURE, "expected", person(test_user.id, test_user.username), platform="windows")
     run = started_run(GUID)
     db = get_db()
     db.execute(update(SVSRun).where(SVSRun.id == run.id).values(state="reviewed", reviewed_at=T0))

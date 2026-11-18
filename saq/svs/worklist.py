@@ -31,8 +31,10 @@ from urllib.parse import urlparse
 
 from sqlalchemy import func, select
 
+from saq.auth import ApiAuthResult
 from saq.database.model import SVSExpectation, SVSTechniqueWorklist
 from saq.database.private_session import private_transaction
+from saq.logging import log_audit
 from saq.svs.attack import AttackCatalog, TechniqueStatus
 from saq.svs.constants import WorklistKind, WorklistResolution, WorklistStatus
 from saq.svs.coverage_lock import lock_refresh
@@ -395,9 +397,9 @@ def _resolve_row(row: SVSTechniqueWorklist, resolution: str, reason: str, refere
     _rederive(row, now)
 
 
-def _audit(message: str, row_key: tuple[str, str], resolution: Optional[str], **fields) -> None:
-    logging.info(f"AUDIT: {message}", extra={"signature_uuid": row_key[0], "technique": row_key[1],
-                                             "resolution": resolution, **fields})
+def _audit(message: str, row_key: tuple[str, str], resolution: Optional[str], auth: ApiAuthResult,
+           **fields) -> None:
+    log_audit(message, auth=auth, signature_uuid=row_key[0], technique=row_key[1], resolution=resolution, **fields)
 
 
 def _detached(session, row: SVSTechniqueWorklist) -> SVSTechniqueWorklist:
@@ -408,8 +410,8 @@ def _detached(session, row: SVSTechniqueWorklist) -> SVSTechniqueWorklist:
     return row
 
 
-def resolve(signature_uuid: str, technique: str, resolution: str, reason: Optional[str], user_id: int, *,
-            reference: Optional[str] = None, actor: Optional[str] = None, precondition: Precondition = NONE,
+def resolve(signature_uuid: str, technique: str, resolution: str, reason: Optional[str], auth: ApiAuthResult, *,
+            reference: Optional[str] = None, precondition: Precondition = NONE,
             now: Optional[datetime] = None) -> SVSTechniqueWorklist:
     """Resolves a declared tag measurement doesn't confirm: keep it, or remove it. A remove stops the
     tag counting toward coverage from the next refresh. Raises UnknownWorklistRow, WorklistConflict,
@@ -420,11 +422,11 @@ def resolve(signature_uuid: str, technique: str, resolution: str, reason: Option
         lock_refresh(session)
         row = _row(session, signature_uuid, technique)
         precondition.check(row, f"the worklist row of {row.technique}")
-        _resolve_row(row, resolution, reason, reference, user_id, now)
+        _resolve_row(row, resolution, reason, reference, auth.auth_user_id, now)
         row = _detached(session, row)
 
-    _audit("svs worklist resolution set", (row.signature_uuid, row.technique), resolution, reason=reason,
-           reference=reference, status=row.status, actor=actor, actor_user_id=user_id)
+    _audit("svs worklist resolution set", (row.signature_uuid, row.technique), resolution, auth, reason=reason,
+           reference=reference, status=row.status)
     return row
 
 
@@ -436,9 +438,8 @@ class BulkResolution:
     unknown: list[tuple[str, str]] = field(default_factory=list)
 
 
-def resolve_many(keys: Iterable[tuple[str, str]], resolution: str, reason: Optional[str], user_id: int, *,
-                 reference: Optional[str] = None, actor: Optional[str] = None,
-                 now: Optional[datetime] = None) -> BulkResolution:
+def resolve_many(keys: Iterable[tuple[str, str]], resolution: str, reason: Optional[str], auth: ApiAuthResult, *,
+                 reference: Optional[str] = None, now: Optional[datetime] = None) -> BulkResolution:
     """resolve() for each (signature_uuid, technique), in one transaction; a row that doesn't exist or
     can't be resolved is reported and left alone. Raises InvalidResolution."""
     resolution, reason, reference = _validated(resolution, reason, reference)
@@ -449,7 +450,7 @@ def resolve_many(keys: Iterable[tuple[str, str]], resolution: str, reason: Optio
         for signature_uuid, technique in dict.fromkeys(keys):
             try:
                 row = _row(session, signature_uuid, technique)
-                _resolve_row(row, resolution, reason, reference, user_id, now)
+                _resolve_row(row, resolution, reason, reference, auth.auth_user_id, now)
             except UnknownWorklistRow:
                 result.unknown.append((signature_uuid, technique))
             except WorklistConflict as e:
@@ -458,13 +459,12 @@ def resolve_many(keys: Iterable[tuple[str, str]], resolution: str, reason: Optio
                 result.done.append((row.signature_uuid, row.technique))
 
     for key in result.done:
-        _audit("svs worklist resolution set", key, resolution, reason=reason, reference=reference, actor=actor,
-               actor_user_id=user_id)
+        _audit("svs worklist resolution set", key, resolution, auth, reason=reason, reference=reference)
     return result
 
 
-def reopen(signature_uuid: str, technique: str, user_id: int, *, actor: Optional[str] = None,
-           precondition: Precondition = NONE, now: Optional[datetime] = None) -> SVSTechniqueWorklist:
+def reopen(signature_uuid: str, technique: str, auth: ApiAuthResult, *, precondition: Precondition = NONE,
+           now: Optional[datetime] = None) -> SVSTechniqueWorklist:
     """Clears a row's resolution: an unconfirmed tag is open again and counts from the next refresh.
     Raises UnknownWorklistRow (also when the row has no resolution), StaleWrite."""
     now = now or datetime.now()
@@ -480,8 +480,8 @@ def reopen(signature_uuid: str, technique: str, user_id: int, *, actor: Optional
         _rederive(row, now)
         row = _detached(session, row)
 
-    _audit("svs worklist resolution cleared", (row.signature_uuid, row.technique), None,
-           cleared_resolution=previous, status=row.status, actor=actor, actor_user_id=user_id)
+    _audit("svs worklist resolution cleared", (row.signature_uuid, row.technique), None, auth,
+           cleared_resolution=previous, status=row.status)
     return row
 
 
@@ -496,10 +496,10 @@ def excluded_mappings(session) -> frozenset[tuple[str, str]]:
         select(SVSTechniqueWorklist.signature_uuid, SVSTechniqueWorklist.technique).where(
             SVSTechniqueWorklist.kind == WorklistKind.DECLARED.value,
             SVSTechniqueWorklist.resolution == WorklistResolution.REMOVE.value,
-            SVSTechniqueWorklist.status != WorklistStatus.CONFIRMED.value)).tuples())
+            SVSTechniqueWorklist.status != WorklistStatus.CONFIRMED.value)))
 
 
 def worklist_counts(session) -> dict[str, int]:
     """{status: rows}."""
     return dict(session.execute(
-        select(SVSTechniqueWorklist.status, func.count()).group_by(SVSTechniqueWorklist.status)).tuples().all())
+        select(SVSTechniqueWorklist.status, func.count()).group_by(SVSTechniqueWorklist.status)).all())

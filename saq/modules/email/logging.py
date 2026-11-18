@@ -2,7 +2,6 @@ from datetime import datetime
 from typing import Optional, Type
 from pydantic import BaseModel, Field
 import logging
-import os
 
 from saq.analysis.analysis import Analysis
 from saq.analysis.observable import Observable
@@ -11,10 +10,11 @@ from saq.constants import DIRECTIVE_ORIGINAL_EMAIL, F_FILE, F_URL, AnalysisExecu
 from saq.database.pool import get_db_connection
 from saq.database.retry import execute_with_retry
 from saq.email import normalize_email_address
-from saq.environment import get_base_dir
 from saq.modules import AnalysisModule
+from saq.modules.email.archive import EmailArchiveResults
+from saq.modules.email.rfc822 import TAG_OUTBOUND_EMAIL, EmailAnalysis
 
-from fluent import sender
+from saq.logging import UTF8SafeFluentSender
 
 from saq.modules.config import AnalysisModuleConfig
 
@@ -48,30 +48,31 @@ class EmailLoggingAnalyzer(AnalysisModule):
 
         # brocess log settings
         self.brocess_logging_enabled = self.config.brocess_logging_enabled
-        self.fluent_bit_main_sender: Optional[sender.FluentSender] = None
-        self.fluent_bit_urls_sender: Optional[sender.FluentSender] = None
-        self.fluent_bit_headers_sender: Optional[sender.FluentSender] = None
-        self.fluent_bit_lookalike_sender: Optional[sender.FluentSender] = None
+        self.fluent_bit_main_sender: Optional[UTF8SafeFluentSender] = None
+        self.fluent_bit_urls_sender: Optional[UTF8SafeFluentSender] = None
+        self.fluent_bit_headers_sender: Optional[UTF8SafeFluentSender] = None
+        self.fluent_bit_lookalike_sender: Optional[UTF8SafeFluentSender] = None
 
         if self.config.fluent_bit_logging_enabled:
-            self.fluent_bit_main_sender = sender.FluentSender(
+            self.fluent_bit_main_sender = UTF8SafeFluentSender(
                 self.config.fluent_bit_tags.main,
                 host=self.config.fluent_bit_hostname,
                 port=self.config.fluent_bit_port)
 
             if self.config.fluent_bit_tags.urls:
-                self.fluent_bit_urls_sender = sender.FluentSender(
+                self.fluent_bit_urls_sender = UTF8SafeFluentSender(
                     self.config.fluent_bit_tags.urls,
                     host=self.config.fluent_bit_hostname,
                     port=self.config.fluent_bit_port)
 
             if self.config.fluent_bit_tags.headers:
-                self.fluent_bit_headers_sender = sender.FluentSender(
+                self.fluent_bit_headers_sender = UTF8SafeFluentSender(
                     self.config.fluent_bit_tags.headers,
-                    host=self.config.fluent_bit_hostname)
+                    host=self.config.fluent_bit_hostname,
+                    port=self.config.fluent_bit_port)
 
             if self.config.fluent_bit_tags.lookalike:
-                self.fluent_bit_lookalike_sender = sender.FluentSender(
+                self.fluent_bit_lookalike_sender = UTF8SafeFluentSender(
                     self.config.fluent_bit_tags.lookalike,
                     host=self.config.fluent_bit_hostname,
                     port=self.config.fluent_bit_port)
@@ -100,22 +101,18 @@ class EmailLoggingAnalyzer(AnalysisModule):
 
     def process_email(self, email_file):
 
-        from saq.modules.email.rfc822 import EmailAnalysis
-        from saq.modules.email.archive import EmailArchiveResults
+        # url_extraction imports urlfinderlib, which only the engine needs
+        from saq.modules.file_analysis.url_extraction import URLExtractionAnalysis
 
         analysis = email_file.get_and_load_analysis(EmailAnalysis)
         if not analysis:
-            # XXX hack - make MUCH better support for whitelisting :-(
-            if not email_file.has_tag('whitelisted'):
+            # scan_inbound_only skips the email analysis of outbound mail on purpose
+            if not email_file.has_tag(TAG_OUTBOUND_EMAIL):
                 logging.warning("missing EmailAnalysis for {} - not logging".format(email_file))
             return
 
         if not analysis.email:
             logging.warning("missing analysis.email for {} - not logging".format(email_file))
-            return
-
-        # has this been whitelisted?
-        if email_file.has_tag('whitelisted'):
             return
 
         if not analysis.log_entry:
@@ -126,41 +123,47 @@ class EmailLoggingAnalyzer(AnalysisModule):
 
         # look for url extracted as well
         extracted_urls = []
+        url_extractions = []
 
         # find all urls starting from this analysis
         def _callback(target):
-            nonlocal extracted_urls
             if isinstance(target, Observable) and target.type == F_URL:
                 extracted_urls.append(target.value)
+            elif isinstance(target, URLExtractionAnalysis):
+                url_extractions.append(target)
 
         recurse_tree(analysis, _callback)
+
+        # url_extraction makes observables of only the first max_extracted_urls urls of a file,
+        # but its details list every url it found
+        for url_extraction in url_extractions:
+            try:
+                # the engine flushes analysis details to disk as it goes
+                if not url_extraction.load_details():
+                    raise RuntimeError(f"unable to load {url_extraction.external_details_path}")
+
+                extracted_urls.extend(url_extraction.urls)
+            except Exception as e:
+                # the urls that became observables are still logged
+                logging.exception(f"unable to read the urls extracted from {url_extraction.observable} for {email_file}: {e}",
+                                  extra={"root_uuid": self.get_root().uuid,
+                                         "observable_uuid": email_file.uuid,
+                                         "path": url_extraction.external_details_path})
+
         # remove duplicates
         extracted_urls = list(set(extracted_urls))
 
-        # since we only extract urls from emails we just find them all in the entire analysis tree
-        #for url_extraction in self.get_root().all_analysis:
-            #if not isinstance(url_extraction, URLExtractionAnalysis):
-                #continue
-
-            #if url_extraction.details is not None:
-                #extracted_urls.extend(url_extraction.details)
-
-        # log where we ended up archiving the email
-        archive_path = None
+        # the email's digest in the email archive pool, which is how it is found there
+        archive_hash = None
         archive_results = email_file.get_and_load_analysis(EmailArchiveResults)
         if archive_results:
-            archive_path = archive_results.archive_path
-
-        #url_extraction = email_file.get_and_load_analysis(URLExtractionAnalysis)
-        #if url_extraction and url_extraction.details:
-            # get all the URLs extracted
-            #extracted_urls = url_extraction.details
+            archive_hash = archive_results.hash
 
         # so all we need to do now is figure out how to write the data from
         # multiple processes to the same place without collision
         entry = analysis.log_entry.copy()
         entry.update({'extracted_urls': extracted_urls})
-        entry.update({'archive_path': None if archive_path is None else os.path.relpath(archive_path, start=get_base_dir())})
+        entry.update({'archive_hash': archive_hash})
 
         if self.config.brocess_logging_enabled:
             try:
@@ -321,24 +324,27 @@ class EmailLoggingAnalyzer(AnalysisModule):
         if not mail_from:
             return
 
+        sql = []
+        params = []
+        for email_address in entry['env_rcpt_to']:
+            email_address = normalize_email_address(email_address)
+            if not email_address:
+                continue
+
+            sql.append("""INSERT INTO smtplog ( source, destination, numconnections, firstconnectdate )
+                          VALUES (%s, %s, 1, UNIX_TIMESTAMP(NOW()))
+                          ON DUPLICATE KEY UPDATE numconnections = numconnections + 1""")
+            params.append((
+                mail_from.encode("utf-8", errors="replace")[:255],
+                email_address.encode("utf-8", errors="replace")[:255],
+            ))
+
+        if not sql:
+            return
+
         try:
             with get_db_connection(name='brocess') as db:
-                c = db.cursor()
-                for email_address in entry['env_rcpt_to']:
-                    email_address = normalize_email_address(email_address)
-                    if not email_address:
-                        continue
-
-                    sql = """INSERT INTO smtplog ( source, destination, numconnections, firstconnectdate )
-                             VALUES (%s, %s, 1, UNIX_TIMESTAMP(NOW()))
-                             ON DUPLICATE KEY UPDATE numconnections = numconnections + 1"""
-                    params = (
-                        mail_from.encode("utf-8", errors="replace")[:255],
-                        email_address.encode("utf-8", errors="replace")[:255],
-                    )
-                    execute_with_retry(db, c, sql, params)
-
-                db.commit()
+                execute_with_retry(db, db.cursor(), sql, params, commit=True)
 
         except Exception as e:
             logging.exception("unable to update brocess: {}".format(e))

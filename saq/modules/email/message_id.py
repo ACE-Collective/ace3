@@ -2,13 +2,13 @@ import hashlib
 import logging
 import os
 from typing import Optional, override
-from saq.email_archive import iter_archived_email, email_is_archived
+from saq.email_archive import find_archived_email, get_email_archive_pool
 from saq.analysis.analysis import Analysis
 from saq.analysis.search import search_down
 from saq.constants import F_MESSAGE_ID, AnalysisExecutionResult
 from saq.modules import AnalysisModule
+from saq.modules.email.rfc822 import EmailAnalysis
 
-KEY_ERROR = "error"
 KEY_EXTRACTED_EMAIL = "extracted_email"
 
 class MessageIDAnalysisV2(Analysis):
@@ -17,7 +17,6 @@ class MessageIDAnalysisV2(Analysis):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.details = { 
-            KEY_ERROR: None,
             KEY_EXTRACTED_EMAIL: None,
         }
 
@@ -25,14 +24,6 @@ class MessageIDAnalysisV2(Analysis):
     @property
     def display_name(self) -> str:
         return "Message ID Analysis"
-
-    @property
-    def error(self) -> Optional[str]:
-        return self.details[KEY_ERROR]
-
-    @error.setter
-    def error(self, value: str):
-        self.details[KEY_ERROR] = value
 
     @property
     def extracted_email(self) -> Optional[str]:
@@ -64,7 +55,6 @@ class MessageIDAnalyzerV2(AnalysisModule):
     def execute_analysis(self, message_id) -> AnalysisExecutionResult:
 
         # if we've already analyzed this email then we don't need to extract it
-        from saq.modules.email import EmailAnalysis
         email_analysis = search_down(message_id, 
                 lambda x: isinstance(x, EmailAnalysis) and x.message_id == message_id.value)
 
@@ -72,7 +62,8 @@ class MessageIDAnalyzerV2(AnalysisModule):
             logging.debug(f"already have email analysis for {message_id.value}")
             return AnalysisExecutionResult.COMPLETED
 
-        if not email_is_archived(message_id.value):
+        digest = find_archived_email(message_id.value)
+        if digest is None:
             logging.info(f"email {message_id.value} is not archived")
             return AnalysisExecutionResult.COMPLETED
 
@@ -85,9 +76,7 @@ class MessageIDAnalyzerV2(AnalysisModule):
             if os.path.exists(target_path):
                 logging.info(f"archived email {target_path} already exists")
             else:
-                with open(target_path, "wb") as fp:
-                    for chunk in iter_archived_email(message_id.value):
-                        fp.write(chunk)
+                get_email_archive_pool().materialize(digest, target_path)
 
             if os.path.getsize(target_path) == 0:
                 logging.info(f"got 0 bytes for {message_id.value}")
@@ -106,7 +95,7 @@ class MessageIDAnalyzerV2(AnalysisModule):
         except Exception as e:
             logging.exception(f"unable to get archived email {message_id.value}: {e}")
             if analysis:
-                analysis.error = str(e)
+                analysis.error = str(e) or type(e).__name__
 
             return AnalysisExecutionResult.COMPLETED
 

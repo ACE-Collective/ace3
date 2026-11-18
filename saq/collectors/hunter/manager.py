@@ -238,7 +238,7 @@ class HuntManager:
             try:
                 hunt.cancel()
             except Exception:
-                logging.exception("unable to cancel hunt {hunt}: {e}")
+                logging.exception("unable to cancel hunt %s", hunt)
 
     def wait(self, *args, **kwargs):
         self.manager_control_event.wait(*args, **kwargs)
@@ -421,14 +421,16 @@ class HuntManager:
                         # record last_alert_time per-group so each group_by value gets its own
                         # suppression window. dedupe so we only write once per group even if
                         # multiple submissions somehow share a group_value.
+                        # suppression_key is the group_value, keyed by the svs run during a test
+                        # run on a test host (QueryHunt.key_suppression)
                         now = local_time()
                         seen_groups = set()
                         for submission in submissions:
-                            group_value = getattr(submission, "group_value", None)
-                            if group_value is None or group_value in seen_groups:
+                            key = getattr(submission, "suppression_key", None) or getattr(submission, "group_value", None)
+                            if key is None or key in seen_groups:
                                 continue
-                            seen_groups.add(group_value)
-                            hunt.set_last_alert_time(now, group_value)
+                            seen_groups.add(key)
+                            hunt.set_last_alert_time(now, key)
 
                 # explicit maintenance pass: keep last_alert_times bounded for hunts with
                 # high-cardinality group_by (e.g. src_ip). intentionally not folded into the
@@ -454,7 +456,7 @@ class HuntManager:
                         "enabled" if track_suppression else "disabled",
                     )
         except Exception as e:
-            logging.exception(f"uncaught exception: {e}")
+            logging.exception("uncaught exception in hunt %s (uuid=%s, type=%s): %s", hunt.name, hunt.uuid, hunt.type, e)
         finally:
             self.release_concurrency_lock(hunt.semaphore)
             # at this point this hunt has finished and is eligible to execute again
@@ -513,8 +515,8 @@ class HuntManager:
                         logging.warning(
                             "%s did not stop within %ss of being cancelled; "
                             "continuing the reload without it", hunt, CANCEL_WAIT_TIMEOUT)
-            except Exception as e:
-                logging.info(f"unable to cancel {hunt}: {e}")
+            except Exception:
+                logging.exception("unable to cancel hunt %s", hunt)
 
     def set_concurrency_limit(self, limit):
         """Sets the concurrency limit for this type of hunt.
@@ -549,7 +551,9 @@ class HuntManager:
             result = NetworkSemaphoreClient(cancel_request_callback=self.manager_control_event.is_set)
                                                                 # make sure we cancel outstanding request 
                                                                 # when shutting down
-            result.acquire(self.concurrency_semaphore)
+            if not result.acquire(self.concurrency_semaphore):
+                # cancelled because the manager is stopping, or the fallback failed: nothing is held
+                result = None
         else:
             logging.debug(f"acquiring local concurrency semaphore for hunt type {self.hunt_type}")
             while not self.manager_control_event.is_set():

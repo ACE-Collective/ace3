@@ -76,52 +76,6 @@ def cert(private_key, x509_constants):
 
 
 @pytest.fixture(scope="module")
-def cert_dns_alternative_only(private_key, x509_constants):
-    """Yield self-signed x509.Certificate object (public key) with only DNS Names in SAN extension."""
-    issuer = x509.Name([
-        x509.NameAttribute(attr_name, value) for attr_name, value in x509_constants.NAME_ATTRIBUTES.items()
-    ])
-
-    alternative_names = [x509.DNSName(dns_name) for dns_name in x509_constants.SUBJECT_ALTERNATIVE_DNS_NAMES]
-
-    cert = x509.CertificateBuilder()\
-        .subject_name(issuer)\
-        .issuer_name(issuer)\
-        .public_key(private_key.public_key())\
-        .serial_number(x509_constants.SERIAL_NUMBER)\
-        .not_valid_before(x509_constants.NOT_VALID_BEFORE)\
-        .not_valid_after(x509_constants.NOT_VALID_AFTER)\
-        .add_extension(
-            x509.SubjectAlternativeName(alternative_names),
-            critical=False,
-        ).sign(private_key, hashes.SHA256(), default_backend())
-
-    yield cert
-
-
-@pytest.fixture(scope="module")
-def cert_ip_alternative_only(private_key, x509_constants):
-    """Yield self-signed x509.Certificate object (public key) with only IP Addresses in SAN extension."""
-    issuer = x509.Name([x509.NameAttribute(attr_name, value) for attr_name, value in x509_constants.NAME_ATTRIBUTES.items()])
-
-    alternative_names = [x509.IPAddress(ip_address) for ip_address in x509_constants.SUBJECT_ALTERNATIVE_IP_ADDRESSES_OBJECTS]
-
-    cert = x509.CertificateBuilder()\
-        .subject_name(issuer)\
-        .issuer_name(issuer)\
-        .public_key(private_key.public_key())\
-        .serial_number(x509_constants.SERIAL_NUMBER)\
-        .not_valid_before(x509_constants.NOT_VALID_BEFORE)\
-        .not_valid_after(x509_constants.NOT_VALID_AFTER)\
-        .add_extension(
-            x509.SubjectAlternativeName(alternative_names),
-            critical=False,
-        ).sign(private_key, hashes.SHA256(), default_backend())
-
-    yield cert
-
-
-@pytest.fixture(scope="module")
 def cert_no_alt(private_key, x509_constants):
     """Yield x509.Certificate with no SAN extension."""
     issuer = x509.Name([x509.NameAttribute(attr_name, value) for attr_name, value in x509_constants.NAME_ATTRIBUTES.items()])

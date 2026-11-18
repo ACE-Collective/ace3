@@ -4,11 +4,11 @@ import re
 import urllib
 from urllib.parse import parse_qs, unquote, urlencode, urlparse, urlunparse
 
-from urlfinderlib import find_urls
 from saq.constants import F_URL
 from saq.util.strings import decode_base64
 
-import requests
+# urlfinderlib and requests (~12 MB) are imported in extract_protected_url(), the only function that uses
+# them: saq.util re-exports two of this module's other helpers, so every process imports it
 
 PROTECTED_URLS = ['egnyte.com', 'fireeye.com', 'safelinks.protection.outlook.com', 'dropbox.com', 'drive.google.com', '.sharepoint.com',
                   'proofpoint.com', 'urldefense.com']
@@ -17,6 +17,16 @@ PROTECTED_URLS = ['egnyte.com', 'fireeye.com', 'safelinks.protection.outlook.com
 REGEX_SHAREPOINT = re.compile(r'^/:b:/g/(.+)/([^/]+)$')
 REGEX_GOOGLE_DRIVE = re.compile(r'drive\.google\.com/file/d/([^/]+)/view')
 REGEX_URLDEFENSE = re.compile(r'^https://urldefense\.com/v3/__(.+?)__.+$')
+
+
+def strip_url_credentials(url: str) -> str:
+    """The url without a user or password in it (https://token@host/... is common for git), so it
+    can be shown to someone who mustn't see them. A url without a scheme, such as git@host:repo, is
+    returned unchanged: its user is not a secret."""
+    parsed = urlparse(url)
+    if not parsed.scheme or "@" not in parsed.netloc:
+        return url
+    return urlunparse(parsed._replace(netloc=parsed.netloc.rsplit("@", 1)[1]))
 
 
 def fang(url):
@@ -123,14 +133,14 @@ def extract_protected_url(url: str) -> tuple[ProtectionType, str]:
 
     # dropbox links
     elif parsed_url.netloc.lower().endswith('.dropbox.com'):
-        qs = parse_qs(parsed_url.query)
+        qs = parse_qs(parsed_url.query, keep_blank_values=True)
         modified = False
         if 'dl' in qs:
             if qs['dl'] == ['0']:
-                qs['dl'] = '1'
+                qs['dl'] = ['1']
                 modified = True
         else:
-            qs['dl'] = '1'
+            qs['dl'] = ['1']
             modified = True
 
         if modified:
@@ -139,7 +149,7 @@ def extract_protected_url(url: str) -> tuple[ProtectionType, str]:
                                         parsed_url.netloc,
                                         parsed_url.path,
                                         parsed_url.params,
-                                        urlencode(qs),
+                                        urlencode(qs, doseq=True),
                                         parsed_url.fragment)))
 
     # sharepoint download links
@@ -180,6 +190,7 @@ def extract_protected_url(url: str) -> tuple[ProtectionType, str]:
             return (ProtectionType.URLDEFENSE, m.group(1))
 
     if parsed_url.netloc.lower().endswith('.proofpoint.com'):
+        from urlfinderlib import find_urls
         extracted_url_set = find_urls(url)
         if extracted_url_set:
             # loop through all extracted URLs to remove any nested protected URLs
@@ -222,6 +233,7 @@ def extract_protected_url(url: str) -> tuple[ProtectionType, str]:
         # transform to https://onedrive.live.com/download?authkey=!AEIWW7c6GG3YkdU&cid=95384755423B88FA&resid=95384755423B88FA!107&parId=root&o=OneUp
         #
 
+        import requests
         try:
             logging.info("fetching final url for one drive link {}".format(url))
             resp = requests.get(url, allow_redirects=True, timeout=8)

@@ -1,6 +1,5 @@
 from saq.analysis.observable import Observable
 from saq.constants import F_MUTEX, F_WINDOWS_REGISTRY, F_WINDOWS_SERVICE
-from saq.observables.generator import register_observable_type
 
 
 class MutexObservable(Observable):
@@ -27,7 +26,3 @@ class WindowsServiceObservable(Observable):
     @Observable.value.setter
     def value(self, new_value):
         self._value = new_value.strip()
-
-register_observable_type(F_MUTEX, MutexObservable)
-register_observable_type(F_WINDOWS_REGISTRY, WindowsRegistryObservable)
-register_observable_type(F_WINDOWS_SERVICE, WindowsServiceObservable)

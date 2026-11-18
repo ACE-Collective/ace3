@@ -5,6 +5,7 @@ from typing import override
 from saq.analysis import Analysis
 from saq.constants import AnalysisExecutionResult, F_FILE, DIRECTIVE_ORIGINAL_EMAIL, R_EXTRACTED_FROM
 from saq.modules import AnalysisModule
+from saq.modules.file_analysis.is_file_type import is_pcap_file
 from saq.mime_extractor import parse_mime, parse_active_mime
 from saq.observables.file import FileObservable
 from saq.util.strings import format_item_list_for_summary
@@ -74,6 +75,11 @@ class HiddenMIMEAnalyzer(AnalysisModule):
             return AnalysisExecutionResult.COMPLETED
 
         if file_type_analysis is not None and file_type_analysis.is_email_file:
+            return AnalysisExecutionResult.COMPLETED
+
+        # - packet captures: the pcap modules carve what crossed the wire (an email is an IMF object);
+        #   a MIME body found in the raw capture bytes is cut at every segment boundary
+        if is_pcap_file(local_file_path):
             return AnalysisExecutionResult.COMPLETED
 
         target_dir = f"{local_file_path}.mime"

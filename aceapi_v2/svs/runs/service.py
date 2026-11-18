@@ -13,8 +13,9 @@ from typing import Any, Optional
 from fastapi import HTTPException
 from pydantic import ValidationError
 from sqlalchemy import Select, and_, case, func, or_, select
-from sqlalchemy.orm import aliased, selectinload
+from sqlalchemy.orm import aliased, selectinload, undefer
 
+from aceapi_v2.auth.schemas import ApiAuthResult
 from aceapi_v2.common.listing import (
     CHANGED_SINCE_SETTLE_SECONDS,
     InvalidCursor,
@@ -34,6 +35,7 @@ from aceapi_v2.svs.runs.schemas import (
     AssociationRequest,
     AssociationResult,
     Attribution,
+    HostHolder,
     BulkRunRequest,
     BulkRunResult,
     HistoryRun,
@@ -55,6 +57,8 @@ from aceapi_v2.svs.runs.schemas import (
     RunResult,
     RunRow,
     RunTarget,
+    RunValidation,
+    RunValidationTarget,
     SignatureHistory,
     SuppressionShare,
 )
@@ -72,10 +76,11 @@ from saq.database.model import (
 from saq.database.pool import get_db
 from saq.gui.filter_screens import SVS_RUNS_SCREEN
 from saq.gui.filter_url import FilterQueryError, decode_filter_query
-from saq.svs import review, run_comments, runs
-from saq.svs.constants import RUN_STATES, AttributionConfidence, RunState
+from saq.svs import association, review, run_comments, runs
+from saq.svs.constants import FALLBACK_EVENT_TIME_SOURCES, RUN_STATES, AttributionConfidence, RunState
 from saq.svs.log_search import log_search_url
 from saq.svs.refusals import Caller
+from saq.svs.results import cleanup_condition
 from saq.svs.run_filters import needs_attention_condition, run_filter_conditions
 from saq.svs.run_summary import RunSummary, batch_result_summaries, run_summaries, suppression_share
 from saq.svs.samples import to_utc_naive
@@ -94,8 +99,19 @@ def _lifecycle(run: SVSRun) -> RunLifecycle:
         run_id=run.uuid, marker=run.marker, state=run.state, test_guid=run.test_guid, platform=run.platform,
         targets=[_target(t) for t in run.targets],
         observation_seconds=run.observation_seconds, attribution_seconds=run.attribution_seconds,
-        created_at=run.created_at, started_at=run.started_at, observation_ends_at=run.observation_ends_at,
+        holds_host=run.holds_host, created_at=run.created_at, started_at=run.started_at,
+        cleanup_at=run.cleanup_at, observation_ends_at=run.observation_ends_at,
         attribution_ends_at=run.attribution_ends_at, error_reason=run.error_reason, close_reason=run.close_reason)
+
+
+def _holder(holder: runs.HostHolder) -> HostHolder:
+    return HostHolder(host=holder.host, run_id=holder.run_uuid, state=holder.state, until=holder.until,
+                      maintenance_id=holder.maintenance_uuid)
+
+
+def host_busy_error(e: runs.HostBusy) -> HTTPException:
+    return HTTPException(status_code=409, detail={
+        "message": str(e), "holders": [_holder(holder).model_dump(mode="json") for holder in e.holders]})
 
 
 def _call(fn, *args, **kwargs) -> RunLifecycle:
@@ -105,19 +121,49 @@ def _call(fn, *args, **kwargs) -> RunLifecycle:
         raise HTTPException(status_code=404, detail=str(e))
     except runs.RunStateConflict as e:
         raise HTTPException(status_code=409, detail={"message": str(e), "state": e.state})
+    except runs.HostBusy as e:
+        raise host_busy_error(e)
 
 
-def register(body: RunRegistrationRequest, caller: Caller) -> RunLifecycle:
-    registration = runs.Registration(
+def _registration(body: RunRegistrationRequest) -> runs.Registration:
+    return runs.Registration(
         test_guid=body.test_guid,
         targets=[runs.TargetSpec(hostname=t.hostname, username=t.username) for t in body.targets],
         launcher=body.launcher, batch_id=body.batch_id, extra=body.extra)
+
+
+def register(body: RunRegistrationRequest, caller: Caller) -> RunLifecycle:
     try:
-        return _lifecycle(runs.register(registration, caller))
+        return _lifecycle(runs.register(_registration(body), caller))
     except runs.InvalidRegistration as e:
         raise HTTPException(status_code=422, detail=str(e))
     except runs.RegistrationRefused as e:
         raise HTTPException(status_code=403, detail={"message": "registration refused", "reasons": e.reasons})
+    except runs.HostBusy as e:
+        raise host_busy_error(e)
+
+
+def validate(body: RunRegistrationRequest, caller: Caller) -> RunValidation:
+    decision = runs.validate(_registration(body), caller)
+    targets = [
+        RunValidationTarget(hostname=target.hostname, username=target.username, accepted=match.matched,
+                            reason=match.reason,
+                            test_host=match.host.hostname if match.host is not None else None,
+                            platform=match.host.platform if match.host is not None else None,
+                            held_by=[_holder(holder) for holder in decision.busy
+                                     if match.host is not None and holder.host == match.host.hostname])
+        for target, match in decision.matches]
+    if decision.invalid:
+        return RunValidation(decision="invalid", status_code=422, message=decision.invalid, targets=targets)
+    if decision.refused:
+        return RunValidation(decision="refused", status_code=403, targets=targets)
+    if decision.busy:
+        return RunValidation(decision="host_busy", status_code=409, targets=targets, platform=decision.platform)
+    return RunValidation(
+        decision="accepted", status_code=201, targets=targets, platform=decision.platform,
+        observation_seconds=int(decision.observation.total_seconds()),
+        observation_source=decision.observation_source,
+        attribution_seconds=int(decision.attribution.total_seconds()), holds_host=decision.holds_host)
 
 
 def start(run_id: str, caller: Caller) -> RunLifecycle:
@@ -125,7 +171,11 @@ def start(run_id: str, caller: Caller) -> RunLifecycle:
 
 
 def executed(run_id: str, body: RunExecutedRequest, caller: Caller) -> RunLifecycle:
-    return _call(runs.executed, run_id, caller, body.exit_code, body.error)
+    return _call(runs.executed, run_id, caller, body.exit_code, body.error, output=body.output)
+
+
+def cleanup(run_id: str, caller: Caller) -> RunLifecycle:
+    return _call(runs.cleanup, run_id, caller)
 
 
 def cancel(run_id: str, caller: Caller) -> RunLifecycle:
@@ -185,7 +235,8 @@ def _row_values(row) -> dict:
         run_id=run.uuid, state=run.state, test_guid=run.test_guid, test_name=test_name, technique=technique,
         technique_name=technique_name, platform=run.platform, marker=run.marker, targets=[_target(t) for t in run.targets],
         launcher=run.launcher, batch_id=run.batch_id, created_at=run.created_at, started_at=run.started_at,
-        executed_at=run.executed_at, exit_code=run.exit_code, ended_at=run.ended_at, canceled_at=run.canceled_at,
+        executed_at=run.executed_at, exit_code=run.exit_code, cleanup_at=run.cleanup_at, ended_at=run.ended_at,
+        end_reason=run.end_reason, canceled_at=run.canceled_at,
         closed_at=run.closed_at, observation_ends_at=run.observation_ends_at,
         attribution_ends_at=run.attribution_ends_at, error_reason=run.error_reason, close_reason=run.close_reason,
         owner=owner, reviewer=reviewer, reviewed_at=run.reviewed_at, changed_since_review=run.changed_since_review,
@@ -197,7 +248,8 @@ def _summary_values(summary: RunSummary) -> dict:
         result_hit=summary.hit, result_expected=summary.expected,
         result_missing=summary.missing + summary.possibly_suppressed,
         result_possibly_suppressed=summary.possibly_suppressed, result_candidate=summary.candidate,
-        result_rejected=summary.rejected, result_ignored=summary.ignored, result_stale=summary.result_stale,
+        result_rejected=summary.rejected, result_ignored=summary.ignored, result_cleanup=summary.cleanup,
+        result_stale=summary.result_stale,
         reviewed_hit=summary.reviewed_hit, reviewed_expected=summary.reviewed_expected,
         reviewed_missing=summary.reviewed_missing + summary.reviewed_possibly_suppressed,
         reviewed_possibly_suppressed=summary.reviewed_possibly_suppressed,
@@ -376,7 +428,8 @@ def run_batches_to_csv(rows: list[RunBatch], *, header: bool) -> str:
 #
 
 def get_detail(run_id: str) -> RunDetail:
-    row = get_db().execute(_runs_statement().where(SVSRun.uuid == _validate_run_id(run_id))).one_or_none()
+    row = get_db().execute(_runs_statement().where(SVSRun.uuid == _validate_run_id(run_id))
+                           .options(undefer(SVSRun.launcher_output))).one_or_none()
     if row is None:
         raise HTTPException(status_code=404, detail=f"run {run_id} not found")
 
@@ -390,9 +443,10 @@ def get_detail(run_id: str) -> RunDetail:
                                   context_alerts=found.get("context_alerts", []))
     return RunDetail(
         **_row_values(row), **_summary_values(summary), extra=_json(run.extra), launcher_error=run.launcher_error,
+        launcher_output=run.launcher_output,
         test_content_hash=run.test_content_hash, catalog_commit=run.catalog_commit,
         observation_seconds=run.observation_seconds, attribution_seconds=run.attribution_seconds,
-        registered_by=registrar.username if registrar is not None else None, review_blockers=blockers,
+        holds_host=run.holds_host, registered_by=registrar.username if registrar is not None else None, review_blockers=blockers,
         log_search_url=log_search_url(run))
 
 
@@ -515,8 +569,9 @@ def _result(row) -> RunResult:
         id=result.id, run_id=run_uuid, signature_uuid=result.signature_uuid,
         signature_family=result.signature_family, signature_name=result.signature_name, status=result.status,
         alert_count=result.alert_count, late_only=result.late_only, context_only=result.context_only,
+        fallback_time=result.fallback_time,
         content_hash=result.content_hash, suppressing_alert_uuid=result.suppressing_alert_uuid,
-        suppression_imprecise=result.suppression_imprecise, reviewed_status=result.reviewed_status,
+        reviewed_status=result.reviewed_status,
         reviewed_alert_count=result.reviewed_alert_count, reviewed_late_only=result.reviewed_late_only,
         reviewed_content_hash=result.reviewed_content_hash, updated_at=result.updated_at)
 
@@ -612,7 +667,8 @@ def fetch_result_feed_page(feed: ResultFeed, cursor: str | None, limit: int) -> 
 
 def _attributions_statement() -> Select:
     actor, remover, keeper = aliased(User), aliased(User), aliased(User)
-    return (select(SVSAttribution, SVSRun.uuid, actor.username, remover.username, keeper.username)
+    return (select(SVSAttribution, SVSRun.uuid, actor.username, remover.username, keeper.username,
+                   cleanup_condition().label("cleanup"))
             .join(SVSRun, SVSRun.id == SVSAttribution.run_id)
             .outerjoin(actor, actor.id == SVSAttribution.actor_user_id)
             .outerjoin(remover, remover.id == SVSAttribution.removed_by_user_id)
@@ -620,11 +676,13 @@ def _attributions_statement() -> Select:
 
 
 def _attribution(row) -> Attribution:
-    attribution, run_uuid, actor_user, removed_by_user, kept_by_user = row
+    attribution, run_uuid, actor_user, removed_by_user, kept_by_user, cleanup = row
     return Attribution(
         id=attribution.id, run_id=run_uuid, alert_uuid=attribution.alert_uuid, detection=attribution.content_hash,
         signature_uuid=attribution.signature_uuid, signature_family=attribution.signature_family,
-        confidence=attribution.confidence, late=attribution.late, source=attribution.source,
+        confidence=attribution.confidence, late=attribution.late, event_time=attribution.event_time,
+        cleanup=bool(cleanup), event_time_source=attribution.event_time_source,
+        fallback_time=attribution.event_time_source in FALLBACK_EVENT_TIME_SOURCES, source=attribution.source,
         scan_point=attribution.scan_point, actor=attribution.actor, actor_user=actor_user,
         created_at=attribution.created_at, removed_at=attribution.removed_at, removed_by=attribution.removed_by,
         removed_by_user=removed_by_user, removal_reason=attribution.removal_reason, kept_at=attribution.kept_at,
@@ -677,7 +735,9 @@ def _run_alert(alert_uuid: str, alert, attributions: list[Attribution], detectio
                                   signature_family=a.signature_family, attribution=a) for a in by_hash.values())
     return RunAlert(
         alert_uuid=alert_uuid, alert=alert, holds=bool(holding), confidence=confidence,
-        late=any(a.late for a in holding), manual=any(a.source == "manual" for a in holding),
+        late=any(a.late for a in holding), cleanup=bool(holding) and all(a.cleanup for a in holding),
+        fallback_time=any(a.fallback_time for a in holding),
+        manual=any(a.source == "manual" for a in holding),
         kept=any(a.kept_at is not None for a in context),
         undecided_context=any(a.kept_at is None for a in context), detections=rows)
 
@@ -813,14 +873,10 @@ def fetch_attribution_feed_page(feed: AttributionFeed, cursor: str | None,
 #
 
 def change_association(action: str, run_id: str, alert_uuid: str, body: AssociationRequest | None,
-                       user_id: int | None, actor: str) -> AssociationResult:
+                       auth: ApiAuthResult) -> AssociationResult:
     """associate, disassociate, not-a-test or keep on (run, alert). 422 for a config key (a change records who made
     it), 400 for a malformed id, 404 for an unknown run or alert, 409 when it doesn't apply."""
-    # local: saq.svs.association imports the attribution and analysis stack, which imports the
-    # observables, which import aceapi_v2 while saq itself is still being imported
-    from saq.svs import association
-
-    _require_user(user_id)
+    _require_user(auth.auth_user_id)
     run_uuid = _validate_run_id(run_id)
     if not UUID_REGEX.fullmatch(alert_uuid.lower()):
         raise HTTPException(status_code=400, detail="invalid alert uuid")
@@ -828,13 +884,13 @@ def change_association(action: str, run_id: str, alert_uuid: str, body: Associat
 
     try:
         if action == "associate":
-            result = association.associate(run_uuid, alert_uuid.lower(), user_id, actor, reason)
+            result = association.associate(run_uuid, alert_uuid.lower(), auth, reason)
         elif action == "disassociate":
-            result = association.disassociate(run_uuid, alert_uuid.lower(), user_id, actor, reason)
+            result = association.disassociate(run_uuid, alert_uuid.lower(), auth, reason)
         elif action == "not-a-test":
-            result = association.disassociate(run_uuid, alert_uuid.lower(), user_id, actor, reason, not_a_test=True)
+            result = association.disassociate(run_uuid, alert_uuid.lower(), auth, reason, not_a_test=True)
         else:
-            result = association.keep(run_uuid, alert_uuid.lower(), user_id, actor)
+            result = association.keep(run_uuid, alert_uuid.lower(), auth)
     except (runs.UnknownRun, association.UnknownAlert) as e:
         raise HTTPException(status_code=404, detail=str(e))
     except association.AssociationConflict as e:
@@ -850,11 +906,10 @@ def change_association(action: str, run_id: str, alert_uuid: str, body: Associat
 # a person's actions on runs (svs:run_manage): ownership, cancel, close, review, comments
 #
 
-def _require_user(user_id: int | None) -> int:
+def _require_user(user_id: int | None) -> None:
     # every action records who took it; a config API key belongs to nobody
     if user_id is None:
         raise HTTPException(status_code=422, detail="this action records who took it: it requires a user's API key or session")
-    return user_id
 
 
 def _user_ids(usernames) -> dict[str, int]:
@@ -883,32 +938,37 @@ def _run_ids(body: BulkRunRequest) -> list[str]:
     return run_ids
 
 
-def take_runs(body: BulkRunRequest, user_id: int | None, actor: str) -> BulkRunResult:
-    user_id = _require_user(user_id)
-    return _bulk_result(review.take_ownership(_run_ids(body), user_id, actor, _confirmed_takes(body)))
+def take_runs(body: BulkRunRequest, auth: ApiAuthResult) -> BulkRunResult:
+    _require_user(auth.auth_user_id)
+    return _bulk_result(review.take_ownership(_run_ids(body), auth, _confirmed_takes(body)))
 
 
-def cancel_runs(body: BulkRunRequest, user_id: int | None, actor: str) -> BulkRunResult:
-    user_id = _require_user(user_id)
-    return _bulk_result(review.cancel_runs(_run_ids(body), user_id, actor, _confirmed_takes(body)))
+def cancel_runs(body: BulkRunRequest, auth: ApiAuthResult) -> BulkRunResult:
+    _require_user(auth.auth_user_id)
+    return _bulk_result(review.cancel_runs(_run_ids(body), auth, _confirmed_takes(body)))
 
 
-def close_runs(body: BulkRunRequest, user_id: int | None, actor: str) -> BulkRunResult:
-    user_id = _require_user(user_id)
-    return _bulk_result(review.close_runs(_run_ids(body), user_id, actor, body.reason, _confirmed_takes(body)))
+def end_runs(body: BulkRunRequest, auth: ApiAuthResult) -> BulkRunResult:
+    _require_user(auth.auth_user_id)
+    return _bulk_result(review.end_runs(_run_ids(body), auth, body.reason, _confirmed_takes(body)))
 
 
-def review_run(run_id: str, body: ReviewRequest | None, user_id: int | None, actor: str) -> ReviewResult:
+def close_runs(body: BulkRunRequest, auth: ApiAuthResult) -> BulkRunResult:
+    _require_user(auth.auth_user_id)
+    return _bulk_result(review.close_runs(_run_ids(body), auth, body.reason, _confirmed_takes(body)))
+
+
+def review_run(run_id: str, body: ReviewRequest | None, auth: ApiAuthResult) -> ReviewResult:
     """404 for an unknown run; 409 with what stands in the way: another person's ownership, the
     run's state, a stale result, undecided candidates or context-only alerts."""
-    user_id = _require_user(user_id)
+    _require_user(auth.auth_user_id)
     run_uuid = _validate_run_id(run_id)
     confirmed_from = None
     if body is not None and body.confirmed_take_from:
         confirmed_from = _user_ids([body.confirmed_take_from]).get(body.confirmed_take_from)
 
     try:
-        result = review.review(run_uuid, user_id, actor, confirmed_from)
+        result = review.review(run_uuid, auth, confirmed_from)
     except runs.UnknownRun as e:
         raise HTTPException(status_code=404, detail=str(e))
     except review.RunOwned as e:
@@ -949,29 +1009,28 @@ def list_run_comments(run_id: str) -> list[RunComment]:
         raise _comment_errors(e)
 
 
-def add_run_comment(run_id: str, body: RunCommentRequest, user_id: int | None, actor: str) -> RunComment:
-    user_id = _require_user(user_id)
+def add_run_comment(run_id: str, body: RunCommentRequest, auth: ApiAuthResult) -> RunComment:
+    _require_user(auth.auth_user_id)
     run_uuid = _validate_run_id(run_id)
     try:
-        return _comment(run_comments.add_comment(run_uuid, user_id, actor, body.comment), run_uuid)
+        return _comment(run_comments.add_comment(run_uuid, auth, body.comment), run_uuid)
     except COMMENT_ERRORS as e:
         raise _comment_errors(e)
 
 
-def update_run_comment(run_id: str, comment_id: int, body: RunCommentRequest, user_id: int | None,
-                       actor: str) -> RunComment:
-    user_id = _require_user(user_id)
+def update_run_comment(run_id: str, comment_id: int, body: RunCommentRequest, auth: ApiAuthResult) -> RunComment:
+    _require_user(auth.auth_user_id)
     run_uuid = _validate_run_id(run_id)
     try:
-        return _comment(run_comments.update_comment(run_uuid, comment_id, user_id, actor, body.comment), run_uuid)
+        return _comment(run_comments.update_comment(run_uuid, comment_id, auth, body.comment), run_uuid)
     except COMMENT_ERRORS as e:
         raise _comment_errors(e)
 
 
-def delete_run_comment(run_id: str, comment_id: int, user_id: int | None, actor: str) -> None:
-    user_id = _require_user(user_id)
+def delete_run_comment(run_id: str, comment_id: int, auth: ApiAuthResult) -> None:
+    _require_user(auth.auth_user_id)
     run_uuid = _validate_run_id(run_id)
     try:
-        run_comments.delete_comment(run_uuid, comment_id, user_id, actor)
+        run_comments.delete_comment(run_uuid, comment_id, auth)
     except COMMENT_ERRORS as e:
         raise _comment_errors(e)

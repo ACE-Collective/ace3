@@ -1,6 +1,5 @@
 """The label of a sample (saq.svs.labels), in Python and in SQL."""
 
-import itertools
 import uuid
 
 import pytest
@@ -12,7 +11,7 @@ from saq.detection_verdicts.constants import SOURCE_EXPLICIT, SOURCE_INHERITED_M
 from saq.detection_verdicts.query import list_alert_detection_points
 from saq.detection_verdicts.store import set_verdict
 from saq.svs import labels
-from saq.svs.labels import STRENGTHS, Votes, aggregate_label
+from saq.svs.labels import Votes, aggregate_label
 from saq.svs.samples import get_sample, samples_subquery
 from tests.saq.svs.conftest import (
     OTHER_RULE_UUID,
@@ -22,6 +21,7 @@ from tests.saq.svs.conftest import (
     insert_capture,
     set_disposition,
 )
+from tests.saq.helpers import person
 
 
 @pytest.mark.unit
@@ -39,20 +39,6 @@ from tests.saq.svs.conftest import (
 ])
 def test_aggregate_label(votes, expected):
     assert aggregate_label(votes) == expected
-
-
-@pytest.mark.unit
-@pytest.mark.parametrize("counts", list(itertools.product([0, 1], repeat=6)))
-def test_the_strongest_strength_decides(counts):
-    votes = Votes(**dict(zip([name for name, _, _ in labels.VOTE_COLUMNS], counts)))
-    label, source = aggregate_label(votes)
-    for strength in STRENGTHS:
-        tp, fp = votes.count("tp", strength), votes.count("fp", strength)
-        if tp or fp:
-            assert source == strength
-            assert label == ("conflicted" if tp and fp else "tp" if tp else "fp")
-            return
-    assert (label, source) == (None, None)
 
 
 def _user_id() -> int:
@@ -104,7 +90,7 @@ def test_a_tp_alert_with_several_signatures_labels_inherited_multi():
 @pytest.mark.integration
 def test_an_explicit_override_decides():
     alert, files = graded_alert("DELIVERY", {"a.bin": [RULE_UUID, OTHER_RULE_UUID]})
-    set_verdict(alert.id, _hash_of(alert, files["a.bin"]), "fp", _user_id())
+    set_verdict(alert.id, _hash_of(alert, files["a.bin"]), "fp", person(_user_id()))
 
     sample = _sample(files["a.bin"])
     assert (sample["label"], sample["label_source"]) == ("fp", SOURCE_EXPLICIT)
@@ -125,7 +111,7 @@ def test_disagreeing_votes_of_one_strength_conflict():
     _assert_sql_agrees(sample)
 
     # an explicit vote outweighs both
-    set_verdict(first.id, _hash_of(first, first_files["a.bin"]), "tp", _user_id())
+    set_verdict(first.id, _hash_of(first, first_files["a.bin"]), "tp", person(_user_id()))
     sample = _sample(first_files["a.bin"])
     assert (sample["label"], sample["label_source"]) == ("tp", SOURCE_EXPLICIT)
     _assert_sql_agrees(sample)
@@ -143,9 +129,9 @@ def test_an_fp_alert_outweighs_an_unconfirmed_tp():
 
 
 @pytest.mark.integration
-@pytest.mark.parametrize("disposition", ["OPEN", "REVIEWED", "IGNORE"])
-def test_an_unclassified_alert_casts_no_vote(disposition):
-    _, files = graded_alert(disposition, {"a.bin": [RULE_UUID]})
+def test_an_unclassified_alert_casts_no_vote():
+    # OPEN and IGNORE are unclassified too: every disposition outside the tp and fp lists is one case
+    _, files = graded_alert("REVIEWED", {"a.bin": [RULE_UUID]})
     sample = _sample(files["a.bin"])
     assert sample["capture_count"] == 1
     assert (sample["label"], sample["label_source"]) == (None, None)
@@ -210,7 +196,7 @@ def test_sql_agrees_with_python_over_the_whole_corpus():
                                 contents={"a.bin": content})
     graded_alert("FALSE_POSITIVE", {"b.bin": [RULE_UUID]}, contents={"b.bin": content})
     graded_alert("REVIEWED", {"d.bin": [OTHER_RULE_UUID]})
-    set_verdict(first.id, _hash_of(first, files["a.bin"], OTHER_RULE_UUID), "fp", _user_id())
+    set_verdict(first.id, _hash_of(first, files["a.bin"], OTHER_RULE_UUID), "fp", person(_user_id()))
 
     samples = samples_subquery()
     rows = [dict(row) for row in get_db().execute(select(samples)).mappings()]

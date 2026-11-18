@@ -64,10 +64,11 @@ def test_every_guide_renders_without_permissions(no_permissions_client):
 
 def test_pager_links_neighbours(no_permissions_client):
     guide_set = GUIDE_SETS[0]
-    first, second = guide_set.guides[0], guide_set.guides[1]
+    first, second, third = guide_set.guides[:3]
     resp = no_permissions_client.get(url_for("help.guide", set_slug=guide_set.slug, guide_slug=second.slug))
     pager = resp.data.split(b'class="help-pager')[1]
     assert url_for("help.guide", set_slug=guide_set.slug, guide_slug=first.slug).encode() in pager
+    assert url_for("help.guide", set_slug=guide_set.slug, guide_slug=third.slug).encode() in pager
 
 
 def test_set_redirects_to_its_first_guide(no_permissions_client):
@@ -94,7 +95,7 @@ def test_image_is_served(no_permissions_client):
 
 
 @pytest.mark.parametrize("filename", ["../beginners.md", "..%2Fbeginners.md", "%2E%2E/beginners.md",
-                                      "../../guides.py", "missing.png"])
+                                      "../../../guides.py", "missing.png"])
 def test_image_route_stays_in_images(no_permissions_client, filename):
     assert no_permissions_client.get(f"/help/svs/images/{filename}").status_code == 404
 

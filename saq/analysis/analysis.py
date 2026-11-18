@@ -3,6 +3,7 @@ import logging
 from typing import TYPE_CHECKING, Any, Callable, Optional
 
 from saq.analysis.base_node import BaseNode
+from saq.analysis.file_manager.file_manager_interface import FileRefusedError
 from saq.analysis.module_path import MODULE_PATH, SPLIT_MODULE_PATH
 from saq.analysis.pivot_link import PivotLink
 from saq.analysis.search import search_down
@@ -66,6 +67,10 @@ class Analysis(BaseNode):
         # set to True when delayed analysis is requested
         self._delayed: bool = False
 
+        # why the module failed to produce this analysis, or None if it did not fail. kept in the
+        # tree, not in details, so the GUI, the cache and accepts() can read it without loading them
+        self._error: Optional[str] = None
+
         # a list of external links an analyst can pivot to from this analysis
         self._pivot_links: list[PivotLink] = []
 
@@ -93,10 +98,6 @@ class Analysis(BaseNode):
 
     # analysis properties and methods
     # ------------------------------------------------------------------------
-
-    @property
-    def whitelisted(self) -> bool:
-        return self.has_tag("whitelisted")
 
     def set_details_modified(self):
         """Calling this function indicates that the details have become modified and thus need to be saved."""
@@ -135,6 +136,23 @@ class Analysis(BaseNode):
     def delayed(self, value: bool):
         assert isinstance(value, bool)
         self._delayed = value
+
+    @property
+    def error(self) -> Optional[str]:
+        """Why the module that generated this analysis failed, or None if it did not.
+
+        Setting it marks the analysis failed: the analyst sees the message in the alert, the result is
+        never cached, and allow_reanalysis_on_failure lets the module run again. Whatever else the
+        analysis holds (observables, details, a summary) is kept and shown as a partial result. The
+        message is required; None clears it. A module can also raise AnalysisError, which ends up here."""
+        return self._error
+
+    @error.setter
+    def error(self, value: Optional[str]):
+        if value is not None and (not isinstance(value, str) or not value.strip()):
+            raise ValueError(f"an analysis error needs a message (got {value!r})")
+
+        self._error = value
 
     @property
     def summary(self) -> Optional[str]:
@@ -340,8 +358,13 @@ class Analysis(BaseNode):
 
         try:
             # Use file manager to store the file
-            sha256_hash, relative_path = self.file_manager.store_file(path, target_path, move)
-            
+            try:
+                sha256_hash, relative_path = self.file_manager.store_file(path, target_path, move)
+            except FileRefusedError:
+                # refused (and logged) by the file manager: a name or link out of the files
+                # directory, such as an archive's symlink member, costs only this one file
+                return None
+
             # Create and add the file observable
             return self.analysis_tree_manager.add_observable(
                 self,
@@ -474,6 +497,26 @@ def is_deprecated_module_path(module_path: str) -> bool:
         return False
 
     return f"{module_name}:{class_name}" in deprecated
+
+def mark_analysis_failed(observable: "Observable", module_path: str, message: str) -> bool:
+    """Marks the analysis at module_path of observable failed with message, for the engine, when the
+    module itself could not say so: it raised, or its process died. Returns False if the module had
+    not created that analysis.
+
+    No analysis is created for it: code that reads an analysis takes one that exists as one the module
+    made. The engine records that failure in RootAnalysis.analysis_failures instead."""
+    analysis = observable.get_analysis(module_path)
+    if not isinstance(analysis, Analysis):
+        return False
+
+    close_with_error(analysis, message)
+    return True
+
+def close_with_error(analysis: Analysis, message: str):
+    """Marks analysis failed and completed: the module that generated it will not be called for it again."""
+    analysis.error = message
+    analysis.delayed = False
+    analysis.completed = True
 
 def load_analysis_from_module_path(module_path: str) -> Analysis:
     """Returns a new instance of the Analysis class referenced by module_path.

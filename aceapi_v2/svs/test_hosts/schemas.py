@@ -45,3 +45,29 @@ class TestHostPage(BaseModel):
 
 TEST_HOST_CSV_FIELDS = ("id", "hostname", "fqdn", "usernames", "ips", "platform", "notes", "created_by", "created_at",
                         "updated_at")
+
+
+class MaintenanceRequest(BaseModel):
+    minutes: int = Field(ge=1, description="how long the window stays open, up to svs.runs.max_maintenance_minutes")
+    reason: str = Field(min_length=1, max_length=2048, description="why: kept with the window and in the comment of every alert closed for it")
+
+
+class MaintenanceWindow(BaseModel):
+    """A test host's maintenance window (docs/SVS_RUNS.md, *Maintenance windows*)."""
+
+    id: str = Field(description="the window's uuid; svs_maintenance in ACE's logs")
+    host: str = Field(description="the test host, by its short name")
+    fqdn: Optional[str] = None
+    reason: str
+    opened_by: str = Field(description="who opened it: the key's or user's name")
+    opened_at: datetime
+    ends_at: datetime = Field(description="when it was opened to end")
+    ended_at: Optional[datetime] = Field(default=None, description="when it ended: early, or at ends_at")
+    ended_by: Optional[str] = Field(default=None, description="who ended it; svs when it expired")
+    end_reason: Optional[str] = Field(default=None, description="ended or expired")
+    open: bool = Field(description="it hasn't ended")
+
+
+class MaintenancePage(BaseModel):
+    data: list[MaintenanceWindow]
+    next_cursor: Optional[str] = None

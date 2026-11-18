@@ -2,32 +2,39 @@
 import argparse
 import os
 import sys
+from typing import Optional
 
-from saq.environment import initialize_environment
+from saq.cli.commands import import_command_modules
+from saq.database.retry import is_connection_lost
+from saq.environment import get_base_dir, initialize_base_dir, initialize_environment
+
+# EX_TEMPFAIL: ace could not reach a database, the one startup failure that waiting fixes.
+# docker/startup/start.sh retries only on this code
+EXIT_DATABASE_UNAVAILABLE = 75
+
+
+def _add_global_arguments(target: argparse.ArgumentParser):
+    """The options that come before the command, on the CLI parser and on the parser that only finds
+    the command (get_command())."""
+    target.add_argument('--saq-home', required=False, dest='saq_home', default=None,
+        help="Sets the base directory of ACE.")
+    target.add_argument('-L', '--logging-config-path', required=False, dest='logging_config_path', default=None,
+        help="Path to the logging configuration file.")
+    target.add_argument('-c', '--config-path', required=False, dest='config_paths', action='append', default=[],
+        help="""ACE configuration files. $SAQ_HOME/etc/saq.default.ini is always loaded, additional override default settings.
+             This option can be specified multiple times and each file is loaded in order.""")
+    target.add_argument('-u', '--user-name', required=False, dest='user_name', default=None,
+        help="The user name of the ACE user executing the command. This information is required for some commands.")
+    target.add_argument('--force-alerts', required=False, dest='force_alerts', default=False, action='store_true',
+        help="Force all analysis to always generate an alert.")
+    target.add_argument('--trace', required=False, action='store_true', dest='trace', default=False,
+        help="Enable execution tracing (debugging option).")
+    target.add_argument('-D', '--debug', required=False, action='store_true', dest='debug_on_error', default=False,
+        help="Break into pdb if an unhanled exception is thrown or an assertion fails.")
 
 
 parser = argparse.ArgumentParser(description="Analysis Correlation Engine")
-parser.add_argument('--saq-home', required=False, dest='saq_home', default=None,
-    help="Sets the base directory of ACE.")
-parser.add_argument('-L', '--logging-config-path', required=False, dest='logging_config_path', default=None,
-    help="Path to the logging configuration file.")
-parser.add_argument('-c', '--config-path', required=False, dest='config_paths', action='append', default=[],
-    help="""ACE configuration files. $SAQ_HOME/etc/saq.default.ini is always loaded, additional override default settings.
-         This option can be specified multiple times and each file is loaded in order.""")
-parser.add_argument('-u', '--user-name', required=False, dest='user_name', default=None,
-    help="The user name of the ACE user executing the command. This information is required for some commands.")
-parser.add_argument('--force-alerts', required=False, dest='force_alerts', default=False, action='store_true',
-    help="Force all analysis to always generate an alert.")
-parser.add_argument('--relative-dir', required=False, dest='relative_dir', default=None,
-    help="Assume all storage paths are relative to the given directory.  Defaults to current work directory.")
-parser.add_argument('-p', '--provide-decryption-password', required=False, action='store_true', dest='provide_decryption_password', default=False,
-    help="Prompt for the decryption password. Read README.CRYPTO for details.")
-parser.add_argument('-P', '--set-decryption-password', dest='set_decryption_password', default=None,
-    help="Provide the decryption password on the command line. Not secure at all. Don't do it.")
-parser.add_argument('--trace', required=False, action='store_true', dest='trace', default=False,
-    help="Enable execution tracing (debugging option).")
-parser.add_argument('-D', '--debug', required=False, action='store_true', dest='debug_on_error', default=False,
-    help="Break into pdb if an unhanled exception is thrown or an assertion fails.")
+_add_global_arguments(parser)
 
 subparsers = parser.add_subparsers(dest='cmd')
 
@@ -39,6 +46,19 @@ def get_cli_subparsers() -> argparse._SubParsersAction:
     """Returns the global main CLI subparser."""
     return subparsers
 
+def get_command(argv: list[str]) -> Optional[str]:
+    """The top-level command argv names, if any: the first argument left once the global options are
+    parsed. Parsing only those needs no command module imported. Arguments it cannot parse return None,
+    and the CLI parser then reports them itself."""
+    global_options = argparse.ArgumentParser(add_help=False, exit_on_error=False)
+    _add_global_arguments(global_options)
+    try:
+        _, rest = global_options.parse_known_args(argv)
+    except argparse.ArgumentError:
+        return None
+
+    return next((arg for arg in rest if not arg.startswith("-")), None)
+
 def main():
 
     # there is no reason to run anything as root
@@ -46,26 +66,29 @@ def main():
         print("do not run ace as root please")
         sys.exit(1)
 
-    # ACE assumes the cwd is /opt/ace
-    if os.getcwd() != '/opt/ace':
-        os.chdir('/opt/ace')
+    # register the parsers of the command being run (all of them for the help), then parse
+    argv = sys.argv[1:]
+    import_command_modules(get_command(argv))
+    args = parser.parse_args(argv)
 
-    # parse the command line arguments
-    args = parser.parse_args()
+    # ACE assumes the cwd is SAQ_HOME
+    initialize_base_dir(args.saq_home)
+    os.chdir(get_base_dir())
 
-    encryption_password_plaintext = None
-    if args.provide_decryption_password:
-        encryption_password_plaintext = getpass.getpass(prompt="Enter the encryption password:")
+    # initialize saq. this is where a database that is not up yet is first noticed
+    try:
+        initialize_environment(
+            saq_home=get_base_dir(),
+            config_paths=args.config_paths,
+            logging_config_path=args.logging_config_path,
+            force_alerts=args.force_alerts,
+        )
+    except Exception as e:
+        if not is_connection_lost(e):
+            raise
 
-    # initialize saq
-    initialize_environment(
-        saq_home=args.saq_home,
-        config_paths=args.config_paths,
-        logging_config_path=args.logging_config_path,
-        relative_dir=args.relative_dir,
-        encryption_password_plaintext=encryption_password_plaintext,
-        force_alerts=args.force_alerts,
-    )
+        print(f"unable to reach a database: {e}", file=sys.stderr)
+        sys.exit(EXIT_DATABASE_UNAVAILABLE)
 
     if args.debug_on_error:
         def info(type, value, tb):

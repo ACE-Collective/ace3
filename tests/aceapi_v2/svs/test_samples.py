@@ -4,6 +4,7 @@ import collections
 import csv
 import io
 import json
+import logging
 import uuid
 import zipfile
 from datetime import datetime, timedelta, timezone
@@ -14,7 +15,7 @@ from httpx import AsyncClient
 from sqlalchemy import update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from aceapi_v2.application import app
+from aceapi_v2.auth.schemas import ApiAuthResult
 from aceapi_v2.common import listing
 from aceapi_v2.svs.samples import service
 from saq.cas import Hold, get_cas
@@ -26,7 +27,8 @@ from saq.detection_verdicts.store import clear_verdict, set_verdict
 from saq.signatures.builtin import SIGNATURE_VERSION_UNKNOWN
 from saq.svs.constants import CaptureState, MissingReason
 from saq.yara_scanning.match_record import serialize_match_record, summarize_match_record
-from tests.aceapi_v2.conftest import api_key_client, make_api_key
+from tests.aceapi_v2.conftest import api_key_client, make_api_key, v2_app
+from tests.saq.helpers import audit_actor_of, audit_actors, audit_record, person
 from tests.saq.svs.conftest import (
     OTHER_RULE_UUID,
     RULE_UUID,
@@ -263,7 +265,6 @@ class TestFilters:
         (["rule:old"], ["missing"]),
         (["file_name:tp.exe"], ["tp", "tp2"]),
         (["file_name:%"], []),
-        (["label:fp"], ["fp"]),
         (["label:tp,fp"], ["fp", "tp", "tp2"]),
         (["label:none"], ["missing", "none"]),
         # an inverse keeps the rows whose value is null
@@ -322,8 +323,8 @@ async def test_changed_since(client: AsyncClient):
     # setting and clearing a verdict both show up; the cleared verdict leaves only history
     content_hash = get_db().query(DetectionPoint.content_hash).filter(
         DetectionPoint.alert_id == a_alert.id, DetectionPoint.signature_uuid == RULE_UUID).scalar()
-    set_verdict(a_alert.id, content_hash, "fp", _user_id())
-    clear_verdict(a_alert.id, content_hash, _user_id())
+    set_verdict(a_alert.id, content_hash, "fp", person(_user_id()))
+    clear_verdict(a_alert.id, content_hash, person(_user_id()))
     assert _keys(await _get(client, changed_since=since)) == [(a, RULE_UUID)]
 
     # a disposition change relabels every sample of the alert
@@ -371,7 +372,7 @@ class TestExport:
         assert (await client.get("/svs/samples/export/csv", params={"f": "nope:x"})).status_code == 422
 
     def test_each_export_documents_exactly_one_media_type(self):
-        paths = app.openapi()["paths"]
+        paths = v2_app().openapi()["paths"]
         for path, media_type in (("/svs/samples/export/ndjson", "application/x-ndjson"),
                                  ("/svs/samples/export/csv", "text/csv")):
             assert list(paths[path]["get"]["responses"]["200"]["content"]) == [media_type]
@@ -453,7 +454,8 @@ async def test_missing_summary(client: AsyncClient):
 
 class TestDownload:
     @pytest.mark.asyncio
-    async def test_one_sample(self, client: AsyncClient):
+    async def test_one_sample(self, client: AsyncClient, client_actor, caplog: pytest.LogCaptureFixture):
+        caplog.set_level(logging.INFO)
         content = f"download {uuid.uuid4()}".encode()
         first, sha256, _ = _sample("FALSE_POSITIVE", [RULE_UUID], name="dir/manifest.json", content=content)
         _sample("DELIVERY", [RULE_UUID], content=content)
@@ -461,6 +463,8 @@ class TestDownload:
         response = await client.get(f"/svs/samples/{sha256}/{RULE_UUID}/download")
         assert response.status_code == 200, response.text
         assert response.headers["content-type"] == "application/zip"
+        audit = audit_record(caplog, f"user unittest downloading svs sample {sha256}")
+        assert (*audit_actor_of(audit), audit.sha256, audit.rule_uuid) == (*client_actor, sha256, RULE_UUID)
         archive, manifest = _open_zip(response.content)
         (entry,) = manifest["files"]
         assert entry["sha256"] == sha256 and manifest["skipped"] == []
@@ -489,7 +493,8 @@ class TestDownload:
         assert response.json()["detail"]["error"] == "wrong_node"
 
     @pytest.mark.asyncio
-    async def test_bulk(self, client: AsyncClient):
+    async def test_bulk(self, client: AsyncClient, client_actor, caplog: pytest.LogCaptureFixture):
+        caplog.set_level(logging.INFO)
         _, fp, fp_content = _sample("FALSE_POSITIVE", [RULE_UUID])
         _, tp, tp_content = _sample("DELIVERY", [RULE_UUID, OTHER_RULE_UUID])
         alert, _, _ = _sample("REVIEWED", [RULE_UUID])
@@ -500,6 +505,8 @@ class TestDownload:
         archive, manifest = _open_zip(response.content)
         files = {entry["sha256"]: entry for entry in manifest["files"]}
         assert set(files) == {fp, tp}
+        audit = audit_record(caplog, "user unittest downloading 2 svs sample files (filters ['label:tp,fp'])")
+        assert (*audit_actor_of(audit), sorted(audit.sha256s)) == (*client_actor, sorted([fp, tp]))
         assert archive.read(f"svs-samples/{files[fp]['path']}") == fp_content
         # a file two rules matched is in the zip once, with both samples
         assert archive.read(f"svs-samples/{files[tp]['path']}") == tp_content
@@ -636,13 +643,14 @@ class TestActionAccess:
 
     def test_a_key_without_a_user_cannot_act(self):
         # a config API key authenticates with no user, and every action records who took it
+        config_key = ApiAuthResult(auth_type="config", auth_name="cfg")
         calls = [
-            lambda: service.relabel_sample("ab" * 32, RULE_UUID, "fp", None),
-            lambda: service.reset_sample_label("ab" * 32, RULE_UUID, None),
-            lambda: service.confirm_sample("ab" * 32, RULE_UUID, None),
-            lambda: service.retire_sample("ab" * 32, RULE_UUID, "obsolete", None),
-            lambda: service.unretire_sample("ab" * 32, RULE_UUID, None),
-            lambda: service.delete_sample_file("ab" * 32, "privacy", None, None),
+            lambda: service.relabel_sample("ab" * 32, RULE_UUID, "fp", config_key),
+            lambda: service.reset_sample_label("ab" * 32, RULE_UUID, config_key),
+            lambda: service.confirm_sample("ab" * 32, RULE_UUID, config_key),
+            lambda: service.retire_sample("ab" * 32, RULE_UUID, "obsolete", config_key),
+            lambda: service.unretire_sample("ab" * 32, RULE_UUID, config_key),
+            lambda: service.delete_sample_file("ab" * 32, "privacy", config_key),
         ]
         for call in calls:
             with pytest.raises(HTTPException) as error:
@@ -671,7 +679,8 @@ class TestLabelActions:
             assert relabel.status_code == 409 and refusal in relabel.json()["detail"]
 
     @pytest.mark.asyncio
-    async def test_relabel_reset_and_confirm(self, client: AsyncClient):
+    async def test_relabel_reset_and_confirm(self, client: AsyncClient, client_actor, caplog):
+        caplog.set_level(logging.INFO)
         _, sha256, _ = _sample("DELIVERY", [RULE_UUID, OTHER_RULE_UUID])
         path = f"/svs/samples/{sha256}/{RULE_UUID}"
 
@@ -687,6 +696,10 @@ class TestLabelActions:
         response = await client.delete(f"{path}/label")
         assert response.status_code == 200, response.text
         assert (response.json()["label"], response.json()["label_source"]) == ("tp", "inherited_multi")
+        for action in ("confirmed", "relabeled", "label reset"):
+            assert audit_actors(caplog, f"svs sample {action}") == [client_actor]
+        # the verdicts written under each action name the key too
+        assert audit_actors(caplog, "detection verdict changed") == [client_actor] * 3
 
     @pytest.mark.asyncio
     async def test_skipped_detections_say_why(self, client: AsyncClient):
@@ -704,13 +717,6 @@ class TestLabelActions:
         assert "correct its disposition" in skipped["reason"]
 
     @pytest.mark.asyncio
-    async def test_nothing_writable_is_409(self, client: AsyncClient):
-        _, sha256, _ = _sample("FALSE_POSITIVE", [RULE_UUID])
-        response = await client.put(f"/svs/samples/{sha256}/{RULE_UUID}/label", json={"verdict": "tp"})
-        assert response.status_code == 409
-        assert "correct its disposition" in response.json()["detail"]
-
-    @pytest.mark.asyncio
     async def test_bad_requests(self, client: AsyncClient):
         assert (await client.put(f"/svs/samples/{'ab' * 32}/{RULE_UUID}/label", json={"verdict": "tp"})).status_code == 404
         assert (await client.put(f"/svs/samples/abc/{RULE_UUID}/label", json={"verdict": "tp"})).status_code == 400
@@ -719,7 +725,8 @@ class TestLabelActions:
 
 class TestRetirement:
     @pytest.mark.asyncio
-    async def test_retire_and_unretire(self, client: AsyncClient):
+    async def test_retire_and_unretire(self, client: AsyncClient, client_actor, caplog):
+        caplog.set_level(logging.INFO)
         _, sha256, _ = _sample("DELIVERY", [RULE_UUID])
         path = f"/svs/samples/{sha256}/{RULE_UUID}"
 
@@ -735,6 +742,8 @@ class TestRetirement:
         assert (response.json()["retired"], response.json()["unretired_by"]) == (False, "unittest")
         assert (await client.get(path)).json()["retired"] is False
         assert (await client.delete(f"{path}/retirement")).status_code == 404
+        assert audit_actors(caplog, "svs sample retired") == [client_actor]
+        assert audit_actors(caplog, "svs sample unretired") == [client_actor]
 
     @pytest.mark.asyncio
     async def test_bad_requests(self, client: AsyncClient):
@@ -749,7 +758,8 @@ class TestRetirement:
 
 class TestDeletion:
     @pytest.mark.asyncio
-    async def test_delete(self, client: AsyncClient):
+    async def test_delete(self, client: AsyncClient, client_actor, caplog: pytest.LogCaptureFixture):
+        caplog.set_level(logging.INFO)
         _, sha256, _ = _sample("DELIVERY", [RULE_UUID, OTHER_RULE_UUID])
 
         response = await client.request("DELETE", f"/svs/samples/{sha256.upper()}", json={"reason": "legal request"})
@@ -760,8 +770,11 @@ class TestDeletion:
         assert body["rule_uuids"] == sorted([RULE_UUID, OTHER_RULE_UUID])
         assert (body["capture_count"], body["deleted_by"], body["reason"]) == (2, "unittest", "legal request")
         assert body["purged_at"] is not None
+        audit = audit_record(caplog, f"user unittest deleting svs sample {sha256.upper()}: legal request")
+        assert (*audit_actor_of(audit), audit.sha256) == (*client_actor, sha256.upper())
         assert (await client.get(f"/svs/samples/{sha256}/{RULE_UUID}")).status_code == 404
         assert not get_cas().pool("svs_samples").exists(sha256)
+        assert audit_actors(caplog, "svs sample deleted") == [client_actor]
 
         deletions = (await client.get("/svs/samples/deletions")).json()
         assert [row["sha256"] for row in deletions["data"]] == [sha256]

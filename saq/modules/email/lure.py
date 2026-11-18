@@ -1,0 +1,1042 @@
+"""Picks the URL a phishing email lures its recipient to (docs/LURE_URL.md)."""
+
+import logging
+import os
+import re
+from dataclasses import dataclass, field
+from typing import Iterator, Optional, Type, override
+from urllib.parse import parse_qsl, urlparse
+
+from bs4 import NavigableString, Tag
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+from urlfinderlib.url import URL
+
+from saq.analysis.analysis import Analysis
+from saq.analysis.observable import Observable
+from saq.analysis.root import RootAnalysis
+from saq.constants import DIRECTIVE_CRAWL, F_FILE, F_URL, AnalysisExecutionResult
+from saq.email import get_email_domain, normalize_email_address
+from saq.modules import AnalysisModule
+from saq.modules.config import AnalysisModuleConfig
+from saq.modules.email.rfc822 import EmailAnalysis, is_body_part, is_html_body_part
+from saq.modules.file_analysis.html_js_extraction import parse_document
+from saq.modules.file_analysis.pdf import PDFLinkTextAnalysis
+from saq.modules.file_analysis.qrcode import QRCodeAnalysis
+from saq.modules.phishkit import PhishkitAnalysis
+from saq.modules.phishkit_chain import display_url
+from saq.modules.url.protected import ProtectedURLAnalysis
+from saq.nrd.util import registrable_domain
+from saq.util.networking import is_subdomain
+
+KEY_PRIMARY = "primary"
+KEY_CANDIDATES = "candidates"
+KEY_HAS_INNER_EMAIL = "has_inner_email"
+KEY_SUBJECT = "subject"
+
+SOURCE_BODY = "body"
+SOURCE_QR = "qr"
+SOURCE_ATTACHMENT = "attachment"
+
+NON_PART_YARA_TYPES = ("email.headers", "email.combined")
+# pdf.py writes a PDF's link annotations, the PDF equivalent of <a href>, to a file of this type
+PDF_LINK_ANNOTATIONS_YARA_TYPE = "document.pdf.annotation_uris"
+
+# a body larger than this is not parsed for its anchors
+MAX_BODY_BYTES = 5 * 1024 * 1024
+ANCHOR_TEXT_MAX_LEN = 100
+
+STATIC_EXTENSIONS = (".png", ".gif", ".jpg", ".jpeg", ".bmp", ".svg", ".ico", ".webp", ".tiff",
+                     ".css", ".woff", ".woff2", ".ttf", ".eot")
+BUTTON_STYLE_PATTERN = re.compile(r"(background(-color)?\s*:|padding\s*:|border-radius\s*:)", re.I)
+
+DEFAULT_CALL_TO_ACTION_KEYWORDS = [
+    "view", "review", "open", "sign", "verify", "download", "access", "confirm", "click", "login",
+    "log in", "update", "secure", "document", "pay", "invoice", "shared"]
+DEFAULT_NOISE_KEYWORDS = ["unsubscribe", "privacy", "terms", "preferences", "opt-out", "optout", "cookie", "legal"]
+DEFAULT_BENIGN_DOMAINS = ["fonts.googleapis.com", "fonts.gstatic.com"]
+# whole phrases: "attachments" is in the external sender banners and confidentiality notices on most mail
+DEFAULT_ATTACHMENT_REFERENCE_KEYWORDS = [
+    "please find attached", "attached", "enclosed", "see attachment", "see the attachment", "open the attachment",
+    "review the attachment"]
+DEFAULT_SIGN_OFF_PHRASES = [
+    "regards", "best regards", "kind regards", "warm regards", "respectfully", "sincerely", "thanks", "thank you",
+    "many thanks", "best", "cheers", "cordially"]
+
+# a line longer than this is not a sign-off
+SIGN_OFF_MAX_LEN = 80
+# what follows a sign-off phrase on its line is a name of at most this many words ("Thanks, Pat Doe")
+SIGN_OFF_NAME_WORDS = 4
+# how much of the newest message's text is kept to look for a reference to the attachment
+MAX_NEWEST_TEXT = 20_000
+# the containers mail clients put an earlier, quoted message of a thread in (Gmail, Yahoo, Thunderbird)
+QUOTE_CLASS_PREFIXES = ("gmail_quote", "yahoo_quoted", "moz-cite-prefix")
+# the line that starts an earlier message of a thread, other than a reply header
+QUOTE_MARKER_PATTERN = re.compile(
+    r"^(-{2,}\s*(original message|forwarded message)\s*-{2,}|begin forwarded message:?|on\s.{1,200}\swrote:)$", re.I)
+# a field of the header Outlook writes above an earlier message
+HEADER_FIELD_PATTERN = re.compile(r"^(from|sent|date|to|cc|subject):", re.I)
+# how many lines after its From: line a reply header's other fields can be (a table puts each value on its own)
+MAX_HEADER_LINES = 8
+SIGNATURE_PENDING = "pending"
+SIGNATURE_ON = "on"
+LINK_TAGS = ("a", "area", "form")
+# the elements that start or end a line where a mail client renders them
+LINE_BREAK_TAGS = frozenset((
+    "address", "article", "blockquote", "body", "br", "caption", "center", "dd", "div", "dl", "dt", "footer",
+    "form", "h1", "h2", "h3", "h4", "h5", "h6", "header", "hr", "html", "li", "ol", "p", "pre", "section",
+    "table", "tbody", "td", "tfoot", "th", "thead", "tr", "ul"))
+TEXT_SKIP_PARENTS = ("script", "style", "head", "title")
+URL_TOKEN_PUNCTUATION = "<>()[]\"'.,;"
+
+
+class LureURLWeights(BaseModel):
+    """How much each signal adds to (or takes from) a candidate's score."""
+
+    # a misspelled weight would otherwise be dropped silently and keep its default
+    model_config = ConfigDict(extra="forbid")
+
+    qr: int = 35
+    body: int = 20
+    attachment: int = 15
+    attachment_reference: int = 20
+    clickable: int = 25
+    button: int = 15
+    call_to_action: int = 20
+    only_domain: int = 10
+    only_link: int = 10
+    unwrapped: int = 5
+    detection: int = 30
+    not_a_link: int = -15
+    signature_block: int = -25
+    quoted_message: int = 0
+    sender_domain: int = -20
+    noise: int = -30
+    static: int = -40
+    benign: int = -50
+
+
+class LureURLSettings(BaseModel):
+    """The analyst-editable settings file referenced by the module's ``config_path``
+    (``etc/lure_url.yaml`` documents every key). A key left out of the file keeps its default."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    call_to_action_keywords: list[str] = Field(
+        default_factory=lambda: list(DEFAULT_CALL_TO_ACTION_KEYWORDS),
+        description="Anchor text words that ask the recipient to click.")
+    noise_keywords: list[str] = Field(
+        default_factory=lambda: list(DEFAULT_NOISE_KEYWORDS),
+        description="Words in a link or its text that mark it as an unsubscribe, privacy or footer link.")
+    benign_domains: list[str] = Field(
+        default_factory=lambda: list(DEFAULT_BENIGN_DOMAINS),
+        description="Domains (and their subdomains) that are never the lure.")
+    attachment_reference_keywords: list[str] = Field(
+        default_factory=lambda: list(DEFAULT_ATTACHMENT_REFERENCE_KEYWORDS),
+        description="Phrases in the newest message of the email, before its signature, that refer to its attachment "
+                    "(whole words, case-insensitive).")
+    sign_off_phrases: list[str] = Field(
+        default_factory=lambda: list(DEFAULT_SIGN_OFF_PHRASES),
+        description="A line that starts with one of these, then ends or goes on after a comma, ends the message's "
+                    "text; the signature block below it runs to the next message.")
+    max_candidates: int = Field(default=5, ge=1, description="How many ranked candidates to keep, the primary included.")
+    sentence_words: int = Field(
+        default=12, ge=1, description="A line of more words than this is a sentence: after a sign-off, it means the "
+                                      "sign-off was not one.")
+    sentence_end_words: int = Field(
+        default=8, ge=1, description="A line of at least this many words that ends in . ? ! or : is a sentence too.")
+    crawl_primary: bool = Field(default=True, description="Add the crawl directive to the primary lure URL.")
+    min_primary_score: int = Field(default=1, description="A candidate needs at least this score to be called the primary lure URL.")
+    weights: LureURLWeights = Field(default_factory=LureURLWeights)
+
+    @field_validator("call_to_action_keywords", "noise_keywords", "benign_domains", "attachment_reference_keywords",
+                     "sign_off_phrases", mode="before")
+    @classmethod
+    def _none_is_empty(cls, value):
+        # a key left with nothing under it parses as None
+        return [] if value is None else value
+
+    @field_validator("weights", mode="before")
+    @classmethod
+    def _none_is_default(cls, value):
+        return {} if value is None else value
+
+
+class LureURLConfig(AnalysisModuleConfig):
+    config_path: str = Field(
+        default="etc/lure_url.yaml",
+        description="Path to the analyst-editable settings file, relative to SAQ_HOME; blank uses the built-in defaults.")
+
+
+@dataclass
+class Anchor:
+    text: str
+    button: bool
+    # where the link is in the body, or in its PDF, the tie-break between equal scores
+    position: int = 0
+    signature: bool = False
+    quoted: bool = False
+    # a PDF's link annotation, whose text is what the PDF shows under it
+    pdf: bool = False
+
+
+@dataclass
+class ParsedBody:
+    anchors: dict[str, Anchor] = field(default_factory=dict)
+    # a plain text body's URLs, keyed as anchors are, each with whether it is in a signature block and in a
+    # quoted message
+    text_urls: dict[str, tuple[bool, bool]] = field(default_factory=dict)
+    newest_text: str = ""
+
+
+@dataclass
+class Candidate:
+    observable: Observable
+    sources: set[str] = field(default_factory=set)
+    attachments: list[str] = field(default_factory=list)
+    wrapped_by: Optional[str] = None
+    # the candidate URLs this one carries in its query string, e.g. a click tracker's destinations
+    carries: list[str] = field(default_factory=list)
+    pdf_link: bool = False
+    # set when a body part was parsed: whether the URL is a link there, and its anchor
+    in_parsed_body: bool = False
+    anchor: Optional[Anchor] = None
+    signature: bool = False
+    quoted: bool = False
+    # the PDF whose link annotation this is, and how many distinct links that PDF has
+    pdf_name: Optional[str] = None
+    pdf_link_count: int = 0
+    score: int = 0
+    reasons: list[str] = field(default_factory=list)
+    # per reason, the values in it the alert page shows in bold (link text, attachment, carried URLs)
+    highlights: list[list[str]] = field(default_factory=list)
+
+    @property
+    def rank_key(self) -> tuple:
+        # extraction order is not stable (urlfinderlib returns a set), so ties go by position in
+        # the body, then in a PDF, then by value
+        where = (self.anchor.pdf, self.anchor.position) if self.anchor else (True, float("inf"))
+        return (-self.score, where, self.observable.value)
+
+    def to_dict(self) -> dict:
+        return {
+            "url": self.observable.value,
+            "observable_uuid": self.observable.uuid,
+            "score": self.score,
+            "sources": sorted(self.sources),
+            "anchor_text": self.anchor.text if self.anchor else None,
+            "carries": self.carries,
+            "reasons": self.reasons,
+            "highlights": self.highlights,
+        }
+
+
+class LureURLAnalysis(Analysis):
+    """Which URL is this email luring its recipient to?"""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.details = {
+            KEY_PRIMARY: None,
+            KEY_CANDIDATES: [],
+            KEY_HAS_INNER_EMAIL: False,
+            KEY_SUBJECT: None,
+        }
+
+    @override
+    @property
+    def display_name(self) -> str:
+        return "Lure URL Analysis"
+
+    @property
+    def primary(self) -> Optional[dict]:
+        return self.details.get(KEY_PRIMARY) if self.details else None
+
+    @primary.setter
+    def primary(self, value: Optional[dict]):
+        self.details[KEY_PRIMARY] = value
+
+    @property
+    def candidates(self) -> list[dict]:
+        return self.details.get(KEY_CANDIDATES, []) if self.details else []
+
+    @candidates.setter
+    def candidates(self, value: list[dict]):
+        self.details[KEY_CANDIDATES] = value
+
+    @property
+    def has_inner_email(self) -> bool:
+        return bool(self.details.get(KEY_HAS_INNER_EMAIL)) if self.details else False
+
+    @has_inner_email.setter
+    def has_inner_email(self, value: bool):
+        self.details[KEY_HAS_INNER_EMAIL] = value
+
+    def generate_summary(self) -> Optional[str]:
+        if not self.primary:
+            return f"{self.display_name}: no lure URL identified"
+
+        return f"{self.display_name}: {self.primary['url']} ({'; '.join(self.primary['reasons'])})"
+
+
+def normalize_url(value: str) -> str:
+    try:
+        return URL(value).value or value
+    except Exception:
+        # urlfinderlib rejects some values; the raw value still matches itself
+        return value
+
+
+def is_http_url(value: str) -> bool:
+    try:
+        return urlparse(value).scheme.lower() in ("http", "https")
+    except ValueError:
+        # e.g. "http://[x/": a URL observable is not validated, and an attacker writes the link
+        return False
+
+
+def is_link(candidate: "Candidate") -> bool:
+    """Whether the recipient can follow this URL from the email, as opposed to an image or resource."""
+    return bool(candidate.anchor or candidate.pdf_link or SOURCE_QR in candidate.sources
+                or (SOURCE_BODY in candidate.sources and not candidate.in_parsed_body))
+
+
+def _is_button(tag) -> bool:
+    for node in (tag, tag.parent):
+        if node is None or not hasattr(node, "get"):
+            continue
+        if node.get("role") == "button":
+            return True
+        if any("btn" in c.lower() or "button" in c.lower() for c in (node.get("class") or [])):
+            return True
+        if BUTTON_STYLE_PATTERN.search(node.get("style") or ""):
+            return True
+        if node.get("bgcolor"):
+            return True
+    return False
+
+
+def is_sign_off(line: str, phrases: list[str]) -> bool:
+    """Whether line closes a message: "Respectfully," or "Thanks, Sam", but neither "Thanks for the bid" nor
+    "Thanks, please review the attached invoice.", which goes on with the message."""
+    if len(line) > SIGN_OFF_MAX_LEN:
+        return False
+    lower = line.lower()
+    for phrase in phrases:
+        phrase = phrase.lower()
+        if phrase and lower.startswith(phrase):
+            rest = lower[len(phrase):]
+            # "Thanks - Sam" is a sign-off, "Best-in-class pricing" is not
+            if not rest or rest[0] in ",.!:" or rest.startswith((" -", " –")):
+                return _is_name(rest.lstrip(",.!:-– "))
+    return False
+
+
+def _is_name(text: str) -> bool:
+    """Whether the text after a sign-off phrase is a name ("Sam.", "J. Smith") rather than a sentence of the
+    message ("Your document is ready.")."""
+    words = text.split()
+    return len(words) <= SIGN_OFF_NAME_WORDS and not (len(words) > 1 and text.endswith((".", "?", "!", ":")))
+
+
+def is_sentence(line: str, settings: "LureURLSettings") -> bool:
+    """Whether line reads as a sentence of the message rather than a line of a signature (a name, title, address)."""
+    words = line.split()
+    return len(words) > settings.sentence_words or (
+        len(words) >= settings.sentence_end_words and line.endswith((".", "?", "!", ":")))
+
+
+class BodyRegions:
+    """Follows a body line by line, in reading order: whether it has reached an earlier message the email quotes,
+    and whether it is in a signature block.
+
+    A signature block starts after a sign-off line that is not the first line of its message ("<h2>Thank you!</h2>"
+    heads many phish), unless the first line after it with text of its own is a sentence, and runs to the start of
+    the next message. Lines of link text only between the two (a "View invoice" button) are decided with it."""
+
+    def __init__(self, settings: "LureURLSettings"):
+        self.settings = settings
+        self.quoted = False
+        self._signature: Optional[str] = None
+        # the flags of the link text lines after a pending sign-off, set once it is decided, and where they start in
+        # _newest
+        self._undecided: list[list[bool]] = []
+        self._undecided_start = 0
+        self._message_lines = 0
+        self._line_number = 0
+        # a "From:" line that may start a reply header: where it is in _newest, its line number and the fields seen
+        self._header: Optional[tuple[int, int, set[str]]] = None
+        self._newest: list[str] = []
+        self._newest_len = 0
+
+    def quote(self):
+        self.quoted = True
+        self._signature = None
+        self._undecided = []
+        self._message_lines = 0
+        self._header = None
+
+    def line(self, text: str, checked: bool = True) -> list[bool]:
+        """Takes the next line and returns [whether it is in a signature block, whether it is in a quoted message].
+        A line that is only link text is not checked: a link's own text never starts a message or a signature, nor
+        decides one. Its flags can change until the line that decides it, so read them once the body is done."""
+        line = " ".join(text.split())
+        self._line_number += 1
+        if checked and line and (QUOTE_MARKER_PATTERN.match(line) or self._completes_header(line)):
+            self.quote()
+            return [False, True]
+
+        flags = [False, self.quoted]
+        if self._signature == SIGNATURE_PENDING:
+            if line and not checked:
+                if not self._undecided:
+                    self._undecided_start = len(self._newest)
+                self._undecided.append(flags)
+            else:
+                # a line with no text is a linked logo, which a signature often starts with
+                self._signature = None if is_sentence(line, self.settings) else SIGNATURE_ON
+                for undecided in self._undecided:
+                    undecided[0] = self._signature == SIGNATURE_ON
+                if self._undecided and self._signature == SIGNATURE_ON:
+                    # they are the signature's, not the message's
+                    self._truncate_newest(self._undecided_start)
+                self._undecided = []
+        flags[0] = self._signature == SIGNATURE_ON
+        if checked and not self._signature and self._message_lines and is_sign_off(line, self.settings.sign_off_phrases):
+            self._signature = SIGNATURE_PENDING
+
+        if line:
+            self._message_lines += 1
+            if not self.quoted and not flags[0] and self._newest_len < MAX_NEWEST_TEXT:
+                self._newest.append(line)
+                self._newest_len += len(line) + 1
+        return flags
+
+    def _completes_header(self, line: str) -> bool:
+        """Whether line completes a reply header: From:, then Sent: or Date:, and To: or Subject:. A lone "From:"
+        line, as fake voicemail and file share notices have above their button, starts no message."""
+        match = HEADER_FIELD_PATTERN.match(line)
+        if match is None:
+            return False
+        name = match.group(1).lower()
+        if name == "from":
+            self._header = (len(self._newest), self._line_number, {name})
+            return False
+        if self._header is None or self._line_number - self._header[1] > MAX_HEADER_LINES:
+            return False
+
+        index, _, names = self._header
+        names.add(name)
+        if not (names & {"sent", "date"} and names & {"to", "subject"}):
+            return False
+        # the header is the earlier message's, not the newest one's
+        self._truncate_newest(index)
+        return True
+
+    def _truncate_newest(self, index: int):
+        # subtract what is removed: re-counting what is kept costs a body of many headers seconds per thousand
+        self._newest_len -= sum(len(removed) + 1 for removed in self._newest[index:])
+        del self._newest[index:]
+
+    @property
+    def newest_text(self) -> str:
+        return "\n".join(self._newest)
+
+
+def _is_quote_container(tag: Tag) -> bool:
+    if tag.name == "blockquote" and (tag.get("type") or "").lower() == "cite":
+        return True
+    # Outlook's reply header; a message sent on from Outlook on the web prefixes it with x_
+    if (tag.get("id") or "").endswith("divRplyFwdMsg"):
+        return True
+    return any(c.startswith(QUOTE_CLASS_PREFIXES) for c in (tag.get("class") or []))
+
+
+def _walk(soup) -> Iterator[tuple[str, object]]:
+    """Yields ("start", tag), ("text", string) and ("end", tag) in document order, without recursion, so a deeply
+    nested body costs no more than a flat one."""
+    stack = [iter(soup.contents)]
+    tags = [None]
+    while stack:
+        node = next(stack[-1], None)
+        if node is None:
+            stack.pop()
+            tag = tags.pop()
+            if tag is not None:
+                yield "end", tag
+        elif isinstance(node, Tag):
+            yield "start", node
+            if node.name in TEXT_SKIP_PARENTS:
+                yield "end", node
+            else:
+                stack.append(iter(node.contents))
+                tags.append(node)
+        elif type(node) is NavigableString:
+            # comments, doctypes and CDATA are subclasses, and never shown
+            yield "text", node
+
+
+def parse_html_body(html: str, settings: "LureURLSettings") -> ParsedBody:
+    """Returns the body's clickable links, keyed by their normalized URL (first one wins), each with whether it is
+    in a signature block or a quoted message, and the text of the newest message."""
+    body = ParsedBody()
+    regions = BodyRegions(settings)
+    position = 0
+    link_depth = 0
+    line_parts: list[str] = []
+    line_anchors: list[Anchor] = []
+    # whether the line has text that is not a link's
+    line_checked = False
+    anchor_flags: list[tuple[Anchor, list[bool]]] = []
+
+    def end_line():
+        nonlocal line_parts, line_anchors, line_checked
+        if line_parts or line_anchors:
+            flags = regions.line(" ".join(line_parts), line_checked)
+            anchor_flags.extend((anchor, flags) for anchor in line_anchors)
+        line_parts, line_anchors, line_checked = [], [], False
+
+    for event, node in _walk(parse_document(html)):
+        if event == "text":
+            if node.strip():
+                line_parts.append(str(node))
+                line_checked = line_checked or not link_depth
+            continue
+
+        if node.name in LINE_BREAK_TAGS:
+            end_line()
+        if node.name not in LINK_TAGS:
+            if event == "start" and _is_quote_container(node):
+                end_line()
+                regions.quote()
+            continue
+        if event == "end":
+            link_depth -= 1
+            continue
+
+        link_depth += 1
+        href = node.get("action") if node.name == "form" else node.get("href")
+        if not href or not href.strip():
+            continue
+
+        text = node.get_text(" ", strip=True)
+        if not text:
+            image = node.find("img")
+            if image is not None:
+                text = f"[image{': ' + image.get('alt') if image.get('alt') else ''}]"
+        anchor = Anchor(text=text[:ANCHOR_TEXT_MAX_LEN], button=_is_button(node), position=position)
+        position += 1
+        line_anchors.append(anchor)
+        for key in {href.strip(), normalize_url(href.strip())}:
+            body.anchors.setdefault(key, anchor)
+
+    end_line()
+    for anchor, (signature, quoted) in anchor_flags:
+        anchor.signature, anchor.quoted = signature, quoted
+    body.newest_text = regions.newest_text
+    return body
+
+
+def parse_text_body(text: str, settings: "LureURLSettings") -> ParsedBody:
+    """Returns whether each URL in a plain text body is in a signature block or a quoted message, and the text of
+    the newest message."""
+    body = ParsedBody()
+    regions = BodyRegions(settings)
+    url_flags: dict[str, list[bool]] = {}
+    for line in text.splitlines():
+        if not line.strip():
+            continue
+        tokens = [token.strip(URL_TOKEN_PUNCTUATION) for token in line.split()]
+        urls = [token for token in tokens if token.lower().startswith(("http://", "https://"))]
+        # a line quoted with ">" is an earlier message's, even between the lines of the reply; a line of URLs only
+        # is a plain text body's link text
+        flags = [False, True] if line.lstrip().startswith(">") else regions.line(line, len(urls) < len(tokens))
+        for url in urls:
+            for key in {url, normalize_url(url)}:
+                url_flags.setdefault(key, flags)
+
+    body.text_urls = {key: (signature, quoted) for key, (signature, quoted) in url_flags.items()}
+    body.newest_text = regions.newest_text
+    return body
+
+
+def find_phrase(phrases: list[str], text: str) -> Optional[re.Match]:
+    """Returns the first match of any of phrases in text as whole words, case-insensitive."""
+    found = [re.search(rf"\b{re.escape(phrase)}\b", text, re.I) for phrase in phrases if phrase]
+    found = [match for match in found if match]
+    return min(found, key=lambda match: match.start()) if found else None
+
+
+def phrase_around(text: str, start: int, end: int, width: int = 50) -> str:
+    """Returns the words around text[start:end], within its line."""
+    line_start = text.rfind("\n", 0, start) + 1
+    line_end = text.find("\n", end)
+    if line_end < 0:
+        line_end = len(text)
+    left, right = max(line_start, start - width), min(line_end, end + width)
+    # whole words only
+    if left > line_start:
+        space = text.find(" ", left, start)
+        left = space + 1 if space >= 0 else left
+    if right < line_end:
+        space = text.rfind(" ", end, right)
+        right = space if space >= 0 else right
+    return text[left:right].strip()
+
+
+def _read_body(observable: Observable, root_uuid: Optional[str]) -> Optional[str]:
+    path = observable.full_path
+    try:
+        if os.path.getsize(path) > MAX_BODY_BYTES:
+            logging.info(f"email body {path} is too large to parse for lure links")
+            return None
+        with open(path, "rb") as fp:
+            return fp.read().decode("utf-8", errors="ignore")
+    except OSError:
+        logging.exception(f"unable to read email body {path} in {root_uuid} for lure links",
+                          extra={"root_uuid": root_uuid, "observable_uuid": observable.uuid, "path": path})
+        return None
+
+
+def _lookup(mapping: dict, keys: list[str]):
+    for key in keys:
+        hit = mapping.get(key) or mapping.get(normalize_url(key))
+        if hit:
+            return hit
+    return None
+
+
+def carried_urls(url: str) -> list[str]:
+    """Returns the http(s) URLs carried in url's query string, e.g. a click tracker's ?u=..."""
+    try:
+        query = urlparse(url).query
+    except ValueError:
+        # not a URL urlparse can split, so it carries nothing
+        return []
+    return [value.strip() for _, value in parse_qsl(query)
+            if value.strip().lower().startswith(("http://", "https://"))]
+
+
+def fold_carried_urls(candidates: list[Candidate]) -> list[Candidate]:
+    """Folds the URLs a candidate carries in its query string into that candidate.
+
+    urlfinderlib extracts the URLs inside a click tracker's query string as URLs of their own,
+    but the link in the email, the lure, is the tracker. Where it sends the recipient is the
+    crawl's business, not this module's.
+    """
+    by_value: dict[str, Candidate] = {}
+    for candidate in candidates:
+        by_value.setdefault(candidate.observable.value, candidate)
+        by_value.setdefault(normalize_url(candidate.observable.value), candidate)
+
+    # a carried URL sits percent-encoded inside its carrier, so it is always the shorter of the
+    # two and carrying cannot form a cycle; in a chain (tracker -> tracker -> lure) only the
+    # outermost link is left
+    folded: set[str] = set()
+    for carrier in candidates:
+        for value in carried_urls(carrier.observable.value):
+            carried = by_value.get(value) or by_value.get(normalize_url(value))
+            if carried is None or carried is carrier or carried.observable.value in carrier.carries:
+                continue
+            folded.add(carried.observable.uuid)
+            carrier.carries.append(carried.observable.value)
+
+    return [c for c in candidates if c.observable.uuid not in folded]
+
+
+class CandidateCollector:
+    """Walks one email's subtree for the URLs it carries, recording where each came from.
+
+    Crawl output (PhishkitAnalysis) is skipped: those URLs come after the click. A nested email
+    is skipped too: it gets its own LureURLAnalysis.
+    """
+
+    def __init__(self, root_uuid: Optional[str] = None, settings: Optional[LureURLSettings] = None):
+        self.root_uuid = root_uuid
+        self.settings = settings or LureURLSettings()
+        self.candidates: dict[str, Candidate] = {}
+        self.wrappers: set[str] = set()
+        self.visited: set[tuple[str, str]] = set()
+        self.has_inner_email = False
+        # each PDF link annotation's anchor, the name of its PDF and how many distinct links that PDF has
+        self.pdf_links: dict[str, tuple[Anchor, str, int]] = {}
+        # the text of the newest message of the email, from its body parts
+        self.body_text = ""
+
+    def collect(self, email_analysis: EmailAnalysis) -> list[Candidate]:
+        anchors: dict[str, Anchor] = {}
+        text_urls: dict[str, tuple[bool, bool]] = {}
+        newest_text = []
+        parsed_body = False
+        parts = [o for o in email_analysis.observables
+                 if o.type == F_FILE and not any(o.has_yara_meta("type", t) for t in NON_PART_YARA_TYPES)]
+
+        # EmailAnalyzer also extracts an attached email's parts into this email, and those
+        # belong to the inner email's lure, not this one's
+        inner_parts = set()
+        for part in parts:
+            inner_analysis = part.get_analysis(EmailAnalysis)
+            if inner_analysis:
+                self.has_inner_email = True
+                inner_parts.add(part.value)
+                inner_parts.update(o.value for o in inner_analysis.observables if o.type == F_FILE)
+
+        for part in parts:
+            if part.value in inner_parts:
+                continue
+
+            if is_body_part(part):
+                body = self._parse_body(part)
+                if body is not None:
+                    anchors.update(body.anchors)
+                    text_urls.update(body.text_urls)
+                    if body.newest_text:
+                        newest_text.append(body.newest_text)
+                    parsed_body = parsed_body or is_html_body_part(part)
+                self._walk(part, SOURCE_BODY, None, None, False)
+            else:
+                self._walk(part, SOURCE_ATTACHMENT, part.file_name, None, False)
+        self.body_text = "\n".join(newest_text)
+
+        result = [c for c in self.candidates.values() if c.observable.uuid not in self.wrappers]
+        for candidate in result:
+            keys = [value for value in (candidate.wrapped_by, candidate.observable.value) if value]
+            if SOURCE_BODY in candidate.sources:
+                candidate.in_parsed_body = parsed_body
+                if parsed_body:
+                    candidate.anchor = _lookup(anchors, keys)
+                if candidate.anchor:
+                    candidate.signature, candidate.quoted = candidate.anchor.signature, candidate.anchor.quoted
+                else:
+                    candidate.signature, candidate.quoted = _lookup(text_urls, keys) or (False, False)
+            if candidate.anchor is None and candidate.pdf_link:
+                pdf_link = _lookup(self.pdf_links, keys)
+                if pdf_link:
+                    candidate.anchor, candidate.pdf_name, candidate.pdf_link_count = pdf_link
+
+        return fold_carried_urls(result)
+
+    def _parse_body(self, part: Observable) -> Optional[ParsedBody]:
+        content = _read_body(part, self.root_uuid)
+        if content is None:
+            return None
+        try:
+            if is_html_body_part(part):
+                return parse_html_body(content, self.settings)
+            return parse_text_body(content, self.settings)
+        except Exception:
+            # the URLs are still scored, only without their anchors
+            logging.exception(f"unable to parse email body {part.full_path} in {self.root_uuid} for lure links",
+                              extra={"root_uuid": self.root_uuid, "observable_uuid": part.uuid,
+                                     "path": part.full_path})
+            return None
+
+    def _record_pdf_links(self, pdf: Observable, analysis: PDFLinkTextAnalysis):
+        # the details of an analysis loaded from disk stay there until they are loaded
+        if not analysis.details and analysis.external_details_path:
+            analysis.load_details()
+        links = analysis.links
+        count = len({link["url"] for link in links})
+        for position, link in enumerate(links):
+            text = link.get("text") or link.get("line") or ""
+            anchor = Anchor(text=text[:ANCHOR_TEXT_MAX_LEN], button=False, position=position, pdf=True)
+            url = link["url"].strip()
+            for key in {url, normalize_url(url)}:
+                self.pdf_links.setdefault(key, (anchor, pdf.file_name, count))
+
+    def _walk(self, observable: Observable, source: str, attachment: Optional[str], wrapped_by: Optional[str],
+              pdf_link: bool):
+        # recorded on every visit: urlfinderlib also extracts the URL inside a wrapper directly,
+        # so the visit through the wrapper may not be the first
+        if observable.type == F_URL:
+            self._record(observable, source, attachment, wrapped_by, pdf_link)
+
+        key = (observable.uuid, source)
+        if key in self.visited:
+            return
+        self.visited.add(key)
+
+        if observable.type == F_URL:
+            protected = observable.get_analysis(ProtectedURLAnalysis)
+            if protected:
+                for child in protected.observables:
+                    if child.type == F_URL:
+                        self.wrappers.add(observable.uuid)
+                        self._walk(child, source, attachment, wrapped_by or observable.value, pdf_link)
+            return
+
+        if observable.type != F_FILE:
+            return
+
+        link_annotations = observable.has_yara_meta("type", PDF_LINK_ANNOTATIONS_YARA_TYPE)
+        for analysis in observable.all_analysis:
+            if isinstance(analysis, (PhishkitAnalysis, EmailAnalysis)):
+                continue
+            if isinstance(analysis, PDFLinkTextAnalysis):
+                self._record_pdf_links(observable, analysis)
+            child_source = SOURCE_QR if isinstance(analysis, QRCodeAnalysis) else source
+            for child in analysis.observables:
+                self._walk(child, child_source, attachment, None, link_annotations)
+
+    def _record(self, observable: Observable, source: str, attachment: Optional[str], wrapped_by: Optional[str],
+                pdf_link: bool):
+        candidate = self.candidates.get(observable.uuid)
+        if candidate is None:
+            candidate = Candidate(observable=observable)
+            self.candidates[observable.uuid] = candidate
+        candidate.sources.add(source)
+        if attachment and attachment not in candidate.attachments:
+            candidate.attachments.append(attachment)
+        if wrapped_by and not candidate.wrapped_by:
+            candidate.wrapped_by = wrapped_by
+        candidate.pdf_link = candidate.pdf_link or pdf_link
+
+
+def _matching_keyword(keywords: list[str], *values: Optional[str]) -> Optional[str]:
+    for value in values:
+        if not value:
+            continue
+        value = value.lower()
+        for keyword in keywords:
+            if keyword.lower() in value:
+                return keyword
+    return None
+
+
+def score_candidates(candidates: list[Candidate], sender_domains: set[str], settings: LureURLSettings,
+                     body_text: str = ""):
+    """Scores each candidate in place, recording a reason for every signal that applied. body_text is the text of
+    the newest message of the email."""
+    linked_domains = {registrable_domain(c.observable.value) for c in candidates if is_link(c)}
+    linked_domains.discard("")
+    external_domains = linked_domains - sender_domains
+    reference = find_phrase(settings.attachment_reference_keywords, body_text)
+    attachment_phrase = phrase_around(body_text, reference.start(), reference.end()) if reference else None
+
+    for candidate in candidates:
+        score = 0
+        reasons = []
+        highlights = []
+
+        def signal(weight: int, reason: str, *values: str):
+            nonlocal score
+            score += weight
+            reasons.append(reason)
+            highlights.append(list(values))
+
+        url = candidate.observable.value
+        parsed = urlparse(url)
+        domain = registrable_domain(url)
+        anchor_text = candidate.anchor.text if candidate.anchor else None
+        weights = settings.weights
+
+        if SOURCE_QR in candidate.sources:
+            signal(weights.qr, "decoded from a QR code")
+        if SOURCE_BODY in candidate.sources:
+            signal(weights.body, "found in the email body")
+        elif SOURCE_ATTACHMENT in candidate.sources:
+            signal(weights.attachment, f"found in attachment {', '.join(candidate.attachments)}",
+                   *candidate.attachments)
+            if attachment_phrase:
+                signal(weights.attachment_reference, f"the email refers to its attachment: '{attachment_phrase}'",
+                       attachment_phrase)
+
+        if candidate.anchor:
+            where = " in a PDF" if candidate.anchor.pdf else ""
+            signal(weights.clickable, f"clickable link{where}" + (f" with text '{anchor_text}'" if anchor_text else ""),
+                   *([anchor_text] if anchor_text else []))
+            if candidate.anchor.button:
+                signal(weights.button, "styled as a button")
+            keyword = _matching_keyword(settings.call_to_action_keywords, anchor_text)
+            if keyword:
+                signal(weights.call_to_action, f"call-to-action text ({keyword})")
+        elif candidate.pdf_link:
+            signal(weights.clickable, "clickable link in a PDF")
+        elif candidate.in_parsed_body and SOURCE_QR not in candidate.sources:
+            signal(weights.not_a_link, "not a clickable link in the body")
+
+        if candidate.pdf_name and candidate.pdf_link_count == 1:
+            signal(weights.only_link, f"the only link in {candidate.pdf_name}", candidate.pdf_name)
+        if candidate.signature:
+            signal(weights.signature_block, "in a signature block")
+        if candidate.quoted:
+            signal(weights.quoted_message, "in an earlier message the email quotes")
+
+        if candidate.wrapped_by:
+            signal(weights.unwrapped, f"unwrapped from {display_url(candidate.wrapped_by)}")
+        if candidate.carries:
+            carried = [display_url(url, 60) for url in candidate.carries]
+            signal(0, f"carries {len(carried)} URL{'' if len(carried) == 1 else 's'}: {', '.join(carried)}", *carried)
+        if candidate.observable.has_detection_points():
+            signal(weights.detection, "has detection points")
+        if domain and external_domains == {domain}:
+            signal(weights.only_domain, "the only linked external domain")
+
+        if parsed.path.lower().endswith(STATIC_EXTENSIONS):
+            signal(weights.static, "points at an image or static resource")
+        keyword = _matching_keyword(settings.noise_keywords, url, anchor_text)
+        if keyword:
+            signal(weights.noise, f"looks like a footer link ({keyword})")
+        if domain and domain in sender_domains:
+            signal(weights.sender_domain, f"same domain as the sender ({domain})")
+        if parsed.hostname and any(is_subdomain(parsed.hostname, d) for d in settings.benign_domains):
+            signal(weights.benign, "benign infrastructure domain")
+
+        candidate.score = score
+        candidate.reasons = reasons
+        candidate.highlights = highlights
+
+
+def reason_segments(reason: str, values: list[str]) -> list[tuple[str, bool]]:
+    """Splits a reason into (text, bold) pieces around the values it highlights, in order."""
+    segments = []
+    rest = reason
+    for value in values:
+        index = rest.find(value) if value else -1
+        if index < 0:
+            continue
+        if index:
+            segments.append((rest[:index], False))
+        segments.append((value, True))
+        rest = rest[index + len(value):]
+    if rest:
+        segments.append((rest, False))
+    return segments
+
+
+def _with_reason_segments(candidate: dict) -> dict:
+    # an analysis saved before highlights were recorded has none, and renders plain
+    highlights = candidate.get("highlights") or []
+    reasons = candidate.get("reasons") or []
+    return {**candidate, "reason_segments": [
+        reason_segments(reason, highlights[i] if i < len(highlights) else []) for i, reason in enumerate(reasons)]}
+
+
+def sender_domains(email_analysis: EmailAnalysis) -> set[str]:
+    domains = set()
+    for value in (email_analysis.mail_from_address, email_analysis.return_path):
+        address = normalize_email_address(value)
+        domain = get_email_domain(address) if address else None
+        if domain:
+            domains.add(registrable_domain(domain))
+    domains.discard("")
+    return domains
+
+
+class LureURLAnalyzer(AnalysisModule):
+    config: LureURLConfig
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._settings = self.watch_settings(self.config.config_path, LureURLSettings)
+
+    @classmethod
+    def get_config_class(cls) -> Type[AnalysisModuleConfig]:
+        return LureURLConfig
+
+    @property
+    def settings(self) -> LureURLSettings:
+        return self._settings.value
+
+    @property
+    def generated_analysis_type(self):
+        return LureURLAnalysis
+
+    @property
+    def valid_observable_types(self):
+        return F_FILE
+
+    def execute_analysis(self, _file: Observable) -> AnalysisExecutionResult:
+        if not _file.get_analysis(EmailAnalysis):
+            return AnalysisExecutionResult.COMPLETED
+
+        # scored in final analysis, once every part has had its URLs extracted
+        return AnalysisExecutionResult.INCOMPLETE
+
+    def execute_final_analysis(self, _file: Observable) -> AnalysisExecutionResult:
+        """Scores the email's candidates on every final pass.
+
+        The analysis is never sealed (INCOMPLETE, as ObservableModifierAnalyzer does): a module
+        that works in final analysis too, such as xlmdeobfuscator, adds URLs after the first final
+        pass, and the engine calls this again in the next one. A pass that changes nothing adds
+        nothing, so the engine still stops.
+        """
+        email_analysis = _file.get_and_load_analysis(EmailAnalysis)
+        if not email_analysis:
+            return AnalysisExecutionResult.COMPLETED
+
+        root = self.get_root()
+        settings = self.settings
+        collector = CandidateCollector(root.uuid, settings)
+        candidates = [c for c in collector.collect(email_analysis) if is_http_url(c.observable.value)]
+        if not candidates:
+            logging.debug(f"no lure url candidates in {_file}")
+            return AnalysisExecutionResult.INCOMPLETE
+
+        score_candidates(candidates, sender_domains(email_analysis), settings, collector.body_text)
+        ranked = sorted(candidates, key=lambda c: c.rank_key)
+        primary = ranked[0] if ranked[0].score >= settings.min_primary_score else None
+
+        analysis = _file.get_and_load_analysis(LureURLAnalysis) or self.create_analysis(_file)
+        # kept re-runnable: AnalysisModule.accepts() skips an observable whose analysis is completed
+        analysis.completed = False
+        previous = analysis.primary["observable_uuid"] if analysis.primary else None
+        analysis.details = {
+            KEY_PRIMARY: primary.to_dict() if primary else None,
+            KEY_CANDIDATES: [c.to_dict() for c in ranked[:settings.max_candidates]],
+            KEY_HAS_INNER_EMAIL: collector.has_inner_email,
+            # stored so the alert page need not load the email's analysis for it
+            KEY_SUBJECT: email_analysis.decoded_subject or email_analysis.subject,
+        }
+        analysis.summary = analysis.generate_summary()
+
+        if primary:
+            if settings.crawl_primary:
+                primary.observable.add_directive(DIRECTIVE_CRAWL)
+            if primary.observable.uuid != previous:
+                logging.info(
+                    f"lure url for {_file} in {root} is {primary.observable.value} (score {primary.score})",
+                    extra={"root_uuid": root.uuid, "observable_uuid": primary.observable.uuid,
+                           "url": primary.observable.value, "lure_score": primary.score})
+
+        return AnalysisExecutionResult.INCOMPLETE
+
+
+@dataclass
+class LureURLEntry:
+    """One email's primary lure URL, as the alert page shows it."""
+    email: Observable
+    subject: Optional[str]
+    primary: dict
+    observable: Optional[Observable]
+    runners_up: list[dict]
+
+
+def build_lure_urls(root: RootAnalysis) -> list[LureURLEntry]:
+    """Returns the primary lure URL of every email in the tree, innermost emails first.
+
+    An email that carries another email is usually the report an analyst or a user forwarded,
+    so the lure is in the email it carries.
+    """
+    entries = []
+    for analysis in root.all_analysis:
+        if not isinstance(analysis, LureURLAnalysis) or analysis.observable is None:
+            continue
+        try:
+            analysis.load_details()
+            if not analysis.primary:
+                continue
+            observable = root.get_observable(analysis.primary["observable_uuid"])
+            entries.append((analysis.has_inner_email, LureURLEntry(
+                email=analysis.observable,
+                subject=analysis.details.get(KEY_SUBJECT),
+                primary=_with_reason_segments(analysis.primary),
+                observable=observable,
+                runners_up=[_with_reason_segments(c) for c in analysis.candidates
+                            if c["observable_uuid"] != analysis.primary["observable_uuid"]],
+            )))
+        except Exception:
+            # the alert page renders without this entry rather than failing
+            logging.exception(f"unable to build the lure url entry for {analysis.observable} in {root.uuid}",
+                              extra={"root_uuid": root.uuid, "observable_uuid": analysis.observable.uuid})
+
+    return [entry for _, entry in sorted(entries, key=lambda e: e[0])]

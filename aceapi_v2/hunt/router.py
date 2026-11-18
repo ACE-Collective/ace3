@@ -15,6 +15,7 @@ from aceapi_v2.auth import ApiAuthResult
 from aceapi_v2.dependencies import get_current_auth, require_permission
 from aceapi_v2.hunt.audit import ValidationOutcome, audit_fields, failure_audit_fields, write_audit_record
 from aceapi_v2.hunt.schemas import HuntValidationRequest, HuntValidationResult
+from aceapi_v2.hunt.service import validate_hunt as run_validation
 from aceapi_v2.sync import run_db_in_thread
 from saq.json_encoding import _JSONEncoder
 
@@ -41,8 +42,7 @@ def _client_ip(request: Request) -> Optional[str]:
 
 
 def _audit(auth: ApiAuthResult, request: Request, event: str, fields: dict[str, Any]) -> None:
-    write_audit_record(event, user=auth.auth_name, user_id=auth.auth_user_id, key_id=auth.key_id,
-                               key_name=auth.key_name, src_ip=_client_ip(request), **fields)
+    write_audit_record(event, auth, _client_ip(request), **fields)
 
 
 @router.post(
@@ -72,10 +72,6 @@ async def validate_hunt(
         outcome.body, outcome.status = {"valid": False, "error": "request body must be JSON"}, 400
         _audit(auth, request, *audit_fields(outcome))
         return _json(outcome.body, outcome.status)
-
-    # local import: the service imports the hunter, and through it the engine, which imports
-    # aceapi_v2 back (a circular import at startup)
-    from aceapi_v2.hunt.service import validate_hunt as run_validation
 
     # run_db_in_thread, not run_in_threadpool: loading the hunter queries through get_db(), whose
     # session belongs to the pool thread and outlives the request unless it is removed. One left

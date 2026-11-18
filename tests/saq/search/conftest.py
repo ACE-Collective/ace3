@@ -7,6 +7,7 @@ from qdrant_client import models
 
 from saq.configuration.config import get_config, get_service_config
 from saq.constants import SERVICE_SEARCH_INDEXER
+from saq.qdrant_client import get_qdrant_client
 
 
 class WhitespaceTokenizer:
@@ -66,3 +67,12 @@ def search_config(monkeypatch):
     monkeypatch.setattr(config, "chunk_overlap", 2)
     monkeypatch.setattr(config, "max_chunks_per_document", 4)
     return config
+
+
+@pytest.fixture(scope="session")
+def qdrant_available():
+    """Skips the tests that need the dev stack's real qdrant when it cannot be reached."""
+    try:
+        get_qdrant_client(timeout=3).get_collections()
+    except Exception:
+        pytest.skip("qdrant is not reachable")

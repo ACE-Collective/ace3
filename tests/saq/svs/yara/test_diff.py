@@ -6,7 +6,7 @@ import pytest
 
 from saq.detection_verdicts.constants import SOURCE_EXPLICIT, SOURCE_INHERITED_MULTI, SOURCE_INHERITED_SINGLE
 from saq.svs.yara.corpus import Corpus, Sample, Unit
-from saq.svs.yara.diff import Category, Outcome, RuleInfo, SideScan, categorize, detection_blocker, diff, duplicate_uuids
+from saq.svs.yara.diff import Category, Outcome, RuleInfo, SideScan, categorize, diff, duplicate_uuids
 
 MATCH, MISS = Outcome.MATCH, Outcome.MISS
 A, B, C = "a" * 64, "b" * 64, "c" * 64
@@ -35,10 +35,8 @@ def test_a_sample_is_judged_by_its_own_label(label, source, base, head, expected
 
 @pytest.mark.unit
 @pytest.mark.parametrize("file_labels, base, head, expected", [
-    (["fp"], MISS, MATCH, Category.NEW_FP_OTHER_RULE),
     (["fp", "fp"], MISS, MATCH, Category.NEW_FP_OTHER_RULE),
     (["fp", "tp"], MISS, MATCH, Category.NEW_MATCH_REAL_HIT),
-    (["tp"], MISS, MATCH, Category.NEW_MATCH_REAL_HIT),
     (["fp", None], MISS, MATCH, Category.UNLABELED_CHANGE),
     (["conflicted"], MISS, MATCH, Category.UNLABELED_CHANGE),
     (["fp"], MATCH, MISS, Category.UNLABELED_CHANGE),
@@ -47,19 +45,6 @@ def test_a_sample_is_judged_by_its_own_label(label, source, base, head, expected
 ])
 def test_another_rule_is_judged_by_the_files_labels(file_labels, base, head, expected):
     assert categorize(None, None, False, file_labels, base, head) == expected
-
-
-@pytest.mark.unit
-@pytest.mark.parametrize("meta, expected", [
-    ({}, None),
-    ({"enabled": False}, "enabled = false"),
-    ({"enabled": "no"}, "enabled = false"),
-    ({"modifiers": "qa"}, "in QA mode"),
-    ({"modifiers": "directive=sandbox, no_alert"}, "no_alert"),
-    ({"modifiers": "directive=sandbox"}, None),
-])
-def test_detection_blocker(meta, expected):
-    assert detection_blocker(meta) == expected
 
 
 def _corpus(samples: dict, units: dict[str, int] | None = None) -> Corpus:
@@ -83,7 +68,7 @@ def _side(corpus: Corpus, rules: dict[str, dict], matches: dict[str, list[str]],
                 for rule_uuid, meta in rules.items()},
         source_uuids=set(rules) if source is None else source)
     for sha256, rule_uuids in matches.items():
-        scan.matches[unit_of[sha256]] = [("ns", f"rule_{u}", {"uuid": u, **rules.get(u, {})}) for u in rule_uuids]
+        scan.matches[unit_of[sha256]] = [("ns", f"rule_{u}", {"uuid": u, **rules.get(u, {})}, []) for u in rule_uuids]
     for sha256, namespaces in (errors or {}).items():
         scan.errors[unit_of[sha256]] = namespaces
     return scan
@@ -176,7 +161,7 @@ def test_a_file_matches_if_any_of_its_scans_matches():
     corpus.units.append(Unit(1, A, "renamed.txt", (), path="/work/u/1/files/renamed.txt"))
     base = _side(corpus, {"r1": {}}, {A: ["r1"]})
     head = _side(corpus, {"r1": {}}, {})
-    head.matches[1] = [("ns", "rule_r1", {"uuid": "r1"})]
+    head.matches[1] = [("ns", "rule_r1", {"uuid": "r1"}, [])]
 
     rows, counts = diff(corpus, base, head, retired=set(), not_testable=set())
     assert rows == [] and counts[Category.UNCHANGED] == 1

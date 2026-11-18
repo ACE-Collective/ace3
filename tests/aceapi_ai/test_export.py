@@ -191,6 +191,10 @@ async def test_alert_page_is_audited(export_client, caplog):
 
 @pytest.mark.asyncio
 async def test_observable_lookup_bounds_and_unknown_ids(export_client, caplog):
+    # an observable the lookup must leave out
+    insert_alert_with_detections(
+        [{"description": "bad domain", "signature_uuid": SIGNATURE_UUID, "fqdn": "other.example.com"}])
+
     with caplog.at_level("INFO", logger="ace.ai_audit"):
         response = await export_client.post("/export/observables", json={"ids": [2_000_000_000]})
 

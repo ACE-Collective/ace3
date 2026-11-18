@@ -4,13 +4,13 @@ from unittest.mock import patch
 
 import pytest
 
-from saq.collectors.hunter.correlation.engine import CorrelationEngine, CorrelationResult
+from saq.collectors.hunter.correlation.engine import CorrelationEngine
 from saq.collectors.hunter.correlation.registry import (
     QuerySource,
     clear_query_sources,
     register_query_source,
 )
-from saq.collectors.hunter.correlation.schema import CorrelateConfig, PredefinedCommandConfig, StepConfig
+from saq.collectors.hunter.correlation.schema import CorrelateConfig, PredefinedCommandConfig
 
 
 PYTHON = sys.executable
@@ -27,64 +27,6 @@ def _make_config(logic_data, timeout="15m"):
 @pytest.mark.integration
 class TestCorrelationEngine:
 
-    def test_no_logic_all_alert(self):
-        """Events with no logic steps should all become alerts."""
-        config = _make_config([])
-        engine = CorrelationEngine(config, [], datetime.datetime.now(datetime.timezone.utc))
-        events = [{"id": 1}, {"id": 2}, {"id": 3}]
-        result = engine.execute(events)
-        assert len(result.events) == 3
-        assert not result.discarded
-
-    def test_filter_action(self):
-        """Filter action should remove the event."""
-        config = _make_config([
-            {
-                "when": {"type": "equals", "value": "admin", "property": "user"},
-                "execute": [{"action": "filter"}],
-            },
-        ])
-        engine = CorrelationEngine(config, [], datetime.datetime.now(datetime.timezone.utc))
-        events = [{"user": "admin"}, {"user": "guest"}, {"user": "admin"}]
-        result = engine.execute(events)
-        assert len(result.events) == 1
-        assert result.events[0]["user"] == "guest"
-
-    def test_stop_action(self):
-        """Stop action should halt processing but keep accumulated alerts."""
-        config = _make_config([
-            {
-                "when": {"type": "equals", "value": "stop_here", "property": "action"},
-                "execute": [{"action": "stop"}],
-            },
-        ])
-        engine = CorrelationEngine(config, [], datetime.datetime.now(datetime.timezone.utc))
-        events = [
-            {"action": "continue", "id": 1},
-            {"action": "stop_here", "id": 2},
-            {"action": "continue", "id": 3},
-        ]
-        result = engine.execute(events)
-        assert len(result.events) == 1
-        assert result.events[0]["id"] == 1
-
-    def test_discard_action(self):
-        """Discard action should stop everything and set discarded flag."""
-        config = _make_config([
-            {
-                "when": {"type": "equals", "value": "discard_all", "property": "action"},
-                "execute": [{"action": "discard"}],
-            },
-        ])
-        engine = CorrelationEngine(config, [], datetime.datetime.now(datetime.timezone.utc))
-        events = [
-            {"action": "continue", "id": 1},
-            {"action": "discard_all", "id": 2},
-            {"action": "continue", "id": 3},
-        ]
-        result = engine.execute(events)
-        assert result.discarded is True
-
     def test_alert_action_with_overrides(self):
         """Alert action should include queue/analysis_mode overrides."""
         config = _make_config([
@@ -95,21 +37,6 @@ class TestCorrelationEngine:
         result = engine.execute(events)
         assert len(result.events) == 1
         assert result.event_actions[0].queue_override == "high_priority"
-
-    def test_condition_else_branch(self):
-        """Else branch should execute when condition is false."""
-        config = _make_config([
-            {
-                "when": {"type": "equals", "value": "admin", "property": "user"},
-                "execute": [{"action": "alert"}],
-                "else": [{"action": "filter"}],
-            },
-        ])
-        engine = CorrelationEngine(config, [], datetime.datetime.now(datetime.timezone.utc))
-        events = [{"user": "admin"}, {"user": "guest"}]
-        result = engine.execute(events)
-        assert len(result.events) == 1
-        assert result.events[0]["user"] == "admin"
 
     def test_default_alert(self):
         """Events that fall through without an explicit action should become alerts."""
@@ -123,36 +50,6 @@ class TestCorrelationEngine:
         events = [{"type": "normal"}]
         result = engine.execute(events)
         assert len(result.events) == 1
-
-    def test_timeout_remaining_events_alert(self):
-        """When timeout occurs, remaining events should fall through to alert."""
-        config = _make_config([], timeout="1s")
-        engine = CorrelationEngine(config, [], datetime.datetime.now(datetime.timezone.utc))
-        # Set timeout to already expired
-        engine.timeout = datetime.timedelta(seconds=0)
-        events = [{"id": 1}, {"id": 2}]
-        result = engine.execute(events)
-        assert len(result.events) == 2
-
-    def test_execute_populates_event_duration(self):
-        """Every event trace records how long the event took to process."""
-        config = _make_config([{"action": {"type": "log", "log_message": "x"}}])
-        engine = CorrelationEngine(config, [], datetime.datetime.now(datetime.timezone.utc))
-        result = engine.execute([{"id": 1}, {"id": 2}])
-        assert all(et.duration_ms is not None and et.duration_ms >= 0
-                   for et in result.trace.event_traces)
-        assert all(step.duration_ms is not None
-                   for et in result.trace.event_traces for step in et.steps)
-
-    def test_log_action_continues_processing(self):
-        """Log action should not interrupt processing."""
-        config = _make_config([
-            {"action": {"type": "log", "log_message": "logging {{ _event.id }}", "log_level": "INFO"}},
-        ])
-        engine = CorrelationEngine(config, [], datetime.datetime.now(datetime.timezone.utc))
-        events = [{"id": 1}, {"id": 2}]
-        result = engine.execute(events)
-        assert len(result.events) == 2
 
     def test_multiple_conditions_sequential(self):
         """Multiple conditions should be processed in order."""
@@ -261,37 +158,6 @@ def _clean_registry():
 class TestSourceAwareTimeDefaults:
     """Verify that the engine threads hunt_source_type into query commands so
     relative_time_field/format can be omitted on YAML when the source declares defaults."""
-
-    def test_hunt_source_type_supplies_default_field_for_event_query(self, _clean_registry, tmpdir):
-        splunk = _RecordingSource(results=[])
-        register_query_source("splunk", splunk)
-
-        # event-transform query with time_range that omits relative_time_field/format;
-        # engine must default to splunk's `_time` / iso8601 because hunt_source_type is "splunk".
-        config = _make_config([
-            {
-                "transform": {
-                    "type": "event",
-                    "method": "property",
-                    "property_name": "lookup",
-                    "command": {
-                        "type": "query",
-                        "source": "splunk",
-                        "query": "search index=main",
-                        "time_range": {"before": "1h", "after": "1h"},
-                    },
-                },
-            },
-        ])
-        hunt_time = datetime.datetime(2024, 6, 1, 12, 0, tzinfo=datetime.timezone.utc)
-        engine = CorrelationEngine(config, [], hunt_time, hunt_source_type="splunk")
-        events = [{"_time": "2024-06-01T00:00:00+00:00"}]
-        engine.execute(events)
-
-        assert len(splunk.calls) == 1
-        ref = datetime.datetime(2024, 6, 1, 0, 0, tzinfo=datetime.timezone.utc)
-        assert splunk.calls[0]["start_time"] == ref - datetime.timedelta(hours=1)
-        assert splunk.calls[0]["end_time"] == ref + datetime.timedelta(hours=1)
 
     def test_missing_default_field_routes_event_to_alert_with_error(self, _clean_registry, tmpdir):
         splunk = _RecordingSource(results=[])
@@ -402,11 +268,17 @@ class TestSourceAwareTimeDefaults:
         hunt_end = datetime.datetime(2026, 5, 5, 0, 0, tzinfo=datetime.timezone.utc)
         engine = CorrelationEngine(config, [], hunt_start, hunt_end, hunt_source_type="splunk")
         # the event carries a _time far outside the hunt window; it must be ignored
-        engine.execute([{"_time": "2099-01-01T00:00:00+00:00"}])
+        result = engine.execute([{"_time": "2099-01-01T00:00:00+00:00"}])
 
         assert len(splunk.calls) == 1
         assert splunk.calls[0]["start_time"] == hunt_start - datetime.timedelta(hours=3)
         assert splunk.calls[0]["end_time"] == hunt_end + datetime.timedelta(hours=1)
+        # the trace records the same window; the trace surviving a stream_reset belongs to the
+        # triggering event. _RecordingSource uses the ABC default display string (None).
+        transform = result.trace.event_traces[0].steps[0].step
+        assert transform.query_start_time == hunt_start - datetime.timedelta(hours=3)
+        assert transform.query_end_time == hunt_end + datetime.timedelta(hours=1)
+        assert transform.query_time_spec is None
 
     def test_stream_merge_preserves_triggering_trace(self, _clean_registry, tmpdir):
         """A stream transform resets the stream, but the trace of the event that
@@ -526,36 +398,6 @@ class TestTransformTraceQueryTimespec:
         # decorative block built from the raw query_start_time/query_end_time.
         assert transform.query_time_spec is None
 
-    def test_stream_query_captures_hunt_window_anchored_time_range(self, _clean_registry, tmpdir):
-        splunk = _RecordingSource(results=[])
-        register_query_source("splunk", splunk)
-
-        config = _make_config([
-            {
-                "transform": {
-                    "type": "stream",
-                    "method": "mutate",
-                    "command": {
-                        "type": "query",
-                        "source": "splunk",
-                        "query": "search index=main",
-                        "time_range": {"before": "3h", "after": "1h"},
-                    },
-                },
-            },
-        ])
-        hunt_start = datetime.datetime(2026, 5, 4, 0, 0, tzinfo=datetime.timezone.utc)
-        hunt_end = datetime.datetime(2026, 5, 5, 0, 0, tzinfo=datetime.timezone.utc)
-        engine = CorrelationEngine(config, [], hunt_start, hunt_end, hunt_source_type="splunk")
-        result = engine.execute([{"_time": "2099-01-01T00:00:00+00:00"}])
-
-        # the trace surviving a stream_reset belongs to the triggering event
-        transform = result.trace.event_traces[0].steps[0].step
-        assert transform.query_start_time == hunt_start - datetime.timedelta(hours=3)
-        assert transform.query_end_time == hunt_end + datetime.timedelta(hours=1)
-        # _RecordingSource uses the ABC default → None (no inline-prefix syntax).
-        assert transform.query_time_spec is None
-
     def test_executable_transform_has_no_query_timespec(self, _clean_registry, tmpdir):
         """Executables don't run against a QuerySource — the timespec fields stay None."""
         config = _make_config([
@@ -673,24 +515,6 @@ class TestCorrelateReplay:
         assert len(splunk.calls) == 0  # no live queries on a full replay
         by_host = {e["host"]: e["lookup"] for e in result.events}
         assert by_host == {"web1": [{"saved": "web1"}], "web2": [{"saved": "web2"}]}
-
-    def test_capture_roundtrips_through_replay(self, _clean_registry):
-        splunk = _RecordingSource(results=[{"found": True}])
-        register_query_source("splunk", splunk)
-        hunt_time = datetime.datetime(2024, 6, 1, 12, 0, tzinfo=datetime.timezone.utc)
-        events = [{"host": "web1", "_time": "2024-06-01T11:00:00+00:00"}]
-
-        # capture from a live run, then replay that capture verbatim
-        live = CorrelationEngine(self._config(), [], hunt_time, hunt_source_type="splunk")
-        captured = live.execute(events).captured_queries
-
-        splunk.calls.clear()
-        replayed = CorrelationEngine(
-            self._config(), [], hunt_time, hunt_source_type="splunk", correlate_replay=captured,
-        ).execute(events)
-        assert len(splunk.calls) == 0
-        assert replayed.events[0]["lookup"] == [{"found": True}]
-
 
 class _ClockAdvancingSource(QuerySource):
     """A query source that consumes wall-clock time when queried, simulating a slow

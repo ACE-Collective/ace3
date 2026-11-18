@@ -2,16 +2,16 @@
 (saq/disposition.py, the dispositions: and disposition_classification: config blocks)."""
 
 import copy
-import logging
 from types import SimpleNamespace
 
 import pytest
 from pydantic import ValidationError
 
 from saq.configuration.config import get_config, get_engine_config
-from saq.configuration.schema import ACEConfig, DispositionConfig, REMOVED_DISPOSITION_CONFIG_KEYS
+from saq.configuration.schema import ACEConfig, DispositionConfig
 from saq.constants import DISPOSITION_DELIVERY, DISPOSITION_FALSE_POSITIVE, DISPOSITION_OPEN, DISPOSITION_SIMULATED
 from saq.database.model import Event
+from saq.engine.core import Engine
 from saq.disposition import (
     DEFAULT_DISPOSITION_CSS,
     DISPOSITION_CLASS_FP,
@@ -21,7 +21,7 @@ from saq.disposition import (
     get_disposition_rank,
     get_dispositions,
     get_selectable_dispositions,
-    initialize_dispositions,
+    validate_stop_analysis_on_dispositions,
     is_frozen_disposition,
     is_selectable_disposition,
     is_valid_disposition,
@@ -82,19 +82,11 @@ class TestTheList:
 class TestSimulated:
     """The disposition SVS sets on a test run's alerts (docs/SVS_RUNS.md)."""
 
-    def test_only_ace_sets_it(self):
-        assert is_valid_disposition(DISPOSITION_SIMULATED)
-        assert not is_selectable_disposition(DISPOSITION_SIMULATED)
-        assert DISPOSITION_SIMULATED not in get_selectable_dispositions()
-
     def test_it_is_the_only_frozen_disposition(self):
         assert [d for d in get_dispositions() if is_frozen_disposition(d)] == [DISPOSITION_SIMULATED]
         # a value that is not configured is not frozen: nothing says only ACE sets it
         assert not is_frozen_disposition("AUTHORIZED")
         assert not is_frozen_disposition(None)
-
-    def test_it_is_tp(self):
-        assert get_disposition_class(DISPOSITION_SIMULATED) == DISPOSITION_CLASS_TP
 
     def test_it_ranks_below_grayware(self):
         assert get_disposition_rank("REVIEWED") < get_disposition_rank(DISPOSITION_SIMULATED) \
@@ -137,7 +129,10 @@ class TestClassification:
 
 
 class TestValidation:
-    @pytest.mark.parametrize("key", REMOVED_DISPOSITION_CONFIG_KEYS)
+    @pytest.mark.parametrize("key", [
+        "valid_dispositions", "disposition_rank", "disposition_css", "show_save_to_event",
+        "benign_dispositions", "malicious_dispositions",
+    ])
     def test_a_removed_key_fails_instead_of_being_ignored(self, key):
         """A site overlay still setting an old per-disposition map would otherwise lose its
         customization silently: ACEConfig does not reject unknown keys in general."""
@@ -146,10 +141,11 @@ class TestValidation:
         with pytest.raises(ValidationError, match="dispositions:"):
             ACEConfig.model_validate(data)
 
-    def test_a_disposition_needs_rank_and_css(self):
+    @pytest.mark.parametrize("settings, missing", [({"rank": 5}, "css"), ({"css": "light"}, "rank")])
+    def test_a_disposition_needs_rank_and_css(self, settings, missing):
         data = _config_data()
-        data["dispositions"]["NEW_ONE"] = {"rank": 5}
-        with pytest.raises(ValidationError):
+        data["dispositions"]["NEW_ONE"] = settings
+        with pytest.raises(ValidationError, match=rf"dispositions\.NEW_ONE\.{missing}\n  Field required"):
             ACEConfig.model_validate(data)
 
     def test_unknown_settings_fail(self):
@@ -173,13 +169,15 @@ class TestValidation:
         assert list(config.dispositions)[-1] == "NEW_ONE"
 
 
-class TestInitialize:
-    def test_a_typo_in_stop_analysis_on_dispositions_fails(self, monkeypatch):
-        engine_config = get_engine_config()
-        monkeypatch.setattr(engine_config, "stop_analysis_on_dispositions",
-                            ["FALSE_POSITIVE", "FALSE_POSTIVE"])
+class TestStopAnalysisOnDispositions:
+    def test_configured_dispositions_pass(self, monkeypatch):
+        monkeypatch.setattr(get_engine_config(), "stop_analysis_on_dispositions", ["FALSE_POSITIVE"])
+        validate_stop_analysis_on_dispositions()
+
+    def test_a_typo_stops_the_engine_from_being_created(self, monkeypatch):
+        monkeypatch.setattr(get_engine_config(), "stop_analysis_on_dispositions", ["FALSE_POSTIVE"])
         with pytest.raises(ValueError, match="FALSE_POSTIVE"):
-            initialize_dispositions()
+            Engine()
 
 
 class _RollUpEvent:

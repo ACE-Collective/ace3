@@ -1,6 +1,7 @@
 """SVS test runs router for ACE API v2 (docs/SVS_RUNS.md, *Registering a run*; docs/SVS_API.md).
 
-The launcher's lifecycle calls: register a run, start it, report how the test executed, cancel it.
+The launcher's lifecycle calls: register a run (or validate a registration without making it), start
+it, report how the test executed and when its cleanup began, cancel it.
 Every call needs svs:run_register [ART-2]. A registration against a host that is not a test host is
 refused with 403 and alerts (docs/SVS_RUNS.md, *Refused registrations*).
 
@@ -9,7 +10,7 @@ test's earlier runs, and the feeds of those over every run needs svs:run_read; t
 the runs that the count and the batches (one row per batch_id) are over. A person's
 actions need svs:run_manage: associating an alert with a run by hand, disassociating it, marking it
 not a test and keeping a context attribution (docs/SVS_RUNS.md, *Associating alerts by hand*), and
-taking, canceling, closing and reviewing runs and commenting on them (*Reviewing runs*).
+taking, ending early, canceling, closing and reviewing runs and commenting on them (*Reviewing runs*).
 """
 
 from datetime import datetime
@@ -50,6 +51,7 @@ from aceapi_v2.svs.runs.schemas import (
     RunPage,
     RunRegistrationRequest,
     RunResultPage,
+    RunValidation,
     SuppressionShare,
 )
 from aceapi_v2.sync import run_db_in_thread
@@ -83,9 +85,8 @@ AttributionsChangedSinceParam = Annotated[datetime | None, Query(
     description="only attributions written, removed or kept at or after this time (UTC if no offset is given)")]
 
 
-def _caller(auth: ApiAuthResult, request: Request) -> Caller:
-    return Caller(name=auth.auth_name, user_id=auth.auth_user_id, key_id=auth.key_id,
-                  address=request.client.host if request.client is not None else None)
+def caller_of(auth: ApiAuthResult, request: Request) -> Caller:
+    return Caller(auth, address=request.client.host if request.client is not None else None)
 
 
 #
@@ -97,21 +98,29 @@ def _caller(auth: ApiAuthResult, request: Request) -> Caller:
 async def take_ownership(body: BulkRunRequest, auth: ManageAuth) -> BulkRunResult:
     """Take the runs. One someone else owns is left alone unless confirmed_takes names that owner;
     one whose owner's account is disabled is taken without asking."""
-    return await run_db_in_thread(service.take_runs, body, auth.auth_user_id, auth.auth_name)
+    return await run_db_in_thread(service.take_runs, body, auth)
 
 
 @router.post("/bulk/cancel", response_model=BulkRunResult)
 async def cancel_runs(body: BulkRunRequest, auth: ManageAuth) -> BulkRunResult:
     """Cancel the runs (created or started), as the launcher would. A run someone else owns is left
     alone unless confirmed_takes names that owner, and then becomes the caller's."""
-    return await run_db_in_thread(service.cancel_runs, body, auth.auth_user_id, auth.auth_name)
+    return await run_db_in_thread(service.cancel_runs, body, auth)
+
+
+@router.post("/bulk/end", response_model=BulkRunResult)
+async def end_runs(body: BulkRunRequest, auth: ManageAuth) -> BulkRunResult:
+    """End the runs (started) now, before their observation windows pass, so they can be reviewed: for
+    when nothing more will fire. Needs a reason. Their attribution windows are unchanged, so an alert
+    that fires anyway is still attributed, as late. Ownership as for cancel."""
+    return await run_db_in_thread(service.end_runs, body, auth)
 
 
 @router.post("/bulk/close", response_model=BulkRunResult)
 async def close_runs(body: BulkRunRequest, auth: ManageAuth) -> BulkRunResult:
     """Close the runs (ended, canceled or error): nothing is learned from them and their alerts
     become SIMULATED. An ended run needs a reason. Ownership as for cancel."""
-    return await run_db_in_thread(service.close_runs, body, auth.auth_user_id, auth.auth_name)
+    return await run_db_in_thread(service.close_runs, body, auth)
 
 
 #
@@ -182,27 +191,43 @@ async def register_run(body: RunRegistrationRequest, auth: RegisterAuth, request
     """Register a run in state created and get its marker. 422 for a test that is not in the
     catalog, a target whose platform the test doesn't support, or an extra that is too large; 403
     when a target is not a test host or not a user the host lists, which also alerts."""
-    return await run_db_in_thread(service.register, body, _caller(auth, request))
+    return await run_db_in_thread(service.register, body, caller_of(auth, request))
+
+
+@router.post("/validate", response_model=RunValidation)
+async def validate_registration(body: RunRegistrationRequest, auth: RegisterAuth, request: Request) -> RunValidation:
+    """What registering this body would decide: accepted (with the run's platform and windows),
+    refused (with the reason per target) or invalid. Creates no run, event, refusal or alert, so a
+    launcher's dry run is invisible to triage."""
+    return await run_db_in_thread(service.validate, body, caller_of(auth, request))
 
 
 @router.post("/{run_id}/start", response_model=RunLifecycle)
 async def start_run(run_id: str, auth: RegisterAuth, request: Request) -> RunLifecycle:
     """created -> started: the windows start now. 409 in any other state."""
-    return await run_db_in_thread(service.start, run_id, _caller(auth, request))
+    return await run_db_in_thread(service.start, run_id, caller_of(auth, request))
 
 
 @router.post("/{run_id}/executed", response_model=RunLifecycle)
 async def run_executed(run_id: str, body: RunExecutedRequest, auth: RegisterAuth, request: Request) -> RunLifecycle:
     """Report how the test executed on a started run. A non-zero exit code or an error moves it to
     error. 409 in any other state."""
-    return await run_db_in_thread(service.executed, run_id, body, _caller(auth, request))
+    return await run_db_in_thread(service.executed, run_id, body, caller_of(auth, request))
+
+
+@router.post("/{run_id}/cleanup", response_model=RunLifecycle)
+async def run_cleanup(run_id: str, auth: RegisterAuth, request: Request) -> RunLifecycle:
+    """The test's cleanup begins now, on a started run: detections whose event time is at or after
+    it are attributed as the cleanup's and left out of the run's candidates and expectations. Once
+    per run; 409 in any other state or the second time."""
+    return await run_db_in_thread(service.cleanup, run_id, caller_of(auth, request))
 
 
 @router.post("/{run_id}/cancel", response_model=RunLifecycle)
 async def cancel_run(run_id: str, auth: RegisterAuth, request: Request) -> RunLifecycle:
     """created or started -> canceled. A canceled run keeps attributing until its attribution window
     ends; one canceled before it started is closed at once. 409 in any other state."""
-    return await run_db_in_thread(service.cancel, run_id, _caller(auth, request))
+    return await run_db_in_thread(service.cancel, run_id, caller_of(auth, request))
 
 
 #
@@ -536,8 +561,7 @@ async def associate_alert(run_id: str, alert_uuid: str, auth: ManageAuth,
     """Attribute every detection of the alert to the run, by hand; the alert moves to the test queue
     when it is OPEN and nobody else has taken it. 409 for a run that never started, 422 for an alert
     without detections."""
-    return await run_db_in_thread(service.change_association, "associate", run_id, alert_uuid, body,
-                                  auth.auth_user_id, auth.auth_name)
+    return await run_db_in_thread(service.change_association, "associate", run_id, alert_uuid, body, auth)
 
 
 @router.post("/{run_id}/alerts/{alert_uuid}/disassociate", response_model=AssociationResult)
@@ -546,23 +570,20 @@ async def disassociate_alert(run_id: str, alert_uuid: str, auth: ManageAuth,
     """Remove the alert's attributions to the run, by hand; the router never attributes it to the run
     again. An alert no longer fully attributed is given back: OPEN if it was SIMULATED, and back in
     the queue SVS took it from. 409 when it isn't attributed to the run."""
-    return await run_db_in_thread(service.change_association, "disassociate", run_id, alert_uuid, body,
-                                  auth.auth_user_id, auth.auth_name)
+    return await run_db_in_thread(service.change_association, "disassociate", run_id, alert_uuid, body, auth)
 
 
 @router.post("/{run_id}/alerts/{alert_uuid}/not-a-test", response_model=AssociationResult)
 async def mark_not_a_test(run_id: str, alert_uuid: str, auth: ManageAuth,
                           body: AssociationRequest | None = None) -> AssociationResult:
     """Disassociate a TEST? alert: one the run holds by context alone (409 otherwise)."""
-    return await run_db_in_thread(service.change_association, "not-a-test", run_id, alert_uuid, body,
-                                  auth.auth_user_id, auth.auth_name)
+    return await run_db_in_thread(service.change_association, "not-a-test", run_id, alert_uuid, body, auth)
 
 
 @router.post("/{run_id}/alerts/{alert_uuid}/keep", response_model=AssociationResult)
 async def keep_context(run_id: str, alert_uuid: str, auth: ManageAuth) -> AssociationResult:
     """Confirm the alert's context attributions to the run (409 when it has none)."""
-    return await run_db_in_thread(service.change_association, "keep", run_id, alert_uuid, None,
-                                  auth.auth_user_id, auth.auth_name)
+    return await run_db_in_thread(service.change_association, "keep", run_id, alert_uuid, None, auth)
 
 
 
@@ -577,7 +598,7 @@ async def review_run(run_id: str, auth: ManageAuth, body: ReviewRequest | None =
     Reviewing takes the run when nobody owns it. 409 with what stands in the way: another person's
     ownership (owner), the state, a stale result (stale), undecided candidates (candidates), or
     context-only alerts neither kept nor marked not a test (context_alerts)."""
-    return await run_db_in_thread(service.review_run, run_id, body, auth.auth_user_id, auth.auth_name)
+    return await run_db_in_thread(service.review_run, run_id, body, auth)
 
 
 @router.get("/{run_id}/comments", response_model=list[RunComment])
@@ -588,18 +609,17 @@ async def list_run_comments(run_id: str, auth: ReadAuth) -> list[RunComment]:
 
 @router.post("/{run_id}/comments", response_model=RunComment, status_code=201)
 async def add_run_comment(run_id: str, body: RunCommentRequest, auth: ManageAuth) -> RunComment:
-    return await run_db_in_thread(service.add_run_comment, run_id, body, auth.auth_user_id, auth.auth_name)
+    return await run_db_in_thread(service.add_run_comment, run_id, body, auth)
 
 
 @router.patch("/{run_id}/comments/{comment_id}", response_model=RunComment)
 async def update_run_comment(run_id: str, comment_id: int, body: RunCommentRequest, auth: ManageAuth) -> RunComment:
     """Change a comment; only its author can (403)."""
-    return await run_db_in_thread(service.update_run_comment, run_id, comment_id, body, auth.auth_user_id,
-                                  auth.auth_name)
+    return await run_db_in_thread(service.update_run_comment, run_id, comment_id, body, auth)
 
 
 @router.delete("/{run_id}/comments/{comment_id}", status_code=204)
 async def delete_run_comment(run_id: str, comment_id: int, auth: ManageAuth) -> Response:
     """Delete a comment; only its author can (403)."""
-    await run_db_in_thread(service.delete_run_comment, run_id, comment_id, auth.auth_user_id, auth.auth_name)
+    await run_db_in_thread(service.delete_run_comment, run_id, comment_id, auth)
     return Response(status_code=204)

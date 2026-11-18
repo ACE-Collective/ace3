@@ -9,18 +9,17 @@ import threading
 from typing import Type
 
 from pydantic import Field
-from sqlalchemy import distinct
 
 from saq.configuration.config import get_service_config
 from saq.configuration.schema import ServiceConfig
-from saq.constants import SERVICE_EXTERNAL_REMEDIATION_CHECK
+from saq.constants import DISPOSITION_OPEN, SERVICE_EXTERNAL_REMEDIATION_CHECK
 from saq.database.model import Alert, ExternalRemediationCheck
 from saq.database.pool import get_db, remove_all_sessions
 from saq.error.reporting import log_loop_exception
+from saq.queue_service import QueueService
 from saq.remediation.external.database import cancel_external_checks_for_alert
 from saq.remediation.external.manager import ExternalRemediationCheckManager
 from saq.remediation.external.types import CheckStatus
-from saq.service import ACEServiceInterface
 
 
 class ExternalRemediationCheckServiceConfig(ServiceConfig):
@@ -50,23 +49,28 @@ class ExternalRemediationCheckServiceConfig(ServiceConfig):
     )
 
 
-class ExternalRemediationCheckService(ACEServiceInterface):
+class ExternalRemediationCheckService(QueueService):
 
     @classmethod
     def get_config_class(cls) -> Type[ServiceConfig]:
         return ExternalRemediationCheckServiceConfig
 
-    def start(self):
+    def __init__(self):
+        self._sweep_thread = None
+        self._sweep_shutdown = threading.Event()
+
+    def create_manager(self) -> ExternalRemediationCheckManager:
         config = get_service_config(SERVICE_EXTERNAL_REMEDIATION_CHECK)
-        self.manager = ExternalRemediationCheckManager(
+        return ExternalRemediationCheckManager(
             lock_timeout_seconds=config.lock_timeout_seconds,
             initial_retry_delay_seconds=config.initial_retry_delay_seconds,
             max_retry_delay_seconds=config.max_retry_delay_seconds,
         )
-        self.manager.start()
 
-        self._sweep_thread = None
-        self._sweep_shutdown = threading.Event()
+    def start(self):
+        super().start()
+
+        config = get_service_config(SERVICE_EXTERNAL_REMEDIATION_CHECK)
         if config.stop_on_disposition:
             self._sweep_thread = threading.Thread(
                 target=self._disposition_sweep_loop,
@@ -76,18 +80,18 @@ class ExternalRemediationCheckService(ACEServiceInterface):
             )
             self._sweep_thread.start()
 
-    def wait_for_start(self, timeout: float = 5) -> bool:
-        return self.manager.wait_for_start(timeout)
-
     def start_single_threaded(self):
-        self.manager.start_single_threaded()
+        super().start_single_threaded()
+        if get_service_config(SERVICE_EXTERNAL_REMEDIATION_CHECK).stop_on_disposition:
+            self._run_disposition_sweep()
 
     def stop(self):
         self._sweep_shutdown.set()
-        self.manager.stop()
+        super().stop()
 
     def wait(self):
-        self.manager.wait()
+        # bounded by `ace service start`, which runs it under the shutdown deadline
+        super().wait()
         if self._sweep_thread is not None:
             self._sweep_thread.join()
 
@@ -101,8 +105,8 @@ class ExternalRemediationCheckService(ACEServiceInterface):
             finally:
                 try:
                     remove_all_sessions()
-                except Exception:
-                    pass
+                except Exception as e:
+                    logging.exception(f"error removing database connection: {e}")
             self._sweep_shutdown.wait(interval_seconds)
 
     def _run_disposition_sweep(self):
@@ -111,8 +115,9 @@ class ExternalRemediationCheckService(ACEServiceInterface):
         # exists and is dispositioned — orphaned checks are left alone.
         active_alert_uuids = (
             get_db()
-            .query(distinct(ExternalRemediationCheck.alert_uuid))
+            .query(ExternalRemediationCheck.alert_uuid)
             .filter(ExternalRemediationCheck.status != CheckStatus.COMPLETED.value)
+            .distinct()
             .all()
         )
         if not active_alert_uuids:
@@ -123,7 +128,7 @@ class ExternalRemediationCheckService(ACEServiceInterface):
             get_db()
             .query(Alert.uuid)
             .filter(Alert.uuid.in_(uuids))
-            .filter(Alert.disposition != None)  # noqa: E711
+            .filter(Alert.disposition != DISPOSITION_OPEN)
             .all()
         )
 

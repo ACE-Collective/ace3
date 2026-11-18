@@ -1,3 +1,5 @@
+import logging
+
 import pytest
 from unittest.mock import patch
 from uuid import uuid4
@@ -5,12 +7,13 @@ from flask import url_for
 from datetime import datetime
 
 from saq.analysis.root import load_root
-from saq.constants import ANALYSIS_MODE_CORRELATION, ANALYSIS_MODE_DISPOSITIONED, DISPOSITION_SIMULATED, STATE_ANALYST_REQUESTED_ANALYSIS
-from saq.database.model import Alert, Workload
+from saq.constants import ANALYSIS_MODE_CORRELATION, ANALYSIS_MODE_DISPOSITIONED, STATE_ANALYST_REQUESTED_ANALYSIS
+from saq.database.model import Workload
 from saq.database.pool import get_db
 from saq.database.util.alert import ALERT
 from saq.database.util.locking import acquire_lock, release_lock
 from saq.gui.alert import GUIAlert
+from tests.saq.helpers import audit_actor_of, audit_record, logged_with, the_error_with_traceback
 
 
 @pytest.fixture
@@ -54,100 +57,40 @@ def _is_unlocked(alert_uuid: str) -> bool:
 class TestAddObservable:
     """Tests for add_observable function."""
 
-    def test_missing_alert_uuid(self, web_client):
-        """Test when alert_uuid is missing from form."""
-        response = web_client.post(url_for('analysis.add_observable'), data={
-            'add_observable_type': 'ipv4',
-            'add_observable_value': '192.168.1.1',
-            'add_observable_time': ''
-        })
+    @pytest.mark.parametrize('missing', [
+        'alert_uuid', 'add_observable_type', 'add_observable_value', 'add_observable_time'])
+    def test_a_missing_form_field_is_refused(self, web_client, missing):
+        """Each field the form always sends is required: without one, nothing is looked up."""
+        form = {'alert_uuid': 'test-uuid', 'add_observable_type': 'ipv4',
+                'add_observable_value': '192.168.1.1', 'add_observable_time': ''}
+        del form[missing]
+
+        response = web_client.post(url_for('analysis.add_observable'), data=form)
 
         assert response.status_code == 302
-        # Should redirect to analysis.index due to missing form item
+        assert response.location.endswith(url_for('analysis.index'))
 
-    def test_missing_observable_type(self, web_client):
-        """Test when add_observable_type is missing from form."""
-        response = web_client.post(url_for('analysis.add_observable'), data={
-            'alert_uuid': 'test-uuid',
-            'add_observable_value': '192.168.1.1',
-            'add_observable_time': ''
-        })
-
-        assert response.status_code == 302
-
-    def test_missing_observable_value(self, web_client):
-        """Test when add_observable_value is missing from form."""
-        response = web_client.post(url_for('analysis.add_observable'), data={
-            'alert_uuid': 'test-uuid',
-            'add_observable_type': 'ipv4',
-            'add_observable_time': ''
-        })
-
-        assert response.status_code == 302
-
-    def test_missing_observable_time(self, web_client):
-        """Test when add_observable_time is missing from form."""
-        response = web_client.post(url_for('analysis.add_observable'), data={
-            'alert_uuid': 'test-uuid',
-            'add_observable_type': 'ipv4',
-            'add_observable_value': '192.168.1.1'
-        })
-
-        assert response.status_code == 302
-
-    def test_conversation_type_with_value_a_b(self, web_client, alert):
-        """Test that conversation types accept add_observable_value_A and _B instead of add_observable_value."""
+    @pytest.mark.parametrize('o_type,value_a,value_b,expected', [
+        ('email_conversation', 'sender@example.com', 'recipient@example.com',
+         'sender@example.com|recipient@example.com'),
+        ('email_delivery', '<message-id@example.com>', 'recipient@example.com',
+         '<message-id@example.com>|recipient@example.com'),
+        ('ipv4_conversation', '192.168.1.1', '192.168.1.2', '192.168.1.1_192.168.1.2'),
+        ('ipv4_full_conversation', '192.168.1.1:8080', '192.168.1.2:80', '192.168.1.1:8080:192.168.1.2:80'),
+    ])
+    def test_pair_types_join_their_two_values(self, web_client, alert, o_type, value_a, value_b, expected):
+        """These types are sent as add_observable_value_A and _B instead of add_observable_value."""
         response = web_client.post(url_for('analysis.add_observable'), data={
             'alert_uuid': alert.uuid,
-            'add_observable_type': 'email_conversation',
-            'add_observable_value_A': 'sender@example.com',
-            'add_observable_value_B': 'recipient@example.com',
+            'add_observable_type': o_type,
+            'add_observable_value_A': value_a,
+            'add_observable_value_B': value_b,
             'add_observable_time': ''
         })
 
-        # Should redirect to analysis.index with direct parameter
         assert response.status_code == 302
         assert f'direct={alert.uuid}' in response.location
-        assert _saved_root(alert).get_observable_by_type('email_conversation') is not None
-
-    def test_email_conversation_value_formatting(self, web_client, alert):
-        """Test that email conversation values are joined with pipe."""
-        web_client.post(url_for('analysis.add_observable'), data={
-            'alert_uuid': alert.uuid,
-            'add_observable_type': 'email_conversation',
-            'add_observable_value_A': 'sender@example.com',
-            'add_observable_value_B': 'recipient@example.com',
-            'add_observable_time': ''
-        })
-
-        observable = _saved_root(alert).get_observable_by_type('email_conversation')
-        assert observable.value == 'sender@example.com|recipient@example.com'
-
-    def test_ipv4_conversation_value_formatting(self, web_client, alert):
-        """Test that ipv4 conversation values are joined with underscore."""
-        web_client.post(url_for('analysis.add_observable'), data={
-            'alert_uuid': alert.uuid,
-            'add_observable_type': 'ipv4_conversation',
-            'add_observable_value_A': '192.168.1.1',
-            'add_observable_value_B': '192.168.1.2',
-            'add_observable_time': ''
-        })
-
-        observable = _saved_root(alert).get_observable_by_type('ipv4_conversation')
-        assert observable.value == '192.168.1.1_192.168.1.2'
-
-    def test_ipv4_full_conversation_value_formatting(self, web_client, alert):
-        """Test that ipv4 full conversation values are joined with colon."""
-        web_client.post(url_for('analysis.add_observable'), data={
-            'alert_uuid': alert.uuid,
-            'add_observable_type': 'ipv4_full_conversation',
-            'add_observable_value_A': '192.168.1.1:8080',
-            'add_observable_value_B': '192.168.1.2:80',
-            'add_observable_time': ''
-        })
-
-        observable = _saved_root(alert).get_observable_by_type('ipv4_full_conversation')
-        assert observable.value == '192.168.1.1:8080:192.168.1.2:80'
+        assert _saved_root(alert).get_observable_by_type(o_type).value == expected
 
     def test_valid_datetime_parsing(self, web_client, alert):
         """Test that valid datetime strings are parsed correctly."""
@@ -163,30 +106,28 @@ class TestAddObservable:
         assert observable.value == '192.168.1.1'
         assert observable.time.replace(tzinfo=None) == datetime.strptime(test_time, '%Y-%m-%d %H:%M:%S')
 
-    def test_invalid_datetime_format(self, web_client):
-        """Test that invalid datetime format causes flash error and redirect."""
-        response = web_client.post(url_for('analysis.add_observable'), data={
-            'alert_uuid': 'test-uuid',
-            'add_observable_type': 'ipv4',
-            'add_observable_value': '192.168.1.1',
-            'add_observable_time': 'invalid-date-format'
-        })
+    def test_invalid_datetime_format(self, web_client, alert, basic_form_data):
+        """A time that cannot be read refuses the observable rather than adding it without one."""
+        response = web_client.post(url_for('analysis.add_observable'),
+                                   data={**basic_form_data, 'add_observable_time': 'invalid-date-format'})
 
         assert response.status_code == 302
+        assert f'direct={alert.uuid}' in response.location
+        assert _saved_root(alert).get_observable_by_type('ipv4') is None
+        assert _workload_modes(alert) == []
 
-    def test_empty_observable_value(self, web_client):
-        """Test that empty observable value causes flash error and redirect."""
-        response = web_client.post(url_for('analysis.add_observable'), data={
-            'alert_uuid': 'test-uuid',
-            'add_observable_type': 'ipv4',
-            'add_observable_value': '',
-            'add_observable_time': ''
-        })
+    def test_empty_observable_value(self, web_client, alert, basic_form_data):
+        """An empty value refuses the observable, and the alert is not queued for analysis again."""
+        response = web_client.post(url_for('analysis.add_observable'),
+                                   data={**basic_form_data, 'add_observable_value': ''})
 
         assert response.status_code == 302
+        assert f'direct={alert.uuid}' in response.location
+        assert _saved_root(alert).get_observables_by_type('ipv4') == []
+        assert _workload_modes(alert) == []
 
-    def test_alert_not_found_in_database(self, web_client):
-        """Test when alert cannot be found in database."""
+    def test_alert_not_found_in_database(self, web_client, caplog):
+        """An unknown alert uuid is client input: refused with a WARNING that names it, not an error."""
         missing_uuid = str(uuid4())
         response = web_client.post(url_for('analysis.add_observable'), data={
             'alert_uuid': missing_uuid,
@@ -198,17 +139,17 @@ class TestAddObservable:
         assert response.status_code == 302
         assert f'direct={missing_uuid}' in response.location
         assert _is_unlocked(missing_uuid)
+        assert [r.user for r in logged_with(caplog, logging.WARNING, alert_uuid=missing_uuid)] == ['john']
+        assert logged_with(caplog, logging.ERROR, alert_uuid=missing_uuid) == []
 
-    def test_frozen_alert_is_not_modified(self, web_client, alert, basic_form_data):
-        """An alert with a frozen disposition is neither changed nor queued again."""
-        get_db().query(Alert).filter(Alert.uuid == alert.uuid).update({Alert.disposition: DISPOSITION_SIMULATED})
-        get_db().commit()
-
-        response = web_client.post(url_for('analysis.add_observable'), data=basic_form_data)
+    def test_alert_database_error(self, web_client, alert, basic_form_data, caplog):
+        """A failing alert query is logged at ERROR with its traceback and the alert uuid."""
+        with patch('app.analysis.views.edit.observable.get_db', side_effect=Exception("db down")):
+            response = web_client.post(url_for('analysis.add_observable'), data=basic_form_data)
 
         assert response.status_code == 302
-        assert _saved_root(alert).get_observable_by_type('ipv4') is None
-        assert _workload_modes(alert) == []
+        assert 'from database' in the_error_with_traceback(caplog, alert_uuid=alert.uuid).getMessage()
+        assert _is_unlocked(alert.uuid)
 
     def test_unable_to_acquire_lock(self, web_client, alert, basic_form_data):
         """Test when unable to acquire lock on alert."""
@@ -223,27 +164,30 @@ class TestAddObservable:
         assert _saved_root(alert).get_observable_by_type('ipv4') is None
         assert _workload_modes(alert) == []
 
-    def test_alert_load_error(self, web_client, alert, basic_form_data):
+    def test_alert_load_error(self, web_client, alert, basic_form_data, caplog):
         """Test when alert.load() raises an exception."""
         with patch.object(GUIAlert, 'load', side_effect=Exception("Load failed")):
             response = web_client.post(url_for('analysis.add_observable'), data=basic_form_data)
 
         assert response.status_code == 302
+        assert 'from filesystem' in the_error_with_traceback(caplog, alert_uuid=alert.uuid).getMessage()
         assert _workload_modes(alert) == []
         assert _is_unlocked(alert.uuid)
 
-    def test_alert_sync_error(self, web_client, alert, basic_form_data):
+    def test_alert_sync_error(self, web_client, alert, basic_form_data, caplog):
         """Test when alert.sync() raises an exception."""
         with patch.object(GUIAlert, 'sync', side_effect=Exception("Sync failed")):
             response = web_client.post(url_for('analysis.add_observable'), data=basic_form_data)
 
         assert response.status_code == 302
+        assert the_error_with_traceback(caplog, alert_uuid=alert.uuid).getMessage() == f"unable to sync alert {alert.uuid}"
         assert _saved_root(alert).get_observable_by_type('ipv4') is None
         assert _workload_modes(alert) == []
         assert _is_unlocked(alert.uuid)
 
-    def test_successful_observable_addition(self, web_client, alert, basic_form_data):
+    def test_successful_observable_addition(self, web_client, session_actor, alert, basic_form_data, caplog):
         """Test successful addition of an observable."""
+        caplog.set_level(logging.INFO)
         response = web_client.post(url_for('analysis.add_observable'), data={
             **basic_form_data,
             'add_observable_directives': 'no_scan, not_a_directive',
@@ -254,6 +198,12 @@ class TestAddObservable:
         observable = root.get_observable_by_type('ipv4')
         assert observable.value == '192.168.1.1'
         assert observable.directives == ['no_scan']
+        added = audit_record(caplog, "user john added observable (ipv4,192.168.1.1,")
+        assert (*audit_actor_of(added), added.alert_uuid, added.observable_type, added.observable_value) == (
+            *session_actor, alert.uuid, "ipv4", "192.168.1.1")
+        directed = audit_record(caplog, "user john added directives ['no_scan']")
+        assert (*audit_actor_of(directed), directed.alert_uuid, directed.observable_uuid, directed.directives) == (
+            *session_actor, alert.uuid, observable.uuid, ["no_scan"])
         # switched back into correlation mode and queued for the analysis the analyst asked for
         assert root.analysis_mode == ANALYSIS_MODE_CORRELATION
         assert root.state[STATE_ANALYST_REQUESTED_ANALYSIS] is True
@@ -290,7 +240,7 @@ class TestAddObservable:
         assert observables[0].added_by is None
         assert observables[0].added_time is None
 
-    def test_lock_release_error_handling(self, web_client, alert, basic_form_data):
+    def test_lock_release_error_handling(self, web_client, alert, basic_form_data, caplog):
         """Test that lock release errors are handled gracefully."""
         with patch('app.analysis.views.edit.observable.release_lock',
                    side_effect=Exception("Release failed")) as mock_release_lock:
@@ -300,21 +250,10 @@ class TestAddObservable:
         assert response.status_code == 302
         mock_release_lock.assert_called_once()
         assert mock_release_lock.call_args.args[0] == alert.uuid
+        record = the_error_with_traceback(caplog, alert_uuid=alert.uuid)
+        assert record.lock_uuid == mock_release_lock.call_args.args[1]
         assert _saved_root(alert).get_observable_by_type('ipv4') is not None
         assert _workload_modes(alert) == [ANALYSIS_MODE_CORRELATION]
-
-    def test_email_delivery_value_formatting(self, web_client, alert):
-        """Test that email delivery values are joined with pipe."""
-        web_client.post(url_for('analysis.add_observable'), data={
-            'alert_uuid': alert.uuid,
-            'add_observable_type': 'email_delivery',
-            'add_observable_value_A': '<message-id@example.com>',
-            'add_observable_value_B': 'recipient@example.com',
-            'add_observable_time': ''
-        })
-
-        observable = _saved_root(alert).get_observable_by_type('email_delivery')
-        assert observable.value == '<message-id@example.com>|recipient@example.com'
 
     def test_regular_observable_type_ignores_value_a_b(self, web_client, alert):
         """Test that regular observable types use add_observable_value, not _A/_B."""

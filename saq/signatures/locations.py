@@ -18,7 +18,7 @@ from collections.abc import Callable
 import logging
 import os
 
-from saq.configuration.config import get_config, get_service_config
+from saq.configuration.config import find_service_config, get_config
 from saq.constants import ANALYSIS_MODULE_OBSERVABLE_MODIFIER, SERVICE_YARA_SCANNER
 from saq.signatures.model import SignatureLocation, SignatureType
 from saq.util.filesystem import abs_path
@@ -30,9 +30,8 @@ CONFIG_ANALYSIS_MODULE_OBSERVABLE_MODIFIER = f"analysis_module_{ANALYSIS_MODULE_
 
 def _yara_locations() -> list[SignatureLocation]:
     """service_yara.signature_dir, versioned by service_yara.git_repo_dirs."""
-    try:
-        config = get_service_config(SERVICE_YARA_SCANNER)
-    except ValueError:
+    config = find_service_config(SERVICE_YARA_SCANNER)
+    if config is None:
         logging.warning("no %s configuration - no yara signatures are loaded", CONFIG_SERVICE_YARA)
         return []
 
@@ -89,12 +88,19 @@ def _observable_modifier_locations() -> list[SignatureLocation]:
     """the single rules file of the observable modifier module."""
     from saq.modules.util.observable_modifier import ObservableModifierConfig
 
-    try:
-        config = get_config().get_analysis_module_config(ANALYSIS_MODULE_OBSERVABLE_MODIFIER)
-    except ValueError:
+    if not get_config().has_analysis_module_config(ANALYSIS_MODULE_OBSERVABLE_MODIFIER):
         logging.warning(
             "no %s configuration - no observable modifier signatures are loaded",
             CONFIG_ANALYSIS_MODULE_OBSERVABLE_MODIFIER)
+        return []
+
+    try:
+        config = get_config().get_analysis_module_config(ANALYSIS_MODULE_OBSERVABLE_MODIFIER)
+    except Exception:
+        logging.exception(
+            "%s is invalid - no observable modifier signatures are loaded",
+            CONFIG_ANALYSIS_MODULE_OBSERVABLE_MODIFIER,
+            extra={"analysis_module": ANALYSIS_MODULE_OBSERVABLE_MODIFIER})
         return []
 
     if not isinstance(config, ObservableModifierConfig):

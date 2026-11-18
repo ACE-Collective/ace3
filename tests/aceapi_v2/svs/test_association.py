@@ -5,24 +5,31 @@ GET /svs/runs/{run_id}/attributions and the feed, GET /svs/runs/attributions."""
 import csv
 import io
 import json
+import logging
 import uuid
 from datetime import datetime, timedelta
 
 import pytest
 from fastapi import HTTPException
 from httpx import AsyncClient
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from aceapi_v2.auth.schemas import ApiAuthResult
+from aceapi_v2.auth.utils import API_AUTH_TYPE_CONFIG
 from aceapi_v2.svs.runs import service
 from saq.alert_routing import reset_alert_routers
 from saq.configuration.config import get_config
 from saq.constants import F_HOSTNAME, QUEUE_DEFAULT
+from saq.database.model import AuthApiKey
 from saq.database.util.alert import ALERT
+from saq.util import sha256_str
 from tests.aceapi_v2.conftest import api_key_client, make_api_key
-from tests.saq.helpers import create_root_analysis, insert_alert
+from tests.saq.helpers import audit_actors, create_root_analysis, insert_alert
 from tests.saq.svs.conftest import add_catalog_test, add_test_host, started_run
 
-pytestmark = pytest.mark.integration
+# several runs on one test host are fixtures here; the host's claim is tested in test_runs.py
+pytestmark = [pytest.mark.integration, pytest.mark.usefixtures("overlapping_runs")]
 
 GUID = "aaaaaaaa-1111-4111-8111-111111111111"
 
@@ -58,12 +65,21 @@ def _run():
 
 
 @pytest.mark.asyncio
-async def test_associate_and_disassociate(client: AsyncClient, test_user):
+async def test_associate_and_disassociate(client: AsyncClient, test_user, session: AsyncSession, valid_api_key,
+                                          client_actor, caplog):
+    caplog.set_level(logging.INFO)
     run = _run()
     alert_uuid = _alert(host="srv-01")
 
-    response = await client.post(f"/svs/runs/{run.uuid}/alerts/{alert_uuid}/associate", json={"reason": "seen live"})
+    with caplog.at_level(logging.INFO):
+        response = await client.post(f"/svs/runs/{run.uuid}/alerts/{alert_uuid}/associate", json={"reason": "seen live"})
     assert response.status_code == 200, response.text
+    # the record names the key that acted, not only its owner
+    key_id = (await session.execute(
+        select(AuthApiKey.id).where(AuthApiKey.key_hash == sha256_str(valid_api_key)))).scalar_one()
+    (audit,) = [r for r in caplog.records if r.getMessage() == "AUDIT: svs alert associated with a run"]
+    assert (audit.actor, audit.actor_user_id, audit.actor_key_id, audit.alert_uuid) == (
+        test_user.username, test_user.id, key_id, alert_uuid)
     assert response.json() == {"alert_uuid": alert_uuid, "svs_status": "test", "queue": get_config().svs.queue,
                                "moved": True, "reopened": False}
 
@@ -76,6 +92,8 @@ async def test_associate_and_disassociate(client: AsyncClient, test_user):
     assert (response.json()["queue"], response.json()["svs_status"]) == (QUEUE_DEFAULT, None)
     (row,) = (await client.get(f"/svs/runs/{run.uuid}/attributions")).json()["data"]
     assert (row["removed_by_user"], row["removal_reason"]) == (test_user.username, "wrong run")
+    # moved to the svs queue and back
+    assert audit_actors(caplog, "alert moved to queue") == [client_actor] * 2
     # the body is optional
     assert (await client.post(f"/svs/runs/{run.uuid}/alerts/{alert_uuid}/associate")).status_code == 200
 
@@ -110,7 +128,8 @@ async def test_errors(client: AsyncClient):
 
 def test_a_config_key_is_refused():
     with pytest.raises(HTTPException) as e:
-        service.change_association("associate", str(uuid.uuid4()), str(uuid.uuid4()), None, None, "ci")
+        service.change_association("associate", str(uuid.uuid4()), str(uuid.uuid4()), None,
+                                   ApiAuthResult(auth_type=API_AUTH_TYPE_CONFIG, auth_name="ci"))
     assert e.value.status_code == 422
 
 

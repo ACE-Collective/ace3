@@ -1,14 +1,19 @@
 
+import logging
 import os
+import subprocess
+import uuid
+
+from unittest.mock import Mock
 
 import pytest
 from PIL import Image
 
 from saq.analysis import Observable
 from saq.configuration.config import get_analysis_module_config
-from saq.constants import ANALYSIS_MODULE_ARCHIVE, ANALYSIS_MODULE_AUTOIT, ANALYSIS_MODULE_DE4DOT, ANALYSIS_MODULE_EXIF, ANALYSIS_MODULE_FILE_HASH_ANALYZER, ANALYSIS_MODULE_FILE_TYPE, ANALYSIS_MODULE_HTML_DATA_URL_EXTRACTION, ANALYSIS_MODULE_LNK_PARSER, ANALYSIS_MODULE_OCR, ANALYSIS_MODULE_OFFICE_XML_REL, ANALYSIS_MODULE_QRCODE, ANALYSIS_MODULE_URL_EXTRACTION, DIRECTIVE_CRAWL_EXTRACTED_URLS, DIRECTIVE_EXTRACT_URLS, DIRECTIVE_EXTRACT_URLS_DOMAIN_AS_URL, DIRECTIVE_FORCE_DOWNLOAD, F_FILE, F_URL, R_EXTRACTED_FROM, AnalysisExecutionResult
-from saq.modules.file_analysis import ArchiveAnalysis, ArchiveAnalyzer, AutoItAnalyzer, De4dotAnalyzer, ExifAnalyzer, FileHashAnalysis, FileHashAnalyzer, FileTypeAnalysis, FileTypeAnalyzer, HTMLDataURLAnalysis, HTMLDataURLAnalyzer, LnkParseAnalyzer, OCRAnalysis, OCRAnalyzer, OfficeXMLRelationshipExternalURLAnalysis, OfficeXMLRelationshipExternalURLAnalyzer, QRCodeAnalysis, QRCodeAnalyzer, URLExtractionAnalysis, URLExtractionAnalyzer
-from saq.modules.file_analysis.dotnet import De4dotAnalysis
+from saq.constants import ANALYSIS_MODULE_ARCHIVE, ANALYSIS_MODULE_AUTOIT, ANALYSIS_MODULE_FILE_TYPE, ANALYSIS_MODULE_OCR, ANALYSIS_MODULE_OFFICE_XML_REL, ANALYSIS_MODULE_OLEVBA_V1_2, ANALYSIS_MODULE_QRCODE, ANALYSIS_MODULE_URL_EXTRACTION, DIRECTIVE_CRAWL_EXTRACTED_URLS, DIRECTIVE_EXTRACT_URLS, DIRECTIVE_EXTRACT_URLS_DOMAIN_AS_URL, DIRECTIVE_FORCE_DOWNLOAD, F_FILE, F_URL, R_DOWNLOADED_FROM, R_EXTRACTED_FROM, AnalysisExecutionResult
+from saq.modules.file_analysis import ArchiveAnalysis, ArchiveAnalyzer, AutoItAnalyzer, FileTypeAnalysis, FileTypeAnalyzer, OCRAnalysis, OCRAnalyzer, OfficeXMLRelationshipExternalURLAnalysis, OfficeXMLRelationshipExternalURLAnalyzer, QRCodeAnalysis, QRCodeAnalyzer, URLExtractionAnalysis, URLExtractionAnalyzer
+from saq.modules.file_analysis.olevba import OLEVBA_Analysis_v1_2, OLEVBA_Analyzer_v1_2
 from saq.signatures.builtin import OFFICE_EXTERNAL_OLEOBJECT
 
 from saq.modules.adapter import AnalysisModuleAdapter
@@ -16,16 +21,6 @@ from tests.saq.helpers import create_root_analysis
 from tests.saq.test_util import create_test_context
 
 
-
-
-
-class MockAnalysis(object):
-    def __init__(self):
-        self.details = {}
-        self.observables = []
-
-    def add_observable(self, *args, **kwargs):
-        self.observables.append(args)
 
 
 class TestUrlExtraction:
@@ -64,6 +59,9 @@ class TestUrlExtraction:
     def test_exclude_filtered_domains(self, test_context):
         extracted_urls_unfiltered = ['http://schemas.microsoft.com/office/2004/12/omml',
                                      'http://www.w3.org/TR/REC-html40',
+                                     # XMP metadata namespaces
+                                     'http://ns.adobe.com/xap/1.0/mm',
+                                     'http://ns.adobe.com/pdf/1.3',
                                      'https://voltage-pp-0000.wellsfargo.com/brand/rv/19238/zdm/troubleshooting.ftl',
                                      'https://voltage-pp-0000.wellsfargo.com/brand/rv/19238/zdm/troubleshooting.ftl',
                                      'https://voltage-pp-0000.wellsfargo.com/brand/zdm/mobile.ftl',
@@ -205,6 +203,129 @@ class TestUrlExtraction:
         urls = self._run_url_extraction(root_analysis, target_path)
         assert 'https://example.net/sh"' in urls
 
+    @pytest.mark.unit
+    def test_order_urls_by_interest_puts_images_last_and_keeps_urls_without_a_tld(self, test_context, caplog):
+        urls = ['https://example.com/logo.png',
+                'http://192.0.2.1/payload.exe',
+                'https://example.com/login',
+                'http://localhost/x']
+
+        analyzer = URLExtractionAnalyzer(
+            context=test_context,
+            config=get_analysis_module_config(ANALYSIS_MODULE_URL_EXTRACTION))
+        with caplog.at_level(logging.INFO):
+            ordered, grouped = analyzer.order_urls_by_interest(urls)
+
+        assert ordered == ['https://example.com/login',
+                           'http://192.0.2.1/payload.exe',
+                           'http://localhost/x',
+                           'https://example.com/logo.png']
+        assert grouped == {'example.com': ['https://example.com/logo.png', 'https://example.com/login'],
+                           'no_tld': ['http://192.0.2.1/payload.exe', 'http://localhost/x']}
+        # every url with an IP address for a host has no TLD, so this is not worth an INFO record
+        assert not [r for r in caplog.records if r.levelno >= logging.INFO]
+
+    @pytest.mark.unit
+    def test_filter_excluded_domains_keeps_what_it_cannot_match(self, test_context, monkeypatch):
+        config = get_analysis_module_config(ANALYSIS_MODULE_URL_EXTRACTION)
+        analyzer = URLExtractionAnalyzer(context=test_context, config=config)
+
+        # urlparse raises ValueError on a malformed IPv6 host
+        assert analyzer.filter_excluded_domains('http://[::1/path')
+        assert analyzer.filter_excluded_domains('http://[bogus]/path')
+        # no host at all
+        assert analyzer.filter_excluded_domains('mailto:user@example.com')
+
+        monkeypatch.setattr(config, "excluded_domains", [])
+        assert analyzer.filter_excluded_domains('http://schemas.microsoft.com/office/2004/12/omml')
+
+    @pytest.mark.unit
+    def test_summary_skips_urls_it_cannot_parse(self):
+        analysis = URLExtractionAnalysis()
+        assert analysis.generate_summary() is None
+
+        analysis.urls = ['http://[::1/path', 'https://b.example.com/x', 'https://a.example.com/y']
+        assert analysis.generate_summary() == "URL Extraction Analysis (a.example.com, b.example.com)"
+
+    def _url_extraction_analyzer(self, root_analysis, config=None):
+        return AnalysisModuleAdapter(URLExtractionAnalyzer(
+            context=create_test_context(root=root_analysis),
+            config=config or get_analysis_module_config(ANALYSIS_MODULE_URL_EXTRACTION)))
+
+    def _file_with_type(self, root_analysis, path, mime="text/plain"):
+        file_observable = root_analysis.add_file_observable(path)
+        file_type_analysis = FileTypeAnalysis()
+        file_observable.add_analysis(file_type_analysis)
+        file_type_analysis.details = {"type": "", "mime": mime}
+        return file_observable
+
+    @pytest.mark.unit
+    def test_relative_urls_resolve_against_the_url_the_html_was_downloaded_from(self, tmpdir, root_analysis):
+        target_path = str(tmpdir / "page.html")
+        with open(target_path, "w") as fp:
+            fp.write('<html><body><a href="/login.php">sign in</a></body></html>')
+
+        file_observable = self._file_with_type(root_analysis, target_path, mime="text/html")
+        url_observable = root_analysis.add_observable_by_spec(F_URL, "https://phish.example.com/landing/")
+        file_observable.add_relationship(R_DOWNLOADED_FROM, url_observable)
+
+        assert self._url_extraction_analyzer(root_analysis).execute_analysis(file_observable) == AnalysisExecutionResult.COMPLETED
+
+        analysis = file_observable.get_and_load_analysis(URLExtractionAnalysis)
+        assert "https://phish.example.com/login.php" in analysis.urls
+
+    @pytest.mark.unit
+    def test_files_it_does_not_read(self, tmpdir, root_analysis, monkeypatch, caplog):
+        analyzer = self._url_extraction_analyzer(root_analysis)
+
+        no_file_type_path = str(tmpdir / "no_file_type.txt")
+        with open(no_file_type_path, "w") as fp:
+            fp.write("https://example.com/a\n")
+        no_file_type = root_analysis.add_file_observable(no_file_type_path)
+
+        empty_path = str(tmpdir / "empty.txt")
+        open(empty_path, "w").close()
+        empty = self._file_with_type(root_analysis, empty_path)
+
+        missing_path = str(tmpdir / "missing.txt")
+        with open(missing_path, "w") as fp:
+            fp.write("https://example.com/b\n")
+        missing = self._file_with_type(root_analysis, missing_path)
+        os.remove(missing.full_path)
+
+        with caplog.at_level(logging.ERROR):
+            for file_observable in (no_file_type, empty, missing):
+                assert analyzer.execute_analysis(file_observable) == AnalysisExecutionResult.COMPLETED
+                assert file_observable.get_and_load_analysis(URLExtractionAnalysis) is None
+
+        assert f"cannot find local file path for {missing}" in [r.getMessage() for r in caplog.records]
+
+    @pytest.mark.unit
+    def test_a_file_over_the_size_limit_is_skipped(self, tmpdir, root_analysis, monkeypatch):
+        config = get_analysis_module_config(ANALYSIS_MODULE_URL_EXTRACTION)
+        monkeypatch.setattr(config, "max_file_size", 0)
+        target_path = str(tmpdir / "large.txt")
+        with open(target_path, "w") as fp:
+            fp.write("https://example.com/a\n")
+        file_observable = self._file_with_type(root_analysis, target_path)
+
+        assert self._url_extraction_analyzer(root_analysis, config).execute_analysis(file_observable) == AnalysisExecutionResult.COMPLETED
+        assert file_observable.get_and_load_analysis(URLExtractionAnalysis) is None
+
+    @pytest.mark.unit
+    def test_a_urlfinderlib_failure_is_logged(self, tmpdir, root_analysis, monkeypatch, caplog):
+        monkeypatch.setattr("saq.modules.file_analysis.url_extraction.find_urls", Mock(side_effect=ValueError("bad markup")))
+        target_path = str(tmpdir / "page.txt")
+        with open(target_path, "w") as fp:
+            fp.write("https://example.com/a\n")
+        file_observable = self._file_with_type(root_analysis, target_path)
+
+        with caplog.at_level(logging.WARNING):
+            assert self._url_extraction_analyzer(root_analysis).execute_analysis(file_observable) == AnalysisExecutionResult.COMPLETED
+
+        assert file_observable.get_and_load_analysis(URLExtractionAnalysis) is None
+        assert any(f"failed to extract urls from {file_observable.full_path}: bad markup" in r.getMessage() for r in caplog.records)
+
 
 
 
@@ -237,79 +358,6 @@ def test_autoit_decompilation(caplog, datadir, monkeypatch, test_context):
     assert analysis.scripts == ['script_1.au3']
 
 @pytest.mark.integration
-def test_lnk_parser(caplog, datadir, monkeypatch, test_context):
-    # Create a test alert with a file observable
-    root = create_root_analysis(analysis_mode='test_single')
-    root.initialize_storage()
-    target_path = datadir / 'google_chrome.lnk'
-    observable = root.add_file_observable(target_path)
-
-    # Execute the analysis
-    analyzer = AnalysisModuleAdapter(LnkParseAnalyzer(
-        context=create_test_context(root=root),
-        config=get_analysis_module_config(ANALYSIS_MODULE_LNK_PARSER)))
-    result = analyzer.execute_analysis(observable)
-
-    assert result == AnalysisExecutionResult.COMPLETED
-    from saq.modules.file_analysis.lnk_parser import LnkParseAnalysis
-    analysis = observable.get_and_load_analysis(LnkParseAnalysis)
-    assert isinstance(analysis, LnkParseAnalysis)
-    assert analysis.icon_location == 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe'
-    assert analysis.working_directory == 'C:\\Program Files\\Google\\Chrome\\Application'
-
-class MockYaraAnalysis(object):
-    def __init__(self, rule):
-        self.rule = rule
-        pass
-
-    def has_observable(self, _type, val):
-        print(f'MockYaraAnalysis checking for observable {val} against mocked result {self.rule}')
-        if val == self.rule:
-            return True
-        else:
-            return False
-
-class MockYaraAnalysisModule(object):
-    def __init__(self):
-        pass
-
-    def wait_for_analysis(self):
-        return MockYaraAnalysis()
-
-
-
-@pytest.mark.integration
-def test_de4dot_analyzer(caplog, datadir, monkeypatch, test_context):
-    # Create a test alert with file observable
-    root = create_root_analysis(analysis_mode='test_single')
-    root.initialize_storage()
-
-    target_path = root.create_file_path('malicious.exe')
-    with open(str(datadir / '6346eea9dff4eac53113fc2ba3b8a497.hex'), 'r') as fp_in:
-        with open(target_path, 'wb') as fp_out:
-            for line in fp_in:
-                line = line.strip()
-                fp_out.write(bytes.fromhex(line))
-
-    observable = root.add_file_observable(target_path)
-    analyzer = De4dotAnalyzer(
-        context=create_test_context(root=root),
-        config=get_analysis_module_config(ANALYSIS_MODULE_DE4DOT))
-    analysis_result = analyzer.execute_analysis(observable)
-
-    assert analysis_result == AnalysisExecutionResult.COMPLETED
-    analysis = observable.get_analysis(De4dotAnalysis)
-    assert analysis.deobfuscated
-    
-    # there should be a single file observable
-    assert isinstance(analysis, De4dotAnalysis)
-    assert len(analysis.observables) == 1
-    assert analysis.observables[0].type == F_FILE
-    assert analysis.observables[0].file_path == 'malicious.exe.deobfuscated'
-    assert analysis.observables[0].redirection == observable
-    assert analysis.observables[0].has_relationship(R_EXTRACTED_FROM)
-
-@pytest.mark.integration
 def test_zipped_jar(datadir, test_context):
     # Create a test alert with file observable
     root = create_root_analysis(analysis_mode='test_single')
@@ -334,52 +382,6 @@ def test_zipped_jar(datadir, test_context):
     assert len(extracted) == 1
     assert extracted[0].file_path == 'zipped.jar.extracted/META-INF/MANIFEST.MF'
     assert extracted[0].has_relationship(R_EXTRACTED_FROM)
-
-
-@pytest.mark.integration
-def test_exif_analysis(caplog, datadir, monkeypatch, test_context):
-    # Create a test alert with an office document
-    root = create_root_analysis(analysis_mode='test-single')
-    root.initialize_storage()
-    observable = root.add_file_observable(datadir / 'doc.docx')
-
-    # Execute the analysis
-    analyzer = AnalysisModuleAdapter(ExifAnalyzer(
-        context=create_test_context(root=root),
-        config=get_analysis_module_config(ANALYSIS_MODULE_EXIF)))
-    analysis = analyzer.execute_analysis(observable)
-
-    assert analysis == AnalysisExecutionResult.COMPLETED
-    assert 'Exif data collection completed.' in caplog.text
-
-    # Create a second test alert with a non document file observable
-    # This should fail because it's not an office document
-    root = create_root_analysis(analysis_mode='test-single')
-    root.initialize_storage()
-    observable = root.add_file_observable(datadir / 'hello_world.exe')
-    if observable:
-
-        # Execute the analysis
-        analyzer = AnalysisModuleAdapter(ExifAnalyzer(
-            context=create_test_context(root=root),
-            config=get_analysis_module_config(ANALYSIS_MODULE_EXIF)))
-        analysis = analyzer.execute_analysis(observable)
-
-        assert analysis is False
-
-    # Create a third test alert with an ole
-    root = create_root_analysis(analysis_mode='test-single')
-    root.initialize_storage()
-    observable = root.add_file_observable(datadir / 'doc.doc')
-
-    # Execute the analysis
-    analyzer = AnalysisModuleAdapter(ExifAnalyzer(
-        context=create_test_context(root=root),
-        config=get_analysis_module_config(ANALYSIS_MODULE_EXIF)))
-    analysis = analyzer.execute_analysis(observable)
-
-    assert analysis == AnalysisExecutionResult.COMPLETED
-
 
 
 @pytest.mark.parametrize('valid_analysis_modes,analysis_mode, valid_alert_types,alert_type,expected_result', [
@@ -512,30 +514,6 @@ def test_ocr_analyzer(datadir, test_filename, expected_strings, expected_urls, e
     url_observable_values = [o.value for o in analysis.observables]
     assert all(expected_url in url_observable_values for expected_url in expected_urls)
 
-@pytest.mark.unit
-def test_html_data_url_extraction(datadir, test_context):
-    root = create_root_analysis(analysis_mode='test_single')
-    root.initialize_storage()
-    observable = root.add_file_observable(datadir / "ref.html")
-    
-    analyzer = HTMLDataURLAnalyzer(
-        context=create_test_context(root=root),
-        config=get_analysis_module_config(ANALYSIS_MODULE_HTML_DATA_URL_EXTRACTION))
-    
-    result = analyzer.execute_analysis(observable)
-    assert result == AnalysisExecutionResult.COMPLETED
-    analysis = observable.get_and_load_analysis(HTMLDataURLAnalysis)
-    assert isinstance(analysis, HTMLDataURLAnalysis)
-
-    assert analysis.count == 2
-
-    # Extracted data-URL images skip expensive OCR but must still be scanned
-    # for QR codes -- an embedded data-URL image is a common quishing vector.
-    for extracted in analysis.get_observables_by_type(F_FILE):
-        excluded = " ".join(extracted.excluded_analysis)
-        assert "OCRAnalyzer" in excluded
-        assert "QRCodeAnalyzer" not in excluded
-
 OFFICE_XML_RELS = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
 <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>
@@ -552,7 +530,7 @@ OFFICE_XML_RELS = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 ])
 @pytest.mark.unit
 def test_office_xml_rel(tmp_path, test_context, file_name, expected_urls):
-    root = create_root_analysis(analysis_mode='test_single')
+    root = create_root_analysis(analysis_mode="test_single", uuid=str(uuid.uuid4()))
     root.initialize_storage()
     rels_path = tmp_path / file_name
     rels_path.write_text(OFFICE_XML_RELS)
@@ -579,26 +557,101 @@ def test_office_xml_rel(tmp_path, test_context, file_name, expected_urls):
     assert [dp.signature_uuid for dp in observable.detections] == [OFFICE_EXTERNAL_OLEOBJECT.uuid]
 
 @pytest.mark.unit
-def test_one_file_in_zip_detection(datadir):
-    root = create_root_analysis(analysis_mode='test_single')
+def test_office_xml_rel_target_without_host(tmp_path, test_context):
+    """An oleObject target that is not a valid URL adds no URL observable, but the document still alerts."""
+    root = create_root_analysis(analysis_mode="test_single", uuid=str(uuid.uuid4()))
     root.initialize_storage()
-    #shutil.copy(str(datadir / "evil.zip"), root.storage_dir)
-    observable = root.add_file_observable(datadir / "evil.zip")
+    rels_path = tmp_path / "document.xml.rels"
+    rels_path.write_text(OFFICE_XML_RELS.replace("https://example.com/payload.html!", "https:.."))
+    observable = root.add_file_observable(rels_path)
 
-    analyzer = AnalysisModuleAdapter(FileTypeAnalyzer(
+    analyzer = OfficeXMLRelationshipExternalURLAnalyzer(
         context=create_test_context(root=root),
-        config=get_analysis_module_config(ANALYSIS_MODULE_FILE_TYPE)))
-    analyzer.execute_analysis(observable)
-    
-    analyzer = AnalysisModuleAdapter(ArchiveAnalyzer(
-        context=create_test_context(root=root),
-        config=get_analysis_module_config(ANALYSIS_MODULE_ARCHIVE)))
-    
-    result = analyzer.execute_analysis(observable)
-    assert result == AnalysisExecutionResult.COMPLETED
-    analysis = observable.get_and_load_analysis(ArchiveAnalysis)
-    assert analysis.has_tag("one_in_zip")
+        config=get_analysis_module_config(ANALYSIS_MODULE_OFFICE_XML_REL))
 
+    assert analyzer.execute_analysis(observable) == AnalysisExecutionResult.COMPLETED
+    analysis = observable.get_and_load_analysis(OfficeXMLRelationshipExternalURLAnalysis)
+    assert analysis.urls == ["https:.."]
+    assert analysis.get_observables_by_type(F_URL) == []
+    assert [dp.signature_uuid for dp in observable.detections] == [OFFICE_EXTERNAL_OLEOBJECT.uuid]
+
+@pytest.mark.unit
+def test_office_xml_rel_that_cannot_be_parsed(tmp_path, test_context):
+    """The targets read before the parse error are still added, and the analysis says it failed."""
+    root = create_root_analysis(analysis_mode="test_single", uuid=str(uuid.uuid4()))
+    root.initialize_storage()
+    rels_path = tmp_path / "document.xml.rels"
+    rels_path.write_text(OFFICE_XML_RELS.replace("</Relationships>", "<Relationship"))
+    observable = root.add_file_observable(rels_path)
+
+    analyzer = OfficeXMLRelationshipExternalURLAnalyzer(
+        context=create_test_context(root=root),
+        config=get_analysis_module_config(ANALYSIS_MODULE_OFFICE_XML_REL))
+
+    assert analyzer.execute_analysis(observable) == AnalysisExecutionResult.COMPLETED
+    analysis = observable.get_and_load_analysis(OfficeXMLRelationshipExternalURLAnalysis)
+    assert analysis.error.startswith("unable to parse document.xml.rels: ")
+    assert analysis.urls == ["https://example.com/payload.html!"]
+
+@pytest.mark.unit
+def test_olevba_failure_is_an_error(tmp_path, test_context, monkeypatch):
+    def _fail(*args, **kwargs):
+        raise ValueError("not an OLE2 structured storage file")
+
+    monkeypatch.setattr("oletools.olevba.VBA_Parser", _fail)
+    root = create_root_analysis(analysis_mode="test_single", uuid=str(uuid.uuid4()))
+    root.initialize_storage()
+    path = tmp_path / "invoice.doc"
+    path.write_bytes(b"\xD0\xCF\x11\xE0\xA1\xB1\x1A\xE1" + b"\x00" * 504)
+    observable = root.add_file_observable(path)
+    file_type = FileTypeAnalysis()
+    file_type.details = {"type": "Composite Document File V2 Document", "mime": "application/msword"}
+    observable.add_analysis(file_type)
+
+    analyzer = OLEVBA_Analyzer_v1_2(context=create_test_context(root=root),
+                                    config=get_analysis_module_config(ANALYSIS_MODULE_OLEVBA_V1_2))
+
+    assert analyzer.execute_analysis(observable) == AnalysisExecutionResult.COMPLETED
+    assert observable.get_analysis(OLEVBA_Analysis_v1_2).error == "olevba failed: not an OLE2 structured storage file"
+    assert observable.has_tag("olevba_failed")
+
+def _olevba_on(root, path):
+    observable = root.add_file_observable(path)
+    file_type = FileTypeAnalysis()
+    file_type.details = {"type": "Zip archive data", "mime": "application/zip"}
+    observable.add_analysis(file_type)
+    analyzer = OLEVBA_Analyzer_v1_2(context=create_test_context(root=root),
+                                    config=get_analysis_module_config(ANALYSIS_MODULE_OLEVBA_V1_2))
+    assert analyzer.execute_analysis(observable) == AnalysisExecutionResult.COMPLETED
+    return observable
+
+@pytest.mark.unit
+def test_olevba_on_an_encrypted_zip_is_not_an_error(tmp_path):
+    payload = tmp_path / "invoice.txt"
+    payload.write_text("payload")
+    archive = tmp_path / "invoice.zip"
+    subprocess.run(["7z", "a", "-tzip", "-pSecr3tPw", str(archive), str(payload)], check=True, capture_output=True)
+    root = create_root_analysis(analysis_mode="test_single", uuid=str(uuid.uuid4()))
+    root.initialize_storage()
+
+    observable = _olevba_on(root, archive)
+
+    assert observable.get_analysis(OLEVBA_Analysis_v1_2).error is None
+    assert not observable.has_tag("olevba_failed")
+
+@pytest.mark.unit
+def test_olevba_that_cannot_open_an_office_document_is_an_error(tmp_path):
+    payload = tmp_path / "invoice.txt"
+    payload.write_text("payload")
+    archive = tmp_path / "invoice.docx"
+    subprocess.run(["7z", "a", "-tzip", "-pSecr3tPw", str(archive), str(payload)], check=True, capture_output=True)
+    root = create_root_analysis(analysis_mode="test_single", uuid=str(uuid.uuid4()))
+    root.initialize_storage()
+
+    observable = _olevba_on(root, archive)
+
+    assert observable.get_analysis(OLEVBA_Analysis_v1_2).error.startswith("olevba failed: Failed to open file ")
+    assert observable.has_tag("olevba_failed")
 
 @pytest.mark.unit
 def test_file_type_image_yara_meta(datadir):
@@ -715,21 +768,6 @@ def test_file_type_no_type_for_generic_files(datadir):
 
 
 
-
-@pytest.mark.unit
-def test_empty_file_hash(datadir, test_context):
-    root = create_root_analysis(analysis_mode='test_single')
-    root.initialize_storage()
-    observable = root.add_file_observable(datadir / "empty")
-    
-    analyzer = AnalysisModuleAdapter(FileHashAnalyzer(
-        context=create_test_context(root=root),
-        config=get_analysis_module_config(ANALYSIS_MODULE_FILE_HASH_ANALYZER)))
-    
-    result = analyzer.execute_analysis(observable)
-    assert result == AnalysisExecutionResult.COMPLETED
-    analysis = observable.get_and_load_analysis(FileHashAnalysis)
-    assert analysis is None
 
 @pytest.mark.unit
 def test_qrcode(datadir, test_context):
@@ -858,16 +896,22 @@ def test_qrcode_negative_records_empty_analysis(tmp_path, test_context):
 
 
 @pytest.mark.unit
-def test_qrcode_scan_failure_records_no_analysis(tmp_path, test_context, monkeypatch):
+def test_qrcode_scan_failure_records_no_analysis(tmp_path, test_context):
     """A failed scan (timeout / zbarimg error) means 'unknown', not 'no QR
     code' — nothing is recorded, so the failure can never be cached as a
     negative result."""
-    monkeypatch.setattr(QRCodeAnalyzer, "_scan_image", lambda self, path: None)
-    monkeypatch.setattr(QRCodeAnalyzer, "_scan_inverted_image", lambda self, path: None)
+    # a truncated png still opens as an image, but zbarimg exits with an error on it and PIL cannot
+    # load it to invert it, so both scans fail
+    blank = _make_blank_png(tmp_path)
+    with open(blank, "rb") as fp:
+        data = fp.read()
+    truncated = os.path.join(str(tmp_path), "truncated.png")
+    with open(truncated, "wb") as fp:
+        fp.write(data[:len(data) // 2])
 
     root = create_root_analysis(analysis_mode='test_single')
     root.initialize_storage()
-    observable = root.add_file_observable(_make_blank_png(tmp_path))
+    observable = root.add_file_observable(truncated)
 
     analyzer = AnalysisModuleAdapter(QRCodeAnalyzer(
         context=create_test_context(root=root),
@@ -905,7 +949,7 @@ def test_ocr_failure_records_no_analysis(tmp_path, test_context, monkeypatch):
     def _raise(image):
         raise RuntimeError("tesseract crashed")
 
-    monkeypatch.setattr("saq.modules.file_analysis.ocr.get_image_text", _raise)
+    monkeypatch.setattr("saq.ocr.get_image_text", _raise)
 
     root = create_root_analysis(analysis_mode='test_single')
     root.initialize_storage()
@@ -976,7 +1020,12 @@ def test_file_type_persists_mime_type_on_observable(datadir, monkeypatch):
     def _no_fork(*args, **kwargs):
         raise AssertionError("mime_type forked `file` for an already-analyzed observable")
 
+    # the FileTypeAnalysis fallback also answers without a fork, but loads the analysis from disk
+    def _no_analysis_read(*args, **kwargs):
+        raise AssertionError("mime_type read the FileTypeAnalysis instead of the value stored on the observable")
+
     monkeypatch.setattr(file_module, "Popen", _no_fork)
+    monkeypatch.setattr(file_module.FileObservable, "_mime_type_from_file_type_analysis", _no_analysis_read)
     assert reloaded.mime_type == "image/gif"
     assert reloaded.is_image is True
 

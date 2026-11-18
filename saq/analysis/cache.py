@@ -405,11 +405,17 @@ def put_cached_delta(
             exc_info=True,
             extra={"module_name": module_name},
         )
-        try:
-            get_db(DB_ANALYSIS_RESULT_CACHE).rollback()
-        except Exception:
-            pass
+        _rollback_cache_session()
         return None
+
+
+def _rollback_cache_session() -> None:
+    """Roll back the analysis cache session after a failed lookup or write. Never raises: both
+    callers are on the executor's path and must not."""
+    try:
+        get_db(DB_ANALYSIS_RESULT_CACHE).rollback()
+    except Exception:
+        logging.warning("unable to roll back the analysis cache session", exc_info=True)
 
 
 def collect_stats() -> dict:
@@ -763,6 +769,9 @@ def get_cached_delta(
                 "cache_key_prefix": cache_key_prefix,
             },
         )
+        # a connection lost mid-lookup leaves the session's transaction invalid, and every
+        # later lookup and write on it fails until it is rolled back
+        _rollback_cache_session()
         return _result(None, "decode_error")
 
 
@@ -805,16 +814,16 @@ def apply_delta(
     file_specs = delta.file_observable_specs()
     staging_dir = None
     staged_files: dict[str, str] = {}  # spec.uuid -> staged path
-    if file_specs:
-        if blob_store is None:
-            blob_store = get_blob_store()
-        staging_dir = tempfile.mkdtemp(prefix=".cache_replay_", dir=root.storage_dir)
-        for spec in file_specs:
-            staged_path = os.path.join(staging_dir, spec.uuid)
-            blob_store.materialize(spec.value, staged_path)
-            staged_files[spec.uuid] = staged_path
-
     try:
+        if file_specs:
+            if blob_store is None:
+                blob_store = get_blob_store()
+            staging_dir = tempfile.mkdtemp(prefix=".cache_replay_", dir=root.storage_dir)
+            for spec in file_specs:
+                staged_path = os.path.join(staging_dir, spec.uuid)
+                blob_store.materialize(spec.value, staged_path)
+                staged_files[spec.uuid] = staged_path
+
         # 1. Rehydrate the Analysis object first so step 2's new observables
         # can be hung off it as children (matching the live run's structure).
         # _rehydrate_analysis returns the freshly rehydrated analysis, the

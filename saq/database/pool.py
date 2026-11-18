@@ -3,33 +3,44 @@ from contextlib import contextmanager
 from datetime import datetime
 import logging
 import os
-import sys
 import threading
-from typing import Any, Callable
+import time
+from typing import TYPE_CHECKING, Any, Callable
 import warnings
 import weakref
 
 import pymysql
-from sqlalchemy import Engine, create_engine, event
 
 from saq.configuration.config import get_config
 from saq.monitor import emit_monitor
 from saq.monitor_definitions import MONITOR_DB_POOL_AVAILABLE_COUNT, MONITOR_DB_POOL_IN_USE_COUNT, MONITOR_SQLALCHEMY_DB_POOL_STATUS
 from saq.util import abs_path, create_timedelta
 
-from sqlalchemy.exc import DisconnectionError
-from sqlalchemy.orm.scoping import scoped_session
-from sqlalchemy.orm.session import sessionmaker
+if TYPE_CHECKING:
+    from sqlalchemy import Engine
+    from sqlalchemy.orm.scoping import scoped_session
 
-# registry of SQLAlchemy ORM scoped sessions keyed by database config name
-# the "ace" session is registered by initialize_database(); sessions for other
-# databases are created lazily on first get_db() request
-_db_sessions: dict[str, scoped_session] = {}
+# SQLAlchemy is imported only where an engine or a session is built: every process imports this module for its
+# raw connections (node registration, the email archive), and only the ones that query through the ORM need it
+
+# every pool ACE builds (the SQLAlchemy engines here and in aceapi_v2/database.py, and the raw one) keeps POOL_SIZE
+# idle connections for reuse and closes the rest as they come back. a SQLAlchemy engine makes a caller wait once
+# POOL_SIZE + POOL_MAX_OVERFLOW are checked out; the raw pool opens more past that point, because callers nest
+# get_db_connection() and would deadlock waiting on themselves, and warns instead.
+# the raw pool opens a connection only when every open one is checked out, and retires each one max_connection_lifetime
+# after it opened it, so it holds no more than the most it had in use over that time. it logs that number once
+# per max_connection_lifetime (_database_pool._rotate_window), which is what to look at before changing POOL_SIZE
+POOL_SIZE = 5
+POOL_MAX_OVERFLOW = 10
+
+# registry of SQLAlchemy ORM scoped sessions keyed by database config name, each created
+# (with its own engine) on its first get_db() request
+_db_sessions: dict[str, "scoped_session"] = {}
 _db_sessions_lock = threading.RLock()
 
 # every SQLAlchemy engine this module creates, so that reset_database_after_fork() can
 # find them all. guarded by _db_sessions_lock along with _db_sessions
-_db_engines: set[Engine] = set()
+_db_engines: set["Engine"] = set()
 
 # every DBAPI connection opened in this process, tagged with the pid that opened it, so
 # that a forked child can neutralise the ones it inherited before anything touches them.
@@ -47,12 +58,11 @@ def _track_connection(connection):
     except Exception as e:
         logging.debug("unable to track database connection: %s", e)
 
-def get_db(name: str = "ace") -> scoped_session:
+def get_db(name: str = "ace") -> "scoped_session":
     """returns the SQLAlchemy scoped session for the named database
 
     get_db() with no argument returns the "ace" session
-    sessions for other configured databases are created lazily (with their own
-    engine) on first request."""
+    sessions are created lazily (each with its own engine) on first request."""
     if name is None:
         name = "ace"
 
@@ -61,19 +71,17 @@ def get_db(name: str = "ace") -> scoped_session:
         if session is not None:
             return session
 
-        # the "ace" session is created by initialize_database() using the flask config
-        if name == "ace":
-            return None
-
-        session = _db_sessions[name] = scoped_session(sessionmaker(bind=_create_engine_for(name)))
+        session = _db_sessions[name] = _new_session(_create_engine_for(name))
         logging.debug("created new scoped session for database %s", name)
         return session
 
-def set_db(value):
-    with _db_sessions_lock:
-        _db_sessions["ace"] = value
+def _new_session(engine) -> "scoped_session":
+    from sqlalchemy.orm.scoping import scoped_session
+    from sqlalchemy.orm.session import sessionmaker
 
-def _log_pool_issue(message: str, e: Exception):
+    return scoped_session(sessionmaker(bind=engine))
+
+def _log_pool_issue(database: str, message: str, e: Exception):
     """Log a connection-pool problem at a level that matches whether we expected it.
 
     While shutting down these are routine -- the database container is stopping at the
@@ -85,9 +93,9 @@ def _log_pool_issue(message: str, e: Exception):
     from saq.shutdown import is_shutting_down
 
     if is_shutting_down():
-        logging.debug("%s (shutting down): %s", message, e)
+        logging.debug("%s for database %s (shutting down): %s", message, database, e, extra={"database": database})
     else:
-        logging.warning("%s: %s", message, e)
+        logging.warning("%s for database %s: %s", message, database, e, extra={"database": database})
 
 
 def remove_all_sessions():
@@ -118,8 +126,14 @@ class _database_pool:
         self.pid = os.getpid()
         # lock used to make changes to the queues
         self.lock = threading.RLock()
+        # the most connections this pool has had open at once past the soft cap, so that it warns once per new peak
+        self.peak_over_cap = 0
 
         self.database_config = get_config().get_database_config(name)
+        # how often the pool logs what it used: connections do not outlive this, so nor does what the pool holds
+        self.window = create_timedelta(self.database_config.max_connection_lifetime)
+        self._reset_window(datetime.now())
+
         kwargs: dict[str, Any] = {
             'database': self.database_config.database,
             'user': self.database_config.username,
@@ -185,11 +199,52 @@ class _database_pool:
 
             self.available.clear()
             self.in_use.clear()
+            self.peak_over_cap = 0
+            self._reset_window(datetime.now())
             self.emit_monitors()
+
+    def _reset_window(self, now: datetime):
+        """Starts counting what the pool uses over the next window. Called with the lock held."""
+        self.window_start = now
+        self.window_peak = len(self.in_use)
+        self.checkouts = 0
+        self.opened = 0
+        self.closed_expired = 0
+        self.closed_idle = 0
+        self.closed_broken = 0
+
+    def _rotate_window(self, now: datetime):
+        """Logs what the pool used over the window that has ended, if it has, and starts the next one. Checked on
+        every checkout and return rather than by a thread, so a pool nobody uses logs nothing. Called with the lock
+        held."""
+        if now - self.window_start < self.window:
+            return
+
+        summary = {
+            "database": self.name,
+            "window_seconds": int((now - self.window_start).total_seconds()),
+            "peak_in_use": self.window_peak,
+            "idle": len(self.available),
+            "checkouts": self.checkouts,
+            "opened": self.opened,
+            "closed_expired": self.closed_expired,
+            "closed_idle": self.closed_idle,
+            "closed_broken": self.closed_broken,
+        }
+        self._reset_window(now)
+        logging.info(
+            f"database pool {self.name} in pid {self.pid} over the last {summary['window_seconds']}s: "
+            f"at most {summary['peak_in_use']} connections in use, {summary['idle']} idle now, "
+            f"{summary['checkouts']} checkouts, {summary['opened']} opened, "
+            f"{summary['closed_expired']} closed past their lifetime, {summary['closed_idle']} closed as idle, "
+            f"{summary['closed_broken']} closed as broken",
+            extra=summary)
 
     def get_connection(self):
         connection = None
         with self.lock:
+            self._rotate_window(datetime.now())
+            self.checkouts += 1
             try:
                 connection = self.available.pop()
 
@@ -200,23 +255,39 @@ class _database_pool:
                     connection.rollback()
                 except Exception as e:
                     # if we can't rollback then toss this connection and get a new one
-                    _log_pool_issue("unable to rollback connection on get_connection", e)
+                    _log_pool_issue(self.name, "unable to rollback connection on get_connection", e)
                     self.close_connection(connection)
+                    self.closed_broken += 1
                     connection = self.open_new_connection()
 
                 # drop old connections
                 if datetime.now() >= connection.termination_date: # termination_date is a property we add in open_new_connection()
                     logging.info(f"terminating old connection {connection}")
                     self.close_connection(connection)
+                    self.closed_expired += 1
                     connection = self.open_new_connection()
             except IndexError:
                 connection = self.open_new_connection()
 
             self.in_use.append(connection)
+            self.window_peak = max(self.window_peak, len(self.in_use))
             connection.acquired = datetime.now()
+            self._warn_past_soft_cap()
             self.emit_monitors()
 
         return connection
+
+    def _warn_past_soft_cap(self):
+        """Warns when the pool has more connections open than a SQLAlchemy engine would allow, once per new peak.
+        The connection is opened anyway (see POOL_MAX_OVERFLOW). Called with the lock held."""
+        soft_cap = POOL_SIZE + POOL_MAX_OVERFLOW
+        open_connections = len(self.in_use) + len(self.available)
+        if open_connections > max(soft_cap, self.peak_over_cap):
+            self.peak_over_cap = open_connections
+            logging.warning(
+                f"{open_connections} connections open to database {self.name} in pid {self.pid}, "
+                f"past the soft cap of {soft_cap}",
+                extra={"database": self.name, "open_connections": open_connections, "soft_cap": soft_cap})
 
     def return_connection(self, connection):
         if connection is None:
@@ -225,20 +296,43 @@ class _database_pool:
         try:
             connection.rollback()
         except Exception as e:
-            _log_pool_issue(f"unable to rollback connection {connection} on return to pool", e)
+            _log_pool_issue(self.name, f"unable to rollback connection {connection} on return to pool", e)
             self.destroy_connection(connection)
             return
 
+        now = datetime.now()
         with self.lock:
+            self._rotate_window(now)
             self.in_use.remove(connection)
             self.available.append(connection)
+            # the pool reuses the connection returned last, so one under it is never checked out for get_connection()
+            # to retire: every expired one is retired here, and only POOL_SIZE are kept
+            expired = [c for c in self.available if now >= c.termination_date]
+            for c in expired:
+                self.available.remove(c)
+            excess = []
+            while len(self.available) > POOL_SIZE:
+                excess.append(self.available.popleft())
+            self.closed_expired += len(expired)
+            self.closed_idle += len(excess)
             self.emit_monitors()
+
+        # outside the lock, because closing a connection writes to the server
+        for c in expired:
+            logging.info(f"terminating old connection {c}")
+            self.close_connection(c)
+
+        if excess:
+            logging.debug(f"closing {len(excess)} idle connections to {self.name} past the pool size of {POOL_SIZE}")
+            for c in excess:
+                self.close_connection(c)
 
     def close_connection(self, connection):
         try:
             connection.close()
         except Exception as e:
-            logging.warning(f"unable to close database connection: {e} connection {connection}")
+            logging.warning(f"unable to close database connection: {e} connection {connection}",
+                            extra={"database": self.name})
 
     def destroy_connection(self, connection):
         self.close_connection(connection)
@@ -246,6 +340,7 @@ class _database_pool:
         with self.lock:
             try:
                 self.in_use.remove(connection)
+                self.closed_broken += 1
                 self.emit_monitors()
             except ValueError:
                 logging.warning(f"attempted to remove missing database connection {connection}")
@@ -257,6 +352,8 @@ class _database_pool:
         cursor.execute('SET SESSION TRANSACTION ISOLATION LEVEL READ COMMITTED')
         cursor.close()
         connection.commit()
+        # get_connection() opens connections, with the lock held
+        self.opened += 1
 
         # keep track of when this connection should be invalidated
         setattr(connection,
@@ -285,7 +382,7 @@ class _database_pool:
                 try:
                     c.close()
                 except Exception as e:
-                    _log_pool_issue("unable to close database connection", e)
+                    _log_pool_issue(self.name, "unable to close database connection", e)
 
             self.available.clear()
 
@@ -293,9 +390,11 @@ class _database_pool:
                 try:
                     c.close()
                 except Exception as e:
-                    _log_pool_issue("unable to close database connection", e)
+                    _log_pool_issue(self.name, "unable to close database connection", e)
 
             self.in_use.clear()
+            self.peak_over_cap = 0
+            self._reset_window(datetime.now())
             self.emit_monitors()
 
     @property
@@ -369,9 +468,12 @@ def _attach_engine_listeners(engine):
     it cannot see a connection that was already checked out when the fork happened, and
     pool_pre_ping writes to the socket before it ever runs. reset_database_after_fork()
     is what actually keeps the two processes apart."""
+    from sqlalchemy import event
+    from sqlalchemy.exc import DisconnectionError
 
     with _db_sessions_lock:
         _db_engines.add(engine)
+        register_sql_timing_listeners()
 
     @event.listens_for(engine, 'connect')
     def connect(dbapi_connection, connection_record):
@@ -394,6 +496,41 @@ def _attach_engine_listeners(engine):
             raise DisconnectionError(message)
 
 
+def _log_sql_exec_times() -> bool:
+    """Whether query timing is enabled.
+
+    These listeners are registered on the Engine class, so they fire for *every* engine in
+    the process, including ones created before the configuration is loaded (the test suite
+    seeds its per-session databases that way). No configuration means no timing."""
+    config = get_config()
+    return config is not None and config.global_settings.log_sql_exec_times
+
+
+def register_sql_timing_listeners():
+    """Registers the query timing listeners on the Engine class, once per process.
+
+    Called for every engine ACE builds (here, and the API's async engines in aceapi_v2.database) rather
+    than when this module is imported, which would import SQLAlchemy into every process."""
+    from sqlalchemy import Engine, event
+
+    with _db_sessions_lock:
+        if not event.contains(Engine, "before_cursor_execute", _before_cursor_execute):
+            event.listen(Engine, "before_cursor_execute", _before_cursor_execute)
+            event.listen(Engine, "after_cursor_execute", _after_cursor_execute)
+
+
+def _before_cursor_execute(conn, cursor, statement, parameters, context, executemany):
+    if _log_sql_exec_times():
+        context._query_start_time = time.time()
+        logging.debug("START QUERY {} ({})".format(statement, parameters))
+
+
+def _after_cursor_execute(conn, cursor, statement, parameters, context, executemany):
+    if _log_sql_exec_times():
+        total = time.time() - context._query_start_time
+        logging.debug("END QUERY {:02f} {} ({})".format(total * 1000, statement, parameters))
+
+
 def _build_database_url(database_config) -> str:
     """builds a SQLAlchemy connection URL for the given database config"""
     if database_config.unix_socket:
@@ -412,14 +549,12 @@ def _build_database_url(database_config) -> str:
 
 
 def _build_engine_options(database_config) -> dict:
-    """builds the create_engine kwargs for the given database config
-
-    mirrors the SQLALCHEMY_DATABASE_OPTIONS that flask_config builds for the
-    ace database so that alternate databases get the same pooling behavior."""
+    """builds the create_engine kwargs for the given database config"""
     options: dict[str, Any] = {
         "pool_recycle": 60 * 10,  # 10 minute connection pool recycle
         "pool_timeout": 30,
-        "pool_size": 5,
+        "pool_size": POOL_SIZE,
+        "max_overflow": POOL_MAX_OVERFLOW,
         "connect_args": {"init_command": "SET NAMES utf8mb4"},
         "pool_pre_ping": True,
     }
@@ -429,7 +564,9 @@ def _build_engine_options(database_config) -> dict:
 
     if not database_config.unix_socket:
         if database_config.ssl_ca or database_config.ssl_cert or database_config.ssl_key:
-            ssl_options = {"ca": abs_path(database_config.ssl_ca)}
+            ssl_options = {}
+            if database_config.ssl_ca:
+                ssl_options["ca"] = abs_path(database_config.ssl_ca)
             if database_config.ssl_cert:
                 ssl_options["cert"] = abs_path(database_config.ssl_cert)
             if database_config.ssl_key:
@@ -440,7 +577,9 @@ def _build_engine_options(database_config) -> dict:
 
 
 def _create_engine_for(name: str):
-    """creates a SQLAlchemy engine for the named (non-ace) database config"""
+    """creates a SQLAlchemy engine for the named database config"""
+    from sqlalchemy import create_engine
+
     database_config = get_config().get_database_config(name)
     engine = create_engine(
         _build_database_url(database_config),
@@ -451,32 +590,37 @@ def _create_engine_for(name: str):
 
 
 def initialize_database():
-    """Initializes database connections by creating the SQLAlchemy engine and session objects."""
-
-    from flask_config import get_flask_config
+    """Prepares the database connections. get_db() creates the "ace" session on first use: building it
+    imports SQLAlchemy, which a process that never queries through the ORM does not need."""
 
     # see https://github.com/PyMySQL/PyMySQL/issues/644
     # /usr/local/lib/python3.6/dist-packages/pymysql/cursors.py:170: Warning: (1300, "Invalid utf8mb4 character string: '800363'")
     warnings.filterwarnings(action='ignore', message='.*Invalid utf8mb4 character string.*')
 
-    if get_db() is None:
-        engine = create_engine(
-            get_flask_config(get_config().global_settings.instance_type).SQLALCHEMY_DATABASE_URI,
-            isolation_level='READ COMMITTED',
-            **get_flask_config(get_config().global_settings.instance_type).SQLALCHEMY_DATABASE_OPTIONS)
-
-        _attach_engine_listeners(engine)
-        set_db(scoped_session(sessionmaker(bind=engine)))
-
-    else:
-        # if you call this a second time it just closes all the sessions
-        # this (currently) happens in unit testing
-        from sqlalchemy.orm.session import close_all_sessions
-        close_all_sessions()
+    with _db_sessions_lock:
+        if "ace" in _db_sessions:
+            # if you call this a second time it just closes all the sessions
+            # this (currently) happens in unit testing
+            from sqlalchemy.orm.session import close_all_sessions
+            close_all_sessions()
 
 # ----------------------------------------------------------------------
 # fork safety
 # ----------------------------------------------------------------------
+
+# the sockets and read buffers taken off inherited connections in a forked child, kept for the life of
+# the process so that nothing inherited is ever freed there: freeing a read buffer closes it, and freeing
+# a TLS socket that was never shut down has OpenSSL take its context's lock (see reset_database_after_fork)
+_abandoned_after_fork = []
+
+
+def _write_stderr(message: str):
+    # os.write, not sys.stderr: a thread that does not exist in a forked child can hold its buffer lock
+    try:
+        os.write(2, message.encode(errors="replace"))
+    except OSError:
+        pass  # there is nowhere left to say it
+
 
 def reset_database_after_fork():
     """Drop every database connection inherited from the parent process.
@@ -499,27 +643,49 @@ def reset_database_after_fork():
     close writes COM_QUIT, and a checkin writes a ROLLBACK, down a connection the parent
     is still using -- which is the damage this exists to prevent. So:
 
-    _force_close() drops this process's file descriptor and nothing else. The parent
-    still holds its own descriptor for the same socket, so the connection stays up and
-    the server is told nothing. This is the same reasoning _database_pool.close() already
-    documents. It has to happen first, before the connections become unreachable: once
-    SQLAlchemy's _finalize_fairy runs on a garbage collected connection it issues a reset
-    *and* a close on the way out, and a force closed connection makes both no-ops.
+    Each inherited connection is left the way _force_close() leaves one, with no socket and
+    no read buffer, and this process's copy of the socket's file descriptor is closed. That
+    is all: the parent still holds its own descriptor for the same socket, so the connection
+    stays up and the server is told nothing. This is the same reasoning _database_pool.close()
+    already documents. It has to happen first, before the connections become unreachable, so
+    that a close on the way out (garbage collection, or invalidating the record) is a no-op.
 
     engine.dispose(close=False) is then SQLAlchemy's documented after-fork call: it swaps
-    in a fresh pool and abandons the inherited one rather than closing it.
+    in a fresh pool and abandons the inherited one rather than closing it. The abandoned pool
+    is then set not to reset what is checked in to it. A connection that was checked out at
+    the fork (a session holding an open transaction) is checked in to it when the child
+    garbage collects it, and SQLAlchemy's _finalize_fairy would reset it with a ROLLBACK.
+    pymysql refuses that before writing a byte, since there is no socket, but SQLAlchemy logs
+    it at ERROR ("Exception during reset or similar"), which reads as a database failure.
     registry.clear() drops the inherited Session objects the same way -- unlike
     remove_all_sessions(), which calls Session.close() and would check a connection back
     into the pool with a rollback on the way.
 
     Nothing here may use the logging module either, which is why the diagnostics below go
-    straight to sys.stderr. os.register_at_fork child handlers run inside os.fork(), before
+    straight to file descriptor 2. os.register_at_fork child handlers run inside os.fork(), before
     multiprocessing's _bootstrap calls util._run_after_forkers() -- so at this point every
     fork-aware thread-local still holds the object the child inherited from the parent. A
     root handler that talks to another process is then used over the *parent's* connection:
     the unit test MemoryLogHandler writes every record into a SyncManager list, and two
     processes on one stream socket desynchronise it exactly the way two processes on one
     MySQL socket do. Both sides block forever on a reply that was never sent.
+
+    This runs in every fork that runs Python in the child: os.fork(), the fork context
+    ACE_MP_CONTEXT is, and a subprocess started with a preexec_fn, which forks the same way
+    and runs this before it execs. Only the forking thread exists in that child, so nothing
+    here may take a lock another thread of the parent can hold at the fork: that lock is never
+    released, and the child waits for ever, before it ever execs. That rules out closing or
+    freeing an inherited read buffer, whose lock a thread waiting for a query reply holds (the
+    engine's lock keepalive thread is one every few seconds): _force_close() does both, and so
+    does pymysql's __del__. A buffer whose lock is held stays referenced by the stack of the thread
+    that held it, which the child keeps and never runs, but the sockets and buffers are also kept
+    in _abandoned_after_fork, so that nothing inherited is freed here at all (freeing a TLS socket
+    has OpenSSL take a lock as well), and the socket's descriptor is closed with os.close once
+    detach() has taken it from the socket object. It also rules out writing through sys.stderr, whose buffer lock any thread
+    writing to stderr holds. Other code that runs in such a child (other libraries' at-fork
+    hooks, a preexec_fn itself) has the same problem, so a process that runs other threads
+    still must not start a subprocess with a preexec_fn; `setpriv --pdeathsig` gives a
+    parent-death signal without one (aceapi_v2/cli/service.py).
     """
     pid = os.getpid()
 
@@ -530,15 +696,26 @@ def reset_database_after_fork():
 
     for connection in inherited:
         try:
-            connection._force_close()
+            sock, rfile = connection._sock, connection._rfile
+            connection._sock = connection._rfile = None
+            _abandoned_after_fork.append((sock, rfile))
+            if sock is not None:
+                os.close(sock.detach())
         except Exception as e:
-            sys.stderr.write(f"WARNING: unable to force close inherited connection after fork: {e}\n")
+            _write_stderr(f"WARNING: unable to close inherited connection after fork: {e}\n")
 
     for engine in list(_db_engines):
         try:
+            # local, like every SQLAlchemy import here; an engine exists, so this only reads sys.modules
+            from sqlalchemy.pool.base import reset_none
+
+            inherited_pool = engine.pool
             engine.dispose(close=False)
+            # only once it has been swapped out: recreate() copies this setting into the new pool, which must
+            # keep rolling back. _ConnectionFairy._reset reads this private attribute; test_pool_fork.py pins it
+            inherited_pool._reset_on_return = reset_none
         except Exception as e:
-            sys.stderr.write(f"WARNING: unable to dispose inherited engine after fork: {e}\n")
+            _write_stderr(f"WARNING: unable to dispose inherited engine after fork: {e}\n")
 
     for name, session in list(_db_sessions.items()):
         if session is None:
@@ -547,14 +724,14 @@ def reset_database_after_fork():
         try:
             session.registry.clear()
         except Exception as e:
-            sys.stderr.write(f"WARNING: unable to clear inherited {name} session after fork: {e}\n")
+            _write_stderr(f"WARNING: unable to clear inherited {name} session after fork: {e}\n")
 
     # the raw pymysql pools go the same way. get_pool() would rebuild them lazily on its
     # own pid check, but dropping them here means an inherited connection is never even
     # a candidate.
     _global_db_pools.clear()
 
-    sys.stderr.write(f"NOTICE: reset {len(inherited)} inherited database connections in pid {pid}\n")
+    _write_stderr(f"NOTICE: reset {len(inherited)} inherited database connections in pid {pid}\n")
 
 
 def _before_fork():

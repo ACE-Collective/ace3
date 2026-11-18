@@ -104,8 +104,9 @@ def reset_alert_routers() -> None:
         _loaded = False
 
 
-def route_alert(root, stage: RouteStage) -> Optional[RouteDecision]:
-    """Run the routers in priority order and return the first decision, or None.
+def route_alert(root, stage: RouteStage, *, final: bool) -> Optional[RouteDecision]:
+    """Run the routers in priority order and return the first decision, or None. final: see
+    AlertRouter.route.
 
     A router that raises, or returns something that is not a RouteDecision, is reported and
     skipped: routing never breaks the alert insert or the analysis pass it runs inside.
@@ -113,7 +114,7 @@ def route_alert(root, stage: RouteStage) -> Optional[RouteDecision]:
     load_alert_routers()
     for router in get_alert_routers():
         try:
-            decision = router.route(root, stage)
+            decision = router.route(root, stage, final)
             if decision is None:
                 continue
             if not isinstance(decision, RouteDecision):
@@ -125,7 +126,7 @@ def route_alert(root, stage: RouteStage) -> Optional[RouteDecision]:
         decision = replace(decision, router=router.name)
         logging.info(
             "alert router decided a queue",
-            extra={"alert_uuid": root.uuid, "stage": stage.value, "router": router.name,
+            extra={"alert_uuid": root.uuid, "stage": stage.value, "final": final, "router": router.name,
                    "queue": decision.queue, "reason": decision.reason})
         return decision
 

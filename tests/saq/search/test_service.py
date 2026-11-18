@@ -1,9 +1,12 @@
 import logging
+import shutil
 import uuid
 from unittest.mock import Mock, patch
 
+import httpx
 import pytest
 from pydantic import ValidationError
+from qdrant_client.http.exceptions import ResponseHandlingException
 
 from saq.configuration.config import get_config
 from saq.database.pool import get_db_connection
@@ -32,6 +35,7 @@ from saq.search.tasks import (
     submit_index_task,
     submit_payload_task,
 )
+from tests.saq.helpers import insert_alert
 
 pytestmark = pytest.mark.unit
 
@@ -59,12 +63,28 @@ class TestSubmit:
             assert submit_index_task("u") is False
         mock_redis.assert_not_called()
 
-    def test_missing_service_section_is_a_noop(self, monkeypatch):
-        def raise_(name):
-            raise ValueError("no such service")
+    def test_missing_service_section_is_a_noop(self, caplog):
+        del get_config().raw._data["service_search_indexer"]
+        get_config().load_service_configs()
 
-        monkeypatch.setattr("saq.search.tasks.get_service_config", raise_)
-        assert submit_index_task("u") is False
+        with patch("saq.search.tasks.get_redis_connection") as mock_redis:
+            assert submit_index_task("u") is False
+        mock_redis.assert_not_called()
+        # a site without the section is not failing: submit_task's catch-all would log it at ERROR
+        assert [record for record in caplog.records if record.levelno >= logging.ERROR] == []
+
+    def test_invalid_service_section_is_reported(self, caplog):
+        # a section that is there but fails to validate must not read as "no indexer on this site"
+        get_config().raw._data["service_search_indexer"]["worker_count"] = "two"
+        get_config().load_service_configs()
+
+        with patch("saq.search.tasks.get_redis_connection") as mock_redis, patch("saq.error.reporting.write_error_report"):
+            assert submit_index_task("u") is False
+        mock_redis.assert_not_called()
+
+        (record,) = [record for record in caplog.records if record.levelno >= logging.ERROR]
+        assert isinstance(record.exc_info[1], ValidationError)
+        assert "worker_count" in str(record.exc_info[1])
 
     @pytest.mark.parametrize("submit,op", [(submit_index_task, OP_INDEX), (submit_payload_task, OP_PAYLOAD), (submit_delete_task, OP_DELETE)])
     def test_ops_are_queued(self, enable_indexer, submit, op):
@@ -170,14 +190,21 @@ class TestWorkerLoop:
 
     def test_loop_prepares_once(self, worker):
         calls = []
+        passes = []
 
         def prepare():
             calls.append(1)
             worker.model = Mock()
 
+        def worker_execute():
+            passes.append(1)
+            if len(passes) == 3:
+                worker.stop()
+
         worker.prepare = prepare
-        worker.worker_execute = lambda: worker.stop()
+        worker.worker_execute = worker_execute
         worker.worker_loop()
+        assert len(passes) == 3
         assert calls == [1]
 
     def test_single_threaded_start_runs_the_loop(self):
@@ -227,17 +254,6 @@ class TestTaskRecovery:
             worker.defer_task(task)
         assert mock_get_redis.return_value.rpush.call_args[0][0] == FAILED_TASK_KEY
 
-    def test_worker_execute_requeues_on_error(self, worker, task):
-        with (
-            patch.object(SearchIndexWorker, "get_next_task", return_value=("key", task.model_dump_json())),
-            patch.object(SearchIndexWorker, "execute_task", side_effect=RuntimeError("boom")),
-            patch.object(SearchIndexWorker, "requeue_task") as mock_requeue,
-            patch("saq.error.reporting.write_error_report"),
-        ):
-            worker.worker_execute()
-
-        mock_requeue.assert_called_once()
-
     def test_worker_execute_defers_on_lock_unavailable(self, worker, task):
         with (
             patch.object(SearchIndexWorker, "get_next_task", return_value=("key", task.model_dump_json())),
@@ -249,23 +265,6 @@ class TestTaskRecovery:
 
         mock_defer.assert_called_once()
         mock_requeue.assert_not_called()
-
-    @pytest.mark.integration
-    def test_missing_alert_does_not_requeue(self, worker):
-        """A deleted alert is a terminal success, not a failure to retry."""
-        task = SearchIndexTask(alert_uuid=str(uuid.uuid4()))
-        with (
-            patch.object(SearchIndexWorker, "get_next_task", return_value=("key", task.model_dump_json())),
-            patch.object(SearchIndexWorker, "requeue_task") as mock_requeue,
-            patch.object(SearchIndexWorker, "defer_task") as mock_defer,
-            patch("saq.search.service.get_redis_connection"),
-        ):
-            worker.worker_execute()
-
-        mock_requeue.assert_not_called()
-        mock_defer.assert_not_called()
-        assert worker.tasks_completed == 1
-        assert _locks(task.alert_uuid) == []
 
 
 class TestLogging:
@@ -317,6 +316,7 @@ class TestLogging:
 
     @pytest.mark.integration
     def test_skipped_index_reports_the_reason(self, worker, caplog):
+        """A deleted alert is a terminal success, not a failure to retry."""
         # no alerts row: the real index_alert skips it before reaching the model or qdrant
         task = SearchIndexTask(alert_uuid=str(uuid.uuid4()))
         self.run_task(worker, task, caplog, index_alert=patch("saq.search.service.index.index_alert", wraps=index.index_alert))
@@ -324,6 +324,23 @@ class TestLogging:
         records = self.records(caplog, "search_index_task_complete")
         assert len(records) == 1
         assert records[0].skipped == "alert not found"
+
+    @pytest.mark.integration
+    def test_alert_without_storage_completes_as_skipped(self, worker, caplog):
+        # retrying cannot bring the files back: the task completes instead of being requeued
+        # until it is dead-lettered
+        alert = insert_alert()
+        shutil.rmtree(alert.storage_dir)
+        task = SearchIndexTask(alert_uuid=alert.uuid)
+        with patch.object(SearchIndexWorker, "requeue_task") as mock_requeue:
+            self.run_task(worker, task, caplog, index_alert=patch("saq.search.service.index.index_alert", wraps=index.index_alert))
+
+        mock_requeue.assert_not_called()
+        records = self.records(caplog, "search_index_task_complete")
+        assert len(records) == 1
+        assert records[0].alert_uuid == alert.uuid
+        assert records[0].skipped == "alert storage missing"
+        assert worker.tasks_completed == 1
 
     def test_payload_task_logs_completion(self, worker, caplog):
         """payload and delete succeeded silently before this: an analyst dispositioning 50
@@ -432,6 +449,33 @@ class TestLogging:
         assert ready[0].model == "all-MiniLM-L6-v2"
         assert ready[0].collection == "ace3-alerts-unittest-v1"
         assert isinstance(ready[0].model_load_ms, int)
+
+    @pytest.mark.parametrize("failure,expected_errors,expected_warnings", [
+        # qdrant not accepting connections yet is the peer being down, not an ACE bug
+        (ResponseHandlingException(httpx.ConnectError("[Errno 111] Connection refused")), 0, 1),
+        # a reply the client could not read is still an error with a report
+        (ResponseHandlingException(ValueError("unreadable response")), 1, 0),
+    ])
+    def test_failed_prepare_is_retried_until_the_worker_is_ready(self, worker, caplog, failure, expected_errors, expected_warnings):
+        """If prepare() fails, for example because qdrant is still starting, the worker retries it until it is ready."""
+        client = Mock()
+        client.collection_exists.side_effect = [failure, True]
+        client.get_collection.return_value = Mock(payload_schema={name: {} for name in index.KEYWORD_INDEXES + index.DATETIME_INDEXES})
+        worker.worker_execute = worker.stop
+        with (
+            caplog.at_level(logging.INFO),
+            patch("saq.search.service.download_model"),
+            patch("saq.search.service.load_model", return_value=Mock()),
+            patch("saq.search.service.index.get_qdrant_client", return_value=client),
+        ):
+            worker.worker_loop()
+
+        errors = self.records(caplog, "search_indexer_worker_error")
+        assert [(error.levelno, error.ready) for error in errors] == [(logging.ERROR, False)] * expected_errors
+        unavailable = [record for record in caplog.records if record.message.startswith("search indexer worker-0 qdrant unavailable")]
+        assert [record.levelno for record in unavailable] == [logging.WARNING] * expected_warnings
+        assert len(self.records(caplog, "search_indexer_worker_ready")) == 1
+        assert worker.collection == index.collection_name()
 
     def test_manager_start_names_the_collection(self, caplog, monkeypatch):
         monkeypatch.setattr(get_config().search, "embedding_model", "all-MiniLM-L6-v2")

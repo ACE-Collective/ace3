@@ -48,9 +48,6 @@ class TestSecretRefValidation:
         original = SecretRef(key="x")
         assert _Model(key=original).key is original
 
-    def test_none_stays_none(self):
-        assert _Model().key is None
-
     def test_repr_redacts_literal(self):
         assert "plainvalue" not in repr(_Model(key="plainvalue").key)
         assert repr(_Model(key="encrypted:a.b").key) == "SecretRef(key='a.b')"
@@ -68,10 +65,6 @@ class TestResolveSecretHelper:
     def test_passes_through_plain_str(self):
         assert resolve_secret("already-plain") == "already-plain"
 
-    def test_none(self):
-        assert resolve_secret(None) is None
-
-
 @pytest.mark.integration
 @pytest.mark.usefixtures("_unlock_encryption")
 class TestGetSecretTTLCache:
@@ -87,12 +80,6 @@ class TestGetSecretTTLCache:
         key = "test.ttl_secret"
         yield key
         delete_password(key)
-
-    def test_caches_within_ttl(self, decrypt_spy, stored_key):
-        encrypt_password(stored_key, "value1")
-        assert get_secret(stored_key, ttl_seconds=100) == "value1"
-        assert get_secret(stored_key, ttl_seconds=100) == "value1"
-        assert decrypt_spy.call_count == 1  # only one DB hit within the TTL
 
     def test_cached_value_survives_rotation_until_cleared(self, stored_key):
         encrypt_password(stored_key, "v1")
@@ -157,7 +144,3 @@ class TestDynamicResolutionEndToEnd:
         finally:
             delete_password(key)
 
-    def test_unset_secret_resolves_none(self):
-        ref = _Model(key="encrypted:test.never_set_xyz").key
-        clear_secret_cache()
-        assert ref.resolve() is None

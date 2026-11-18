@@ -144,7 +144,8 @@ catalog current (`docs/SVS_RUNS.md`).
   fingerprint** it ran with. The corpus version is a digest of the latest change time and the row
   count of the stored captures, the verdict history, the retirements, the sample deletions and the
   alerts the captures come from; the counts catch what bumps no change time (a cleared verdict, a
-  deleted alert). The engine fingerprint covers the replay's code, the YARA library versions, the
+  deleted alert). The engine fingerprint covers the replay's code, `saq/signatures/yara_meta.py` (what makes a
+  match a detection), the YARA library versions, the
   disposition classification, the per-file scan timeout and the repository's layout. A request for
   the same commits is answered from a completed validation while both are unchanged; a failed one is
   never reused.
@@ -187,27 +188,35 @@ The working directory is deleted when the validation ends, whether it succeeded 
 
 ### Compiling the way the yara service does
 
-`saq/svs/yara/child.py` follows `YaraScanner.compile_and_load_rules` (yara_scanner 3.0.0), which
-the yara service runs for each generation, but calls `yara.compile()` itself so the errors and the
-compiler warnings are kept:
+`saq/svs/yara/child.py` loads each namespace into a `YaraScanner` of its own with `load_rules()`,
+which is what the yara service runs for each generation, and reports what the library recorded of
+the compile (`scanner.compiled_sources`, yara_scanner 3.2.0+). Its includes are held to an
+include boundary, as the service's are. For a contained layout that is the signature directory, the
+service's own boundary, so a rule set can include a file of the set next to it. For a linked layout
+it is the namespace's own directory, because the service's signature directory is not in the
+exported tree. That is narrower than the service, which bounds a linked namespace by the signature
+directory and follows the links in it: an include of another namespace (`../other/x.yar`) loads in
+the service but is refused here, and the file with it fails to compile. A validation of a linked
+repository that has such includes does not show what the service loads.
 
-1. Each rule file is compiled on its own, with the library's include callback. A file that does not
-   compile is dropped with its rules, and the report says which rules went with it. An include that
-   cannot be read becomes empty text, as in the service, and is reported. So is an include that
-   resolves outside the repository, because it reads something else in production.
-2. The surviving files are compiled together, one source per namespace. If that fails (two files
-   in one namespace defining the same rule name, for instance), **the ruleset would not load**: the
-   service keeps serving its previous generation. Nothing is compared, and the report says so. A
-   file that is not UTF-8 text fails the whole load the same way, because the service reads it
-   before it compiles it.
-3. Each namespace is then compiled on its own and every unit is scanned with it, which is what
-   gives the scan time per namespace. Namespaces are independent in YARA (a global rule applies
-   only to its own namespace), so together these match what the combined rules match. Each scan
-   goes through `YaraScanner.scan()`, with the yara service's `default_timeout` per file and
-   namespace, so the externals and the meta filters behave as in production.
+1. Each rule file is compiled on its own. A file that cannot be read (not UTF-8 text, for instance)
+   or does not compile is dropped with its rules, and the report says which rules went with it. An
+   include that cannot be read becomes empty text, as in the service, and is reported. So is an
+   include the boundary refuses (an absolute path, one that leaves the boundary, one through a
+   symbolic link), which the library refuses before reading it, in the service as here.
+2. The surviving files of the namespace are compiled together. If that fails (two files in one
+   namespace defining the same rule name, for instance), **the ruleset would not load**: the
+   service keeps serving its previous generation. Nothing is compared, and the report says so.
+3. Every unit is scanned with each namespace's rules. The service compiles all namespaces together,
+   but namespaces are independent in YARA (a global rule applies only to its own namespace), so a
+   namespace compiles the same on its own and together these match what the combined rules match.
+   A namespace's compile time is both passes, what the service spends on it. Each scan goes through
+   `YaraScanner.scan()`, with the yara service's `default_timeout` per file and namespace, so the
+   externals and the meta filters behave as in production.
 
-The scan applies the `enabled` meta and the `qa` and `no_alert` modifiers the way the YARA module
-does (`saq/signatures/yara_meta.py`): a **match** means the rule would make a detection. The raw
+The scan applies the `enabled` meta, the `qa` and `no_alert` modifiers and the `whitelisted` tag
+the way the YARA module does (`detection_blocker()` in `saq/signatures/yara_meta.py`, which both
+call): a **match** means the rule would make a detection. The raw
 match is kept too, so a rule that still matches but was switched to QA mode reads as what it is.
 
 ### The sandbox

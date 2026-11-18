@@ -16,7 +16,7 @@ from saq.database.model import SVSRun, User
 from saq.database.pool import get_db
 from saq.database.util.alert import ALERT
 from saq.svs import association, coverage, review, windows, worklist
-from saq.svs.attribution import clear_caches, evaluate, write_attributions
+from saq.svs.attribution import clear_caches, evaluate, record_suppressed_matches, write_attributions
 from saq.svs.coverage import refresh_coverage, write_snapshot
 from saq.svs.expectations import set_expectation
 
@@ -24,12 +24,12 @@ from saq.svs.hosts import build_spec, create_host
 from saq.svs.refusals import Caller
 from saq.svs.runs import Registration, RegistrationRefused, TargetSpec, cancel, executed, register, run_timers, start
 from tests.saq.helpers import create_root_analysis
-from tests.saq.svs.conftest import add_catalog_test, write_hunt
+from tests.saq.svs.conftest import add_catalog_test, person, write_hunt
 
 pytestmark = pytest.mark.integration
 
 GUID = "aaaaaaaa-1111-4111-8111-111111111111"
-LAUNCHER = Caller(name="art-launcher", address="10.1.2.3")
+LAUNCHER = Caller(person(None, "art-launcher"), address="10.1.2.3")
 T0 = datetime(2026, 10, 14, 12, 0, 0)
 
 RUN_FIELDS = ("svs_run", "svs_test", "svs_marker")
@@ -41,7 +41,7 @@ REFUSAL_FIELDS = ("caller", "host", "reason", "launcher", "svs_test")
 @pytest.fixture(autouse=True)
 def setup(no_hunts):
     add_catalog_test(GUID)
-    create_host(build_spec("win10-01"), None)
+    create_host(build_spec("win10-01"), person(None))
 
 
 def _registration(hostname: str = "win10-01") -> Registration:
@@ -62,10 +62,11 @@ def test_lifecycle_transitions(caplog):
         first = register(_registration(), LAUNCHER, now=T0)
         start(first.uuid, LAUNCHER, now=T0)
         executed(first.uuid, LAUNCHER, 1, now=T0)
-        second = register(_registration(), LAUNCHER, now=T0)
-        cancel(second.uuid, LAUNCHER, now=T0)
-        third = register(_registration(), LAUNCHER, now=T0)
-        start(third.uuid, LAUNCHER, now=T0)
+        # one run per host: each after the claim of the one before
+        second = register(_registration(), LAUNCHER, now=T0 + timedelta(hours=2))
+        cancel(second.uuid, LAUNCHER, now=T0 + timedelta(hours=2))
+        third = register(_registration(), LAUNCHER, now=T0 + timedelta(hours=2))
+        start(third.uuid, LAUNCHER, now=T0 + timedelta(hours=2))
         run_timers(T0 + timedelta(days=2))
 
     # the transitions, not the other records about runs (an ended run's result, say)
@@ -181,6 +182,7 @@ def test_a_mismatch(caplog, routed):
     assert decision.decision == "mismatch" and decision.svs_run == run.uuid
 
 
+@pytest.mark.usefixtures("overlapping_runs")
 def test_a_refused_context_attribution(caplog, routed):
     first, second = _started(), _started()
     with caplog.at_level(logging.INFO):
@@ -225,7 +227,7 @@ def test_a_run_changed_since_review(caplog, routed):
 def test_a_result(caplog):
     missing = "22222222-bbbb-4bbb-8bbb-222222222222"
     user_id = get_db().execute(select(User.id).where(User.username == "unittest")).scalar_one()
-    set_expectation(GUID, missing, "expected", user_id, platform="windows")
+    set_expectation(GUID, missing, "expected", person(user_id), platform="windows")
     run = register(_registration(), LAUNCHER, now=T0)
     start(run.uuid, LAUNCHER, now=T0)
     with caplog.at_level(logging.INFO):
@@ -240,20 +242,50 @@ def test_a_result(caplog):
     _assert_fields(record, RUN_FIELDS + ("signature_uuid", "signature_family", "possibly_suppressed"))
 
 
+def test_a_suppressed_match(caplog):
+    run = _started()
+    root = RootAnalysis(uuid=str(uuid.uuid4()))
+    root.add_observable_by_spec(F_HOSTNAME, "win10-01")
+    root.event_time = datetime.now()
+    hunt_uuid = "11111111-aaaa-4aaa-8aaa-111111111111"
+    with caplog.at_level(logging.INFO):
+        record_suppressed_matches(hunt_uuid, [(root, "alice")])
+
+    (record,) = _records(caplog, f"svs run {run.uuid}: hunt {hunt_uuid} suppressed a match")
+    assert record.levelno == logging.INFO and (record.hunt_uuid, record.group_value) == (hunt_uuid, "alice")
+    _assert_fields(record, RUN_FIELDS + ("hunt_uuid", "group_value"))
+
+
+def test_a_duplicate_match(caplog):
+    run = _started()
+    hunt_uuid = "11111111-aaaa-4aaa-8aaa-111111111111"
+    root = RootAnalysis(uuid=str(uuid.uuid4()))
+    root.add_observable_by_spec(F_HOSTNAME, "win10-01")
+    root.event_time = datetime.now()
+    root.submission_key = f"{hunt_uuid}:win10-01"
+    with caplog.at_level(logging.INFO):
+        record_suppressed_matches(hunt_uuid, [(root, None)], duplicate=True)
+
+    (record,) = _records(caplog, f"svs run {run.uuid}: hunt {hunt_uuid} dropped a duplicate match")
+    assert record.levelno == logging.INFO and record.dedup_key == f"{hunt_uuid}:win10-01"
+    _assert_fields(record, RUN_FIELDS + ("hunt_uuid", "dedup_key"))
+
+
 def test_a_persons_association_changes(caplog, routed):
     user_id = get_db().execute(select(User.id).where(User.username == "unittest")).scalar_one()
     run = _started()
     root = _alert("win10-01", {})
     with caplog.at_level(logging.INFO):
-        association.keep(run.uuid, root.uuid, user_id, "unittest")
-        association.disassociate(run.uuid, root.uuid, user_id, "unittest", not_a_test=True)
-        association.associate(run.uuid, root.uuid, user_id, "unittest", "it was the test after all")
+        association.keep(run.uuid, root.uuid, person(user_id, key_id=7))
+        association.disassociate(run.uuid, root.uuid, person(user_id, key_id=7), not_a_test=True)
+        association.associate(run.uuid, root.uuid, person(user_id, key_id=7), "it was the test after all")
 
     for message in ("AUDIT: svs context attribution kept", "AUDIT: svs alert disassociated from a run",
                     "AUDIT: svs alert associated with a run"):
         (record,) = _records(caplog, message)
         assert record.svs_run == run.uuid and record.alert_uuid == root.uuid
-        _assert_fields(record, RUN_FIELDS + ("alert_uuid", "actor", "actor_user_id"))
+        _assert_fields(record, RUN_FIELDS + ("alert_uuid", "actor", "actor_user_id", "actor_key_id"))
+        assert (record.actor, record.actor_user_id, record.actor_key_id) == ("unittest", user_id, 7)
 
 
 def test_a_review(caplog):
@@ -262,7 +294,7 @@ def test_a_review(caplog):
     start(run.uuid, LAUNCHER, now=T0)
     run_timers(T0 + timedelta(days=2))
     with caplog.at_level(logging.INFO):
-        review.review(run.uuid, user_id, "unittest")
+        review.review(run.uuid, person(user_id, "unittest"))
 
     (transition,) = [r for r in _records(caplog, f"svs run {run.uuid}: ended -> reviewed")]
     _assert_fields(transition, TRANSITION_FIELDS)
@@ -308,11 +340,11 @@ def test_worklist_records(caplog, monkeypatch, attack_catalog, hunt_dir, yara_di
     user_id = get_db().execute(select(User.id).where(User.username == "unittest")).scalar_one()
     monkeypatch.setattr(coverage, "get_attack_catalog", lambda: attack_catalog)
     write_hunt(hunt_dir, signature, tags=["mitre:T1547"])
-    set_expectation(GUID, signature, "expected", user_id, platform="windows")
+    set_expectation(GUID, signature, "expected", person(user_id), platform="windows")
     refresh_coverage("unittest")
 
     with caplog.at_level(logging.INFO):
-        worklist.resolve(signature, "T1547", "remove", "why", user_id, actor="unittest")
+        worklist.resolve(signature, "T1547", "remove", "why", person(user_id, "unittest"))
         write_hunt(hunt_dir, signature)
         windows.clear_cache()
         refresh_coverage("unittest")

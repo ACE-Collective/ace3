@@ -1,7 +1,5 @@
-from saq.analysis.presenter.observable_presenter import ObservablePresenter, register_observable_presenter
 from saq.constants import F_USER
 from saq.observables.base import CaselessObservable
-from saq.observables.generator import register_observable_type
 
 
 class UserObservable(CaselessObservable):
@@ -18,26 +16,3 @@ class UserObservable(CaselessObservable):
         # bare account name instead of an empty inter-backslash segment.
         if '\\' in self._value:
             self._value = self._value.split('\\')[-1]
-
-    @property
-    def jinja_template_path(self):
-        return "analysis/user_observable.html"
-
-    @property
-    def jinja_available_actions(self):
-        result = []
-        result.extend(super().jinja_available_actions)
-        return result
-
-
-class UserObservablePresenter(ObservablePresenter):
-    """Presenter for UserObservable."""
-
-    @property
-    def template_path(self) -> str:
-        return "analysis/user_observable.html"
-
-
-register_observable_presenter(UserObservable, UserObservablePresenter)
-
-register_observable_type(F_USER, UserObservable)

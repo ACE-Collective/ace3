@@ -7,13 +7,36 @@
 
 source bin/initialize-environment.sh
 
+# ace exits with 75 (EXIT_DATABASE_UNAVAILABLE in saq/cli/cli_main.py) when it cannot reach a
+# database, the one failure that waiting fixes. anything else, such as a configuration error, fails
+# the same way on every attempt, so exit and leave it to the container's restart policy, where the
+# restart count shows it
+#
+# the wait for an unreachable database is bounded too: pymysql reports a hostname that fails TLS
+# verification, or one that never resolves, the same way as a database that is not up yet
+database_wait_seconds="${ACE_DATABASE_WAIT_SECONDS:-300}"
+deadline=$((SECONDS + database_wait_seconds))
 echo -n "waiting for database..."
 while :
 do
-    if ace test database-connections
+    ace test database-connections
+    result=$?
+    if [ "$result" -eq 0 ]
     then
         echo
         break
+    fi
+
+    if [ "$result" -ne 75 ]
+    then
+        echo "ace test database-connections failed with exit code $result, which waiting will not fix" >&2
+        exit "$result"
+    fi
+
+    if [ "$SECONDS" -ge "$deadline" ]
+    then
+        echo "no database reachable after ${database_wait_seconds} seconds, giving up" >&2
+        exit "$result"
     fi
 
     echo .

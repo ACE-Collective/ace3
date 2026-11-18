@@ -19,12 +19,14 @@ from saq.svs import results
 from saq.svs.result_state import mark_runs_stale
 from tests.saq.svs.conftest import add_catalog_test, add_test_host, started_run
 
-pytestmark = pytest.mark.integration
+# several runs on one test host are fixtures here; the host's claim is tested in test_runs.py
+pytestmark = [pytest.mark.integration, pytest.mark.usefixtures("overlapping_runs")]
 
 GUID = "aaaaaaaa-1111-4111-8111-111111111111"
 OTHER_GUID = "bbbbbbbb-2222-4222-8222-222222222222"
 SIGNATURE = "22222222-bbbb-4bbb-8bbb-222222222222"
 NOISE = "33333333-cccc-4ccc-8ccc-333333333333"
+ELSEWHERE = "44444444-dddd-4ddd-8ddd-444444444444"
 
 
 @pytest.fixture(autouse=True)
@@ -57,6 +59,8 @@ def _ended_run(test_guid: str = GUID, *signature_uuids: str) -> SVSRun:
 @pytest.mark.asyncio
 async def test_a_runs_result(client: AsyncClient):
     run = _ended_run(GUID, SIGNATURE, NOISE)
+    # another run's result is not this run's
+    _ended_run(OTHER_GUID, ELSEWHERE)
 
     body = (await client.get(f"/svs/runs/{run.uuid}/results")).json()
     assert {(row["signature_uuid"], row["status"]) for row in body["data"]} == {

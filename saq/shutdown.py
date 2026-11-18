@@ -235,8 +235,16 @@ class ShutdownCoordinator:
 
         logging.info("shutdown requested: %s (deadline %.1fs)", self._reason, self.deadline_seconds)
 
-        # mirror the flag for forked children
-        self._mp_flag.value = True
+        # mirror the flag for forked children. the mirror only flows down: a forked child
+        # shares it with its parent and every sibling, so a child that sets it shuts them
+        # all down too (an engine started with start_nonblocking() and then sent SIGINT
+        # left its parent, and every engine forked from that parent afterwards, shutting
+        # down on arrival). such a child takes a mirror of its own instead, which the
+        # processes it forks from now on inherit
+        if os.getpid() == self._owner_pid:
+            self._mp_flag.value = True
+        else:
+            self._mp_flag = ACE_MP_CONTEXT.Value(ctypes.c_bool, True, lock=False)
 
         self._start_watchdog()
 
@@ -415,7 +423,7 @@ def wait_for_shared_flag(flag, timeout: Optional[float] = None) -> bool:
     rather than blocking on a shared primitive on purpose. The obvious primitive is a
     multiprocessing Event, but ACE kills processes abruptly by design -- an analysis
     module that runs past its limit is ``os._exit(1)``ed, a worker that overruns is
-    SIGKILLed as a process tree -- and mp's Condition registers a sleeper before it
+    SIGKILLed with its process group -- and mp's Condition registers a sleeper before it
     sleeps, then makes ``notify_all()`` wait for one wake per sleeper. A process killed
     mid-wait leaves a sleeper that never wakes, and every later ``set()`` blocks forever.
     A byte in shared memory has nothing to orphan. The cost is SHUTDOWN_POLL_INTERVAL of

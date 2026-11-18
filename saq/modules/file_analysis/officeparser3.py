@@ -160,18 +160,18 @@ class OfficeParserAnalyzer3(AnalysisModule):
             stdout=PIPE,
             stderr=PIPE)
 
+        timed_out = False
         try:
             stdout, stderr = p.communicate(timeout=self.timeout)
         except TimeoutExpired:
+            timed_out = True
             logging.warning("timeout expired for officeparser on {}".format(local_file_path))
             _file.add_tag('officeparser_failed')
             _file.add_directive(DIRECTIVE_SANDBOX)
 
-            #try:
-                #p.kill()
-            #except:
-                #pass
-
+            # communicate() leaves the process running when it times out, and the one below then
+            # waited for it with no limit at all
+            p.kill()
             stdout, stderr = p.communicate()
 
         manifest_path = os.path.join(officeparser_output_dir, 'manifest')
@@ -181,6 +181,9 @@ class OfficeParserAnalyzer3(AnalysisModule):
 
         analysis = self.create_analysis(_file)
         assert isinstance(analysis, OfficeParserAnalysis3)
+        if timed_out:
+            # what it extracted before it was stopped is still added
+            analysis.error = f"officeparser timed out after {self.timeout} seconds"
 
         # the macros merged into macros.bas
         merged_files: list[str] = []

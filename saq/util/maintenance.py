@@ -22,6 +22,7 @@ from saq.database.util.node import is_primary_node
 from saq.environment import get_base_dir, get_global_runtime_settings
 from saq.search.tasks import submit_delete_task
 
+from sqlalchemy import func, text
 from sqlalchemy.sql.expression import select, delete
 
 def cleanup_alerts(fp_days_old: Optional[int]=None, ignore_days_old: Optional[int]=None, dry_run: Optional[bool]=False,
@@ -76,30 +77,36 @@ def cleanup_alerts(fp_days_old: Optional[int]=None, ignore_days_old: Optional[in
     except Exception as e:
         logging.exception(f"error distributing old alerts: {e}")
 
+def _days_ago(days: int):
+    # NOW() - N days, evaluated by the database: disposition_time is set with the database's NOW()
+    return func.date_sub(func.now(), text(f"INTERVAL {int(days)} DAY"))
+
 def cleanup_ignored_alerts(days: int, dry_run: bool):
     # delete alerts dispositioned as IGNORE and older than N days
     dry_run_count = 0
     for storage_dir, alert_id, alert_uuid in get_db().execute(select(Alert.storage_dir, Alert.id, Alert.uuid)
         .where(Alert.location == get_global_runtime_settings().saq_node)
         .where(Alert.disposition == DISPOSITION_IGNORE)
-        .where(Alert.disposition_time < datetime.datetime.now() - datetime.timedelta(days=days))):
+        .where(Alert.disposition_time < _days_ago(days))):
 
         if dry_run:
             dry_run_count += 1
             continue
 
-        # delete the files backing the alert
-        try:
-            target_path = os.path.join(get_base_dir(), storage_dir)
-            logging.info(f"deleting files {target_path}")
-            shutil.rmtree(target_path)
-        except Exception as e:
-            logging.error(f"unable to delete alert storage directory {storage_dir}: {e}")
-
-        # delete the alert from the database
+        # the row goes before the files, so that nothing reading the alerts table finds an alert
+        # whose storage is already gone; a failure in between leaves an orphaned directory
+        # rather than an alert that cannot be loaded
         logging.info(f"deleting database entry {alert_id}")
         retry_sql_on_deadlock(delete(Alert).where(Alert.id == alert_id), commit=True)
         submit_delete_task(alert_uuid)
+
+        target_path = os.path.join(get_base_dir(), storage_dir)
+        try:
+            logging.info(f"deleting files {target_path}")
+            shutil.rmtree(target_path)
+        except Exception as e:
+            logging.exception(f"unable to delete storage directory {target_path} of deleted alert {alert_uuid}: {e}",
+                              extra={"alert_uuid": alert_uuid, "storage_dir": target_path})
 
     if dry_run:
         logging.info(f"{dry_run_count} ignored alerts would be deleted")
@@ -119,23 +126,27 @@ def _archive_alerts(disposition: str, days: int, dry_run: bool):
         Alert.location == get_global_runtime_settings().saq_node,
         Alert.archived == False,
         Alert.disposition == disposition,
-        Alert.disposition_time < datetime.datetime.now() - datetime.timedelta(days=days)):
+        Alert.disposition_time < _days_ago(days)):
     
         if dry_run:
             dry_run_count += 1
             continue
 
         logging.info(f"archiving {disposition} alert {alert}")
+        # read now: a failed flush expires the alert and its attributes can no longer be loaded
+        alert_uuid, storage_dir = alert.uuid, alert.storage_dir
 
         try:
             alert.load()
+            alert.archive()
+            alert.sync()
         except Exception as e:
-            logging.error(f"unable to load {alert}: {e}")
-            continue
+            # one alert that cannot be archived must not stop the rest; it is retried on the next run
+            logging.exception(f"unable to archive {disposition} alert {alert_uuid}: {e}",
+                              extra={"alert_uuid": alert_uuid, "storage_dir": storage_dir})
+            # a failed commit leaves the session unusable for the alerts that follow
+            get_db().rollback()
 
-        alert.archive()
-        alert.sync()
-        
     if dry_run:
         logging.info(f"{dry_run_count} {disposition} alerts would be archived")
 
@@ -170,7 +181,7 @@ def distribute_old_alerts(days: int, dry_run: bool, distribution_target: str, ma
             if max_count > 0:
                 if alert_index > max_count:
                     logging.warning(f"stopping at max count {max_count}")
-                    return success_count
+                    break
 
             logging.info(f"uploading alert {uuid} to {distribution_target} (dry_run = {dry_run})")
             if dry_run:
@@ -235,7 +246,7 @@ def emit_cache_stats() -> None:
             },
         )
     except Exception as e:
-        logging.warning(f"failed to collect cache_stats: {e}")
+        logging.exception(f"failed to collect cache_stats: {e}")
 
 
 def gc_durable_blobs(dry_run: bool = False) -> GlobalMaintenanceStats:

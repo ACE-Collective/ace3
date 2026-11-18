@@ -30,7 +30,8 @@ class CatalogEntry:
 # `admin:read` is the umbrella gate for the /admin GUI area; it is enforced by the admin blueprint's
 # before_request guard (app/admin/views/access.py:24) rather than a require_permission decorator, so
 # it has no decorator call site. `signature:read` is likewise the umbrella gate for the /signatures
-# GUI area (app/signatures/views/access.py), and is also enforced by the yara-qa API routes. `ai:read` is enforced by the out-of-repo AI container. `cas:hold`
+# GUI area (app/signatures/views/access.py), and is also enforced by the yara-qa API routes. `ai:read` is enforced by the out-of-repo AI container. `file_collection:create`
+# is enforced by integrations, on the API routes through which callers request their collectors' work. `cas:hold`
 # and `cas:purge` have no in-repo enforcement site yet: `ace cas hold|purge` record --actor without
 # checking, and the entries exist so an API surface can enforce them without a catalog migration
 # (docs/CAS.md). Every other entry has at least one in-repo enforcement site.
@@ -63,6 +64,7 @@ PERMISSION_CATALOG: tuple[CatalogEntry, ...] = (
     CatalogEntry("engine", "upload", "Upload a work item's storage directory to a node (node-to-node)."),
     CatalogEntry("event", "read", "View events, details, and export event data."),
     CatalogEntry("event", "write", "Create and modify events."),
+    CatalogEntry("file_collection", "create", "Request file collections from hosts through the API; a collector may run a script on the host to produce the file."),
     CatalogEntry("file_collection", "read", "Read file collection requests and history."),
     CatalogEntry("file_collection", "write", "Stop, retry and delete file collection requests on the File Collections page."),
     CatalogEntry("hunt", "write", "Compile and execute hunts via the hunt-validation API endpoint."),
@@ -75,6 +77,7 @@ PERMISSION_CATALOG: tuple[CatalogEntry, ...] = (
     CatalogEntry("secret", "read", "View encrypted-secret names and config references."),
     CatalogEntry("secret", "write", "Create, overwrite, or delete encrypted secrets."),
     CatalogEntry("signature", "download", "Download the files matched by YARA rules in QA mode and the SVS YARA samples (live malware, in zips protected with the password infected)."),
+    CatalogEntry("signature", "qa_purge", "Purge the files stored for YARA rules in QA mode: a rule's versions, or chosen files (audited). Touches only the YARA QA store."),
     CatalogEntry("signature", "read", "Access the Signatures area and read YARA QA results (rules in QA mode, match counts and match records) and the SVS YARA samples (their labels, captures and match records)."),
     CatalogEntry("svs", "admin", "Administer SVS: retire SVS YARA samples for a rule and delete sample files (their bytes are purged, audited), manage the test hosts, and ignore signatures for every test (global ignores)."),
     CatalogEntry("svs", "run_manage", "Manage SVS test runs: take ownership, cancel, close and review runs, decide a test's expectations, ignores and settings, resolve the coverage worklist, associate alerts with runs."),
@@ -83,12 +86,20 @@ PERMISSION_CATALOG: tuple[CatalogEntry, ...] = (
     CatalogEntry("svs", "validate", "Request SVS YARA validations of a rule repository's commits and read their status (counts, rule names and uuids only; the CI key's permission)."),
     CatalogEntry("system", "read", "Read system metadata and supported types via API."),
     CatalogEntry("user", "read", "View users, groups, and their permissions."),
+    CatalogEntry("user", "self", "Create, edit and revoke your own scoped API keys, limited to permissions you already hold."),
     CatalogEntry("user", "write", "Create/modify users, groups, memberships, and permission grants."),
 )
 
 # Convenience lookups for validation and guard tests. These cover the STATIC entries only; use
 # get_catalog_pairs() where the config-derived ai:<backend> entries must be included.
 CATALOG_PAIRS: frozenset[tuple[str, str]] = frozenset((e.major, e.minor) for e in PERMISSION_CATALOG)
+
+# Permissions no API key ever holds, whatever its scope says and whether or not it inherits its
+# owner's: only a GUI session does. user:self changes the user's own API keys, so a key holding it
+# could widen its own scope up to everything its owner holds, or mint keys that outlive its
+# revocation. The routes that need it also refuse every API key (require_self_service(
+# session_only=True)); this holds even where a route forgets to.
+SESSION_ONLY_PAIRS: frozenset[tuple[str, str]] = frozenset({("user", "self")})
 CATALOG_MAJORS: frozenset[str] = frozenset(e.major for e in PERMISSION_CATALOG)
 
 
@@ -111,11 +122,13 @@ def dynamic_backend_entries() -> tuple[CatalogEntry, ...]:
     except Exception:
         return ()
 
+    # lowercase, as every permission is stored (saq.database.model), or sync_permission_catalog
+    # would never find the row it wrote
     return tuple(
-        CatalogEntry("ai", backend.name,
+        CatalogEntry("ai", backend.name.lower(),
                      f"Run read-only {backend.name} queries via the AI investigation API.")
         for backend in sorted(backends, key=lambda b: b.name)
-        if ("ai", backend.name) not in CATALOG_PAIRS
+        if ("ai", backend.name.lower()) not in CATALOG_PAIRS
     )
 
 
@@ -139,7 +152,7 @@ def is_grantable(major: str, minor: str) -> bool:
     ``*:*``, ``observable:*``, ``*:read`` remain grantable even though they are not catalog rows).
     Used to *warn* (not block) on likely typos when granting permissions.
     """
-    if (major, minor) in get_catalog_pairs():
+    if (major.lower(), minor.lower()) in get_catalog_pairs():
         return True
     return any(c in major or c in minor for c in _WILDCARD_CHARS)
 

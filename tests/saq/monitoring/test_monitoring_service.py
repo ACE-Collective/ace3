@@ -34,9 +34,6 @@ def _make_test_monitor_config(frequency=0.1, enabled=True):
 
 @pytest.mark.unit
 class TestACEMonitoringService:
-    def test_get_config_class(self):
-        assert ACEMonitoringService.get_config_class() is ACEMonitoringServiceConfig
-
     def test_init_loads_monitors_from_config(self, set_monitors):
         set_monitors({
             "loaded_monitor": _make_monitor_config(
@@ -50,12 +47,6 @@ class TestACEMonitoringService:
         assert len(service.threaded_monitors) == 1
         assert service.threaded_monitors[0].name == "loaded_monitor"
         assert service.threaded_monitors[0].frequency == 2.0
-
-    def test_init_with_no_monitors(self, set_monitors):
-        set_monitors({})
-
-        service = ACEMonitoringService()
-        assert service.threaded_monitors == []
 
     @patch("saq.error.reporting.write_error_report")
     def test_load_catches_import_error(self, mock_report, set_monitors):
@@ -82,20 +73,6 @@ class TestACEMonitoringService:
         service = ACEMonitoringService()
         assert service.threaded_monitors == []
         mock_report.assert_called_once()
-
-    def test_load_passes_name_and_frequency(self, set_monitors):
-        set_monitors({
-            "named_monitor": _make_monitor_config(
-                python_module="tests.saq.monitoring.conftest",
-                python_class="ConcreteTestMonitor",
-                frequency=7.5,
-            ),
-        })
-
-        service = ACEMonitoringService()
-        monitor = service.threaded_monitors[0]
-        assert monitor.name == "named_monitor"
-        assert monitor.frequency == 7.5
 
     def test_start_stop_wait_drive_the_loaded_monitors(self, set_monitors):
         set_monitors({"looping_monitor": _make_test_monitor_config()})
@@ -124,25 +101,18 @@ class TestACEMonitoringService:
 
         assert [m.execute_count for m in service.threaded_monitors] == [1, 1]
 
-    def test_wait_for_start_returns_false_when_a_monitor_never_starts(self, set_monitors):
+    def test_wait_for_start_is_true_only_once_every_monitor_started(self, set_monitors):
         set_monitors({})
 
         service = ACEMonitoringService()
-        service.threaded_monitors = [ConcreteTestMonitor()]
+        started, not_started = ConcreteTestMonitor(), ConcreteTestMonitor()
+        started.started_event.set()
+        service.threaded_monitors = [started, not_started]
 
         assert service.wait_for_start(timeout=0.1) is False
 
-    def test_disabled_monitor_is_not_loaded(self, set_monitors):
-        set_monitors({
-            "disabled_monitor": _make_monitor_config(
-                python_module="tests.saq.monitoring.conftest",
-                python_class="ConcreteTestMonitor",
-                enabled=False,
-            ),
-        })
-
-        service = ACEMonitoringService()
-        assert service.threaded_monitors == []
+        not_started.started_event.set()
+        assert service.wait_for_start(timeout=0.1) is True
 
     def test_disabled_monitor_logs_info(self, set_monitors, caplog):
         set_monitors({

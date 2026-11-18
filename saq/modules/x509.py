@@ -8,7 +8,7 @@ from typing import override
 from saq import x509
 from saq.analysis import Analysis, RootAnalysis
 from saq.analysis.presenter.analysis_presenter import AnalysisPresenter, register_analysis_presenter
-from saq.constants import F_FILE, F_FQDN, F_IP, F_SHA256, F_URL, DIRECTIVE_CRAWL, AnalysisExecutionResult
+from saq.constants import F_FILE, F_FQDN, F_IP, F_SHA256, F_URL, DIRECTIVE_CRAWL, DIRECTIVE_NO_CRAWL, AnalysisExecutionResult
 from saq.modules import AnalysisModule
 from saq.modules.file_analysis import FileTypeAnalysis
 from saq.util.filesystem import get_local_file_path
@@ -25,6 +25,11 @@ KEY_SAN_IP_ADDRESSES = 'san_ip_addresses'
 KEY_SAN_DNS_NAMES = 'san_dns_names'
 KEY_SHA256_HASH = 'sha256_hash'
 KEY_EXTENSIONS_TREE = 'extensions'
+
+# a certificate only observed in captured traffic (DIRECTIVE_NO_CRAWL) adds at most this many SAN
+# names as fqdn observables: a CDN certificate can carry hundreds, and a capture hundreds of
+# certificates, each name then resolved. Every name is still listed in the analysis.
+MAX_NO_CRAWL_SAN_FQDNS = 10
 
 
 class X509Analysis(Analysis):
@@ -195,8 +200,10 @@ class X509Analyzer(AnalysisModule):
             logging.debug(f"{local_file_path} is not a x509 certificate")
             return AnalysisExecutionResult.COMPLETED
 
+        # never strip: a DER certificate can end in a byte that looks like whitespace, and PEM
+        # loading already tolerates the whitespace around it
         with open(local_file_path, 'rb') as f:
-            file_bytes = f.read().strip()
+            file_bytes = f.read()
 
         # custom_requirements function makes sure this is an x509 file before we load it here
         cert = x509.load_cert(file_bytes)
@@ -213,8 +220,9 @@ class X509Analyzer(AnalysisModule):
         analysis.common_name = x509.common_name(cert)
         analysis.sha256_hash = x509.sha256(cert)  # Created from DER-encoded format of the certificate
 
-        # Note parent observable type; don't render/crawl extracted domains if parent is URL
-        parent_is_url = self.parent_is_url(_file)
+        # Don't auto-crawl names extracted from a certificate we only observed, rather than fetched:
+        # one reached through a URL, or one carved from passively captured traffic (DIRECTIVE_NO_CRAWL).
+        suppress_crawl = self.parent_is_url(_file) or _file.has_directive(DIRECTIVE_NO_CRAWL)
         if analysis.common_name is None:
             logging.info(f"unable to parse common name from {analysis.subject}")
         else:
@@ -223,7 +231,7 @@ class X509Analyzer(AnalysisModule):
             if cn_fqdn:
                 cn_fqdn.display_type = "Certificate Common Name"
 
-            if not parent_is_url:
+            if not suppress_crawl:
                 url = analysis.add_observable_by_spec(F_URL, f'http://{common_name}')
                 if url:
                     url.display_type = "Certificate Common Name URL (http)"
@@ -240,15 +248,18 @@ class X509Analyzer(AnalysisModule):
             if san_ip:
                 san_ip.display_type = "Certificate SAN IP Address"
 
-        for dns_name in x509.san_dns_names(cert):
+        no_crawl = _file.has_directive(DIRECTIVE_NO_CRAWL)
+        for index, dns_name in enumerate(x509.san_dns_names(cert)):
             analysis.add_san_dns_name(dns_name)
+            if no_crawl and index >= MAX_NO_CRAWL_SAN_FQDNS:
+                continue
             # Some certs have wildcards, make sure we submit the nearest FQDN (strip the wildcard)
             dns_name = x509.remove_wildcard(dns_name)
             san_fqdn = analysis.add_observable_by_spec(F_FQDN, dns_name)
             if san_fqdn:
                 san_fqdn.display_type = "Certificate SAN DNS Name"
 
-            if not parent_is_url:
+            if not suppress_crawl:
                 url = analysis.add_observable_by_spec(F_URL, f'http://{dns_name}')
                 if url:
                     url.display_type = "Certificate SAN URL (http)"

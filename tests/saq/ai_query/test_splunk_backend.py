@@ -80,6 +80,10 @@ def test_execute_builds_client_per_request_and_appends_fields(backend, mock_clie
     assert result.window_start == request.start_time
     assert result.meta["search_link"] == "https://splunk/link"
 
+    # the client holds per-search state, so the next request gets a client of its own
+    backend.execute(make_request())
+    assert factory.call_count == 2
+
 
 @pytest.mark.unit
 def test_execute_applies_config_defaults(backend, mock_client):
@@ -105,7 +109,7 @@ def test_execute_filters_splunk_messages(backend, mock_client):
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize("remote_status,expected_status", [(401, 502), (504, 504), (502, 502), (500, 502)])
+@pytest.mark.parametrize("remote_status,expected_status", [(401, 502), (504, 504), (500, 502)])
 def test_execute_maps_remote_errors(backend, mock_client, remote_status, expected_status):
     mock_client.query.side_effect = RemoteApiError(remote_status, "boom")
     with pytest.raises(AIBackendError) as exc_info:

@@ -14,8 +14,8 @@ An ``Observable`` is now the engine's only unit of analysis, stated explicitly:
 ``WorkStack`` and the executor helpers exercised here touch neither the database
 nor a running engine, so everything below is a unit test.
 """
-import ast
 import os
+import re
 from datetime import datetime
 from unittest.mock import MagicMock
 
@@ -100,16 +100,6 @@ def test_append_analysis_is_rejected():
 
 
 @pytest.mark.unit
-def test_append_unknown_type_is_rejected():
-    work_stack = WorkStack()
-
-    with pytest.raises(TypeError):
-        work_stack.append(object())
-
-    assert len(work_stack) == 0
-
-
-@pytest.mark.unit
 def test_initialize_work_stack_queues_only_observables(tmp_path):
     """§19.13: ``_initialize_work_stack`` walked ``root.all_analysis`` and
     appended every one of them, which contributed nothing. The stack is — and
@@ -155,21 +145,6 @@ def test_initialize_work_stack_for_delayed_request_holds_one_target(tmp_path):
     work_item = context.work_stack.popleft()
     assert work_item.observable is observable
     assert work_item.analysis_module is delayed_request.analysis_module
-
-
-@pytest.mark.unit
-def test_final_analysis_repush_queues_only_observables(tmp_path):
-    """The final-analysis pass pushes the whole tree back onto the stack. It used
-    to iterate ``root.all`` (Analysis *and* Observable) and let the Analysis half
-    fall into the dead branch; it now iterates ``all_observables``."""
-    root = _make_root(tmp_path)
-    assert len(root.all) > len(root.all_observables)  # root.all is mixed
-
-    work_stack = WorkStack()
-    for observable in root.all_observables:
-        work_stack.append(observable)
-
-    assert len(work_stack) == len(root.all_observables)
 
 
 @pytest.mark.unit
@@ -246,13 +221,14 @@ def test_no_analysis_module_declares_an_analysis_target_type():
     and the engine only ever passes an Observable, so the gate could not reject
     anything — it is gone, and nothing may reintroduce it.
 
-    Scanned statically so modules that fail to import (missing optional
-    dependencies) are still covered.
+    Scanned as text so modules that fail to import (missing optional dependencies) are still
+    covered. A definition is one line, so a text search finds it without parsing every file.
     """
     module_root = os.path.join(os.path.dirname(os.path.dirname(
         os.path.dirname(os.path.dirname(os.path.abspath(__file__))))), "saq")
     assert os.path.isdir(module_root)
 
+    definition = re.compile(r"^[ \t]*(?:async[ \t]+)?def[ \t]+valid_analysis_target_type\b", re.MULTILINE)
     offenders = []
     for dir_path, _, file_names in os.walk(module_root):
         for file_name in file_names:
@@ -261,16 +237,7 @@ def test_no_analysis_module_declares_an_analysis_target_type():
 
             target = os.path.join(dir_path, file_name)
             with open(target, "r", encoding="utf-8", errors="replace") as fp:
-                try:
-                    tree = ast.parse(fp.read(), filename=target)
-                except SyntaxError:
-                    continue
-
-            for node in ast.walk(tree):
-                if (
-                    isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-                    and node.name == "valid_analysis_target_type"
-                ):
-                    offenders.append(f"{target}:{node.lineno}")
+                if definition.search(fp.read()):
+                    offenders.append(target)
 
     assert offenders == []

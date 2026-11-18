@@ -6,7 +6,6 @@ import pytest
 import pytz
 from httpx import AsyncClient
 
-from saq.util.relative_time import format_date_range
 
 pytestmark = pytest.mark.integration
 
@@ -30,7 +29,7 @@ async def test_relative_value(client: AsyncClient):
     start = datetime.fromisoformat(body["start"])
     end = datetime.fromisoformat(body["end"])
     assert end - start == timedelta(hours=24)
-    assert body["text"] == format_date_range(start, end, pytz.utc)
+    assert body["text"] == f"{start:%m-%d-%Y %H:%M} – {end:%m-%d-%Y %H:%M}"
 
 
 @pytest.mark.asyncio
@@ -43,7 +42,7 @@ async def test_snaps_in_the_given_timezone(client: AsyncClient):
     start = datetime.fromisoformat(body["start"]).astimezone(tz)
     end = datetime.fromisoformat(body["end"]).astimezone(tz)
     assert (start.hour, start.minute, end.hour, end.minute) == (0, 0, 0, 0)
-    assert body["text"] == format_date_range(start, end, tz)
+    assert body["text"] == f"{start:%m-%d-%Y} 00:00 – {end:%m-%d-%Y} 00:00"
 
 
 @pytest.mark.asyncio

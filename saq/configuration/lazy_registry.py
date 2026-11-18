@@ -20,6 +20,8 @@ import sys
 import threading
 from typing import Any, Generic, Optional, TypeVar
 
+from saq.configuration.yaml_parser import resolve_model_fields, resolve_values
+
 ConfigT = TypeVar("ConfigT")
 
 
@@ -58,7 +60,10 @@ class LazyConfigRegistry(Generic[ConfigT]):
         plugin module is not imported) until :meth:`get` or :meth:`values` asks for it.
         """
         try:
-            config = self._base_class.model_validate(raw)
+            # the block also carries the keys of the plugin subclass, which the base class does
+            # not declare; get() resolves and validates those against the subclass, so a process
+            # needs the environment variables of a block only once it uses it
+            config = self._base_class.model_validate(resolve_model_fields(self._base_class, raw, config_key))
         except Exception as e:
             sys.stderr.write(f"CONFIG ERROR: failed to validate {self._label} for {config_key}\n")
             raise e
@@ -90,7 +95,7 @@ class LazyConfigRegistry(Generic[ConfigT]):
         try:
             module = importlib.import_module(config.python_module)
             class_definition = getattr(module, config.python_class)
-            resolved = class_definition.get_config_class().model_validate(self._raw[name])
+            resolved = class_definition.get_config_class().model_validate(resolve_values(self._raw[name], config_key))
         except Exception as e:
             sys.stderr.write(f"CONFIG ERROR: failed to validate {self._label} for {config_key}\n")
             raise e
@@ -105,6 +110,11 @@ class LazyConfigRegistry(Generic[ConfigT]):
             self._resolved.add(name)
 
         return resolved
+
+    def peek(self, name: str) -> ConfigT:
+        """Returns the config for name without importing its plugin module: the resolved config once it has
+        been resolved, the base config until then. Raises KeyError if the name is unknown."""
+        return self._configs[name]
 
     def values(self) -> list[ConfigT]:
         """Returns every config, fully resolved. This imports every plugin module."""

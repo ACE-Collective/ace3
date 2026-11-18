@@ -95,7 +95,10 @@ def test_summarize_alert_checks_per_probe_split(make_check):
 
 
 @pytest.mark.integration
-def test_summarize_alert_checks_empty():
-    footer = summarize_alert_checks([])
-    assert footer.entries == []
+def test_summarize_alert_checks_nothing_pending(make_check):
+    assert summarize_alert_checks([]).entries == []
+
+    finished = make_check(status=CheckStatus.COMPLETED.value, result=CheckResult.NOT_FOUND.value)
+    footer = summarize_alert_checks([finished])
+    assert [(e.probe_name, e.pending, e.not_found) for e in footer.entries] == [("fake_probe", 0, 1)]
     assert footer.any_pending is False

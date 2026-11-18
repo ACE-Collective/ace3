@@ -49,6 +49,18 @@ rule test_whitelist : whitelisted
         any of them
 }
 
+rule test_whitelist_with_modifiers : whitelisted
+{
+    meta:
+        modifiers = "directive=extract_urls"
+
+    strings:
+        $a = "Known good that still gets a directive"
+
+    condition:
+        any of them
+}
+
 rule test_qa_modifier
 {
     meta:

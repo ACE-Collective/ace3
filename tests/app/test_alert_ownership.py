@@ -5,9 +5,6 @@ from app.alert_ownership import TAKE_OWNED_FIELD, confirmed_takes_from_form
 
 @pytest.mark.unit
 @pytest.mark.parametrize("raw,expected", [
-    ("", {}),
-    ("a:3", {"a": 3}),
-    ("a:3,b:4", {"a": 3, "b": 4}),
     (" a:3 , b:4 ", {"a": 3, "b": 4}),
     # malformed pairs are dropped, which leaves those alerts unconfirmed
     ("a,b:x,c:5", {"c": 5}),

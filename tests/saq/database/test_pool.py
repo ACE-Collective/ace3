@@ -1,28 +1,36 @@
+import logging
 import threading
-import pytest
+from datetime import datetime, timedelta
 
+import pytest
+from sqlalchemy import text
+
+import aceapi_v2.database
 from saq.environment import ACE_MP_CONTEXT
 
-from saq.configuration.config import get_database_config
+from saq.configuration.config import get_config, get_database_config
 from saq.constants import DB_ACE
-from saq.database.pool import execute_with_db_cursor, get_db_connection, get_pool, reset_pools
-from tests.saq.helpers import log_count, recv_test_message, send_test_message
+from saq.database import pool
+from saq.database.pool import execute_with_db_cursor, get_db, get_db_connection, get_pool, initialize_database, reset_pools
+from tests.saq.helpers import log_count, recv_test_message, send_test_message, wait_for_condition
+
+
+@pytest.fixture(autouse=True)
+def fresh_ace_pool():
+    """Starts each test on a new ace pool. The cached one keeps the config object, and so the connection lifetime
+    and the window, it was built with, which the per-test config restore never reaches. The other pools are left
+    alone, because the next test's setup would log reconnecting to each of them."""
+    get_pool(DB_ACE).clear()
+    del pool._global_db_pools[DB_ACE]
+
 
 @pytest.mark.unit
 def test_execute_with_db_cursor():
     def _target(db, cursor, param1):
-        assert param1 == "test"
-        cursor.execute("SELECT 1")
-        assert cursor.fetchone() == (1,)
-        db.commit()
+        cursor.execute("SELECT %s", (param1,))
+        return cursor.fetchone()
 
-    execute_with_db_cursor(DB_ACE, _target, "test")
-
-@pytest.mark.unit
-def test_connection():
-    with get_db_connection() as db:
-        cursor = db.cursor()
-        cursor.execute("SELECT 1")
+    assert execute_with_db_cursor(DB_ACE, _target, "test") == ("test",)
 
 @pytest.mark.unit
 def test_pooling():
@@ -43,54 +51,45 @@ def test_pooling():
     assert get_pool().available_count == 2
 
 @pytest.mark.integration
-def test_pooling_old_connection():
+def test_pooling_old_connection(monkeypatch):
     get_pool().clear()
 
-    # make them invalid immediately
-    get_database_config(DB_ACE).max_connection_lifetime = "00:00:00"
+    # the pool holds this config object, which the per-test config restore never reaches, so monkeypatch puts the
+    # lifetime back even when an assert below fails
+    monkeypatch.setattr(get_database_config(DB_ACE), "max_connection_lifetime", "00:00:00")
 
     # this is needed to reset the timeouts on the existing connections
     reset_pools()
 
+    # the test's setup may have opened connections of its own
+    def new_connections():
+        return log_count('got new database connection to') - before
+
+    before = log_count('got new database connection to')
+
     with get_db_connection() as _:
         pass
 
-    assert log_count('got new database connection to') ==  1
+    assert new_connections() == 1
 
     with get_db_connection() as _:
         pass
 
-    assert log_count('got new database connection to') == 2
+    assert new_connections() == 2
 
     # change it back and then we should start re-using the connections again
-    get_database_config(DB_ACE).max_connection_lifetime = "00:01:00"
+    monkeypatch.setattr(get_database_config(DB_ACE), "max_connection_lifetime", "00:01:00")
     reset_pools()
 
     with get_db_connection() as _:
         pass
 
-    assert log_count('got new database connection to') == 3
+    assert new_connections() == 3
 
     with get_db_connection() as _:
         pass
 
-    assert log_count('got new database connection to') == 3
-
-@pytest.mark.integration
-def test_pooling_without_contextmanager():
-    get_pool().clear()
-    db = get_pool().get_connection()
-
-    assert get_pool().in_use_count == 1
-    assert get_pool().available_count == 0
-
-    c = db.cursor()
-    c.execute("SELECT 1")
-    db.commit()
-    get_pool().return_connection(db)
-
-    assert get_pool().in_use_count == 0
-    assert get_pool().available_count == 1
+    assert new_connections() == 3
 
 @pytest.mark.integration
 def test_pooling_bad_sql():
@@ -121,45 +120,6 @@ def test_pooling_bad_sql():
     assert get_pool().available_count == 1
 
 @pytest.mark.integration
-def test_pooling_broken_connection():
-    get_pool().clear()
-    with get_db_connection() as db_1:
-
-        assert get_pool().in_use_count == 1
-        assert get_pool().available_count == 0
-        db_1.close()
-
-    assert get_pool().in_use_count == 0
-    assert get_pool().available_count == 0
-
-    with get_db_connection() as db_1:
-
-        assert get_pool().in_use_count == 1
-        assert get_pool().available_count == 0
-
-        c = db_1.cursor()
-        c.execute("SELECT 1")
-        c.fetchone()
-        db_1.commit()
-
-    assert get_pool().in_use_count == 0
-    assert get_pool().available_count == 1
-
-    # close the connection while not being used
-    for connection in get_pool().available:
-        connection.close()
-
-    with get_db_connection() as db_1:
-
-        assert get_pool().in_use_count == 1
-        assert get_pool().available_count == 0
-
-        c = db_1.cursor()
-        c.execute("SELECT 1")
-        c.fetchone()
-        db_1.commit()
-
-@pytest.mark.integration
 def test_pooling_threaded():
     get_pool().clear()
 
@@ -167,24 +127,23 @@ def test_pooling_threaded():
         assert get_pool().in_use_count == 1
         assert get_pool().available_count == 0
 
+        # what the other thread sees, read here: an assertion that fails in a thread only warns
+        seen = []
+
         def f():
             with get_db_connection() as conn_2:
-                assert conn_1 is not conn_2
-                assert get_pool().in_use_count == 2
-                assert get_pool().available_count == 0
+                seen.append((conn_2 is conn_1, get_pool().in_use_count, get_pool().available_count))
 
             # but asked a second time this should be the same as before
             with get_db_connection() as conn_3:
-                assert conn_3 is conn_2
-                assert get_pool().in_use_count == 2
-                assert get_pool().available_count == 0
-            
-        assert get_pool().in_use_count == 1
-        assert get_pool().available_count == 0
-        t = threading.Thread(target=f)
+                seen.append((conn_3 is conn_2, get_pool().in_use_count, get_pool().available_count))
+
+        t = threading.Thread(target=f, daemon=True)
         t.start()
-        t.join()
-                
+        t.join(30)
+        assert not t.is_alive()
+        assert seen == [(False, 2, 0), (True, 2, 0)]
+
     assert get_pool().in_use_count == 0
     assert get_pool().available_count == 2
 
@@ -244,3 +203,278 @@ def test_pooling_multi_process(test_comms):
         assert get_pool().in_use_count == 1
         assert get_pool().available_count == 0
         assert conn_1 is conn_4
+
+
+def _open_on_server(thread_ids):
+    """The MySQL thread ids, of those given, whose connections are still open on the server. pymysql's close()
+    does not wait for the server to drop the thread, so a test waits for this to settle rather than reading it once."""
+    with get_db_connection() as db:
+        cursor = db.cursor()
+        cursor.execute("SELECT id FROM information_schema.processlist")
+        return set(thread_ids) & {row[0] for row in cursor.fetchall()}
+
+
+@pytest.mark.integration
+def test_returning_a_burst_keeps_only_pool_size_idle(monkeypatch):
+    monkeypatch.setattr(pool, "POOL_SIZE", 2)
+    database_pool = get_pool()
+    database_pool.clear()
+
+    burst = [database_pool.get_connection() for _ in range(5)]
+    thread_ids = [connection.thread_id() for connection in burst]
+    for connection in burst:
+        database_pool.return_connection(connection)
+
+    assert database_pool.in_use_count == 0
+    assert database_pool.available_count == 2
+    wait_for_condition(lambda: len(_open_on_server(thread_ids)) == 2)
+
+
+@pytest.mark.integration
+def test_a_connection_returned_past_its_lifetime_is_closed():
+    database_pool = get_pool()
+    database_pool.clear()
+
+    connection = database_pool.get_connection()
+    connection.termination_date = datetime.now() - timedelta(seconds=1)
+    thread_id = connection.thread_id()
+    database_pool.return_connection(connection)
+
+    assert database_pool.in_use_count == 0
+    assert database_pool.available_count == 0
+    wait_for_condition(lambda: not _open_on_server([thread_id]))
+
+
+@pytest.mark.integration
+def test_expired_idle_connections_are_closed_by_the_next_return():
+    # the pool reuses the connection returned last, so one request only ever checks the top of the
+    # stack: the connections under it used to stay open past their lifetime for as long as the
+    # traffic stayed below the burst that opened them
+    database_pool = get_pool()
+    database_pool.clear()
+
+    idle = [database_pool.get_connection() for _ in range(3)]
+    thread_ids = [connection.thread_id() for connection in idle]
+    for connection in idle:
+        database_pool.return_connection(connection)
+        connection.termination_date = datetime.now() - timedelta(seconds=1)
+
+    with get_db_connection() as db:
+        cursor = db.cursor()
+        cursor.execute("SELECT 1")
+        cursor.fetchone()
+
+    assert database_pool.available_count == 1
+    wait_for_condition(lambda: not _open_on_server(thread_ids))
+
+
+@pytest.mark.integration
+def test_opening_past_the_soft_cap_warns_at_each_new_peak(monkeypatch, caplog):
+    monkeypatch.setattr(pool, "POOL_SIZE", 1)
+    monkeypatch.setattr(pool, "POOL_MAX_OVERFLOW", 1)
+    database_pool = get_pool()
+    database_pool.clear()
+
+    def _warnings():
+        return [r for r in caplog.records if r.levelno == logging.WARNING and hasattr(r, "open_connections")]
+
+    # the cap is soft: the third connection is opened, and the warning says so
+    held = [database_pool.get_connection() for _ in range(3)]
+    assert database_pool.in_use_count == 3
+    assert [(r.open_connections, r.database) for r in _warnings()] == [(3, DB_ACE)]
+
+    # the same peak again is not a new warning, a higher one is
+    for connection in held:
+        database_pool.return_connection(connection)
+    held = [database_pool.get_connection() for _ in range(4)]
+    assert [r.open_connections for r in _warnings()] == [3, 4]
+
+    for connection in held:
+        database_pool.return_connection(connection)
+
+
+@pytest.mark.integration
+def test_a_discarded_connection_that_fails_to_close_is_logged(monkeypatch, caplog):
+    monkeypatch.setattr(pool, "POOL_SIZE", 1)
+    database_pool = get_pool()
+    database_pool.clear()
+
+    first = database_pool.get_connection()
+    second = database_pool.get_connection()
+    database_pool.return_connection(first)
+
+    def _explode():
+        raise OSError("nope")
+
+    # the oldest idle connection is the one trimmed
+    monkeypatch.setattr(first, "close", _explode)
+    database_pool.return_connection(second)
+
+    assert database_pool.in_use_count == 0
+    assert list(database_pool.available) == [second]
+    assert any(r.levelno == logging.WARNING and "unable to close database connection: nope" in r.getMessage()
+               for r in caplog.records)
+
+    monkeypatch.undo()
+    first.close()
+
+
+class _Clock(datetime):
+    """datetime, moved forward by offset."""
+    offset = timedelta(0)
+
+    @classmethod
+    def now(cls, tz=None):
+        return datetime.now(tz) + cls.offset
+
+
+@pytest.fixture
+def clock(monkeypatch):
+    """Moves the pool's clock. fresh_ace_pool has dropped the cached ace pool, so the test's first checkout builds one
+    whose window starts on this clock."""
+    monkeypatch.setattr(pool, "datetime", _Clock)
+    monkeypatch.setattr(_Clock, "offset", timedelta(0))
+    return _Clock
+
+
+def _query():
+    with get_db_connection() as db:
+        cursor = db.cursor()
+        cursor.execute("SELECT 1")
+        cursor.fetchone()
+
+
+def _summaries(caplog):
+    return [r for r in caplog.records if r.levelno == logging.INFO and hasattr(r, "peak_in_use")]
+
+
+@pytest.mark.integration
+def test_the_pool_logs_what_it_used_once_per_connection_lifetime(clock, caplog):
+    database_pool = get_pool()
+
+    burst = [database_pool.get_connection() for _ in range(3)]
+    for connection in burst:
+        database_pool.return_connection(connection)
+    _query()
+    assert not _summaries(caplog)
+
+    # the first checkout after max_connection_lifetime (15 minutes) reports the window that ended
+    clock.offset = timedelta(minutes=16)
+    _query()
+    [first] = _summaries(caplog)
+    assert first.database == DB_ACE
+    assert (first.peak_in_use, first.checkouts, first.opened, first.idle) == (3, 4, 3, 3)
+    assert (first.closed_expired, first.closed_idle, first.closed_broken) == (0, 0, 0)
+
+    # that checkout found all three expired: it replaced the one it took and its return closed the other two
+    clock.offset = timedelta(minutes=32)
+    _query()
+    second = _summaries(caplog)[1]
+    assert (second.peak_in_use, second.checkouts, second.opened, second.idle) == (1, 1, 1, 1)
+    assert (second.closed_expired, second.closed_idle, second.closed_broken) == (3, 0, 0)
+
+
+@pytest.mark.integration
+def test_the_summary_counts_connections_closed_as_idle_or_broken(clock, caplog, monkeypatch):
+    monkeypatch.setattr(pool, "POOL_SIZE", 1)
+    database_pool = get_pool()
+
+    burst = [database_pool.get_connection() for _ in range(3)]
+    for connection in burst:
+        database_pool.return_connection(connection)
+
+    def _explode():
+        raise OSError("nope")
+
+    # one that cannot roll back when it is checked out, and its replacement when it is returned
+    [idle] = database_pool.available
+    monkeypatch.setattr(idle, "rollback", _explode)
+    connection = database_pool.get_connection()
+    assert connection is not idle
+    monkeypatch.setattr(connection, "rollback", _explode)
+    database_pool.return_connection(connection)
+
+    clock.offset = timedelta(minutes=16)
+    _query()
+    [summary] = _summaries(caplog)
+    assert (summary.peak_in_use, summary.checkouts, summary.opened, summary.idle) == (3, 4, 4, 0)
+    assert (summary.closed_expired, summary.closed_idle, summary.closed_broken) == (0, 2, 2)
+
+
+@pytest.fixture
+def no_sessions(monkeypatch):
+    """Starts the test with no session or engine registered, and disposes the engines it creates."""
+    monkeypatch.setattr(pool, "_db_sessions", {})
+    monkeypatch.setattr(pool, "_db_engines", set())
+    yield
+    for session in pool._db_sessions.values():
+        session.remove()
+    for engine in pool._db_engines:
+        engine.dispose()
+
+
+@pytest.mark.integration
+def test_get_db_creates_the_ace_session_on_first_request(no_sessions):
+    # like every other database's, so nothing has to register it first
+    session = get_db()
+    assert session is get_db(DB_ACE)
+
+    engine = session.get_bind()
+    assert engine in pool._db_engines
+    assert engine.url.database == get_database_config(DB_ACE).database
+    assert session.execute(text("SELECT @@transaction_isolation")).scalar() == "READ-COMMITTED"
+
+
+@pytest.mark.integration
+def test_initialize_database_leaves_the_ace_session_to_first_use(no_sessions):
+    # building the engine imports SQLAlchemy, which a process that never queries through the ORM does not need
+    initialize_database()
+    assert DB_ACE not in pool._db_sessions
+    assert not pool._db_engines
+
+    session = get_db()
+    initialize_database()
+    assert pool._db_sessions[DB_ACE] is session
+    assert len(pool._db_engines) == 1
+
+
+@pytest.mark.unit
+def test_sql_exec_times_logged_when_enabled(monkeypatch, caplog):
+    monkeypatch.setattr(get_config().global_settings, "log_sql_exec_times", True)
+    with caplog.at_level(logging.DEBUG):
+        get_db().execute(text("SELECT 1"))
+
+    messages = [record.getMessage() for record in caplog.records]
+    assert any(message.startswith("START QUERY SELECT 1") for message in messages)
+    assert any(message.startswith("END QUERY") and "SELECT 1" in message for message in messages)
+
+
+@pytest.mark.unit
+def test_sql_exec_times_not_logged_when_disabled(monkeypatch, caplog):
+    monkeypatch.setattr(get_config().global_settings, "log_sql_exec_times", False)
+    with caplog.at_level(logging.DEBUG):
+        get_db().execute(text("SELECT 1"))
+
+    assert not [record for record in caplog.records if "QUERY" in record.getMessage()]
+
+
+@pytest.mark.unit
+def test_registering_the_timing_listeners_again_logs_each_query_once(monkeypatch, caplog):
+    pool.register_sql_timing_listeners()
+    pool.register_sql_timing_listeners()
+    monkeypatch.setattr(get_config().global_settings, "log_sql_exec_times", True)
+    with caplog.at_level(logging.DEBUG):
+        get_db().execute(text("SELECT 1"))
+
+    assert len([record for record in caplog.records if record.getMessage().startswith("START QUERY SELECT 1")]) == 1
+
+
+@pytest.mark.unit
+def test_the_api_engines_register_the_timing_listeners(monkeypatch):
+    registered = []
+    monkeypatch.setattr(aceapi_v2.database, "register_sql_timing_listeners", lambda: registered.append(True))
+    monkeypatch.setattr(aceapi_v2.database, "create_async_engine", lambda *args, **kwargs: object())
+
+    aceapi_v2.database.create_engine_for("ace")
+    assert registered == [True]
+

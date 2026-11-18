@@ -7,6 +7,7 @@ import yaml
 
 from saq.cli.cli_main import get_cli_subparsers
 from saq.configuration import get_config
+from saq.configuration.yaml_parser import resolve_values
 from saq.environment import get_global_runtime_settings
 
 
@@ -17,8 +18,8 @@ def list_available_modules(args):
     configuration_manager = ConfigurationManager(EngineConfiguration(engine_type=EngineType.LOCAL, single_threaded_mode=True))
     configuration_manager.load_modules()
 
-    for module in sorted(configuration_manager.analysis_modules, key=lambda x: x.module_id):
-        print(f"{module.module_id}")
+    for module in sorted(configuration_manager.analysis_modules, key=lambda x: x.name):
+        print(module.name)
 
     sys.exit(0)
 
@@ -63,6 +64,7 @@ def config(args):
 
         return False
 
+    # the configuration keeps its env: and file: references; print what they stand for
     result = {}
     for section in list(get_config().raw._data.keys()):
         if not matches_param(section):
@@ -75,14 +77,19 @@ def config(args):
         if isinstance(value, dict):
             for key in list(get_config().raw._data[section].keys()):
                 if matches_param(section, key):
-                    result[section][key] = get_config().raw._data[section][key]
+                    result[section][key] = resolve_values(get_config().raw._data[section][key], f"{section}.{key}")
         else:
-            result[section] = value
+            result[section] = resolve_values(value, section)
 
     # are we only printing the value out?
     if args.value:
-        for section_key, section_dict in result.items():
-            for key, value in section_dict.items():
+        for section_key, section_value in result.items():
+            # a few top level settings are lists rather than sections
+            if not isinstance(section_value, dict):
+                print(section_value)
+                continue
+
+            for key, value in section_value.items():
                 print(value)
     else:
         # otherwise we just dump what is queried for as yaml
@@ -116,7 +123,6 @@ def display_workload(args):
         print("{: <36} {: <20} {}".format('UUID', 'MODULE', 'COUNT'))
         for storage_dir, analysis_module, count in c:
             storage_dir = os.path.basename(storage_dir)
-            analysis_module = analysis_module[len('analysis_module_'):]
             print("{: <36} {: <20} {}".format(storage_dir, analysis_module, count))
 
         db.commit()

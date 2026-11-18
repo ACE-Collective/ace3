@@ -74,10 +74,12 @@ threaded engine, which has no manager to kill it) uses one:
   the `killed` report as `thread_stacks.txt`, then deletes the source file. A `killed` report
   with no dump, for example a memory kill of a module that wasn't hung, records
   `thread_stacks.txt` in `omitted`.
-- **Clean up.** A worker that exits cleanly deletes its own file. A starting worker, and
-  `ace crash prune`, delete files whose pid no longer exists and that are more than 10 minutes
-  old. The age guard keeps one replacement from deleting a file that another has yet to collect
-  after several workers are killed at once.
+- **Clean up.** A worker that exits cleanly deletes its own file. A starting worker deletes
+  files whose pid no longer exists and that are more than 10 minutes old. The age guard keeps one
+  replacement from deleting a file that another has yet to collect after several workers are
+  killed at once. `ace crash prune` never touches these files: it runs in the cron container,
+  which shares the node name and data volume but none of the engine's pids, so every live
+  worker's file would look stale to it.
 
 The dump starts with a `Timeout (0:00:55)!` line, followed by faulthandler's usual
 `Thread 0x... (most recent call first):` blocks. The C timer thread is not a Python thread, so
@@ -183,16 +185,17 @@ node can serve any report:
 
 ```yaml
 storage:
-  target: local       # with base_dir on a filesystem every node shares, or custom (below)
-  base_dir: /mnt/shared/ace-storage
+  target: s3          # or the local backend with base_dir on a filesystem every node shares
 crash_reporting:
   replicate: true
   storage_bucket: ace-crash-reports
 ```
 
-ACE ships no object store client. A deployment that keeps the shared copies in an object store
-(S3, Azure Blob, ...) supplies its own backend class, typically from an integration, through the
-same plugin convention `analysis_cache.blob_store` uses:
+The built-in `s3` backend talks to an S3-compatible endpoint with a static access key and secret
+(`saq/storage/factory.py::_create_s3_storage` reads the top-level `s3:` block, including `secure`,
+`cert_check` and `region`). A deployment whose
+object store authenticates some other way — an IAM instance role, STS, a signing proxy — supplies
+its own backend instead, through the same plugin convention `analysis_cache.blob_store` uses:
 
 ```yaml
 storage:
@@ -206,9 +209,10 @@ storage:
 
 The class is imported, its `get_config_class()` model validates the `config:` sub-dict, and the
 resulting model is its single constructor argument. It has to implement the seven methods of
-`StorageInterface` (`saq/storage/interface.py`), and it has to bound every network call itself
-(connect and read timeouts, capped retries): `ace crash sync`, `ace crash prune` and the download
-API call it synchronously, and ACE puts no timeout around it.
+`StorageInterface` (`saq/storage/interface.py`), and it can get all of them by subclassing
+`S3Storage` and replacing only the client. Note `S3Storage._ensure_bucket_exists()` does
+`head_bucket` and then `create_bucket` on first upload per process — a backend running under a
+least-privilege policy that denies those should override it and let the bucket be pre-created.
 
 This is an explicit opt-in rather than something inferred from `storage.target`, because a cluster
 running the local backend with `base_dir` on NFS is a perfectly good deployment — inferring would
@@ -239,15 +243,25 @@ is finished, and objects without it mean an interrupted upload, which is served 
 Keys are derivable from the crash id, so **no database column and no migration** — the
 `analysis_module_crashes` row is unchanged.
 
-The upload runs on a **daemon thread that is never joined**. A network backend bounds its own
-requests, but bounded is not instant: a report is several objects, each possibly several requests,
-and the caller is a worker holding a work item lock. The local report is already durable before replication starts, so it is pure
+The crashed file keeps the observable's own name, which need not be UTF-8, and an S3 key must be.
+A name that is not is uploaded with each undecodable byte written as its `\udcXX` escape
+(`utf8_safe()` in `saq/logging.py`), so a report fetched from shared storage, and the
+`GET /api/v2/crashes/{crash_id}` detail of any report, name that file in escaped form. The download
+of a local report keeps the raw bytes. Reads and deletes use each key exactly as storage lists it,
+so a report replicated under the raw name before keys were escaped is still fetched and pruned.
+
+The upload runs on a **daemon thread that is never joined**. S3 requests are bounded — `S3Config`
+sets `connect_timeout`, `read_timeout` and `max_attempts` — but bounded is not instant: a report is
+several objects, each a multipart transfer of several requests, and the caller is a worker holding
+a work item lock. The local report is already durable before replication starts, so it is pure
 best-effort; at most two uploads run at once per process and the rest are left to the sweeper.
 `timeout` reports are never replicated inline at all, because `os._exit(1)` would annihilate the
 thread.
 
 **`ace crash sync`** is the catch-up: it lists the bucket once, compares against the local reports,
-and uploads the difference. It runs hourly from `etc/cron/hourly/crash-reports` **after** `ace crash prune`, so
+and uploads the difference. A report whose `metadata.json` is in the bucket is replicated. A local
+report without one, which no process will ever finish, is replicated once every file it has is in
+the bucket, and is uploaded again only if it gains a file. It runs hourly from `etc/cron/hourly/crash-reports` **after** `ace crash prune`, so
 a run never uploads reports it is about to delete. It is stateless — it asks the bucket rather than
 tracking a marker file locally, which would have leaked into the API's file inventory, into the
 archive handed to the analyst, and (worst) would have refreshed the directory mtime that prune ages
@@ -259,8 +273,10 @@ reports by, silently extending retention.
   the same reason the download is an encrypted zip.
 - **Set a lifecycle expiration rule.** `ace crash prune` deletes the shared copy alongside the
   local one (remote first, and it skips the local delete if that fails, so the two never drift),
-  but a decommissioned node's reports have nobody left to prune them. A lifecycle rule on the
-  object store (or a periodic sweep of the shared directory) is the backstop.
+  but a decommissioned node's reports have nobody left to prune them. A bucket lifecycle rule is
+  the backstop.
+- Least-privilege policies that deny `HeadBucket`/`CreateBucket` will break the automatic bucket
+  creation in `saq/storage/s3.py`; pre-create the bucket in that case.
 
 ## Configuration
 
@@ -307,8 +323,9 @@ the operator's read-only views.
 ## Error reports
 
 Error reports are a separate mechanism: a stack-trace file under `data/error_reports/`,
-written for every record logged at ERROR or above with a traceback (`logging.exception()`)
-by the root logger's `ErrorReportHandler`. Crash reports are the analyst-facing record of a
+written for a record logged at ERROR or above with a traceback (`logging.exception()`)
+by the root logger's `ErrorReportHandler`, once per cause (where it was logged, the exception's
+type and text) every ten minutes; the next report of a cause gives the repeats it skipped. Crash reports are the analyst-facing record of a
 *module* failure; error reports are the process-local traceback dump used everywhere else. The
 engine's per-module exception handler logs at WARNING, so a module failure gets a crash report
 and no error report.

@@ -43,7 +43,7 @@ def load_configuration(config_paths: list[str] | None = None):
     (see tests/unittest_database.py).
     """
 
-    default_yaml = os.path.join("etc", "saq.default.yaml")
+    default_yaml = os.path.join(get_base_dir(), "etc", "saq.default.yaml")
 
     config = YAMLConfig()
     config.load_file(default_yaml)
@@ -74,21 +74,22 @@ def load_configuration(config_paths: list[str] | None = None):
 
     # optional auto-generated passwords and API keys
     db_auto_yaml = "/docker-entrypoint-initdb.d/saq.database.passwords.yaml"
-    local_yaml = "etc/saq.yaml"
+    s3_test_yaml = "/docker-entrypoint-initdb.d/saq.s3.test.passwords.yaml"
+    local_yaml = os.path.join(get_base_dir(), "etc", "saq.yaml")
 
     def _load_optional(path_yaml: str) -> None:
         if os.path.exists(path_yaml):
             config.load_file(path_yaml)
 
     _load_optional(db_auto_yaml)
-    # the dev overlay is never part of a test run
-    if not get_global_runtime_settings().unit_testing:
-        if "SAQ_SKIP_LOCAL_SAQ_YAML" in os.environ:
-            # a container with a curated SAQ_CONFIG_PATHS overlay (the AI API) must not have the
-            # local dev overlay -- which may hold live credentials -- merged over it
-            sys.stderr.write(f"NOTICE: skipping {local_yaml} because SAQ_SKIP_LOCAL_SAQ_YAML is set\n")
-        else:
-            _load_optional(local_yaml)
+    if get_global_runtime_settings().unit_testing:
+        _load_optional(s3_test_yaml)
+    elif "SAQ_SKIP_LOCAL_SAQ_YAML" in os.environ:
+        # a container with a curated SAQ_CONFIG_PATHS overlay (the AI API) must not have the
+        # local dev overlay -- which may hold live credentials -- merged over it
+        sys.stderr.write(f"NOTICE: skipping {local_yaml} because SAQ_SKIP_LOCAL_SAQ_YAML is set\n")
+    else:
+        _load_optional(local_yaml)
 
     config.apply_path_references()
     return config

@@ -56,7 +56,7 @@ def load_auto_close_criteria(file_path: Optional[str]=None) -> list[AutoCloseCri
 
         return [AutoCloseCriteria(**_) for _ in content["criteria"]]
 
-def get_auto_close_events(criteria: Optional[dict]=None) -> list[int]:
+def get_auto_close_events(criteria: Optional[list[AutoCloseCriteria]]=None) -> list[int]:
     """Returns a list of events that have been configured for auto-closing and have expired in time.
     Returns an empty list if none are found that match this criteria."""
     try:
@@ -69,7 +69,8 @@ def get_auto_close_events(criteria: Optional[dict]=None) -> list[int]:
         # look for events with creation date 2 days or older
         cutoff_date = (datetime.datetime.now() - datetime.timedelta(days=2)).replace(hour=0, minute=0, second=0)
         return [event.id for event in get_db().query(Event).filter(Event.status_id == open_id, Event.creation_date <= cutoff_date)
-                if any([c.matches(_get_threat_names(event)) for c in load_auto_close_criteria()])]
+                if any([c.matches(_get_threat_names(event)) for c in criteria])]
 
     except Exception as e:
         logging.exception(f"unable to load auto close criteria: {e}")
+        return []

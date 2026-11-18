@@ -58,14 +58,11 @@ def cli_prune(args):
     """Delete crash reports older than N days, along with their index rows and shared copies."""
     from saq.configuration.config import get_config
     from saq.crash_replication import delete_report, replication_enabled
-    from saq.crash_report import get_crash_report_root_dir, prune_stale_hang_stacks
+    from saq.crash_report import get_crash_report_root_dir
 
-    # pre-kill thread dumps left by engine workers that are gone. independent of retention: a
-    # dump is collected within seconds of its worker dying or not at all. not in a dry run
-    if not args.dry_run:
-        pruned_dumps = prune_stale_hang_stacks()
-        if pruned_dumps:
-            print(f"pruned {pruned_dumps} stale hang stack dump(s)")
+    # NOTE this never prunes the hang stack dumps: those are named by pid, and this runs in the
+    # cron container, whose pid namespace has none of the engine's pids in it. engine workers
+    # prune them as they start (see prune_stale_hang_stacks)
 
     days = args.days if args.days is not None else get_config().crash_reporting.retention_days
     if days <= 0:
@@ -102,7 +99,7 @@ def cli_prune(args):
             shutil.rmtree(crash_dir)
             removed.append(crash_id)
         except Exception as e:
-            logging.error("unable to remove crash report %s: %s", crash_dir, e)
+            logging.exception("unable to remove crash report %s: %s", crash_dir, e)
 
     if removed and not args.dry_run:
         _delete_rows(removed)
@@ -207,7 +204,8 @@ def cli_sync(args):
     API's file inventory, into the archive handed to the analyst, and -- worst -- would refresh the
     directory mtime that `ace crash prune` ages reports by, silently extending retention.
     """
-    from saq.crash_replication import list_replicated_ids, replicate_report, replication_enabled
+    # local for the reason the NOTE at the top of this module gives: it imports saq.crash_report
+    from saq.crash_replication import is_replicated, list_replicated_files, replicate_report, replication_enabled
     from saq.crash_report import get_crash_report_root_dir
 
     if not replication_enabled():
@@ -218,17 +216,16 @@ def cli_sync(args):
     if not os.path.isdir(root_dir):
         return 0
 
-    already = list_replicated_ids()
+    replicated = list_replicated_files()
     uploaded = 0
     skipped = 0
 
     for crash_dir, _ in _iter_report_dirs(root_dir):
         crash_id = os.path.basename(crash_dir)
 
-        # list_replicated_ids() keys off the <id>/metadata.json completeness marker, so a report
-        # in this set is finished up there. Anything else -- never uploaded, or uploaded until the
-        # worker died partway -- gets (re)uploaded, which is idempotent.
-        if crash_id in already:
+        # a report never uploaded, or uploaded until the upload died partway, is (re)uploaded,
+        # which is idempotent
+        if is_replicated(crash_dir, crash_id, replicated.get(crash_id, set())):
             skipped += 1
             continue
 
@@ -295,18 +292,21 @@ def _delete_rows(crash_ids: list[str]):
         ).delete(synchronize_session=False)
         get_db().commit()
     except Exception as e:
-        logging.error("unable to delete crash report index rows: %s", e)
+        logging.exception("unable to delete crash report index rows for %s: %s", crash_ids, e)
 
 
 def _remove_empty_date_dirs(root_dir: str):
     """Reap YYYY/MM/DD levels the sweep drained, deepest first."""
-    for dirpath, dir_names, file_names in os.walk(root_dir, topdown=False):
+    # os.walk lists a directory before descending into it, so its dir_names still names the
+    # children removed below it; whether it is empty now is only known by asking again
+    for dirpath, _, _ in os.walk(root_dir, topdown=False):
         if dirpath == root_dir:
             continue
-        if not dir_names and not file_names:
+        if not os.listdir(dirpath):
             try:
                 os.rmdir(dirpath)
             except OSError:
+                # a crash report written into it since; the next prune gets it
                 pass
 
 

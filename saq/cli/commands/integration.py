@@ -4,13 +4,29 @@ import sys
 from saq.cli.cli_main import get_cli_subparsers
 
 
+def _integration_exists(name: str) -> bool:
+    from saq.integration.integration_util import get_integration_path_from_name
+    try:
+        get_integration_path_from_name(name)
+    except (FileNotFoundError, ValueError) as e:
+        logging.error(f"unknown integration {name}: {e}")
+        return False
+
+    return True
+
 def enable_integration(args):
     from saq.integration.integration_manager import enable_integration
+    if not _integration_exists(args.name):
+        sys.exit(1)
+
     enable_integration(args.name)
     sys.exit(0)
 
 def disable_integration(args):
     from saq.integration.integration_manager import disable_integration
+    if not _integration_exists(args.name):
+        sys.exit(1)
+
     disable_integration(args.name)
     sys.exit(0)
 
@@ -33,13 +49,26 @@ def list_integrations(args):
     sys.exit(0)
 
 def install_integration(args):
-    from saq.integration.integration_manager import install_integration
-    install_integration(args.name)
-    sys.exit(0)
+    from saq.integration.integration_manager import install_integration, is_integration_installed
+    if not _integration_exists(args.name):
+        sys.exit(1)
+
+    if install_integration(args.name):
+        sys.exit(0)
+
+    if is_integration_installed(args.name):
+        print(f"integration {args.name} is already installed")
+        sys.exit(0)
+
+    logging.error(f"integration {args.name} has no tests directory to install")
+    sys.exit(1)
 
 def uninstall_integration(args):
     from saq.integration.integration_manager import uninstall_integration
-    uninstall_integration(args.name)
+    if not uninstall_integration(args.name):
+        logging.error(f"integration {args.name} is not installed")
+        sys.exit(1)
+
     sys.exit(0)
 
 integration_parser = get_cli_subparsers().add_parser('integration')

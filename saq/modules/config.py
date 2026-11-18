@@ -1,10 +1,14 @@
 from datetime import timedelta
 from typing import Optional, Union
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class AnalysisModuleConfig(BaseModel):
+    # a key the config class does not declare is a typo or a renamed setting, and ignoring it
+    # leaves the module running without it; a subclass that takes open-ended keys allows them
+    model_config = ConfigDict(extra="forbid")
+
     name: str = Field(..., description="Unique identifier for the analysis module.")
     python_module: str = Field(..., description="The Python module that contains the analysis module class.")
     python_class: str = Field(..., description="The name of the analysis module class inside the module.")
@@ -54,5 +58,16 @@ class AnalysisModuleConfig(BaseModel):
         if self.cache_ttl is not None and self.is_grouped_by_time:
             raise ValueError(
                 f"analysis module {self.name!r}: cache_ttl cannot be set when is_grouped_by_time is True"
+            )
+        return self
+
+    @model_validator(mode='after')
+    def _grouping_needs_time_range(self) -> 'AnalysisModuleConfig':
+        # analysis_covered() groups observations that fall within
+        # observation_grouping_time_range of each other; without one it fails
+        # on every observable that has a time
+        if self.is_grouped_by_time and self.observation_grouping_time_range is None:
+            raise ValueError(
+                f"analysis module {self.name!r}: is_grouped_by_time requires observation_grouping_time_range"
             )
         return self

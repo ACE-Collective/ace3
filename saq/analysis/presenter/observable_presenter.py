@@ -1,11 +1,7 @@
 from typing import Optional, Type
 
-from saq import Observable
-from aceapi_v2.observables.service import observable_is_interesting
-from aceapi_v2.sync import run_async_with_session
-from saq.database.database_observable import observable_is_set_for_detection
-
-from saq.gui import ObservableAction
+from saq.analysis.observable import Observable
+from saq.gui.observable_actions.base import ObservableAction
 
 # Registry for custom observable presenter classes
 _OBSERVABLE_PRESENTER_REGISTRY: dict[Type[Observable], Type["ObservablePresenter"]] = {}
@@ -83,6 +79,10 @@ class ObservablePresenter:
     def is_set_for_detection(self) -> bool:
         """Returns True if this observable is enabled for future detection."""
         if self._detection_status is None:
+            # imported here, not at module level: an integration that registers its actions from its
+            # package init, rather than from its GUI blueprint's module, imports this module in every
+            # process, and only a presenter that has to ask the database itself needs the database models
+            from saq.database.database_observable import observable_is_set_for_detection
             self._detection_status = observable_is_set_for_detection(self._observable)
 
         return self._detection_status
@@ -91,8 +91,9 @@ class ObservablePresenter:
     def is_interesting(self) -> bool:
         """Returns True if this observable is marked interesting."""
         if self._is_interesting is None:
-            self._is_interesting = run_async_with_session(
-                observable_is_interesting, self._observable.type, self._observable.sha256_bytes)
+            # imported here for the same reason as in is_set_for_detection
+            from saq.database.database_observable import observable_is_interesting
+            self._is_interesting = observable_is_interesting(self._observable)
 
         return self._is_interesting
 
@@ -147,7 +148,3 @@ class ObservablePresenter:
     def __getattr__(self, name):
         """Delegate any missing attributes to the underlying observable object."""
         return getattr(self._observable, name)
-
-
-# The specialized presenters for specific observable types are now co-located
-# with their respective observable classes in the observables modules

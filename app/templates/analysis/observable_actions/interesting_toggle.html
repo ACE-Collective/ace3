@@ -3,6 +3,7 @@
         var menuItem = $('#action_{{action.name}}_{{unique_reference}}');
         var observableValue = decodeURIComponent(atob('{{_observable.value | b64escape}}'));
         var displayValue = decodeURIComponent(atob('{{_observable.display_value | b64escape}}'));
+        var displayType = decodeURIComponent(atob('{{_observable.display_type | b64escape}}'));
 
         function bindMark() {
             menuItem.off('click').on('click', function() {
@@ -22,14 +23,16 @@
                         // add to the summary section
                         var list = $('#interesting_observables_list');
                         if ($('#interesting_item_{{_observable.uuid}}').length === 0) {
-                            list.append(
-                                '<li id="interesting_item_{{_observable.uuid}}">' +
-                                '<a href="#{{_observable.uuid}}" style="text-decoration: none; color: inherit;">' +
-                                '<span class="bi bi-star-fill" style="color: gold;"></span> ' +
-                                '<b>{{_observable.display_type}}</b> : ' +
-                                displayValue +
-                                '</a></li>'
+                            // build the item with DOM methods so the display value and
+                            // display type are inserted as text, never as HTML
+                            var item = $('<li>', {id: 'interesting_item_{{_observable.uuid}}'});
+                            var link = $('<a>', {href: '#{{_observable.uuid}}', style: 'text-decoration: none; color: inherit;'});
+                            link.append(
+                                $('<span>', {'class': 'bi bi-star-fill', style: 'color: gold;'}), ' ',
+                                $('<b>').text(displayType), ' : ',
+                                document.createTextNode(displayValue)
                             );
+                            list.append(item.append(link));
                         }
                         $('#interesting_observables_card').show();
 

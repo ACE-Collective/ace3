@@ -30,6 +30,7 @@ from tests.saq.svs.conftest import (
     graded_alert,
     insert_capture,
 )
+from tests.saq.helpers import person
 
 pytestmark = pytest.mark.integration
 
@@ -64,7 +65,7 @@ def test_relabel_writes_an_explicit_verdict_on_every_contributing_detection(user
     sha256 = _sha256(files)
     assert _label(sha256) == ("tp", SOURCE_INHERITED_SINGLE)
 
-    change = actions.relabel(sha256, RULE_UUID, "fp", user_id)
+    change = actions.relabel(sha256, RULE_UUID, "fp", person(user_id))
 
     assert (change.changed, change.unchanged, change.skipped) == (2, 0, [])
     assert (change.label, change.label_source) == ("fp", SOURCE_EXPLICIT)
@@ -73,7 +74,7 @@ def test_relabel_writes_an_explicit_verdict_on_every_contributing_detection(user
     assert _label(sha256, OTHER_RULE_UUID) == ("tp", SOURCE_INHERITED_MULTI)
 
     # again: nothing to change
-    change = actions.relabel(sha256, RULE_UUID, "fp", user_id)
+    change = actions.relabel(sha256, RULE_UUID, "fp", person(user_id))
     assert (change.changed, change.unchanged) == (0, 2)
 
 
@@ -84,7 +85,7 @@ def test_relabel_skips_the_detections_on_a_false_positive_alert(user_id):
     sha256 = _sha256(files)
     assert _label(sha256) == ("conflicted", SOURCE_INHERITED_SINGLE)
 
-    change = actions.relabel(sha256, RULE_UUID, "tp", user_id)
+    change = actions.relabel(sha256, RULE_UUID, "tp", person(user_id))
 
     assert change.changed == 1
     (skipped,) = change.skipped
@@ -97,14 +98,14 @@ def test_relabel_skips_the_detections_on_a_false_positive_alert(user_id):
 def test_relabel_with_nothing_writable_is_refused(user_id):
     _, files = graded_alert("FALSE_POSITIVE", {"a.bin": [RULE_UUID]})
     with pytest.raises(VerdictNotAllowed, match="correct its disposition"):
-        actions.relabel(_sha256(files), RULE_UUID, "tp", user_id)
+        actions.relabel(_sha256(files), RULE_UUID, "tp", person(user_id))
     assert _label(_sha256(files)) == ("fp", SOURCE_INHERITED_SINGLE)
 
 
 def test_relabel_skips_alerts_whose_disposition_only_ace_sets(user_id):
     _, files = graded_alert("SIMULATED", {"a.bin": [RULE_UUID]})
     with pytest.raises(VerdictNotAllowed, match="set by ACE"):
-        actions.relabel(_sha256(files), RULE_UUID, "fp", user_id)
+        actions.relabel(_sha256(files), RULE_UUID, "fp", person(user_id))
 
 
 def test_relabel_of_a_sample_whose_alerts_are_gone_is_refused(user_id):
@@ -112,28 +113,28 @@ def test_relabel_of_a_sample_whose_alerts_are_gone_is_refused(user_id):
     get_db().execute(delete(Alert).where(Alert.id == alert.id))
     get_db().commit()
     with pytest.raises(VerdictNotAllowed, match="deleted"):
-        actions.relabel(_sha256(files), RULE_UUID, "fp", user_id)
+        actions.relabel(_sha256(files), RULE_UUID, "fp", person(user_id))
 
 
 def test_an_unknown_sample(user_id):
     with pytest.raises(SampleNotFound):
-        actions.relabel("ab" * 32, RULE_UUID, "fp", user_id)
+        actions.relabel("ab" * 32, RULE_UUID, "fp", person(user_id))
     with pytest.raises(SampleNotFound):
-        actions.confirm("ab" * 32, RULE_UUID, user_id)
+        actions.confirm("ab" * 32, RULE_UUID, person(user_id))
 
 
 def test_reset_clears_the_explicit_verdicts(user_id):
     _, files = graded_alert("DELIVERY", {"a.bin": [RULE_UUID]})
     sha256 = _sha256(files)
-    actions.relabel(sha256, RULE_UUID, "fp", user_id)
+    actions.relabel(sha256, RULE_UUID, "fp", person(user_id))
 
-    change = actions.reset_label(sha256, RULE_UUID, user_id)
+    change = actions.reset_label(sha256, RULE_UUID, person(user_id))
 
     assert change.changed == 1
     assert (change.label, change.label_source) == ("tp", SOURCE_INHERITED_SINGLE)
 
     # again: nothing to reset, which is not an error
-    change = actions.reset_label(sha256, RULE_UUID, user_id)
+    change = actions.reset_label(sha256, RULE_UUID, person(user_id))
     assert (change.changed, change.unchanged, change.skipped) == (0, 0, [])
 
 
@@ -142,9 +143,9 @@ def test_reset_leaves_out_the_detections_on_a_false_positive_alert(user_id):
     _, files = graded_alert("FALSE_POSITIVE", {"a.bin": [RULE_UUID]}, contents={"a.bin": content})
     graded_alert("DELIVERY", {"a.bin": [RULE_UUID]}, contents={"a.bin": content})
     sha256 = _sha256(files)
-    actions.relabel(sha256, RULE_UUID, "tp", user_id)
+    actions.relabel(sha256, RULE_UUID, "tp", person(user_id))
 
-    change = actions.reset_label(sha256, RULE_UUID, user_id)
+    change = actions.reset_label(sha256, RULE_UUID, person(user_id))
 
     # the FP alert's detection had nothing to clear, so it is not listed as skipped
     assert (change.changed, change.skipped) == (1, [])
@@ -157,20 +158,20 @@ def test_confirm_upgrades_only_the_unconfirmed_detections(user_id):
     sha256 = _sha256(files)
     assert _label(sha256) == ("tp", SOURCE_INHERITED_MULTI)
 
-    change = actions.confirm(sha256, RULE_UUID, user_id)
+    change = actions.confirm(sha256, RULE_UUID, person(user_id))
 
     assert change.changed == 1
     assert (change.label, change.label_source) == ("tp", SOURCE_EXPLICIT)
     assert _label(sha256, OTHER_RULE_UUID) == ("tp", SOURCE_INHERITED_MULTI)
     # nothing left to confirm is not an error
-    assert actions.confirm(sha256, RULE_UUID, user_id).changed == 0
+    assert actions.confirm(sha256, RULE_UUID, person(user_id)).changed == 0
 
 
 def test_confirm_leaves_an_fp_override_alone(user_id):
     _, files = graded_alert("DELIVERY", {"a.bin": [RULE_UUID, OTHER_RULE_UUID]})
     sha256 = _sha256(files)
-    actions.relabel(sha256, RULE_UUID, "fp", user_id)
-    assert actions.confirm(sha256, RULE_UUID, user_id).changed == 0
+    actions.relabel(sha256, RULE_UUID, "fp", person(user_id))
+    assert actions.confirm(sha256, RULE_UUID, person(user_id)).changed == 0
     assert _label(sha256) == ("fp", SOURCE_EXPLICIT)
 
 
@@ -183,7 +184,7 @@ def test_retire_and_unretire(user_id):
     sha256 = _sha256(files)
     assert _sample(sha256)["retired"] is False
 
-    row = actions.retire(sha256, RULE_UUID, user_id, "  the rule no longer targets this family  ")
+    row = actions.retire(sha256, RULE_UUID, person(user_id), "  the rule no longer targets this family  ")
     assert row.reason == "the rule no longer targets this family"
     sample = _sample(sha256)
     assert sample["retired"] is True
@@ -192,18 +193,18 @@ def test_retire_and_unretire(user_id):
     assert actions.retired_pairs() == {(sha256, RULE_UUID)}
 
     # retiring a retired sample keeps the first reason
-    actions.retire(sha256, RULE_UUID, user_id, "another reason")
+    actions.retire(sha256, RULE_UUID, person(user_id), "another reason")
     assert _sample(sha256)["retired_reason"] == "the rule no longer targets this family"
 
-    row = actions.unretire(sha256, RULE_UUID, user_id)
+    row = actions.unretire(sha256, RULE_UUID, person(user_id))
     assert row.unretired_at is not None
     assert _sample(sha256)["retired"] is False
     assert actions.retired_pairs() == frozenset()
     with pytest.raises(NotRetired):
-        actions.unretire(sha256, RULE_UUID, user_id)
+        actions.unretire(sha256, RULE_UUID, person(user_id))
 
     # the row is reused, so there is one per pair
-    actions.retire(sha256, RULE_UUID, user_id, "retired again")
+    actions.retire(sha256, RULE_UUID, person(user_id), "retired again")
     assert _sample(sha256)["retired_reason"] == "retired again"
     rows = get_db().execute(select(SVSSampleRetirement)).scalars().all()
     assert len(rows) == 1 and rows[0].unretired_at is None
@@ -212,11 +213,11 @@ def test_retire_and_unretire(user_id):
 def test_retire_needs_a_reason_and_a_sample(user_id):
     _, files = graded_alert("DELIVERY", {"a.bin": [RULE_UUID]})
     with pytest.raises(ValueError):
-        actions.retire(_sha256(files), RULE_UUID, user_id, "   ")
+        actions.retire(_sha256(files), RULE_UUID, person(user_id), "   ")
     with pytest.raises(SampleNotFound):
-        actions.retire(_sha256(files), OTHER_RULE_UUID, user_id, "no such sample")
+        actions.retire(_sha256(files), OTHER_RULE_UUID, person(user_id), "no such sample")
     with pytest.raises(NotRetired):
-        actions.unretire(_sha256(files), RULE_UUID, user_id)
+        actions.unretire(_sha256(files), RULE_UUID, person(user_id))
 
 
 def test_retirements_are_seen_by_changed_since(user_id):
@@ -237,12 +238,12 @@ def test_retirements_are_seen_by_changed_since(user_id):
     since = datetime.now() - timedelta(minutes=1)
     assert not changed(since)
 
-    actions.retire(sha256, RULE_UUID, user_id, "retired")
+    actions.retire(sha256, RULE_UUID, person(user_id), "retired")
     assert changed(since)
     with private_transaction() as session:
         session.execute(update(SVSSampleRetirement).values(updated_at=datetime(2020, 1, 1)))
     assert not changed(since)
-    actions.unretire(sha256, RULE_UUID, user_id)
+    actions.unretire(sha256, RULE_UUID, person(user_id))
     assert changed(since)
 
 
@@ -283,10 +284,10 @@ def _captures_of(sha256: str) -> list[SVSYaraCapture]:
 def test_delete_removes_the_file_from_svs(user_id, svs_pool):
     sha256 = _stored_sample(svs_pool, [RULE_UUID, OTHER_RULE_UUID], b"svs delete sample")
     records = [row.record_digest for row in _captures_of(sha256)]
-    actions.retire(sha256, RULE_UUID, user_id, "retired")
+    actions.retire(sha256, RULE_UUID, person(user_id), "retired")
     other = _stored_sample(svs_pool, [RULE_UUID], b"another svs sample")
 
-    deletion = actions.delete_sample(sha256, user_id, "legal request 42", actor="unittest")
+    deletion = actions.delete_sample(sha256, person(user_id, "unittest"), "legal request 42")
 
     assert deletion.sha256 == sha256
     assert json.loads(deletion.rule_uuids) == sorted([RULE_UUID, OTHER_RULE_UUID])
@@ -304,7 +305,7 @@ def test_delete_removes_the_file_from_svs(user_id, svs_pool):
     assert len(_captures_of(other)) == 1 and svs_pool.exists(other)
 
     # deleting again returns the audit row
-    assert actions.delete_sample(sha256, user_id, "again", actor="unittest").reason == "legal request 42"
+    assert actions.delete_sample(sha256, person(user_id, "unittest"), "again").reason == "legal request 42"
 
 
 def test_a_match_record_another_capture_holds_is_kept(user_id, svs_pool):
@@ -313,7 +314,7 @@ def test_a_match_record_another_capture_holds_is_kept(user_id, svs_pool):
     other = _stored_sample(svs_pool, [RULE_UUID], b"svs keep the other", record=record)
     (kept,) = _captures_of(other)
 
-    actions.delete_sample(sha256, user_id, "privacy", actor="unittest")
+    actions.delete_sample(sha256, person(user_id, "unittest"), "privacy")
 
     assert svs_pool.holds(kept.record_digest) == [capture_hold(kept.id)]
 
@@ -323,7 +324,7 @@ def test_a_file_under_legal_hold_is_not_deleted(user_id, svs_pool):
     svs_pool.hold(sha256, Hold.legal("case-7"))
 
     with pytest.raises(LegalHoldActive):
-        actions.delete_sample(sha256, user_id, "privacy", actor="unittest")
+        actions.delete_sample(sha256, person(user_id, "unittest"), "privacy")
 
     assert len(_captures_of(sha256)) == 1
     assert _deletion(sha256) is None
@@ -336,7 +337,7 @@ def test_a_file_on_another_nodes_local_pool_is_not_deleted_here(user_id, svs_poo
         session.execute(update(SVSYaraCapture).where(SVSYaraCapture.sha256 == sha256).values(node="other_node"))
 
     with pytest.raises(WrongNode) as error:
-        actions.delete_sample(sha256, user_id, "privacy", actor="unittest")
+        actions.delete_sample(sha256, person(user_id, "unittest"), "privacy")
 
     assert error.value.node == "other_node"
     assert len(_captures_of(sha256)) == 1
@@ -351,29 +352,22 @@ def test_an_unfinished_purge_is_retried(user_id, svs_pool, monkeypatch):
         raise OSError("backend unavailable")
 
     monkeypatch.setattr(CASPool, "purge", failing_purge)
-    deletion = actions.delete_sample(sha256, user_id, "privacy", actor="unittest")
+    deletion = actions.delete_sample(sha256, person(user_id, "unittest"), "privacy")
     assert deletion.purged_at is None
     assert _captures_of(sha256) == []
     assert svs_pool.exists(sha256)
 
     monkeypatch.setattr(CASPool, "purge", real_purge)
-    deletion = actions.delete_sample(sha256, user_id, "a second reason", actor="unittest")
+    deletion = actions.delete_sample(sha256, person(user_id, "unittest"), "a second reason")
     assert deletion.purged_at is not None
     assert deletion.reason == "privacy"
     assert not svs_pool.exists(sha256)
 
 
-def test_delete_needs_a_reason_and_a_sample(user_id):
-    with pytest.raises(ValueError):
-        actions.delete_sample("ab" * 32, user_id, " ", actor="unittest")
-    with pytest.raises(SampleNotFound):
-        actions.delete_sample("ab" * 32, user_id, "privacy", actor="unittest")
-
-
 def test_a_missing_capture_is_deleted_too(user_id):
     sha256 = "cd" * 32
     insert_capture(str(uuid.uuid4()), sha256, state="missing", missing_reason="file", stored_at=None)
-    deletion = actions.delete_sample(sha256, user_id, "privacy", actor="unittest")
+    deletion = actions.delete_sample(sha256, person(user_id, "unittest"), "privacy")
     assert deletion.capture_count == 1
     assert deletion.purged_at is not None
     assert _captures_of(sha256) == []
@@ -382,7 +376,7 @@ def test_a_missing_capture_is_deleted_too(user_id):
 def test_deletions_page(user_id):
     for content in (b"first deleted", b"second deleted", b"third deleted"):
         _, files = graded_alert("DELIVERY", {"a.bin": [RULE_UUID]}, contents={"a.bin": content})
-        actions.delete_sample(_sha256(files), user_id, "privacy", actor="unittest")
+        actions.delete_sample(_sha256(files), person(user_id, "unittest"), "privacy")
 
     first = actions.deletions_page(None, None, 2)
     assert len(first) == 2
@@ -406,7 +400,7 @@ def _captured(root_analysis, svs_pool):
 def test_a_deleted_file_is_not_captured_again(root_analysis, svs_pool, user_id):
     candidate = _captured(root_analysis, svs_pool)
     assert capture(svs_pool, root_analysis.uuid, candidate).status == CaptureStatus.STORED
-    actions.delete_sample(candidate.sha256, user_id, "privacy", actor="unittest")
+    actions.delete_sample(candidate.sha256, person(user_id, "unittest"), "privacy")
 
     result = capture(svs_pool, str(uuid.uuid4()), candidate)
 

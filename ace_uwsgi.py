@@ -5,7 +5,7 @@ import sys
 
 from saq.constants import ENV_ACE_LOG_CONFIG_PATH
 from saq.environment import initialize_environment
-import app
+from app.application import create_app
 
 # apache env vars and wsgi are different
 # so we use the location of this saq.wsgi file as the root of ACE
@@ -33,11 +33,7 @@ logging_config_path = os.environ.get(ENV_ACE_LOG_CONFIG_PATH, os.path.join("etc"
 
 # initialize saq
 # note that config paths are determined by the env vars we dug out above
-# NOTE that we do NOT set use_flask here YET since we're still using the Flask-SQLAlchemy extension
-initialize_environment(saq_home=saq_home, config_paths=None, logging_config_path=logging_config_path, relative_dir=saq_home)
+initialize_environment(saq_home=saq_home, config_paths=None, logging_config_path=logging_config_path)
 
 # initialize flask
-application = app.create_app() # fix this hard coded string
-
-# tell ACE to use the session scope provided by the sqlalchemy-flask extension
-#set_db(app.db.session) # ???
+application = create_app() # fix this hard coded string

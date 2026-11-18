@@ -1,7 +1,6 @@
 import logging
 import os
-from subprocess import PIPE, Popen
-from typing import override
+from typing import Optional, override
 from saq.analysis.analysis import Analysis
 from saq.constants import AnalysisExecutionResult, F_FILE
 from saq.modules import AnalysisModule
@@ -243,33 +242,31 @@ class FileTypeAnalyzer(AnalysisModule):
         analysis = self.create_analysis(_file)
 
         # get the human readable
-        p = Popen(['file', '-b', '-L', local_file_path], stdout=PIPE, stderr=PIPE)
-        stdout, stderr = p.communicate()
-        
-        if len(stderr) > 0:
-            logging.warning("file command returned error output for {0}".format(local_file_path))
-
-        analysis.details['type'] = stdout.decode().strip()
+        file_type = self.run_file(['file', '-b', '-L', local_file_path], local_file_path)
 
         # get the mime type
-        p = Popen(['file', '-b', '--mime-type', '-L', local_file_path], stdout=PIPE, stderr=PIPE)
-        stdout, stderr = p.communicate()
-        
-        if len(stderr) > 0:
-            logging.warning("file command returned error output for {0}".format(local_file_path))
+        mime_type = self.run_file(['file', '-b', '--mime-type', '-L', local_file_path], local_file_path)
 
-        analysis.details['mime'] = stdout.decode().strip()
+        # a file that was stopped is recorded as having no type, and the checks below that read the file
+        # themselves still run
+        if file_type is None or mime_type is None:
+            analysis.error = "file did not finish"
+
+        analysis.details['type'] = file_type or ""
+        analysis.details['mime'] = mime_type or ""
 
         # stamp the mime type onto the observable so it is serialized with the alert.
         # The alert page reads FileObservable.mime_type (via is_image) for every file
         # observable it renders; without this it forks `file` again for each one, on
-        # every page load.
-        _file.mime_type = analysis.details['mime']
+        # every page load. An empty answer (file was stopped) is not stamped: the observable
+        # would take it as unknown and fork file again, unbounded, as soon as it was read.
+        if analysis.details['mime']:
+            _file.mime_type = analysis.details['mime']
 
-        # the page also scales image previews -- computing the dimensions here means PIL
-        # opens each image once, at analysis time, instead of on every render
-        if _file.is_image:
-            _file.compute_scaled_dimensions()
+            # the page also scales image previews -- computing the dimensions here means PIL
+            # opens each image once, at analysis time, instead of on every render
+            if _file.is_image:
+                _file.compute_scaled_dimensions()
 
         analysis.details['is_office_ext'] = is_office_ext(local_file_path)
         analysis.details['is_ole_file'] = is_ole_file(local_file_path)
@@ -344,3 +341,14 @@ class FileTypeAnalyzer(AnalysisModule):
             _file.add_yara_meta("type", "script.javascript")
 
         return AnalysisExecutionResult.COMPLETED
+
+    def run_file(self, args: list[str], local_file_path: str) -> Optional[str]:
+        """Returns what the file command printed, or None if it had to be stopped."""
+        result = self.run_tool(args, local_file_path, capture_output=True)
+        if result is None:
+            return None
+
+        if result.stderr:
+            logging.warning("file command returned error output for {0}".format(local_file_path))
+
+        return result.stdout.decode().strip()

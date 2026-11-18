@@ -1,17 +1,15 @@
 import logging
 import os
-from subprocess import PIPE, Popen
 from typing import Type, override
 
 from pydantic import Field
-from html2text import html2text
 from saq.analysis.analysis import Analysis
 from saq.signatures.builtin import EMAIL_ENCRYPTED_DECRYPTED
-from saq.analysis.search import search_down
 from saq.constants import DIRECTIVE_EXTRACT_URLS, F_FILE, AnalysisExecutionResult
-from saq.cracking import crack_password, generate_wordlist
+from saq.cracking import crack_password, wordlist_from_email
 from saq.modules import AnalysisModule
 from saq.modules.config import AnalysisModuleConfig
+from saq.modules.file_analysis.archive import UNRAR_WRITE_ERROR, archive_volumes
 from saq.observables.file import FileObservable
 
 KEY_ENCRYPTION_INFO = 'encryption_info'
@@ -19,7 +17,6 @@ KEY_EMAIL = 'email'
 KEY_EMAIL_BODY = 'email_body'
 KEY_WORD_LIST = 'word_list'
 KEY_PASSWORD = 'password'
-KEY_ERROR = 'error'
 
 
 class RarEncryptionAnalysis(Analysis):
@@ -31,7 +28,6 @@ class RarEncryptionAnalysis(Analysis):
             KEY_EMAIL_BODY: None,
             KEY_WORD_LIST: [],
             KEY_PASSWORD: None,
-            KEY_ERROR: None
         }
 
     @override
@@ -79,14 +75,6 @@ class RarEncryptionAnalysis(Analysis):
     def password(self, value):
         self.details[KEY_PASSWORD] = value
 
-    @property
-    def error(self):
-        return self.details[KEY_ERROR]
-
-    @error.setter
-    def error(self, value):
-        self.details[KEY_ERROR] = value
-
     def generate_summary(self):
         if self.details is None:
             return None
@@ -111,10 +99,9 @@ class RarEncryptionAnalysis(Analysis):
 class RarEncryptionAnalyzerConfig(AnalysisModuleConfig):
     range_low: int = Field(..., description="The minimum size of the passwords to try.")
     range_high: int = Field(..., description="The maximum size of the passwords to try.")
-    byte_limit: int = Field(..., description="How many bytes into the email do you want to look?")
+    byte_limit: int = Field(..., description="How many characters of each email body part (html converted to text) to read for candidate passwords.")
     list_limit: int = Field(..., description="The maximum size of the word list created.")
     john_bin_path: str = Field(..., description="Full path to john the ripper binary.")
-    attempt_brute_force: bool = Field(default=True, description="Whether brute force decryption should be attempted if wordlist fails.")
 
 class RarEncryptionAnalyzer(AnalysisModule):
     @classmethod
@@ -149,13 +136,8 @@ class RarEncryptionAnalyzer(AnalysisModule):
     def john_bin_path(self):
         return self.config.john_bin_path
 
-    @property
-    def attempt_brute_force(self):
-        return self.config.attempt_brute_force
-
     def execute_analysis(self, _file) -> AnalysisExecutionResult:
         assert isinstance(_file, FileObservable)
-        from saq.modules.email.rfc822 import EmailAnalysis
 
         # does this file exist as an attachment?
         if not _file.exists:
@@ -178,58 +160,49 @@ class RarEncryptionAnalyzer(AnalysisModule):
         analysis = self.create_analysis(_file)
 
         # extract the hash for cracking
-        p = Popen([os.path.join(self.john_bin_path, 'rar2john'), _file.full_path], stdout=PIPE, stderr=PIPE)
-        stdout, stderr = p.communicate()
+        p = self.run_sandboxed_tool([os.path.join(self.john_bin_path, 'rar2john'), _file.full_path], _file.full_path)
+        if p is None:
+            analysis.error = "rar2john did not finish"
+            return AnalysisExecutionResult.COMPLETED
 
         # did we get the hash?
-        if not stdout:
-            analysis.error = f"rar2john failed: {stderr.decode()}"
+        if not p.stdout:
+            analysis.error = f"rar2john failed: {p.stderr}"
             return AnalysisExecutionResult.COMPLETED
 
         hash_file = f'{_file.full_path}.hash'
-        with open(hash_file, 'wb') as fp:
-            fp.write(stdout)
+        with open(hash_file, 'w') as fp:
+            fp.write(p.stdout)
 
-        # build wordlist for cracking password from email body text, if available
-        analysis.word_list = []
-        source_email = search_down(_file, lambda obj: isinstance(obj, EmailAnalysis) and obj.email is not None)
-        if source_email and source_email.body:
-            analysis.email = True
+        # build wordlist for cracking password from the email's body text, if available
+        try:
+            analysis.email, analysis.email_body, analysis.word_list = wordlist_from_email(
+                _file, range_low=self.range_low, range_high=self.range_high,
+                byte_limit=self.byte_limit, list_limit=self.list_limit)
+        except Exception as e:
+            logging.exception(f"unable to build the password wordlist for {_file}",
+                              extra={"path": _file.full_path, "root_uuid": self.get_root().uuid})
+            analysis.error = f"unable to build the password wordlist: {str(e) or type(e).__name__}"
+            return AnalysisExecutionResult.COMPLETED
 
-            # convert html to text
+        if analysis.word_list:
+            wordlist_path = f'{_file.full_path}.wordlist'
+            with open(wordlist_path, 'w') as fp:
+                for word in analysis.word_list:
+                    fp.write(f'{word}\n')
+
             try:
-                with open(os.path.join(self.get_root().storage_dir, source_email.body.value), 'r', errors='ignore') as fp:
-                    logging.debug(f"parsing {source_email.body.value} for html")
-                    analysis.email_body = html2text(fp.read())[:self.byte_limit]
-
-                analysis.word_list.extend(generate_wordlist(text_content=analysis.email_body,
-                                                            range_low=self.range_low,
-                                                            range_high=self.range_high,
-                                                            byte_limit=self.byte_limit,
-                                                            list_limit=self.list_limit))
-
-                if analysis.word_list:
-                    wordlist_path = f'{_file.full_path}.wordlist'
-                    with open(wordlist_path, 'w') as fp:
-                        for word in analysis.word_list:
-                            fp.write(f'{word}\n')
-
-                    try:
-                        analysis.password = crack_password(self.john_bin_path, hash_file, _file.full_path, f'--wordlist={wordlist_path}')
-                    except Exception as e:
-                        logging.error(f"Error encountered when trying to crack password for {_file}: {e}")
-                        return AnalysisExecutionResult.COMPLETED
-
+                analysis.password = crack_password(self, self.john_bin_path, hash_file, _file.full_path,
+                                                   f'--wordlist={os.path.abspath(wordlist_path)}',
+                                                   read_files=[wordlist_path])
             except Exception as e:
-                logging.error(f"Error encountered when building password wordlist for {_file}: {e}")
+                logging.exception(f"unable to crack the password for {_file}",
+                                  extra={"path": _file.full_path, "root_uuid": self.get_root().uuid})
+                analysis.error = f"unable to crack the password: {str(e) or type(e).__name__}"
                 return AnalysisExecutionResult.COMPLETED
 
-        # let's try brute forcing it if we didn't crack it with the email
-        if not analysis.password and self.attempt_brute_force:
-            analysis.password = crack_password(self.john_bin_path, hash_file, _file.full_path, f'--incremental=DigitsCustom')
-
+        # none of the candidates was the password: the summary says so, and it is not an error
         if not analysis.password:
-            analysis.error = f"RarEncryptionAnalyzer could not crack password!"
             return AnalysisExecutionResult.COMPLETED
 
         # got the password!
@@ -241,11 +214,23 @@ class RarEncryptionAnalyzer(AnalysisModule):
             if not os.path.isdir(output_dir):
                 raise Exception(f"unable to create archive directory {output_dir}: {e}")
 
-        try:
-            with rarfile.RarFile(_file.full_path) as rar_fp:
-                rar_fp.extractall(output_dir, pwd=analysis.password)
-        except Exception as e:
-            logging.error(f"Unable to extract data from encrypted rar {_file}: {e}")
+        # rarfile would run unrar outside the sandbox. the trailing separator makes unrar take
+        # output_dir as the directory to extract into
+        # -kb keeps a member cut off at the file size limit (UNRAR_WRITE_ERROR)
+        result = self.run_sandboxed_tool(['unrar', 'x', '-y', '-kb', f'-p{analysis.password}', _file.full_path,
+                                          os.path.join(os.path.abspath(output_dir), '')], _file.full_path,
+                                         read_files=archive_volumes(_file.full_path), write_dirs=[output_dir])
+        if result is None:
+            # run_sandboxed_tool() logged why (a timeout). What it extracted before it was stopped is
+            # still decrypted content and is still added: the last file may be cut short
+            analysis.error = "unrar did not finish"
+        elif result.returncode == UNRAR_WRITE_ERROR:
+            # what it wrote before the member it could not is still decrypted content and is still added
+            logging.warning(f"unrar could not write every file of encrypted rar {_file}: {result.stderr.strip()[-500:]}")
+            analysis.error = "unrar could not write every file"
+        elif result.returncode != 0:
+            logging.warning(f"Unable to extract data from encrypted rar {_file}: {result.stderr.strip()[-500:]}")
+            analysis.error = result.failure_reason("unrar")
             return AnalysisExecutionResult.COMPLETED
 
         # add files in the Rar as observables

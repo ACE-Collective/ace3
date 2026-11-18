@@ -1,3 +1,6 @@
+import logging
+from threading import Event
+
 import pytest
 
 from saq.configuration.schema import RemediatorConfig
@@ -35,25 +38,15 @@ def test_remediation_worker(worker):
     assert not worker.shutdown_event.is_set()
 
 @pytest.mark.unit
-def test_handle_remediation_request(worker):
+def test_handle_request(worker):
     remediation = Remediation(
         name="custom",
         type=F_TEST,
         key="test"
     )
-    worker.handle_remediation_request(remediation)
+    worker.handle_request(remediation)
     assert not worker.work_queue.empty()
     assert worker.work_queue.get() == remediation
-
-@pytest.mark.unit
-def test_handle_remediation_request_invalid_name(worker):
-    remediation = Remediation(
-        name="other",
-        type=F_TEST,
-        key="test"
-    )
-    with pytest.raises(ValueError):
-        worker.handle_remediation_request(remediation)
 
 @pytest.mark.integration
 def test_remediate(worker):
@@ -144,28 +137,28 @@ def test_remediate_exception_handling(worker):
     assert remediation_history.message == "RuntimeError: Simulated failure during remediation"
     assert remediation_history.status == RemediationStatus.COMPLETED.value
 
-@pytest.mark.parametrize("thread_count", [1, 2])
 @pytest.mark.integration
-def test_worker_lifecycle(worker, thread_count):
-    assert isinstance(worker, RemediationWorker)
-    # no threads created yet
-    assert not worker.worker_threads
-    assert not worker.startup_events
-    worker.remediator.config.thread_count = thread_count
-    worker.queue_wait_timeout = 0.1 # speed up the test
-    worker.start()
-    # threads and startup events created
-    assert len(worker.worker_threads) == thread_count
-    assert len(worker.startup_events) == thread_count
-    assert worker.wait_for_start(5)
-    # all should be running at this point
-    for thread in worker.worker_threads:
-        assert thread.is_alive()
-    assert not worker.shutdown_event.is_set()
+def test_worker_loop_recovers_after_failed_commit(worker, caplog):
+    """A remediation whose row was deleted while it was queued fails to commit its history. That
+    failure must not poison the thread's session for the remediations after it."""
+    worker.queue_wait_timeout = 0.1
+    remediation_id = RemediationTarget("custom", F_TEST, "test").queue_remediation(RemediationAction.REMOVE, get_config().global_settings.automation_user_id)
+    good = create_remediation_work_item(get_db().query(Remediation).filter(Remediation.id == remediation_id).one())
+    deleted = RemediationWorkItem(id=good.id + 1000, action=RemediationAction.REMOVE, name="custom", type=F_TEST, key="deleted", restore_key=None)
+
+    worker.handle_request(deleted)
+    worker.handle_request(good)
+
+    # with the shutdown event set, each pass of the loop takes one item and returns
     worker.stop()
-    # signal to stop should be set
-    assert worker.shutdown_event.is_set()
-    worker.wait()
-    # all should be stopped at this point
-    for thread in worker.worker_threads:
-        assert not thread.is_alive()
+    worker.worker_loop(Event())
+    worker.worker_loop(Event())
+
+    remediation = get_db().query(Remediation).filter(Remediation.id == remediation_id).one()
+    assert remediation.status == RemediationStatus.COMPLETED.value
+    assert remediation.result == RemediatorStatus.SUCCESS.value
+
+    errors = [r for r in caplog.records if r.levelno == logging.ERROR and r.exc_info]
+    assert any(f"remediation {deleted.id} " in r.getMessage() for r in errors)
+
+

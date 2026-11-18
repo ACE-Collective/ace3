@@ -30,7 +30,6 @@ def create_app() -> FastAPI:
         title="ACE AI Investigation API",
         description="Read-only query endpoints for AI-driven alert investigation",
         version="1.0.0",
-        root_path="/ai/v1",
     )
 
     @app.exception_handler(Exception)

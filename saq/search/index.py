@@ -15,12 +15,14 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from http import HTTPStatus
 from typing import Optional
 
 from qdrant_client import QdrantClient, models
+from qdrant_client.http.exceptions import UnexpectedResponse
 
 from saq.configuration.config import get_config
-from saq.database.model import Alert, Comment, load_alert
+from saq.database.model import Alert, Comment
 from saq.database.pool import get_db
 from saq.qdrant_client import get_qdrant_client
 from saq.search.chunking import chunk_text
@@ -34,6 +36,7 @@ from saq.search.model import (
     model_slug,
 )
 from saq.search.sparse import sparse_vector
+from saq.shutdown import is_shutting_down
 
 DENSE = "dense"
 SPARSE = "sparse"
@@ -54,6 +57,11 @@ FIELD_LOCATION = "location"
 FIELD_TAGS = "tags"
 FIELD_ANALYSIS_UUID = "analysis_uuid"
 FIELD_OBSERVABLE_UUID = "observable_uuid"
+
+# how long a worker waits for another worker's create of the collection to finish. A create takes
+# well under a second, even while the disk is busy
+CREATE_WAIT_SECONDS = 30.0
+CREATE_POLL_SECONDS = 0.05
 
 KEYWORD_INDEXES = (FIELD_ROOT_UUID, FIELD_KIND, FIELD_ALERT_TYPE, FIELD_QUEUE, FIELD_DISPOSITION, FIELD_LOCATION, FIELD_TAGS)
 DATETIME_INDEXES = (FIELD_INSERT_DATE,)
@@ -139,18 +147,56 @@ def existing_payload_indexes(client: QdrantClient, name: str) -> set[str]:
     return set((info.payload_schema or {}).keys())
 
 
+def wait_for_payload_indexes(client: QdrantClient, name: str) -> set[str]:
+    """Reads the payload indexes of a collection that another worker may still be creating.
+
+    Qdrant lists the collection, and answers a second create of it with a 409, before the first
+    create has finished. Until it finishes, reads fail with a 500, and so do updates such as
+    create_payload_index ("Failed to apply operation to at least one `Active` replica"). So the
+    collection is not touched until a read succeeds. Bounded by CREATE_WAIT_SECONDS; a 500 that
+    outlasts it means qdrant is failing for some other reason, and is raised."""
+    deadline = time.monotonic() + CREATE_WAIT_SECONDS
+    waiting = False
+    while True:
+        try:
+            return existing_payload_indexes(client, name)
+        except UnexpectedResponse as e:
+            if e.status_code != HTTPStatus.INTERNAL_SERVER_ERROR or time.monotonic() >= deadline or is_shutting_down():
+                raise
+
+            if not waiting:
+                logging.info("search_collection_schema_unreadable", extra={"collection": name, "status": e.status_code})
+                waiting = True
+
+            time.sleep(CREATE_POLL_SECONDS)
+
+
 def ensure_collection(client: QdrantClient, model, name: Optional[str] = None) -> str:
     """Creates the collection and its payload indexes if they do not exist. Returns the name."""
     name = name or collection_name()
-    if not client.collection_exists(collection_name=name):
-        logging.info("search_collection_created", extra={"collection": name})
-        client.create_collection(
-            collection_name=name,
-            vectors_config={DENSE: models.VectorParams(size=dense_dimension(model), distance=models.Distance.COSINE)},
-            sparse_vectors_config={SPARSE: models.SparseVectorParams(modifier=models.Modifier.IDF)},
-        )
+    if client.collection_exists(collection_name=name):
+        present = wait_for_payload_indexes(client, name)
+    else:
+        try:
+            client.create_collection(
+                collection_name=name,
+                vectors_config={DENSE: models.VectorParams(size=dense_dimension(model), distance=models.Distance.COSINE)},
+                sparse_vectors_config={SPARSE: models.SparseVectorParams(modifier=models.Modifier.IDF)},
+            )
+            logging.info("search_collection_created", extra={"collection": name})
+            present = set()
+        except UnexpectedResponse as e:
+            # every indexer worker runs this when it starts, so another worker can create the
+            # collection between the check above and this create. Qdrant answers that with a 409.
+            # The collection name includes the model and the schema version, so the other worker
+            # created this same collection, and its create may still be running
+            if e.status_code != HTTPStatus.CONFLICT:
+                raise
 
-    present = existing_payload_indexes(client, name)
+            logging.info("search_collection_already_exists", extra={"collection": name})
+            present = wait_for_payload_indexes(client, name)
+
+    # creating an index another worker has just created succeeds
     for field_name in KEYWORD_INDEXES:
         if field_name not in present:
             client.create_payload_index(collection_name=name, field_name=field_name, field_schema=models.PayloadSchemaType.KEYWORD, wait=True)
@@ -256,20 +302,24 @@ def index_loaded_alert(alert: Alert, *, client: Optional[QdrantClient] = None, m
 
 def index_alert(alert_uuid: str, *, client: Optional[QdrantClient] = None, model=None) -> IndexResult:
     """Loads and indexes one alert. A missing alert (or storage directory) is skipped, not an error."""
-    alert = load_alert(alert_uuid)
+    alert = get_db().query(Alert).filter(Alert.uuid == alert_uuid).one_or_none()
     if alert is None:
         # DEBUG: surfaced to operators as the `skipped` field on search_index_task_complete
         logging.debug(f"alert {alert_uuid} not found, nothing to index")
         return IndexResult(alert_uuid=alert_uuid, skipped="alert not found")
 
     try:
-        root = alert.root_analysis
-    except Exception as e:
-        logging.debug(f"unable to load alert {alert_uuid} for indexing: {e}")
-        return IndexResult(alert_uuid=alert_uuid, skipped=f"unable to load: {e}")
-
-    if root is None:
-        return IndexResult(alert_uuid=alert_uuid, skipped="root analysis unavailable")
+        alert.load()
+    except FileNotFoundError as e:
+        # retrying cannot bring the files back, so this is a skip rather than an error that
+        # requeues until it is dead-lettered. WARNING, not DEBUG: an alert still in the database
+        # without its storage is either mid-deletion (cleanup removes the files before the row)
+        # or lost data. Anything else (a corrupt data.json, a permission error) still raises
+        logging.warning(
+            "search_index_alert_storage_missing",
+            extra={"alert_uuid": alert_uuid, "storage_dir": alert.storage_dir, "path": e.filename},
+        )
+        return IndexResult(alert_uuid=alert_uuid, skipped="alert storage missing")
 
     return index_loaded_alert(alert, client=client, model=model)
 

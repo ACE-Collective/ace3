@@ -1,18 +1,15 @@
+from urllib.parse import urlsplit
+
 from saq.analysis.observable import Observable
-from saq.analysis.presenter.observable_presenter import register_observable_action
 from saq.configuration.config import get_config
 from saq.constants import F_URI_PATH, F_URL, F_USER_AGENT
-from saq.gui import (
-    ObservableActionSeparator,
-    ObservableActionUrlCrawl,
-    ObservableActionUrlscan,
-    ObservableActionCheckForClickers,
-    ObservableActionOpenSplunkClickerSearch,
-)
-from saq.observables.generator import register_observable_type
-from urlfinderlib.url import URL
+from saq.observables.base import ObservableValueError
 
 from saq.util import is_subdomain
+
+# URLs with these schemes always name a host; mailto:, file:, data: and scheme-less values are not checked
+HOST_URL_SCHEMES = frozenset({"http", "https", "ftp"})
+BROWSER_IGNORED_CHARS = str.maketrans("", "", "\t\r\n")
 
 
 class UserAgentObservable(Observable):
@@ -22,7 +19,6 @@ class UserAgentObservable(Observable):
     @Observable.value.setter
     def value(self, new_value):
         self._value = new_value.strip()
-
 
 
 class URIPathObservable(Observable):
@@ -45,22 +41,35 @@ class URLObservable(Observable):
     def __init__(self, *args, **kwargs):
         super().__init__(F_URL, *args, **kwargs)
 
-    @property
-    def jinja_available_actions(self):
-        result = [
-            ObservableActionUrlscan(),
-            ObservableActionUrlCrawl(),
-            ObservableActionSeparator(),
-        ]
-        result.extend(super().jinja_available_actions)
-        return result
+    @Observable.value.setter
+    def value(self, new_value):
+        # Modules add URLs from attacker-written content (office relationships, kit pages, protected-URL
+        # parameters) and not all of them check what they add, so "https:.." would otherwise reach the
+        # crawler, urlscan and the domain lookups.
+        try:
+            scheme = urlsplit(new_value).scheme
+            missing_host = False
+            if scheme in HOST_URL_SCHEMES:
+                # browsers drop tab, CR and LF, treat \ as / in these URLs and skip any run of them after
+                # "scheme:", so "https:\\evil.com", "https:/evil.com" and "https:/\t/evil.com" all open evil.com
+                rest = new_value.partition(":")[2].translate(BROWSER_IGNORED_CHARS).replace("\\", "/").lstrip("/")
+                # a host with no letter or digit ("..", "-") is not one a browser can look up
+                missing_host = not any(c.isalnum() for c in urlsplit(f"{scheme}://{rest}").hostname or "")
+        except ValueError:
+            # urlsplit refuses some netlocs that still name a host ("http://[x/", NFKC look-alikes); an
+            # attacker wrote them, so keep the URL rather than drop it
+            missing_host = False
 
-    @property
-    def remediation_targets(self):
-        return []
+        if missing_host:
+            raise ObservableValueError(f"{new_value} has no host")
+
+        self._value = new_value
 
     def is_managed(self):
         """Returns True if this URL has a managed domain."""
+        # imported here: every process that loads an alert with a url in it imports this module, and urlfinderlib
+        # costs ~11 MB where nothing else needs it (the hunter)
+        from urlfinderlib.url import URL
 
         url = URL(self.value)
         for fqdn in get_config().global_settings.local_domains:
@@ -72,13 +81,3 @@ class URLObservable(Observable):
                 return True
 
         return False
-
-register_observable_type(F_USER_AGENT, UserAgentObservable)
-register_observable_type(F_URI_PATH, URIPathObservable)
-register_observable_type(F_URL, URLObservable)
-
-# crawl the URL with phishkit
-register_observable_action(F_URL, ObservableActionUrlCrawl)
-# "Check for clickers" (generic) and "Open clicker search in Splunk" (source-specific)
-register_observable_action(F_URL, ObservableActionCheckForClickers)
-register_observable_action(F_URL, ObservableActionOpenSplunkClickerSearch)

@@ -512,6 +512,8 @@ def _serialize_analysis(analysis) -> dict:
         result["completed"] = analysis.completed
     if hasattr(analysis, "delayed"):
         result["delayed"] = analysis.delayed
+    if getattr(analysis, "error", None) is not None:
+        result["error"] = analysis.error
     if hasattr(analysis, "external_details_path") and analysis.external_details_path is not None:
         result["external_details_path"] = analysis.external_details_path
     # Capture tags set on the Analysis object itself (analysis.add_tag).

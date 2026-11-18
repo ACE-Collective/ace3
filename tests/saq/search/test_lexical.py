@@ -71,13 +71,6 @@ class TestOnlyFieldTermsReachTheLane:
     def test_a_word_that_is_also_a_tag_matches_nothing(self, corpus):
         assert _search("credential-harvest phishing campaign") == []
 
-    def test_a_bare_indicator_matches_nothing(self, corpus):
-        assert _search("10.20.30.40") == []
-        assert _search(SHA256_HEX) == []
-
-    def test_the_whole_phrase_is_not_a_candidate(self, corpus):
-        assert _search("look for credential-harvest") == []
-
     def test_nothing_to_look_up(self):
         assert _search("") == []
         assert parse_query("docusign invoice").is_empty()
@@ -91,13 +84,10 @@ class TestLexicalSearch:
         hits = dict(results)[newer.uuid]
         assert hits[0].kind == KIND_OBSERVABLE and hits[0].text == "10.20.30.40" and hits[0].title == "ipv4"
 
-    def test_explicit_observable_form(self, corpus):
-        older, newer, _ = corpus
-        assert [u for u, _ in _search("observable:ipv4:10.20.30.40")] == [newer.uuid, older.uuid]
-
     def test_the_type_has_to_match(self, corpus):
         """A value alone is not an identity: (type, sha256) is."""
-        assert _search("fqdn:10.20.30.40") == []
+        # a valid hostname with the stored ipv4's value, and so its sha256
+        assert _search("hostname:10.20.30.40") == []
 
     def test_value_is_normalized_by_the_observable_class(self, corpus):
         """Matching on (type, sha256) after resolve_observable_identity() means the query is

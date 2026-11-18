@@ -6,7 +6,6 @@ with an svs:validate key, which reads counts and rule names and uuids only. The 
 samples they name are read with signature:read; the files need signature:download.
 """
 
-import logging
 import shutil
 from datetime import datetime
 from typing import Annotated
@@ -35,8 +34,7 @@ from aceapi_v2.svs.yara.validations.schemas import (
     ValidationStatus,
 )
 from aceapi_v2.sync import run_db_in_thread
-
-logger = logging.getLogger(__name__)
+from saq.logging import log_audit
 
 router = APIRouter(dependencies=[Security(get_current_auth)])
 
@@ -71,9 +69,10 @@ async def request_validation(
     if not created:
         response.status_code = 200
 
-    logger.info("AUDIT: %s requested svs validation %s of %s %s..%s (%s): %s",
-                auth.auth_name, status.uuid, body.repository, body.base_sha, body.head_sha, body.branch,
-                "queued" if created else f"answered by an existing {status.state} validation")
+    log_audit("%s requested svs validation %s of %s %s..%s (%s): %s",
+              auth.auth_name, status.uuid, body.repository, body.base_sha, body.head_sha, body.branch,
+              "queued" if created else f"answered by an existing {status.state} validation",
+              auth=auth, validation_uuid=status.uuid, repository=body.repository)
     return status
 
 
@@ -205,9 +204,9 @@ async def download_results(
     and files on another node's local pool are listed in the manifest as skipped."""
     selection = await run_db_in_thread(service.select_results, validation_uuid, category, rule_uuid)
     download = await run_db_in_thread(service.resolve_results_download, selection)
-    logger.info("AUDIT: user %s downloading %s svs sample files of validation %s (categories %s, rules %s): %s",
-                auth.auth_name, len(download.local), selection.validation_uuid, category, rule_uuid,
-                download.sha256s)
+    log_audit("user %s downloading %s svs sample files of validation %s (categories %s, rules %s): %s",
+              auth.auth_name, len(download.local), selection.validation_uuid, category, rule_uuid,
+              download.sha256s, auth=auth, validation_uuid=selection.validation_uuid, sha256s=download.sha256s)
     label = f"svs-validation-{selection.validation_uuid}"
     zip_path, staging = await run_db_in_thread(samples_service.create_sample_zip, label, download, auth.auth_name)
     return ZipFileResponse(

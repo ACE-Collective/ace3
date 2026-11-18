@@ -1,3 +1,4 @@
+from collections import Counter
 from datetime import datetime
 import logging
 from typing import TYPE_CHECKING, Optional, Union
@@ -8,7 +9,7 @@ from saq.constants import ANALYSIS_MODE_CORRELATION
 from saq.engine.delayed_analysis import DelayedAnalysisRequest
 from saq.util import local_time
 
-from fluent import sender
+from saq.logging import UTF8SafeFluentSender
 
 if TYPE_CHECKING:
     from saq.engine.work_stack import WorkStack, WorkTarget
@@ -84,6 +85,8 @@ class EngineExecutionContext:
         self.last_root_save: datetime = datetime.now()
         self.final_analysis_mode: bool = False
         self.last_analyze_time_warning: Optional[datetime] = None
+        # (observable uuid, module path) of every failed analysis this work item retried
+        self.retried_analysis: set[tuple[str, str]] = set()
 
     @property
     def root(self) -> Optional[RootAnalysis]:
@@ -143,31 +146,53 @@ class EngineExecutionContext:
             self.cache_lookup_blob_ms_sum.get(module_name, 0) + result.blob_ms
         )
 
-    def record_execution_statistics(self, elapsed_time: float, stats_dir: str):
+    def record_execution_statistics(self, elapsed_time: float, stats_dir: str, outcome: str = "completed"):
         """Records the execution statistics for the analysis.
 
-        Emits one fluent-bit event per (root, module) pair where the module
-        had any activity in this execution context -- either live execution
-        time, cache hits, cache misses, or cache writes. Each event carries
-        the per-module aggregates (exec_count, cache_* counters, byte/time
-        sums) and root-level context (alert_type, is_alert, queue).
+        Emits one fluent-bit event for the root (``event_type`` "root"): the
+        work item's outcome, timings, alert_type, is_alert, queue,
+        observable_count and observable_type_counts. Then one event per (root, module) pair where
+        the module had any activity in this execution context -- either live
+        execution time, cache hits, cache misses, or cache writes
+        (``event_type`` "module"), carrying only the per-module aggregates
+        (exec_count, cache_* counters, byte/time sums). Both carry root_uuid
+        and the same timestamp, which is what joins them.
 
         Args:
             elapsed_time: The total elapsed time for the analysis.
             stats_dir: The (base) directory to save the statistics to (typically g(G_MODULE_STATS_DIR)).
+            outcome: "completed", "cancelled" (shutdown, lost lock or a disposition stop), "timed_out"
+                or "failed". A work item that did not finish still reports, so the roots that grow past
+                what analysis can finish are not missing from the metrics.
         """
         try:
             engine_config = get_engine_config()
             if not engine_config.metrics_logging.enabled:
                 return
 
-            fluent_bit_sender = sender.FluentSender(
+            fluent_bit_sender = UTF8SafeFluentSender(
                 engine_config.metrics_logging.fluent_bit_tag,
                 host=engine_config.metrics_logging.fluent_bit_hostname,
                 port=engine_config.metrics_logging.fluent_bit_port)
 
             current_time = local_time().strftime("%Y-%m-%d %H:%M:%S.%f")
-            _total = sum(self.total_analysis_time.values())
+            if not elapsed_time:
+                elapsed_time = 0
+
+            observable_type_counts = dict(Counter(o.type for o in self.root.all_observables))
+            fluent_bit_sender.emit(None, {
+                "event_type": "root",
+                "outcome": outcome,
+                "timestamp": current_time,
+                "root_uuid": self.root.uuid,
+                "total_analysis_time_seconds": sum(self.total_analysis_time.values()),
+                "total_time_seconds": elapsed_time,
+                "alert_type": self.root.alert_type,
+                "is_alert": self.root.analysis_mode == ANALYSIS_MODE_CORRELATION,
+                "queue": self.root.queue,
+                "observable_count": sum(observable_type_counts.values()),
+                "observable_type_counts": observable_type_counts,
+            })
 
             # Iterate the union of all per-(root, module) counter dicts so
             # cache-only modules (cache hits, no live executions) still get
@@ -185,21 +210,15 @@ class EngineExecutionContext:
                 percentage = 0.0
                 if elapsed_time:
                     percentage = (analysis_time / elapsed_time) * 100.0
-                if not elapsed_time:
-                    elapsed_time = 0
 
                 payload = {
+                    "event_type": "module",
                     "timestamp": current_time,
+                    "root_uuid": self.root.uuid,
                     "module": key,
                     "analysis_time_seconds": analysis_time,
                     "percentage": percentage,
-                    "total_analysis_time_seconds": _total,
-                    "total_time_seconds": elapsed_time,
-                    "root_uuid": self.root.uuid,
                     "exec_count": self.total_exec_count.get(key, 0),
-                    "alert_type": self.root.alert_type,
-                    "is_alert": self.root.analysis_mode == ANALYSIS_MODE_CORRELATION,
-                    "queue": self.root.queue,
                 }
 
                 hits = self.cache_hit_count.get(key, 0)

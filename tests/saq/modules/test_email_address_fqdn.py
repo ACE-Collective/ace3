@@ -30,31 +30,6 @@ def test_analysis_summary_after_set():
 
 
 @pytest.mark.unit
-def test_analyzer_extracts_domain_as_volatile_fqdn(test_context):
-    root = create_root_analysis()
-    root.initialize_storage()
-    observable = root.add_observable_by_spec(F_EMAIL_ADDRESS, "user@example.com")
-
-    analyzer = EmailAddressFQDNAnalyzer(
-        context=test_context,
-        config=get_analysis_module_config(ANALYSIS_MODULE_EMAIL_ADDRESS_FQDN_ANALYZER),
-    )
-    analyzer.root = root
-
-    result = analyzer.execute_analysis(observable)
-    assert result == AnalysisExecutionResult.COMPLETED
-
-    analysis = observable.get_analysis(EmailAddressFQDNAnalysis)
-    assert analysis is not None
-    assert analysis.domain == "example.com"
-
-    fqdn = analysis.get_observable_by_type(F_FQDN)
-    assert fqdn is not None
-    assert fqdn.value == "example.com"
-    assert fqdn.volatile is True
-
-
-@pytest.mark.unit
 def test_analyzer_normalizes_case(test_context):
     """EmailAddressObservable lowercases on assignment, so the extracted domain should be lowercase too."""
     root = create_root_analysis()

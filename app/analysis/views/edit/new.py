@@ -12,6 +12,7 @@ from aceapi_v2.observable_types.service import get_observable_types
 from aceapi_v2.sync import run_async
 from app.auth.permissions import require_permission
 from app.blueprints import analysis
+from saq.analysis.root import KEY_ALERT_TEMPLATE
 from saq.configuration.config import get_config
 from saq.constants import (
     ANALYSIS_MODE_CORRELATION,
@@ -25,9 +26,15 @@ from saq.database.model import Alert, new_alert_version
 from saq.database.pool import get_db, get_db_connection
 from saq.engine.node_manager.distributed_node_manager import translate_node
 from saq.environment import get_temp_dir
+from saq.gui.alert import get_selectable_alert_templates
 from saq.util import format_iso8601, local_time
 from saq.util.filesystem import abs_path
 from saq.util.hashing import sha256_file
+
+# bounds the submission to the target node, which would otherwise hold this GUI worker for as long
+# as a stalled node keeps the connection open (the read timeout is per socket read, so a large
+# upload is not cut off by it)
+SUBMIT_TIMEOUT = (10, 60)
 
 
 @analysis.route('/new_alert', methods=['POST'])
@@ -61,24 +68,36 @@ ORDER BY
     insert_date = request.form.get('new_alert_insert_date', datetime.now().strftime('%m-%d-%Y %H:%M:%S'))
     # reformat date
     event_time = datetime.strptime(insert_date, '%m-%d-%Y %H:%M:%S')
-    # set the timezone
+    # the form offers only pytz.common_timezones, so an unknown one is a crafted request, not a fault
+    timezone_str = request.form.get('timezone', 'UTC')
     try:
-        timezone_str = request.form.get('timezone', 'UTC')
         timezone = pytz.timezone(timezone_str)
-        event_time = timezone.localize(event_time)
-    except Exception as e:
-        error_message = f"unable to set timezone to {timezone_str}: {e}"
-        logging.error(error_message)
-        flash(error_message)
+    except pytz.UnknownTimeZoneError:
+        logging.warning(f"user {current_user.username} submitted unknown timezone {timezone_str}",
+                        extra={"timezone": timezone_str, "user": current_user.username})
+        flash(f"unknown timezone {timezone_str}")
         return redirect(url_for('analysis.manage'))
 
+    event_time = timezone.localize(event_time)
+
     comment = ''
+
+    # the choice is rendered with {% include %}, so only a template the form offered is accepted
+    alert_template = request.form.get('new_alert_template', '')
+    extensions = None
+    if alert_template:
+        if alert_template not in get_selectable_alert_templates():
+            logging.warning(f"user {current_user.username} submitted unknown alert template {alert_template}",
+                            extra={"template": alert_template, "user": current_user.username})
+            flash(f"unknown alert template {alert_template}")
+            return redirect(url_for('analysis.manage'))
+
+        extensions = {KEY_ALERT_TEMPLATE: alert_template}
 
     tool = "gui"
     tool_instance = get_config().global_settings.instance_name
     alert_type = ANALYSIS_TYPE_MANUAL
     description = request.form.get('new_alert_description', 'Manual Alert')
-    is_local = request.form.get('is_local', None)
     queue = request.form.get('new_alert_queue', 'default')
     node_data = request.form.get('target_node_data', f'{available_nodes[0][0]},{available_nodes[0][2]},{available_nodes[0][3]}').split(',')
     node_id = node_data[0]
@@ -152,32 +171,29 @@ ORDER BY
                 observable_files = []
 
                 if o_type == F_FILE:
-                    if is_local:
-                        local_path = request.form.get(f'observables_values_{index}')
-                        #observable['value'] = os.path.basename(local_path)
-                        observable["value"] = sha256_file(local_path)
-                        observable["file_path"] = os.path.basename(local_path)
-                        observable_files.append((observable['value'], open(local_path, 'rb')))
+                    upload_file = request.files.get(f'observables_values_{index}', None)
+                    if upload_file:
+                        fp, save_path = tempfile.mkstemp(suffix='.upload', dir=os.path.join(get_temp_dir()))
+                        os.close(fp)
 
+                        temp_file_paths.append(save_path)
+
+                        try:
+                            upload_file.save(save_path)
+                        except Exception as e:
+                            logging.exception(f"unable to save {save_path}: {e}")
+                            flash(f"unable to save {save_path}: {e}")
+                            return redirect(url_for('analysis.manage'))
+
+                        observable_files.append((upload_file.filename, open(save_path, 'rb')))
+
+                        observable['value'] = sha256_file(save_path)
+                        observable['file_path'] = upload_file.filename
                     else:
-                        upload_file = request.files.get(f'observables_values_{index}', None)
-                        if upload_file:
-                            fp, save_path = tempfile.mkstemp(suffix='.upload', dir=os.path.join(get_temp_dir()))
-                            os.close(fp)
-
-                            temp_file_paths.append(save_path)
-
-                            try:
-                                upload_file.save(save_path)
-                            except Exception as e:
-                                logging.exception(f"unable to save {save_path}: {e}")
-                                flash(f"unable to save {save_path}: {e}")
-                                return redirect(url_for('analysis.manage'))
-
-                            observable_files.append((upload_file.filename, open(save_path, 'rb')))
-
-                            observable['value'] = sha256_file(save_path)
-                            observable['file_path'] = upload_file.filename
+                        # a file row is nothing without its upload: refuse the whole submission
+                        # rather than fail on it later or have the api drop it from the alert
+                        flash(f"no file uploaded for observable {index}")
+                        return redirect(url_for('analysis.manage'))
 
                 # multi fields add multiple observables of the same type
                 # (only text observables can be "multi"; they never carry files)
@@ -226,7 +242,9 @@ ORDER BY
                     tags = tags,
                     queue = queue,
                     files = all_files,
-                    api_key = get_config().api.api_key)
+                    extensions = extensions,
+                    api_key = get_config().api.api_key,
+                    timeout = SUBMIT_TIMEOUT)
 
                 if 'result' in result and 'uuid' in result['result']:
                     uuid = result['result']['uuid']
@@ -252,7 +270,9 @@ ORDER BY
                         queue = queue,
                         # only attach this observable's own file(s)
                         files = entry['files'],
-                        api_key = get_config().api.api_key)
+                        extensions = extensions,
+                        api_key = get_config().api.api_key,
+                        timeout = SUBMIT_TIMEOUT)
 
                     # in the case of multiple alerts we redirect to the last alert added
                     if 'result' in result and 'uuid' in result['result']:
@@ -270,18 +290,18 @@ ORDER BY
         return redirect(url_for('analysis.manage'))
 
     finally:
-        for file_path in temp_file_paths:
-            try:
-                os.remove(file_path)
-            except Exception as e:
-                logging.error(f"unable to remove {file_path}: {e}")
-
         for entry in observable_entries:
             for file_name, fp in entry['files']:
                 try:
                     fp.close()
-                except:
-                    logging.error(f"unable to close file descriptor for {file_name}")
+                except Exception as e:
+                    logging.exception(f"unable to close file descriptor for {file_name}: {e}", extra={"file_name": file_name})
+
+        for file_path in temp_file_paths:
+            try:
+                os.remove(file_path)
+            except Exception as e:
+                logging.exception(f"unable to remove {file_path}: {e}", extra={"path": file_path})
 
 @analysis.route('/new_alert_observable', methods=['GET'])
 @login_required
@@ -328,4 +348,5 @@ ORDER BY
                            queue=current_user.queue,
                            tab='advanced',
                            timezones=pytz.common_timezones,
+                           alert_templates=get_selectable_alert_templates(),
                            observable_types=run_async(get_observable_types()))

@@ -1,7 +1,7 @@
 import importlib
 
 import pytest
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel, ConfigDict, ValidationError
 
 from saq.configuration.lazy_registry import LazyConfigRegistry
 
@@ -56,17 +56,6 @@ def import_counter(monkeypatch):
 
     monkeypatch.setattr("saq.configuration.lazy_registry.importlib.import_module", _counting_import_module)
     return calls
-
-
-@pytest.mark.unit
-def test_add_raw_does_not_import(registry, import_counter):
-    """add_raw validates against the base class without importing the plugin module"""
-    config = registry.add_raw("fake_one", raw_config("one"))
-
-    assert type(config) is FakeBaseConfig
-    assert config.name == "one"
-    assert import_counter == []
-    assert not registry.is_resolved("one")
 
 
 @pytest.mark.unit
@@ -127,6 +116,26 @@ def test_values_reuses_cached_instance(registry):
 
 
 @pytest.mark.unit
+def test_peek_does_not_resolve(registry, import_counter):
+    """peek() hands back the base config until the name is resolved, and the resolved one after"""
+    registry.add_raw("fake_one", raw_config("one", enabled=False))
+
+    base = registry.peek("one")
+    assert type(base) is FakeBaseConfig
+    assert base.enabled is False
+    assert import_counter == []
+    assert not registry.is_resolved("one")
+
+    resolved = registry.get("one")
+    resolved.enabled = True
+    assert registry.peek("one") is resolved
+    assert registry.peek("one").enabled is True
+
+    with pytest.raises(KeyError):
+        registry.peek("missing")
+
+
+@pytest.mark.unit
 def test_get_unknown_name_raises_key_error(registry):
     with pytest.raises(KeyError):
         registry.get("missing")
@@ -180,21 +189,6 @@ def test_add_raw_reports_base_validation_failure(registry, capsys):
 
 
 @pytest.mark.unit
-def test_get_reports_subclass_validation_failure(registry, capsys):
-    """a block that only fails the plugin subclass fails at resolution, with the key named"""
-    invalid = raw_config("one")
-    del invalid["extra_setting"]
-
-    registry.add_raw("fake_one", invalid)
-    capsys.readouterr()
-
-    with pytest.raises(ValidationError):
-        registry.get("one")
-
-    assert "CONFIG ERROR: failed to validate fake config for fake_one" in capsys.readouterr().err
-
-
-@pytest.mark.unit
 def test_get_reports_missing_module(registry, capsys):
     """an unimportable python_module is reported the same way, and still raises"""
     registry.add_raw("fake_one", raw_config("one", python_module="does.not.exist"))
@@ -213,6 +207,32 @@ def test_get_reports_missing_class(registry, capsys):
     capsys.readouterr()
 
     with pytest.raises(AttributeError):
+        registry.get("one")
+
+    assert "CONFIG ERROR: failed to validate fake config for fake_one" in capsys.readouterr().err
+
+
+class StrictBaseConfig(FakeBaseConfig):
+    model_config = ConfigDict(extra="forbid")
+
+
+class StrictExtendedConfig(StrictBaseConfig):
+    extra_setting: str
+
+
+class StrictPlugin:
+    @staticmethod
+    def get_config_class():
+        return StrictExtendedConfig
+
+
+@pytest.mark.unit
+def test_undeclared_key_fails_at_resolution(capsys):
+    registry = LazyConfigRegistry(StrictBaseConfig, "fake config")
+    registry.add_raw("fake_one", raw_config("one", python_class="StrictPlugin", typo_setting="value"))
+    capsys.readouterr()
+
+    with pytest.raises(ValidationError, match="typo_setting"):
         registry.get("one")
 
     assert "CONFIG ERROR: failed to validate fake config for fake_one" in capsys.readouterr().err

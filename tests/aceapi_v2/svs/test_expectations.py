@@ -4,6 +4,7 @@
 import csv
 import io
 import json
+import logging
 
 import pytest
 from fastapi import HTTPException
@@ -11,15 +12,18 @@ from httpx import AsyncClient
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from aceapi_v2.auth.schemas import ApiAuthResult
 from aceapi_v2.svs.expectations import service as expectations_service
 from aceapi_v2.svs.expectations.schemas import ExpectationRequest
 from saq.database.model import SVSRunResultState
 from saq.database.pool import get_db
 from saq.svs import results
 from tests.aceapi_v2.conftest import api_key_client, make_api_key
+from tests.saq.helpers import audit_actors
 from tests.saq.svs.conftest import add_catalog_test, add_test_host, started_run
 
-pytestmark = pytest.mark.integration
+# several runs on one test host are fixtures here; the host's claim is tested in test_runs.py
+pytestmark = [pytest.mark.integration, pytest.mark.usefixtures("overlapping_runs")]
 
 GUID = "aaaaaaaa-1111-4111-8111-111111111111"
 OTHER_GUID = "bbbbbbbb-2222-4222-8222-222222222222"
@@ -81,7 +85,8 @@ class TestConflictingDecisions:
 
 class TestExpectations:
     @pytest.mark.asyncio
-    async def test_decide_list_and_remove(self, client: AsyncClient, test_user):
+    async def test_decide_list_and_remove(self, client: AsyncClient, test_user, client_actor, caplog):
+        caplog.set_level(logging.INFO)
         run = started_run(GUID)
         results.compute_result(run.id)
 
@@ -96,12 +101,16 @@ class TestExpectations:
         await client.put(f"/svs/tests/{OTHER_GUID}/expectations/windows/{NOISE}", json={"state": "rejected"})
         rows = (await client.get("/svs/expectations/")).json()["data"]
         assert [(row["test_guid"], row["state"]) for row in rows] == [(GUID, "expected"), (OTHER_GUID, "rejected")]
-        rows = (await client.get("/svs/expectations/", params={"test": GUID, "state": "expected"})).json()["data"]
+        rows = (await client.get("/svs/expectations/", params={"test": GUID})).json()["data"]
         assert [row["signature_uuid"] for row in rows] == [SIGNATURE]
+        rows = (await client.get("/svs/expectations/", params={"state": "rejected"})).json()["data"]
+        assert [row["test_guid"] for row in rows] == [OTHER_GUID]
         assert (await client.get("/svs/expectations/", params={"state": "candidate"})).status_code == 422
 
         assert (await client.delete(f"/svs/tests/{GUID}/expectations/windows/{SIGNATURE}")).status_code == 204
         assert (await client.delete(f"/svs/tests/{GUID}/expectations/windows/{SIGNATURE}")).status_code == 404
+        assert audit_actors(caplog, "svs expectation decided") == [client_actor] * 2
+        assert audit_actors(caplog, "svs expectation removed") == [client_actor]
 
     @pytest.mark.asyncio
     async def test_errors(self, client: AsyncClient):
@@ -177,13 +186,15 @@ class TestExpectations:
 
     def test_a_config_key_is_refused(self):
         with pytest.raises(HTTPException) as e:
-            expectations_service.set_expectation(GUID, "windows", SIGNATURE, ExpectationRequest(state="expected"), None, "ci")
+            expectations_service.set_expectation(GUID, "windows", SIGNATURE, ExpectationRequest(state="expected"),
+                                                 ApiAuthResult(auth_type="config", auth_name="ci"))
         assert e.value.status_code == 422
 
 
 class TestIgnores:
     @pytest.mark.asyncio
-    async def test_a_tests_and_global_ignores(self, client: AsyncClient):
+    async def test_a_tests_and_global_ignores(self, client: AsyncClient, client_actor, caplog):
+        caplog.set_level(logging.INFO)
         mine, other = started_run(GUID), started_run(OTHER_GUID)
         for run in (mine, other):
             results.compute_result(run.id)
@@ -208,6 +219,8 @@ class TestIgnores:
         assert (await client.delete(f"/svs/tests/{GUID}/ignores/{NOISE}")).status_code == 404
         assert (await client.delete(f"/svs/ignores/global/{SIGNATURE}")).status_code == 204
         assert (await client.get("/svs/ignores/")).json()["data"] == []
+        assert audit_actors(caplog, "svs signature ignored") == [client_actor] * 2
+        assert audit_actors(caplog, "svs signature no longer ignored") == [client_actor] * 2
 
     @pytest.mark.asyncio
     async def test_exports(self, client: AsyncClient):
@@ -219,7 +232,8 @@ class TestIgnores:
 
 class TestSettings:
     @pytest.mark.asyncio
-    async def test_set_read_and_remove(self, client: AsyncClient, test_user):
+    async def test_set_read_and_remove(self, client: AsyncClient, test_user, client_actor, caplog):
+        caplog.set_level(logging.INFO)
         assert (await client.get(f"/svs/tests/{GUID}/settings")).status_code == 404
 
         response = await client.put(f"/svs/tests/{GUID}/settings", json={"observation_minutes": 45})
@@ -228,8 +242,17 @@ class TestSettings:
         assert (await client.get(f"/svs/tests/{GUID}/settings")).json()["observation_minutes"] == 45
 
         assert (await client.put(f"/svs/tests/{GUID}/settings", json={"observation_minutes": 0})).status_code == 422
+
+        # a PUT replaces the settings: holds_host alone goes back to the computed window
+        response = await client.put(f"/svs/tests/{GUID}/settings", json={"holds_host": True})
+        assert response.status_code == 200, response.text
+        assert (response.json()["observation_minutes"], response.json()["holds_host"]) == (None, True)
+        assert (await client.get(f"/svs/tests/{GUID}/settings")).json()["holds_host"] is True
+
         assert (await client.delete(f"/svs/tests/{GUID}/settings")).status_code == 204
         assert (await client.delete(f"/svs/tests/{GUID}/settings")).status_code == 404
+        assert audit_actors(caplog, "svs test settings changed") == [client_actor] * 2
+        assert audit_actors(caplog, "svs test settings removed") == [client_actor]
         unknown = "cccccccc-0000-4000-8000-000000000000"
         assert (await client.get(f"/svs/tests/{unknown}/settings")).status_code == 404
 
@@ -255,6 +278,7 @@ async def test_permissions(_override_db_session, session: AsyncSession, test_use
         # a global ignore changes every test's results
         assert (await client.put(f"/svs/ignores/global/{NOISE}", json={})).status_code == 403
         assert (await client.get("/svs/expectations/")).status_code == 403
+        assert (await client.get("/svs/ignores/")).status_code == 403
 
     admin = await make_api_key(session, test_user.id, inherit=False, scope=[("svs", "admin")])
     async with api_key_client(admin) as client:
@@ -262,8 +286,3 @@ async def test_permissions(_override_db_session, session: AsyncSession, test_use
         assert (await client.delete(f"/svs/ignores/global/{NOISE}")).status_code == 204
         assert (await client.put(f"/svs/tests/{GUID}/ignores/{NOISE}", json={})).status_code == 403
 
-
-@pytest.mark.asyncio
-async def test_no_permission(noperm_client: AsyncClient):
-    assert (await noperm_client.get("/svs/expectations/")).status_code == 403
-    assert (await noperm_client.get("/svs/ignores/")).status_code == 403

@@ -143,7 +143,7 @@ The run and coverage screens are under **SVS** in the navigation bar, and the YA
 | Area | Permission to open it | Extra permission to act |
 |---|---|---|
 | Documentation | any logged-in user | none |
-| SVS: Runs, Tests, Coverage, Worklist | `svs:run_read` | `svs:run_manage` to take ownership, cancel, close, review, decide candidates and resolve worklist rows |
+| SVS: Runs, Tests, Coverage, Worklist | `svs:run_read` | `svs:run_manage` to take ownership, end runs early, cancel, close, review, decide candidates and resolve worklist rows |
 | SVS: Test hosts | `svs:admin` | `svs:admin` |
 | Signatures: Samples, Validations | `signature:read` | `signature:download` to download sample files |
 

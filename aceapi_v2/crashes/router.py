@@ -26,6 +26,7 @@ from aceapi_v2.responses import ZIP_DOWNLOAD_RESPONSES, ZipFileResponse
 from aceapi_v2.schemas import ListResponse
 from aceapi_v2.sync import run_db_in_thread
 from saq.crash_report import CRASH_TYPES
+from saq.logging import log_audit
 
 logger = logging.getLogger(__name__)
 
@@ -95,7 +96,7 @@ async def download_crash_report(
     Encrypted because the archive contains the file observable the module crashed on.
     """
     crash_dir = await service.resolve_downloadable_report(session, crash_id)
-    logger.info("AUDIT: user %s downloading crash report %s", auth.auth_name, crash_id)
+    log_audit("user %s downloading crash report %s", auth.auth_name, crash_id, auth=auth, crash_id=crash_id)
     zip_path = await run_db_in_thread(service.create_encrypted_crash_zip, crash_id, crash_dir)
     return ZipFileResponse(
         zip_path,

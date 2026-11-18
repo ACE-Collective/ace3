@@ -1,6 +1,7 @@
 """Tests for bin/update-attack-catalog, which builds the ATT&CK extract SVS coverage reads
 (docs/SVS_COVERAGE.md, *The ATT&CK release*), against a synthesized STIX bundle."""
 
+import hashlib
 import importlib.machinery
 import importlib.util
 import json
@@ -97,10 +98,12 @@ def test_parse_release():
 
 def test_the_extract():
     extract = _build()
-    assert extract["format"] == script.FORMAT
+    # the layout saq/svs/attack.py reads
+    assert extract["format"] == 1
     assert extract["release"] == "v20.0"
     assert extract["domain"] == "enterprise-attack"
-    assert len(extract["source"]["sha256"]) == 64
+    assert extract["source"] == {"url": "https://example.invalid/enterprise-attack-20.0.json",
+                                 "sha256": hashlib.sha256(_bundle()).hexdigest()}
     assert [tactic["id"] for tactic in extract["tactics"]] == ["TA0003", "TA0002", "TA0005"]
     assert extract["tactics"][0] == {"id": "TA0003", "shortname": "persistence", "name": "Persistence"}
 
@@ -137,7 +140,9 @@ def test_a_revocation_without_a_successor_is_left_out(capsys):
                      _relationship("revoked-by", "T1004", "T9999"))
     assert "T1003" not in extract["revoked"]
     assert "T1004" not in extract["revoked"]
-    assert "T1003 is revoked without a successor" in capsys.readouterr().err
+    err = capsys.readouterr().err
+    assert "T1003 is revoked without a successor" in err
+    assert "T1004 is revoked by attack-pattern--T9999, which is not a technique in the bundle" in err
 
 
 def test_a_revoked_id_that_is_also_current_stays_current(capsys):

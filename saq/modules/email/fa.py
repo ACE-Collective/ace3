@@ -10,6 +10,7 @@ from saq.brocess import query_brocess_by_email_conversation, query_brocess_by_so
 from saq.constants import DIRECTIVE_SANDBOX, F_EMAIL_CONVERSATION, F_FILE, F_URL, parse_email_conversation, AnalysisExecutionResult
 from saq.modules import AnalysisModule
 from saq.modules.config import AnalysisModuleConfig
+from saq.modules.email.rfc822 import EmailAnalysis
 
 
 def _tree_has_tag(target, tag: str) -> bool:
@@ -51,7 +52,7 @@ class EmailConversationFrequencyAnalysis(Analysis):
         self.details["dest_count"] = value
 
     def generate_summary(self):
-        if not self.source_count:
+        if self.source_count is None:
             return None
 
         result = 'Email Conversation Frequency Analysis -'
@@ -129,6 +130,8 @@ class EmailConversationFrequencyAnalyzer(AnalysisModule):
             except Exception as e:
                 logging.exception("unable to query brocess: {}".format(e))
                 self.enter_cooldown()
+                # the sender count is kept; how often the two talk is not known
+                analysis.error = f"unable to query brocess for the conversation count: {str(e) or type(e).__name__}"
                 return AnalysisExecutionResult.COMPLETED
 
         return AnalysisExecutionResult.COMPLETED
@@ -148,7 +151,6 @@ class EmailConversationAttachmentAnalyzer(AnalysisModule):
 
     def execute_analysis(self, _file) -> AnalysisExecutionResult:
         from saq.modules.file_analysis import FileTypeAnalysis
-        from saq.modules.email.rfc822 import EmailAnalysis
 
         # the file that we are looking at is word documents and the like
         file_analysis = self.wait_for_analysis(_file, FileTypeAnalysis)
@@ -170,7 +172,7 @@ class EmailConversationAttachmentAnalyzer(AnalysisModule):
         # wait for email conversation analysis to complete
         is_new_sender = False
         for ec_observable in self.get_root().get_observables_by_type(F_EMAIL_CONVERSATION):
-            if ec_observable.get_and_load_analysis(EmailConversationFrequencyAnalysis) is None:
+            if not self.wait_for_analysis(ec_observable, EmailConversationFrequencyAnalysis):
                 continue
 
             # is this tagged as new_sender?
@@ -226,8 +228,6 @@ class EmailConversationLinkAnalyzer(AnalysisModule):
         return F_URL
 
     def execute_analysis(self, url) -> AnalysisExecutionResult:
-
-        from saq.modules.email.rfc822 import EmailAnalysis
 
         # does this URL match one of our patterns?
         matches = False

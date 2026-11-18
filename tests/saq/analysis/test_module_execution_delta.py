@@ -41,107 +41,62 @@ class TestObservableDiff:
         assert not diff.has_removals
 
     @pytest.mark.unit
-    def test_serialization_round_trip(self):
+    def test_serialized_format(self):
+        """The dict is stored in cache rows and root.json, so its key names
+        are pinned: a rename in both to_dict and from_dict would still round
+        trip, and would drop every stored row's diff on load."""
         diff = ObservableDiff(
             added_tags=["suspicious"],
             removed_tags=["benign"],
             added_detections=[{"description": "test", "details": None}],
+            removed_detections=[{"description": "old", "details": None}],
             added_directives=["sandbox"],
             removed_directives=["crawl"],
             added_relationships=[{"type": "downloaded_from", "target": "uuid-1"}],
+            removed_relationships=[{"type": "extracted_from", "target": "uuid-3"}],
             added_excluded_analysis=["saq.modules.test:TestAnalysis"],
+            removed_excluded_analysis=["saq.modules.test:Gone"],
             added_limited_analysis=["saq.modules.other:OtherAnalysis"],
+            removed_limited_analysis=["saq.modules.other:Gone"],
             grouping_target=(False, True),
             redirection=(None, "uuid-2"),
             ignored=(False, True),
         )
-        d = diff.to_dict()
-        restored = ObservableDiff.from_dict(d)
-
-        assert restored.added_tags == ["suspicious"]
-        assert restored.removed_tags == ["benign"]
-        assert restored.added_detections == [{"description": "test", "details": None}]
-        assert restored.added_directives == ["sandbox"]
-        assert restored.removed_directives == ["crawl"]
-        assert restored.added_relationships == [{"type": "downloaded_from", "target": "uuid-1"}]
-        assert restored.added_excluded_analysis == ["saq.modules.test:TestAnalysis"]
-        assert restored.added_limited_analysis == ["saq.modules.other:OtherAnalysis"]
-        assert restored.grouping_target == (False, True)
-        assert restored.redirection == (None, "uuid-2")
-        assert restored.ignored == (False, True)
-
-    @pytest.mark.unit
-    def test_empty_serialization_is_compact(self):
-        diff = ObservableDiff()
-        assert diff.to_dict() == {}
-
-    @pytest.mark.unit
-    def test_from_dict_missing_fields_default_to_empty(self):
-        diff = ObservableDiff.from_dict({})
-        assert diff.is_empty
+        stored = {
+            "added_tags": ["suspicious"],
+            "removed_tags": ["benign"],
+            "added_detections": [{"description": "test", "details": None}],
+            "removed_detections": [{"description": "old", "details": None}],
+            "added_directives": ["sandbox"],
+            "removed_directives": ["crawl"],
+            "added_relationships": [{"type": "downloaded_from", "target": "uuid-1"}],
+            "removed_relationships": [{"type": "extracted_from", "target": "uuid-3"}],
+            "added_excluded_analysis": ["saq.modules.test:TestAnalysis"],
+            "removed_excluded_analysis": ["saq.modules.test:Gone"],
+            "added_limited_analysis": ["saq.modules.other:OtherAnalysis"],
+            "removed_limited_analysis": ["saq.modules.other:Gone"],
+            "grouping_target": [False, True],
+            "redirection": [None, "uuid-2"],
+            "ignored": [False, True],
+        }
+        assert diff.to_dict() == stored
+        assert ObservableDiff.from_dict(stored) == diff
 
 
 class TestObservableSpec:
     @pytest.mark.unit
-    def test_minimal_spec(self):
-        spec = ObservableSpec(uuid="u1", type="ipv4", value="1.2.3.4")
-        d = spec.to_dict()
-        assert d == {"uuid": "u1", "type": "ipv4", "value": "1.2.3.4"}
-
-        restored = ObservableSpec.from_dict(d)
-        assert restored.uuid == "u1"
-        assert restored.type == "ipv4"
-        assert restored.value == "1.2.3.4"
-        assert restored.time is None
-        assert restored.initial_tags == []
-
-    @pytest.mark.unit
-    def test_full_spec_round_trip(self):
+    def test_full_spec_format(self):
+        """Every field, under the key names stored in cache rows and root.json."""
         spec = ObservableSpec(
             uuid="u2",
-            type="fqdn",
-            value="evil.com",
+            type="file",
+            value="a" * 64,
             time="2026-04-10T12:00:00+00:00",
             initial_tags=["suspicious"],
             initial_directives=["sandbox"],
             initial_detections=[{"description": "match", "details": None}],
             initial_excluded_analysis=["MyAnalyzer", "OtherAnalyzer"],
             initial_limited_analysis=["LimitedAnalyzer"],
-        )
-        d = spec.to_dict()
-        restored = ObservableSpec.from_dict(d)
-        assert restored.uuid == spec.uuid
-        assert restored.type == spec.type
-        assert restored.value == spec.value
-        assert restored.time == spec.time
-        assert restored.initial_tags == spec.initial_tags
-        assert restored.initial_directives == spec.initial_directives
-        assert restored.initial_detections == spec.initial_detections
-        assert restored.initial_excluded_analysis == spec.initial_excluded_analysis
-        assert restored.initial_limited_analysis == spec.initial_limited_analysis
-
-    @pytest.mark.unit
-    def test_from_dict_backward_compat_missing_exclude_fields(self):
-        """Cache rows written before initial_excluded_analysis existed must
-        still load cleanly. Old shape → empty lists for the new fields."""
-        old_shape = {
-            "uuid": "u3",
-            "type": "user",
-            "value": "Usr123",
-            "initial_tags": ["from-old-cache"],
-        }
-        restored = ObservableSpec.from_dict(old_shape)
-        assert restored.initial_excluded_analysis == []
-        assert restored.initial_limited_analysis == []
-
-    @pytest.mark.unit
-    def test_file_spec_round_trip(self):
-        """Phase 4 fields (file_path/volatile/relationships/redirection)
-        survive serialization."""
-        spec = ObservableSpec(
-            uuid="u4",
-            type="file",
-            value="a" * 64,
             file_path="image.png.ocr/image.png.ocr",
             volatile=True,
             initial_relationships=[
@@ -150,48 +105,45 @@ class TestObservableSpec:
             ],
             initial_redirection="parent-uuid",
         )
-        d = spec.to_dict()
-        restored = ObservableSpec.from_dict(d)
-        assert restored.file_path == spec.file_path
-        assert restored.volatile is True
-        assert restored.initial_relationships == spec.initial_relationships
-        assert restored.initial_redirection == "parent-uuid"
-
-    @pytest.mark.unit
-    def test_from_dict_backward_compat_missing_phase4_fields(self):
-        """Cache rows written before Phase 4 lack the new keys entirely."""
-        restored = ObservableSpec.from_dict({"uuid": "u5", "type": "fqdn", "value": "x.com"})
-        assert restored.file_path is None
-        assert restored.volatile is False
-        assert restored.initial_relationships == []
-        assert restored.initial_redirection is None
-
-    @pytest.mark.unit
-    def test_phase4_fields_omitted_when_default(self):
-        """Compact serialization: defaults add no keys (root.json size)."""
-        d = ObservableSpec(uuid="u6", type="fqdn", value="x.com").to_dict()
-        assert "file_path" not in d
-        assert "volatile" not in d
-        assert "initial_relationships" not in d
-        assert "initial_redirection" not in d
+        stored = {
+            "uuid": "u2",
+            "type": "file",
+            "value": "a" * 64,
+            "time": "2026-04-10T12:00:00+00:00",
+            "initial_tags": ["suspicious"],
+            "initial_directives": ["sandbox"],
+            "initial_detections": [{"description": "match", "details": None}],
+            "initial_excluded_analysis": ["MyAnalyzer", "OtherAnalyzer"],
+            "initial_limited_analysis": ["LimitedAnalyzer"],
+            "file_path": "image.png.ocr/image.png.ocr",
+            "volatile": True,
+            "initial_relationships": [
+                {"type": "extracted_from", "target": "parent-uuid",
+                 "target_type": "file", "target_value": "b" * 64},
+            ],
+            "initial_redirection": "parent-uuid",
+        }
+        assert spec.to_dict() == stored
+        assert ObservableSpec.from_dict(stored) == spec
 
 
 class TestRootDiff:
     @pytest.mark.unit
-    def test_empty(self):
-        diff = RootDiff()
-        assert diff.is_empty
-        assert diff.to_dict() == {}
-
-    @pytest.mark.unit
-    def test_round_trip(self):
+    def test_serialized_format(self):
         diff = RootDiff(
             added_tags=["alert"],
+            removed_tags=["stale"],
+            added_detections=[{"description": "new", "details": None}],
             removed_detections=[{"description": "old", "details": None}],
         )
-        restored = RootDiff.from_dict(diff.to_dict())
-        assert restored.added_tags == ["alert"]
-        assert restored.removed_detections == [{"description": "old", "details": None}]
+        stored = {
+            "added_tags": ["alert"],
+            "removed_tags": ["stale"],
+            "added_detections": [{"description": "new", "details": None}],
+            "removed_detections": [{"description": "old", "details": None}],
+        }
+        assert diff.to_dict() == stored
+        assert RootDiff.from_dict(stored) == diff
 
 
 class TestModuleExecutionDelta:
@@ -244,67 +196,58 @@ class TestModuleExecutionDelta:
         assert delta.has_removals
 
     @pytest.mark.unit
-    def test_full_round_trip(self):
-        target_diff = ObservableDiff(
-            added_tags=["suspicious"],
-            added_detections=[{"description": "found malware", "details": None}],
-        )
-        new_obs = ObservableSpec(
-            uuid="new-1", type="fqdn", value="evil.com",
-            initial_tags=["new"],
-        )
-        root_diff = RootDiff(added_tags=["alert_tag"])
-        other_diff = ObservableDiff(added_directives=["sandbox"])
-
+    def test_full_serialized_format(self):
+        """Every top-level field, under the key names stored in cache rows
+        and root.json. The nested diffs and the spec carry only some of their
+        fields, so this also pins that empty fields are left out and that a
+        stored dict without them loads with the defaults."""
         delta = self._make_delta(
             module_instance="instance1",
             root_uuid="root-uuid-1",
             analysis={"module_path": "saq.modules.test:TestAnalysis", "completed": True},
-            target_observable_diff=target_diff,
-            new_observables=[new_obs],
-            root_diff=root_diff,
+            target_observable_diff=ObservableDiff(added_tags=["suspicious"]),
+            new_observables=[ObservableSpec(uuid="new-1", type="fqdn", value="evil.com")],
+            root_diff=RootDiff(added_detections=[{"description": "root det", "details": None}]),
             cache_key="abc123",
             wide_diff=True,
-            other_observable_diffs={"other-uuid": other_diff},
+            other_observable_diffs={"other-uuid": ObservableDiff(added_directives=["sandbox"])},
+            from_cache_hit=True,
+            cached_at="2026-04-09T08:00:00+00:00",
         )
-
-        d = delta.to_dict()
-        restored = ModuleExecutionDelta.from_dict(d)
-
-        assert restored.module_path == delta.module_path
-        assert restored.module_instance == "instance1"
-        assert restored.module_version == 1
-        assert restored.observable_uuid == delta.observable_uuid
-        assert restored.observable_type == delta.observable_type
-        assert restored.observable_value == delta.observable_value
-        assert restored.created_at == delta.created_at
-        assert restored.execution_time_ms == 42
-        assert restored.root_uuid == "root-uuid-1"
-        assert restored.analysis == delta.analysis
-        assert restored.target_observable_diff.added_tags == ["suspicious"]
-        assert len(restored.new_observables) == 1
-        assert restored.new_observables[0].value == "evil.com"
-        assert restored.root_diff.added_tags == ["alert_tag"]
-        assert restored.cache_key == "abc123"
-        assert restored.wide_diff is True
-        assert "other-uuid" in restored.other_observable_diffs
-        assert restored.other_observable_diffs["other-uuid"].added_directives == ["sandbox"]
+        stored = {
+            "module_path": "saq.modules.test:TestAnalysis",
+            "module_instance": "instance1",
+            "module_version": 1,
+            "observable_uuid": "obs-uuid-1",
+            "observable_type": "ipv4",
+            "observable_value": "10.0.0.1",
+            "created_at": "2026-04-10T12:00:00+00:00",
+            "execution_time_ms": 42,
+            "root_uuid": "root-uuid-1",
+            "analysis": {"module_path": "saq.modules.test:TestAnalysis", "completed": True},
+            "target_observable_diff": {"added_tags": ["suspicious"]},
+            "new_observables": [{"uuid": "new-1", "type": "fqdn", "value": "evil.com"}],
+            "root_diff": {"added_detections": [{"description": "root det", "details": None}]},
+            "cache_key": "abc123",
+            "wide_diff": True,
+            "other_observable_diffs": {"other-uuid": {"added_directives": ["sandbox"]}},
+            "from_cache_hit": True,
+            "cached_at": "2026-04-09T08:00:00+00:00",
+        }
+        assert delta.to_dict() == stored
+        assert ModuleExecutionDelta.from_dict(stored) == delta
 
     @pytest.mark.unit
     def test_compact_serialization_omits_empty_fields(self):
-        delta = self._make_delta()
-        d = delta.to_dict()
-        # Empty diffs and None fields should not appear
-        assert "target_observable_diff" not in d
-        assert "new_observables" not in d
-        assert "root_diff" not in d
-        assert "analysis" not in d
-        assert "cache_key" not in d
-        assert "wide_diff" not in d
-        assert "other_observable_diffs" not in d
-        assert "module_instance" not in d
-        assert "analysis_children_diffs" not in d
-        assert "root_uuid" not in d
+        assert self._make_delta().to_dict() == {
+            "module_path": "saq.modules.test:TestAnalysis",
+            "module_version": 1,
+            "observable_uuid": "obs-uuid-1",
+            "observable_type": "ipv4",
+            "observable_value": "10.0.0.1",
+            "created_at": "2026-04-10T12:00:00+00:00",
+            "execution_time_ms": 42,
+        }
 
     @pytest.mark.unit
     def test_has_removals_from_analysis_children(self):
@@ -317,28 +260,25 @@ class TestModuleExecutionDelta:
         assert delta.has_removals
 
     @pytest.mark.unit
-    def test_analysis_children_diff_round_trip(self):
+    def test_analysis_children_diff_format(self):
         acd = AnalysisChildrenDiff(
             analysis_module_path="saq.modules.email.rfc822:EmailAnalysis",
             parent_observable_uuid="obs-parent",
             added_child_uuids=["obs-added-1"],
             removed_child_uuids=["obs-removed-1", "obs-removed-2"],
         )
-        delta = self._make_delta(
-            wide_diff=True,
-            analysis_children_diffs=[acd],
-        )
-        d = delta.to_dict()
-        assert "analysis_children_diffs" in d
-        assert len(d["analysis_children_diffs"]) == 1
-
-        restored = ModuleExecutionDelta.from_dict(d)
-        assert len(restored.analysis_children_diffs) == 1
-        r_acd = restored.analysis_children_diffs[0]
-        assert r_acd.analysis_module_path == "saq.modules.email.rfc822:EmailAnalysis"
-        assert r_acd.parent_observable_uuid == "obs-parent"
-        assert r_acd.added_child_uuids == ["obs-added-1"]
-        assert r_acd.removed_child_uuids == ["obs-removed-1", "obs-removed-2"]
+        empty = AnalysisChildrenDiff(analysis_module_path="m", parent_observable_uuid="p")
+        delta = self._make_delta(wide_diff=True, analysis_children_diffs=[acd, empty])
+        stored = [{
+            "analysis_module_path": "saq.modules.email.rfc822:EmailAnalysis",
+            "parent_observable_uuid": "obs-parent",
+            "added_child_uuids": ["obs-added-1"],
+            "removed_child_uuids": ["obs-removed-1", "obs-removed-2"],
+        }]
+        # an empty children diff is not stored
+        assert delta.to_dict()["analysis_children_diffs"] == stored
+        restored = ModuleExecutionDelta.from_dict(delta.to_dict())
+        assert restored.analysis_children_diffs == [acd]
 
     @pytest.mark.unit
     def test_delta_not_empty_with_analysis_children(self):
@@ -597,19 +537,3 @@ class TestAnalysisChildrenDiff:
             parent_observable_uuid="obs-1",
         )
         assert acd.is_empty
-
-    @pytest.mark.unit
-    def test_round_trip(self):
-        acd = AnalysisChildrenDiff(
-            analysis_module_path="saq.modules.email.rfc822:EmailAnalysis",
-            parent_observable_uuid="parent-uuid",
-            added_child_uuids=["child-1"],
-            removed_child_uuids=["child-2", "child-3"],
-        )
-        d = acd.to_dict()
-        restored = AnalysisChildrenDiff.from_dict(d)
-        assert restored.analysis_module_path == acd.analysis_module_path
-        assert restored.parent_observable_uuid == acd.parent_observable_uuid
-        assert restored.added_child_uuids == ["child-1"]
-        assert restored.removed_child_uuids == ["child-2", "child-3"]
-        assert not restored.is_empty

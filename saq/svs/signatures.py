@@ -12,6 +12,7 @@ from typing import Iterable, Optional
 
 from saq.configuration.config import get_config
 from saq.signatures.builtin import BUILTIN_SIGNATURES
+from saq.signatures.loaders.builtin import load_builtin_signatures
 from saq.signatures.model import SignatureType
 from saq.svs import windows
 from saq.svs.attack import normalize_technique_id
@@ -69,10 +70,9 @@ def _yara_inventory_or_raise() -> dict:
     from saq.signatures.yara_inventory import get_yara_inventory
     from saq.signatures.yara_meta import is_qa_signature
 
-    if not get_signature_locations(SignatureType.YARA):
-        return {}
-
     try:
+        if not get_signature_locations(SignatureType.YARA):
+            return {}
         inventory = get_yara_inventory(get_config().svs.samples.inventory_refresh_seconds)
     except Exception as e:
         raise SignatureTagsUnavailable(f"unable to read the yara rule inventory: {e}") from e
@@ -118,10 +118,6 @@ def describe_signatures(uuids: Iterable[str]) -> dict[str, SignatureInfo]:
     result: dict[str, SignatureInfo] = {}
     if not uuids:
         return result
-
-    # local: the saq.signatures.loaders package imports the hunter, which imports the engine stack,
-    # which imports aceapi_v2, whose run API imports this module through saq.svs.runs
-    from saq.signatures.loaders.builtin import load_builtin_signatures
 
     builtins = {signature.uuid: signature for signature in load_builtin_signatures()}
     for uuid in uuids & set(BUILTIN_SIGNATURES):

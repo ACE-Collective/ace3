@@ -1,136 +1,189 @@
-import os
+import copy
+import hashlib
+import logging
+from datetime import timedelta
+
 import pytest
 from pydantic import ValidationError
 
-from saq.configuration.schema import EmailArchiveConfig
-from saq.database import get_db_connection
+from saq.configuration.config import get_config
+from saq.configuration.schema import ACEConfig
 from saq.constants import DB_EMAIL_ARCHIVE
-from saq.email_archive import (
-    ArchiveEmailResult,
-    archive_email,
-    archive_email_file,
-    get_archive_path_by_hash,
-    get_archived_email_server,
-    get_email_archive_local_server_name,
-    get_email_archive_server_id,
-    get_recipients_by_message_id,
-    index_email_history,
-    get_archived_email_path,
-    iter_decrypt_email,
-)
-from saq.environment import get_data_dir
+from saq.database import get_db_connection
+from saq.email_archive import archive_email, find_archived_email, get_email_archive_pool, query_archive_hashes
 from saq.util.time import local_time
-
-@pytest.mark.unit
-def test_s3_target_is_rejected_by_name():
-    # a deployment still configured for the removed s3 target must not start archiving to local
-    # disk without being told
-    with pytest.raises(ValidationError, match="email_archive.target s3 is no longer supported"):
-        EmailArchiveConfig(target="s3", primary="email_archive")
-
-
-@pytest.mark.unit
-def test_target_defaults_to_local_and_rejects_anything_else():
-    assert EmailArchiveConfig(primary="email_archive").target == "local"
-    with pytest.raises(ValidationError):
-        EmailArchiveConfig(target="nfs", primary="email_archive")
-
-
-@pytest.mark.integration
-def test_register_email_archive():
-    assert get_email_archive_server_id() is not None
+from tests.saq.helpers import inject_deadlock
 
 TEST_MESSAGE_ID = "<test-message-id>"
-TEST_RECIPIENT = "test@local"
-TEST_RECIPIENT_2 = "test2@local"
+TEST_EMAIL = b"Subject: test\r\n\r\ntest"
+
+
+def _read(digest: str) -> bytes:
+    with get_email_archive_pool().open(digest) as fp:
+        return fp.read()
+
+
+def _write(tmpdir, content: bytes, name: str = "email") -> str:
+    path = tmpdir / name
+    path.write_binary(content)
+    return str(path)
+
+
+def _rows() -> list[tuple]:
+    """Every archived_messages row as (message_id_hash hex, digest hex, insert_date)."""
+    with get_db_connection(DB_EMAIL_ARCHIVE) as db:
+        cursor = db.cursor()
+        cursor.execute("SELECT LOWER(HEX(message_id_hash)), LOWER(HEX(digest)), insert_date FROM archived_messages")
+        return list(cursor.fetchall())
+
 
 @pytest.fixture
 def archived_email(tmpdir):
-    email = tmpdir / "email"
-    email.write_binary(b"test")
+    return archive_email(_write(tmpdir, TEST_EMAIL), TEST_MESSAGE_ID, local_time())
 
-    return archive_email(str(email), TEST_MESSAGE_ID, [TEST_RECIPIENT], local_time())
+
+@pytest.mark.integration
+def test_archive_email_stores_the_email_in_the_pool_and_one_row(archived_email):
+    assert archived_email == hashlib.sha256(TEST_EMAIL).hexdigest()
+
+    pool = get_email_archive_pool()
+    assert pool.name == "email_archive"
+    stat = pool.stat(archived_email)
+    # encrypted, and the digest is of the email itself, not of what is stored
+    assert stat.key_id is not None and stat.size == len(TEST_EMAIL)
+
+    [(message_id_hash, digest, _)] = _rows()
+    assert message_id_hash == hashlib.sha256(TEST_MESSAGE_ID.encode()).hexdigest()
+    assert digest == archived_email
+
+    assert find_archived_email(TEST_MESSAGE_ID) == archived_email
+    assert _read(archived_email) == TEST_EMAIL
+
+
+@pytest.mark.integration
+def test_an_unknown_message_id_is_not_archived():
+    assert find_archived_email("<unknown>") is None
+
+
+@pytest.mark.integration
+def test_the_message_id_is_normalized(tmpdir):
+    digest = archive_email(_write(tmpdir, TEST_EMAIL), "test-message-id", local_time())
+    assert find_archived_email(" <test-message-id> ") == digest
+
+
+@pytest.mark.integration
+def test_the_newest_email_the_pool_still_has_is_found(tmpdir, caplog):
+    # one Message-ID, two different emails: the newest first, but only while its bytes are there
+    now = local_time()
+    older = archive_email(_write(tmpdir, b"older copy", "older"), TEST_MESSAGE_ID, now - timedelta(minutes=5))
+    newer = archive_email(_write(tmpdir, b"newer copy", "newer"), TEST_MESSAGE_ID, now)
+
+    assert query_archive_hashes(TEST_MESSAGE_ID) == [newer, older]
+    assert find_archived_email(TEST_MESSAGE_ID) == newer
+
+    pool = get_email_archive_pool()
+    pool.purge(newer, reason="test", actor="tester")
+    assert find_archived_email(TEST_MESSAGE_ID) == older
+
+    # every email of the Message-ID has expired: its rows outlive it, and it is no longer archived
+    pool.purge(older, reason="test", actor="tester")
+    with caplog.at_level(logging.INFO):
+        assert find_archived_email(TEST_MESSAGE_ID) is None
+
+    assert any("has expired from the archive" in r.getMessage() and getattr(r, "message_id", None) == TEST_MESSAGE_ID
+               for r in caplog.records)
+
+
+@pytest.mark.integration
+def test_archiving_an_expired_email_again_stores_it_again(tmpdir, archived_email):
+    pool = get_email_archive_pool()
+    pool.purge(archived_email, reason="test", actor="tester")
+    assert find_archived_email(TEST_MESSAGE_ID) is None
+
+    archive_email(_write(tmpdir, TEST_EMAIL, "again"), TEST_MESSAGE_ID, local_time())
+    assert find_archived_email(TEST_MESSAGE_ID) == archived_email
+
+
+@pytest.mark.integration
+def test_archive_email_fails_for_a_missing_file():
+    with pytest.raises(FileNotFoundError):
+        archive_email("unknown", TEST_MESSAGE_ID, local_time())
+
+    # nothing was indexed for an email the pool does not have
+    assert _rows() == []
+
+
+@pytest.mark.integration
+def test_archiving_the_same_email_at_the_same_time_is_one_row(tmpdir):
+    email = _write(tmpdir, TEST_EMAIL)
+
+    # the column has no fractional seconds and MySQL rounds, so without the truncation these two
+    # would be written as different seconds whenever the microseconds straddle .5
+    insert_date = local_time().replace(microsecond=600000)
+    assert archive_email(email, TEST_MESSAGE_ID, insert_date) == archive_email(email, TEST_MESSAGE_ID, insert_date.replace(microsecond=100000))
+
+    [(_, _, stored_insert_date)] = _rows()
+    assert stored_insert_date == insert_date.replace(microsecond=0, tzinfo=None)
+
+    # a later archive of the same email is another row, and the lookup still names it once
+    archive_email(email, TEST_MESSAGE_ID, insert_date + timedelta(minutes=1))
+    assert len(_rows()) == 2
+    assert query_archive_hashes(TEST_MESSAGE_ID) == [hashlib.sha256(TEST_EMAIL).hexdigest()]
+
+
+@pytest.mark.integration
+def test_archive_email_runs_the_insert_again_after_a_deadlock(tmpdir, monkeypatch):
+    failed = inject_deadlock(monkeypatch, "INSERT IGNORE INTO archived_messages")
+    digest = archive_email(_write(tmpdir, TEST_EMAIL), TEST_MESSAGE_ID, local_time())
+
+    assert len(failed) == 1
+    assert len(_rows()) == 1
+    assert find_archived_email(TEST_MESSAGE_ID) == digest
+
 
 @pytest.mark.unit
-def test_archive_email_file(tmpdir):
-    email = tmpdir / "email"
-    email.write_binary(b"test")
+def test_the_archive_dir_on_the_archiver_module_fails_instead_of_being_ignored():
+    data = copy.deepcopy(get_config().raw._data)
+    data["analysis_module_email_archiver"]["archive_dir"] = "archive/email"
+    with pytest.raises(ValidationError, match="email_archive.archive_dir"):
+        ACEConfig.model_validate(data)
 
-    md5_hash = archive_email_file(str(email), TEST_MESSAGE_ID)
-    assert os.path.exists(get_archive_path_by_hash(md5_hash))
 
-    # should return existing
-    assert archive_email_file(str(email), TEST_MESSAGE_ID) == md5_hash
+@pytest.mark.unit
+def test_an_s3_target_fails_instead_of_falling_back_to_local():
+    data = copy.deepcopy(get_config().raw._data)
+    data["email_archive"]["target"] = "s3"
+    with pytest.raises(ValidationError, match="email_archive.target: 's3' was removed"):
+        ACEConfig.model_validate(data)
 
-    # should error on missing file
-    with pytest.raises(IOError):
-        archive_email_file("unknown", TEST_MESSAGE_ID)
+    # the old local setting changes nothing
+    data["email_archive"]["target"] = "local"
+    ACEConfig.model_validate(data)
 
-@pytest.mark.integration
-def test_archive_email(archived_email: ArchiveEmailResult):
-    assert isinstance(archived_email.archive_id, int)
-    assert isinstance(archived_email.hash, str) and archived_email.hash
 
-@pytest.mark.integration
-def test_get_archived_email_server(archived_email):
-    assert get_archived_email_server(TEST_MESSAGE_ID) == get_email_archive_local_server_name()
-    assert get_archived_email_server("unknown") is None
+@pytest.mark.unit
+def test_an_archive_retention_shorter_than_the_pools_ttl_fails_to_load():
+    # rows dropped before their emails would lose emails the pool still has
+    data = copy.deepcopy(get_config().raw._data)
+    data["email_archive"]["partition_retention_days"] = 29
+    with pytest.raises(ValidationError, match=r"partition_retention_days \(29\) must be at least the ttl_days of cas pool email_archive \(30\)"):
+        ACEConfig.model_validate(data)
 
-@pytest.mark.integration
-def test_get_archived_email_path(archived_email):
-    assert get_archived_email_path(TEST_MESSAGE_ID) == os.path.join(get_data_dir(), "archive/email/ace/9f/9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08.gz.e")
-    assert get_archived_email_path("unknown") is None
+    data["email_archive"]["partition_retention_days"] = 30
+    ACEConfig.model_validate(data)
 
-@pytest.mark.integration
-def test_duplicate(tmpdir):
-    email = tmpdir / "email"
-    email.write_binary(b"test")
+    # a site that keeps the archive in a pool without a ttl has no floor to keep
+    data["email_archive"]["partition_retention_days"] = 7
+    data["cas"]["pools"]["email_archive"]["retention"] = "held"
+    del data["cas"]["pools"]["email_archive"]["ttl_days"]
+    data["cas"]["pools"]["email_archive"]["index_database"] = "ace"
+    ACEConfig.model_validate(data)
 
-    insert_date = local_time()
-    result_1 = archive_email(str(email), TEST_MESSAGE_ID, [TEST_RECIPIENT], insert_date)
-    result_2 = archive_email(str(email), TEST_MESSAGE_ID, [TEST_RECIPIENT], insert_date)
-    assert result_1 == result_2
 
-    # the archive row is de-duplicated on (server_id, hash, insert_date), so the insert_date we pass in
-    # has to be the one that gets written -- not whatever the server clock said at insert time, which
-    # made this depend on both calls landing in the same wall clock second
-    assert result_1.insert_date.microsecond == 0
-
-    with get_db_connection(DB_EMAIL_ARCHIVE) as db:
-        cursor = db.cursor()
-        cursor.execute("SELECT COUNT(*), MIN(insert_date) FROM archive")
-        count, stored_insert_date = cursor.fetchone()
-
-    assert count == 1
-    assert stored_insert_date == result_1.insert_date.replace(tzinfo=None)
-
-@pytest.mark.integration
-def test_multiple_recipients(archived_email):
-    with get_db_connection(DB_EMAIL_ARCHIVE) as db:
-        cursor = db.cursor()
-        index_email_history(db, cursor, TEST_MESSAGE_ID, [TEST_RECIPIENT_2], archived_email.insert_date)
-        db.commit()
-
-    result = get_recipients_by_message_id(TEST_MESSAGE_ID)
-    assert len(result) == 2
-    assert TEST_RECIPIENT in result
-    assert TEST_RECIPIENT_2 in result
-
-@pytest.mark.integration
-def test_duplicate_index(archived_email):
-    with get_db_connection(DB_EMAIL_ARCHIVE) as db:
-        cursor = db.cursor()
-        index_email_history(db, cursor, TEST_MESSAGE_ID, [TEST_RECIPIENT], archived_email.insert_date)
-        db.commit()
-
-    result = get_recipients_by_message_id(TEST_MESSAGE_ID)
-    assert len(result) == 1
-
-@pytest.mark.integration
-def test_iter_decrypt_email(archived_email):
-    result = []
-    for chunk in iter_decrypt_email(get_archived_email_path(TEST_MESSAGE_ID), chunk_size=1):
-        result.append(chunk)
-
-    assert result == [b't', b'e', b's', b't']
-
+@pytest.mark.unit
+def test_the_removed_email_archive_settings_are_ignored():
+    # a site overlay may still set them; they do nothing now
+    data = copy.deepcopy(get_config().raw._data)
+    data["email_archive"]["primary"] = "email_archive"
+    data["email_archive"]["email_history_retention_days"] = 30
+    ACEConfig.model_validate(data)

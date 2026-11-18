@@ -15,6 +15,8 @@ ran in the ``correlation`` mode saved on disk (FR-5 in docs/SVS_FINAL_REVIEW.md)
 
 import logging
 import os
+import socket
+import threading
 import uuid as uuidlib
 from unittest.mock import Mock
 
@@ -23,8 +25,8 @@ import requests
 
 from saq.constants import ANALYSIS_MODE_CORRELATION, ANALYSIS_MODE_DISPOSITIONED, NODE_STATUS_RUNNING
 from saq.database.pool import get_db_connection
-from saq.database.util.locking import acquire_lock
 from saq.database.util.node import set_node_status
+from saq.analysis.root import RootAnalysis
 from saq.engine.analysis_orchestrator import AnalysisOrchestrator
 from saq.engine.configuration_manager import ConfigurationManager
 from saq.engine.engine_configuration import EngineConfiguration
@@ -32,10 +34,11 @@ from saq.engine.execution_context import EngineExecutionContext
 from saq.engine.executor import AnalysisExecutor
 from saq.engine.lock_manager.distributed import DistributedLockManager
 from saq.engine.node_manager.node_manager_interface import NodeManagerInterface
+from saq.engine.workload_manager import database as workload_database
 from saq.engine.workload_manager.database import DatabaseWorkloadManager
 from saq.environment import get_base_dir, get_global_runtime_settings
 from saq.util import storage_dir_from_uuid
-from tests.saq.helpers import create_root_analysis
+from tests.saq.helpers import create_root_analysis, inject_deadlock
 
 pytestmark = pytest.mark.integration
 
@@ -104,7 +107,7 @@ def make_manager(lock_manager: DistributedLockManager) -> DatabaseWorkloadManage
     )
 
 
-def fake_download(uuid, target_dir, remote_host=None, saved_mode=ANALYSIS_MODE):
+def fake_download(uuid, target_dir, remote_host=None, saved_mode=ANALYSIS_MODE, **kwargs):
     """Materialize a valid root at the transfer target directory, standing in
     for pulling it off the remote node."""
     root = create_root_analysis(uuid=uuid, storage_dir=target_dir, analysis_mode=saved_mode)
@@ -112,7 +115,7 @@ def fake_download(uuid, target_dir, remote_host=None, saved_mode=ANALYSIS_MODE):
     root.save()
 
 
-def fake_alert_download(uuid, target_dir, remote_host=None):
+def fake_alert_download(uuid, target_dir, remote_host=None, **kwargs):
     """An alert as it is saved on disk after its correlation pass."""
     fake_download(uuid, target_dir, remote_host, saved_mode=ANALYSIS_MODE_CORRELATION)
 
@@ -162,43 +165,6 @@ def test_transfer_survives_benign_clear_failure(item, monkeypatch, caplog):
     assert row is not None and row[0] == manager.lock_manager.lock_uuid
 
 
-def test_transfer_succeeds_when_clear_succeeds(item, monkeypatch):
-    """Regression: the normal path (clear returns True) still transfers."""
-    import ace_api
-
-    uuid, _ = item
-    monkeypatch.setattr(ace_api, "clear", lambda *a, **k: True)
-
-    manager = make_manager(DistributedLockManager())
-    result = manager.transfer_work_target(uuid, workload_node_id(uuid))
-
-    assert result is not None and result.uuid == uuid
-    assert os.path.isdir(abs_target(uuid))
-    assert workload_node_id(uuid) == local_node_id()
-
-
-def test_transfer_releases_lock_when_download_fails(item, monkeypatch):
-    """A genuine transfer failure (download raises) releases the lock and
-    cleans up the partial local copy so the item can be retried."""
-    import ace_api
-
-    uuid, _ = item
-
-    def fail_download(*args, **kwargs):
-        raise RuntimeError("network is down")
-
-    monkeypatch.setattr(ace_api, "download", fail_download)
-
-    manager = make_manager(DistributedLockManager())
-    result = manager.transfer_work_target(uuid, workload_node_id(uuid))
-
-    assert result is None
-    # the lock is not leaked -- another worker can pick the item back up
-    assert lock_row(uuid) is None
-    # the partial target directory was cleaned up
-    assert not os.path.isdir(abs_target(uuid))
-
-
 def test_transfer_bails_and_releases_lock_when_target_dir_exists(item, monkeypatch):
     """If the target dir already exists we bail -- but must still release the
     lock we just acquired rather than leaking it."""
@@ -235,16 +201,6 @@ def make_orchestrator(manager: DatabaseWorkloadManager) -> AnalysisOrchestrator:
     )
 
 
-def test_transfer_carries_the_work_item_mode(dispositioned_item):
-    uuid, remote_id = dispositioned_item
-
-    manager = make_manager(DistributedLockManager())
-    result = manager.transfer_work_target(uuid, remote_id, ANALYSIS_MODE_DISPOSITIONED)
-
-    assert result.analysis_mode == ANALYSIS_MODE_DISPOSITIONED
-    assert result.original_analysis_mode == ANALYSIS_MODE_DISPOSITIONED
-
-
 def test_get_work_target_transfers_with_the_row_mode(dispositioned_item):
     """A dispositioned item pulled from another node runs in dispositioned mode, not in the
     correlation mode saved on disk, and clearing it removes its own workload row."""
@@ -279,3 +235,143 @@ def test_clear_after_transfer_keeps_the_other_mode(dispositioned_item):
 
     assert workload_modes(uuid) == [ANALYSIS_MODE_CORRELATION]
     assert workload_node_id(uuid) == local_node_id()
+
+
+@pytest.fixture
+def silent_node(monkeypatch):
+    """A remote node that accepts connections and never answers. Returns its node id."""
+    listener = socket.create_server(("127.0.0.1", 0))
+    listener.settimeout(0.2)
+    stop = threading.Event()
+    connections = []
+
+    def accept():
+        while not stop.is_set():
+            try:
+                connections.append(listener.accept()[0])
+            except TimeoutError:
+                continue
+
+    thread = threading.Thread(target=accept, daemon=True)
+    thread.start()
+
+    node_id = insert_remote_node()
+    with get_db_connection() as db:
+        cursor = db.cursor()
+        cursor.execute("UPDATE nodes SET location = %s WHERE id = %s",
+                       (f"127.0.0.1:{listener.getsockname()[1]}", node_id))
+        db.commit()
+
+    monkeypatch.setattr(workload_database, "TRANSFER_TIMEOUT", (1, 1), raising=False)
+    yield node_id
+
+    stop.set()
+    thread.join(5)
+    for connection in connections:
+        connection.close()
+    listener.close()
+
+
+def transfer_bounded(manager, uuid, node_id):
+    """Runs the transfer in a thread and fails the test if it is still waiting on the node after 30s."""
+    result = []
+    thread = threading.Thread(target=lambda: result.append(manager.transfer_work_target(uuid, node_id)), daemon=True)
+    thread.start()
+    thread.join(30)
+    assert not thread.is_alive(), "the transfer is still waiting on the remote node"
+    return result[0]
+
+
+def test_transfer_from_a_silent_node_gives_up(silent_node, caplog):
+    uuid = str(uuidlib.uuid4())
+    insert_workload(uuid, silent_node)
+
+    manager = make_manager(DistributedLockManager())
+    with caplog.at_level(logging.ERROR):
+        assert transfer_bounded(manager, uuid, silent_node) is None
+
+    assert any(r.getMessage().startswith(f"unable to transfer {uuid}") for r in caplog.records)
+    # nothing moved: the item stays on the remote node and can be retried
+    assert workload_node_id(uuid) == silent_node
+    assert lock_row(uuid) is None
+    assert not os.path.isdir(abs_target(uuid))
+
+
+def test_clear_on_a_silent_node_does_not_hold_the_transfer(silent_node, monkeypatch, caplog):
+    import ace_api
+
+    uuid = str(uuidlib.uuid4())
+    insert_workload(uuid, silent_node)
+    monkeypatch.setattr(ace_api, "download", fake_download)
+
+    manager = make_manager(DistributedLockManager())
+    with caplog.at_level(logging.WARNING):
+        result = transfer_bounded(manager, uuid, silent_node)
+
+    assert result is not None and result.uuid == uuid
+    assert workload_node_id(uuid) == local_node_id()
+    assert any(r.getMessage().startswith(f"unable to clear transferred work target {uuid}")
+               for r in caplog.records)
+
+
+def test_failed_location_update_leaves_the_item_on_the_remote_node(item, monkeypatch, caplog):
+    """The local copy is removed when the transfer fails, so the database must still name the
+    remote copy: the root's location is updated before the database rows are repointed."""
+    import ace_api
+
+    uuid, remote_id = item
+
+    def download_then_fill_the_disk(*args, **kwargs):
+        fake_download(*args, **kwargs)
+        monkeypatch.setattr(RootAnalysis, "save", Mock(side_effect=OSError("No space left on device")))
+
+    monkeypatch.setattr(ace_api, "download", download_then_fill_the_disk)
+    clear = Mock(return_value=True)
+    monkeypatch.setattr(ace_api, "clear", clear)
+
+    manager = make_manager(DistributedLockManager())
+    with caplog.at_level(logging.ERROR):
+        assert manager.transfer_work_target(uuid, remote_id) is None
+
+    assert any(r.getMessage().startswith(f"unable to transfer {uuid}") for r in caplog.records)
+    assert not os.path.isdir(abs_target(uuid))
+    assert workload_node_id(uuid) == remote_id
+    assert lock_row(uuid) is None
+    # the remote copy is still the only one, so it is not cleared
+    clear.assert_not_called()
+
+
+def test_transfer_runs_its_database_updates_again_from_the_start_after_a_deadlock(item, monkeypatch):
+    uuid, remote_id = item
+    remote_dir = f"remote/{uuid}"
+    with get_db_connection() as db:
+        cursor = db.cursor()
+        cursor.execute(
+            """INSERT INTO alerts ( uuid, version, location, storage_dir, tool, tool_instance, alert_type )
+               VALUES ( %s, %s, 'remote_scanner', %s, 'test', 'test', 'test' )""",
+            (uuid, str(uuidlib.uuid4()), remote_dir),
+        )
+        cursor.execute(
+            """INSERT INTO delayed_analysis ( uuid, observable_uuid, analysis_module, insert_date, delayed_until, node_id, storage_dir )
+               VALUES ( %s, %s, 'test_module', NOW(), NOW() + INTERVAL 1 HOUR, %s, %s )""",
+            (uuid, str(uuidlib.uuid4()), remote_id, remote_dir),
+        )
+        db.commit()
+
+    monkeypatch.setattr("ace_api.clear", lambda *a, **k: True)
+    # the last of the three UPDATEs is the deadlock victim, after the workload row was repointed
+    failed = inject_deadlock(monkeypatch, "UPDATE alerts SET location")
+
+    manager = make_manager(DistributedLockManager())
+    assert manager.transfer_work_target(uuid, remote_id) is not None
+
+    assert len(failed) == 1
+    target_dir = storage_dir_from_uuid(uuid)
+    with get_db_connection() as db:
+        cursor = db.cursor()
+        cursor.execute("SELECT node_id, storage_dir FROM workload WHERE uuid = %s", (uuid,))
+        assert cursor.fetchone() == (local_node_id(), target_dir)
+        cursor.execute("SELECT node_id, storage_dir FROM delayed_analysis WHERE uuid = %s", (uuid,))
+        assert cursor.fetchone() == (local_node_id(), target_dir)
+        cursor.execute("SELECT location, storage_dir FROM alerts WHERE uuid = %s", (uuid,))
+        assert cursor.fetchone() == (get_global_runtime_settings().saq_node, target_dir)

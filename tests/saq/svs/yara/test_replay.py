@@ -95,6 +95,49 @@ def test_a_validation_reports_what_the_change_does(svs_repository):
 
 
 @pytest.mark.integration
+def test_a_rule_tagged_whitelisted_makes_no_detection(svs_repository):
+    # the YARA module makes no detection of a rule tagged whitelisted, so a validation must not count one
+    a = stored_sample("DELIVERY", b"alpha evil", [R1])
+    b = stored_sample("FALSE_POSITIVE", b"beta bad", [R2])
+    base = svs_repository.commit({"yara/acme/rules.yar": rule("one", R1, '$a = "evil"') + rule("two", R2, '$a = "bad"')})
+    head = svs_repository.commit({"yara/acme/rules.yar": (
+        rule("one", R1, '$a = "evil"', tags="whitelisted") + rule("two", R2, '$a = "bad"')
+        + rule("known_good", R4, '$a = "bad"', tags="whitelisted"))}, branch="feature")
+
+    result = run_replay(REPOSITORY, base, head, branch="feature")
+
+    assert result.diffed
+    rows = _rows(result)
+    # tagging a rule whitelisted ends the detections of its TP samples
+    assert rows[(a, R1)].category == Category.REGRESSION
+    assert (rows[(a, R1)].base, rows[(a, R1)].head) == (Outcome.MATCH, Outcome.MISS)
+    assert "tagged whitelisted" in rows[(a, R1)].note
+    # and a whitelisted rule that matches another rule's FP sample is no new false positive: it is
+    # only counted unchanged, beside R2's own known FP
+    assert (b, R4) not in rows
+    assert (result.counts["new_fp_other_rule"], result.counts["unchanged"], result.counts["known_fp"]) == (0, 1, 1)
+
+
+@pytest.mark.integration
+def test_an_include_of_the_rule_set_next_to_it_loads_as_in_the_yara_service(svs_repository):
+    # the yara service bounds includes by its signature directory, so a rule set can include a
+    # file of the set next to it; were the replay bounded by the namespace directory instead,
+    # r.yar would fail to compile and rule one would drop out of head
+    a = stored_sample("DELIVERY", b"alpha evil", [R1])
+    shared = {"yara/common/shared.yar": "rule shared { condition: false }\n"}
+    base = svs_repository.commit({**shared, "yara/acme/r.yar": rule("one", R1, '$a = "nothing here"')})
+    head = svs_repository.commit({**shared, "yara/acme/r.yar": 'include "../common/shared.yar"\n'
+                                  + rule("one", R1, '$a = "evil"', condition="$a and not shared")})
+
+    result = run_replay(REPOSITORY, base, head)
+
+    assert result.diffed
+    assert result.head.include_warnings == []
+    assert result.head.file_errors == []
+    assert (_rows(result)[(a, R1)].base, _rows(result)[(a, R1)].head) == (Outcome.MISS, Outcome.MATCH)
+
+
+@pytest.mark.integration
 def test_retired_samples_are_only_counted(svs_repository):
     a = stored_sample("DELIVERY", b"alpha evil", [R1])
     base = svs_repository.commit({"yara/acme/rules.yar": rule("one", R1, '$a = "evil"')})
@@ -118,18 +161,6 @@ def test_a_head_that_would_not_load_is_not_compared(svs_repository, capsys):
 
     print_report(result)
     assert "the ruleset would not load" in capsys.readouterr().out
-
-
-@pytest.mark.integration
-def test_the_report_prints(svs_repository, capsys):
-    stored_sample("DELIVERY", b"alpha evil", [R1])
-    base = svs_repository.commit({"yara/acme/rules.yar": rule("one", R1, '$a = "evil"')})
-    head = svs_repository.commit({"yara/acme/rules.yar": rule("one", R1, '$a = "nothing"')})
-
-    print_report(run_replay(REPOSITORY, base, head))
-    output = capsys.readouterr().out
-    assert "Regressions (1):" in output
-    assert "one" in output
 
 
 @pytest.mark.integration

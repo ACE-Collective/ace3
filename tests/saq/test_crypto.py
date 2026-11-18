@@ -1,50 +1,13 @@
 import pytest
 
-from saq.crypto import InvalidPasswordError, PasswordNotSetError, decrypt_chunk, encrypt_chunk, encryption_key_set, get_aes_key, set_encryption_password
-
-@pytest.mark.integration
-def test_set_password():
-    assert encryption_key_set()
-    # verify the password
-    aes_key = get_aes_key('test')
-    assert isinstance(aes_key, bytes)
-    assert len(aes_key) == 32
-
-    # encrypt and decrypt something with this password
-    encrypted_chunk = encrypt_chunk('Hello, World!'.encode(), password=aes_key)
-    assert decrypt_chunk(encrypted_chunk, password=get_aes_key('test')) == 'Hello, World!'.encode()
-
-@pytest.mark.integration
-def test_change_password():
-    assert encryption_key_set()
-    # verify the password
-    aes_key = get_aes_key('test')
-    # now change the password to something else
-    set_encryption_password('new password', old_password='test')
-    # aes key should still be the same
-    assert aes_key == get_aes_key('new password')
-
-@pytest.mark.integration
-def test_invalid_password():
-    assert encryption_key_set()
-    with pytest.raises(InvalidPasswordError):
-        aes_key = get_aes_key('invalid_password')
-
-@pytest.mark.integration
-def test_encrypt_chunk():
-    chunk = b'1234567890'
-    encrypted_chunk = encrypt_chunk(chunk)
-    assert chunk != encrypted_chunk
-    decrypted_chunk = decrypt_chunk(encrypted_chunk)
-    assert chunk == decrypted_chunk
-
-@pytest.mark.integration
-def test_encrypt_empty_chunk():
-    chunk = b''
-    encrypted_chunk = encrypt_chunk(chunk)
-    assert chunk != encrypted_chunk
-    decrypted_chunk = decrypt_chunk(encrypted_chunk)
-    assert chunk == decrypted_chunk
+from saq.crypto import (
+    CONFIG_KEY_ENCRYPTION_KEY,
+    PasswordNotSetError,
+    decrypt_chunk,
+    encrypt_chunk,
+    get_aes_key,
+    set_encryption_password,
+)
 
 #
 # file formats (v0 and v1) and the stream API
@@ -93,6 +56,36 @@ def _frozen_v0_decrypt(data: bytes, key: bytes) -> bytes:
     cipher = Cipher(algorithms.AES(key), modes.GCM(nonce, tag))
     decryptor = cipher.decryptor()
     return (decryptor.update(data[20:-16]) + decryptor.finalize())[:original_size]
+
+
+def _frozen_v1_decrypt(data: bytes, key: bytes) -> bytes:
+    """The v1 layout as the module docstring of saq/crypto.py specifies it, written out here so that a
+    change to the layout fails a test instead of changing the encoder and the decoder together."""
+    header = data[:36]
+    assert header[:7] == b"ACE-GCM"
+    nonce = header[24:36]
+    cipher = Cipher(algorithms.AES(key), modes.GCM(nonce, data[-16:]))
+    decryptor = cipher.decryptor()
+    decryptor.authenticate_additional_data(header)
+    return decryptor.update(data[36:-16]) + decryptor.finalize()
+
+
+# a raw 32-byte key and its key id, sha256(b"ace-key-id:" + key)[:8] computed outside ACE. Key ids
+# are stored (cas_objects.key_id) and every node computes its own, so they are pinned as literals.
+FIXED_KEY = bytes(range(32))
+FIXED_KEY_ID = "a6caee7affc8dd1d"
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("chunk", [b"", b"1234567890"])
+def test_encrypt_chunk_uses_the_v0_layout(chunk):
+    # the wrapped data key in `config` and every row of encrypted_passwords are stored in it
+    key = _get_password()
+    encrypted = encrypt_chunk(chunk)
+    assert len(encrypted) == 8 + 12 + len(chunk) + 16
+    assert _frozen_v0_decrypt(encrypted, key) == chunk
+    assert decrypt_chunk(_frozen_v0_encrypt(chunk, key)) == chunk
+    assert decrypt_chunk(encrypted) == chunk
 
 
 class _NonSeekable(io.RawIOBase):
@@ -147,43 +140,51 @@ def test_encrypt_still_writes_v0_for_existing_callers(tmp_path):
 
 
 @pytest.mark.unit
-def test_v1_round_trip_and_header_layout(tmp_path):
+def test_v1_round_trip_and_header_layout():
     plaintext = os.urandom(2 * CHUNK_SIZE + 3)
     encrypted = io.BytesIO()
-    result = encrypt_stream(io.BytesIO(plaintext), encrypted, size=len(plaintext))
+    result = encrypt_stream(io.BytesIO(plaintext), encrypted, size=len(plaintext), password=FIXED_KEY)
     data = encrypted.getvalue()
 
-    assert result.format_version == FORMAT_V1
-    assert result.key_id == get_key_id()
-    assert len(result.key_id) == 16
+    assert result.format_version == 1
+    assert result.key_id == FIXED_KEY_ID
     assert result.size == len(plaintext)
-    assert result.stored_size == len(data) == V1_HEADER_SIZE + len(plaintext) + 16
+    assert result.stored_size == len(data) == 36 + len(plaintext) + 16
 
-    assert data[:7] == MAGIC
-    assert data[7] == FORMAT_V1
-    assert data[8:16].hex() == get_key_id()
+    assert data[:7] == b"ACE-GCM"
+    assert data[7] == 1
+    assert data[8:16].hex() == FIXED_KEY_ID
     assert struct.unpack('<Q', data[16:24])[0] == len(plaintext)
+    assert _frozen_v1_decrypt(data, FIXED_KEY) == plaintext
 
     decrypted = io.BytesIO()
-    result = decrypt_stream(io.BytesIO(data), decrypted)
+    result = decrypt_stream(io.BytesIO(data), decrypted, password=FIXED_KEY)
     assert decrypted.getvalue() == plaintext
-    assert result.format_version == FORMAT_V1
-    assert result.key_id == get_key_id()
+    assert result.format_version == 1
+    assert result.key_id == FIXED_KEY_ID
     assert result.size == len(plaintext)
 
 
 @pytest.mark.unit
 def test_encrypt_stream_defaults_to_v1_and_infers_size_from_seekable_source():
-    plaintext = b"hello"
+    # the size is what is left from the current position, not the whole stream
+    source = io.BytesIO(b"skip:hello")
+    source.seek(5)
     encrypted = io.BytesIO()
-    result = encrypt_stream(io.BytesIO(plaintext), encrypted)
+    result = encrypt_stream(source, encrypted)
     assert result.format_version == FORMAT_V1
-    assert encrypted.getvalue().startswith(MAGIC)
+    assert result.size == 5
+    assert encrypted.getvalue().startswith(b"ACE-GCM")
+
+    decrypted = io.BytesIO()
+    decrypt_stream(io.BytesIO(encrypted.getvalue()), decrypted)
+    assert decrypted.getvalue() == b"hello"
 
 
 @pytest.mark.unit
 def test_encrypt_stream_requires_size_for_non_seekable_source():
-    with pytest.raises(ValueError):
+    # match: tell() on a stream that cannot seek raises io.UnsupportedOperation, a ValueError too
+    with pytest.raises(ValueError, match="size is required"):
         encrypt_stream(_NonSeekable(b"hello"), io.BytesIO())
 
 
@@ -273,6 +274,53 @@ def test_decrypt_in_place(tmp_path):
 
 
 @pytest.mark.unit
+def test_encrypt_without_the_key_leaves_nothing_at_the_target(tmp_path, monkeypatch):
+    # the email archive takes an existing target to mean the email is already archived
+    source = tmp_path / "plain"
+    source.write_bytes(b"plaintext")
+    target = tmp_path / "plain.e"
+    monkeypatch.setattr(get_global_runtime_settings(), "encryption_key", None)
+
+    with pytest.raises(PasswordNotSetError):
+        encrypt(str(source), str(target))
+
+    assert not target.exists()
+    assert [p.name for p in tmp_path.iterdir()] == ["plain"]
+
+
+@pytest.mark.unit
+def test_encrypt_that_fails_partway_leaves_the_old_target_alone(tmp_path, monkeypatch):
+    source = tmp_path / "plain"
+    source.write_bytes(os.urandom(CHUNK_SIZE * 3))
+    target = tmp_path / "plain.e"
+    target.write_bytes(b"what was there before")
+
+    def _fail_partway(fp_in, fp_out, **kwargs):
+        fp_out.write(b"part of the ciphertext")
+        raise OSError("No space left on device")
+
+    monkeypatch.setattr(saq.crypto, "encrypt_stream", _fail_partway)
+
+    with pytest.raises(OSError):
+        encrypt(str(source), str(target))
+
+    assert target.read_bytes() == b"what was there before"
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["plain", "plain.e"]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("function", [encrypt, decrypt])
+def test_a_missing_source_leaves_no_temp_file_or_open_descriptor(tmp_path, function):
+    open_before = len(os.listdir("/proc/self/fd"))
+
+    with pytest.raises(FileNotFoundError):
+        function(str(tmp_path / "missing"), str(tmp_path / "out"))
+
+    assert list(tmp_path.iterdir()) == []
+    assert len(os.listdir("/proc/self/fd")) == open_before
+
+
+@pytest.mark.unit
 def test_encrypt_with_explicit_password_uses_that_key():
     plaintext = b"secret"
     encrypted = io.BytesIO()
@@ -292,9 +340,125 @@ def test_encrypt_with_explicit_password_uses_that_key():
 
 
 @pytest.mark.unit
-def test_key_id_is_stable_and_key_specific():
-    assert get_key_id() == get_key_id()
-    assert get_key_id("a") == get_key_id("a")
-    assert get_key_id("a") != get_key_id("b")
-    assert len(get_key_id()) == 16
-    int(get_key_id(), 16)
+def test_key_id_is_a_fixed_fingerprint_of_the_key():
+    assert get_key_id(FIXED_KEY) == FIXED_KEY_ID
+    # a string password is hashed into the key first; computed outside ACE the same way
+    assert get_key_id("a") == "6e9b87c7735c3bf5"
+    assert get_key_id("b") == "cd471495427846b0"
+
+
+#
+# initialize_encryption: how a process gets the system key at startup
+#
+
+import logging
+
+import saq.crypto
+from saq.configuration.database import delete_database_config_value
+from saq.constants import INSTANCE_TYPE_DEV
+from saq.crypto import get_decryption_key, initialize_encryption
+from saq.environment import get_global_runtime_settings
+
+
+@pytest.fixture
+def unloaded_key(monkeypatch):
+    """The system key as a process has it before initialize_encryption runs."""
+    expected = get_aes_key("test")
+    monkeypatch.setattr(get_global_runtime_settings(), "encryption_key", None)
+    monkeypatch.setattr(get_global_runtime_settings(), "encryption_initialized", False)
+    monkeypatch.delenv("SAQ_ENC", raising=False)
+    return expected
+
+
+@pytest.mark.integration
+def test_initialize_encryption_with_the_password(unloaded_key):
+    initialize_encryption(encryption_password_plaintext="test")
+
+    assert get_global_runtime_settings().encryption_key == unloaded_key
+    assert get_global_runtime_settings().encryption_initialized
+
+
+@pytest.mark.integration
+def test_initialize_encryption_prompts_until_the_password_is_right(unloaded_key, monkeypatch, caplog):
+    answers = iter(["wrong", "test"])
+    monkeypatch.setattr(saq.crypto, "getpass", lambda prompt: next(answers))
+
+    with caplog.at_level(logging.ERROR):
+        initialize_encryption(prompt_for_missing_password=True)
+
+    assert get_global_runtime_settings().encryption_key == unloaded_key
+    assert [r.getMessage() for r in caplog.records] == ["invalid encryption password"]
+
+
+@pytest.mark.integration
+def test_initialize_encryption_reads_and_removes_saq_enc(unloaded_key, monkeypatch):
+    monkeypatch.setenv("SAQ_ENC", "test")
+
+    initialize_encryption()
+
+    assert get_global_runtime_settings().encryption_key == unloaded_key
+    # nothing the process starts later inherits the password
+    assert "SAQ_ENC" not in os.environ
+
+
+@pytest.mark.integration
+def test_initialize_encryption_keeps_saq_enc_in_the_dev_container(unloaded_key, monkeypatch):
+    monkeypatch.setenv("SAQ_ENC", "test")
+    monkeypatch.setattr(get_global_runtime_settings(), "instance_type", INSTANCE_TYPE_DEV)
+
+    initialize_encryption()
+
+    assert get_global_runtime_settings().encryption_key == unloaded_key
+    assert os.environ["SAQ_ENC"] == "test"
+
+
+@pytest.mark.integration
+def test_initialize_encryption_with_a_wrong_saq_enc_leaves_the_key_unloaded(unloaded_key, monkeypatch, caplog):
+    monkeypatch.setenv("SAQ_ENC", "wrong")
+
+    with caplog.at_level(logging.ERROR):
+        initialize_encryption()
+
+    assert get_global_runtime_settings().encryption_key is None
+    assert get_global_runtime_settings().encryption_initialized
+    assert [r.getMessage() for r in caplog.records] == ["encryption password is wrong"]
+
+
+@pytest.mark.integration
+def test_initialize_encryption_without_a_password_leaves_the_key_unloaded(unloaded_key):
+    initialize_encryption()
+
+    assert get_global_runtime_settings().encryption_key is None
+    assert get_global_runtime_settings().encryption_initialized
+
+
+@pytest.mark.integration
+def test_initialize_encryption_raises_what_it_cannot_handle(unloaded_key, monkeypatch, caplog):
+    def _get_aes_key(password):
+        raise RuntimeError("database unavailable")
+
+    monkeypatch.setattr(saq.crypto, "get_aes_key", _get_aes_key)
+
+    with caplog.at_level(logging.ERROR), pytest.raises(RuntimeError):
+        initialize_encryption(encryption_password_plaintext="test")
+
+    assert "unable to get encryption key: database unavailable" in caplog.text
+    assert not get_global_runtime_settings().encryption_initialized
+
+
+@pytest.mark.integration
+def test_the_decryption_key_needs_a_password_set():
+    delete_database_config_value(CONFIG_KEY_ENCRYPTION_KEY)
+
+    with pytest.raises(PasswordNotSetError):
+        get_decryption_key("test")
+
+
+@pytest.mark.integration
+def test_set_encryption_password_with_a_given_key(monkeypatch):
+    key = os.urandom(32)
+    monkeypatch.setattr(get_global_runtime_settings(), "encryption_key", None)
+
+    set_encryption_password("other password", key=key)
+
+    assert get_aes_key("other password") == key

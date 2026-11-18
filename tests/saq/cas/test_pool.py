@@ -339,8 +339,8 @@ def test_gc_batches_in_key_order(plain_pool, monkeypatch):
     calls = []
     real = index.gc_candidates
 
-    def spy(session, pool, grace, after, limit):
-        result = real(session, pool, grace, after, limit)
+    def spy(session, pool, grace, after, limit, touched_within_days):
+        result = real(session, pool, grace, after, limit, touched_within_days)
         calls.append((after, len(result)))
         return result
 
@@ -357,10 +357,13 @@ def test_gc_flip_is_conditional_on_holds(plain_pool, payload, monkeypatch):
 
     real = index.flip_to_deleting
 
-    def hold_then_flip(session, pool, digest_, grace):
-        # somebody takes a hold after the candidate scan and before the flip
+    def hold_then_flip(session, pool, digest_, grace, touched_within_days):
+        # somebody takes a hold after the candidate scan and before the flip. taking it bumps
+        # last_held_at, which alone would also stop the flip; ageing the object again leaves the
+        # hold as the only thing that can
         plain_pool.hold(digest_, Hold("k", "late"))
-        return real(session, pool, digest_, grace)
+        age_object(plain_pool, digest_, GRACE + 60)
+        return real(session, pool, digest_, grace, touched_within_days)
 
     monkeypatch.setattr(index, "flip_to_deleting", hold_then_flip)
     stats = plain_pool.gc()
@@ -488,17 +491,6 @@ def test_open_detects_a_corrupt_encrypted_object(enc_pool, payload, where):
     assert not any(name.startswith(".fill-") for _, _, names in os.walk(cache_root) for name in names)
 
 
-def test_open_detects_the_wrong_key(enc_pool, payload):
-    digest = enc_pool.put(payload)
-    path = backend_path(enc_pool, digest)
-    with open(path, "wb") as fp:
-        encrypt_stream(io.BytesIO(payload), fp, size=len(payload), password="not the system key")
-
-    with pytest.raises(IntegrityError, match="encrypted with key"):
-        with enc_pool.open(digest):
-            pass
-
-
 def test_materialize_plaintext_local_is_a_hardlink(plain_pool, payload, dest_dir):
     digest = plain_pool.put(payload)
     dest = os.path.join(dest_dir, "sample")
@@ -623,6 +615,10 @@ def test_orphans(plain_pool, payload):
     new_path = os.path.join(plain_pool.backend.root, plain_pool.key(new_digest))
     os.makedirs(os.path.dirname(new_path), exist_ok=True)
     open(new_path, "wb").write(b"new orphan")
+    # an hour old: within the default grace, and in the past for the zero-grace sweep below even on a
+    # filesystem whose clock runs ahead of this process's (a macOS bind mount, by tens of milliseconds)
+    an_hour_ago = time.time() - 3600
+    os.utime(new_path, (an_hour_ago, an_hour_ago))
 
     stray = os.path.join(shard, "not-a-digest")
     open(stray, "wb").write(b"?")

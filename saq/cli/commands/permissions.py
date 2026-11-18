@@ -111,8 +111,9 @@ def cli_delete_user_permission(args) -> int:
         return 1
 
     if args.all:
-        for permission in get_user_permissions(user.id):
-            if not delete_user_permission(user.id, permission.id):
+        # only the user's own permissions: the ones inherited from a group belong to the group
+        for permission in get_user_permissions(user.id, include_groups=False):
+            if not delete_user_permission(permission.id, user_id=user.id):
                 print(f"User permission {permission.id} not found")
                 return 1
             else:
@@ -124,7 +125,7 @@ def cli_delete_user_permission(args) -> int:
         print("No permission ID provided")
         return 1
 
-    if not delete_user_permission(user.id, args.id):
+    if not delete_user_permission(args.id, user_id=user.id):
         print(f"User permission {args.id} not found")
         return 1
     else:
@@ -234,7 +235,7 @@ def cli_delete_group_permission(args) -> int:
         any_deleted = False
         for permission in get_group_permissions(group.id):
             print(f"Deleting group permission {permission}")
-            deleted = delete_group_permission(permission_id=permission.id)
+            deleted = delete_group_permission(permission_id=permission.id, group_id=group.id)
             if deleted:
                 any_deleted = True
                 print(f"Group permission {permission.id} deleted")
@@ -247,7 +248,7 @@ def cli_delete_group_permission(args) -> int:
         print("No permission ID provided")
         return 1
 
-    deleted = delete_group_permission(permission_id=args.id)
+    deleted = delete_group_permission(permission_id=args.id, group_id=group.id)
     if not deleted:
         print(f"Group permission {args.id} not found")
         return 1

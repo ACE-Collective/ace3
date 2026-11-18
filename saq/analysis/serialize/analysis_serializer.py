@@ -13,6 +13,7 @@ KEY_SUMMARY_DETAILS = 'summary_details'
 KEY_PIVOT_LINKS = 'pivot_links'
 KEY_COMPLETED = 'completed'
 KEY_DELAYED = 'delayed'
+KEY_ERROR = 'error'
 KEY_EXTERNAL_DETAILS_PATH = 'file_path'
 KEY_DETAILS_SIZE = 'details_size'
 KEY_LLM_CONTEXT_DOCUMENTS = 'llm_context_documents'
@@ -40,6 +41,7 @@ class AnalysisSerializer:
             KEY_SUMMARY: analysis.summary,
             KEY_COMPLETED: analysis.completed,
             KEY_DELAYED: analysis.delayed,
+            KEY_ERROR: analysis.error,
             KEY_SUMMARY_DETAILS: [detail.to_dict() for detail in analysis.summary_details],
             KEY_PIVOT_LINKS: [link.to_dict() for link in analysis.pivot_links],
             KEY_EXTERNAL_DETAILS_PATH: analysis.external_details_path,
@@ -85,6 +87,10 @@ class AnalysisSerializer:
         # Set delayed status
         if KEY_DELAYED in data:
             analysis.delayed = data[KEY_DELAYED]
+
+        # set directly: the setter's checks are for what modules write, and a saved tree is read as it is
+        if KEY_ERROR in data:
+            analysis._error = data[KEY_ERROR]
 
         # Set summary details
         if KEY_SUMMARY_DETAILS in data:

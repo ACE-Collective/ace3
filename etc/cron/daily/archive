@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 source /opt/ace/bin/initialize-environment.sh
 
-# delete any archive files older than 30 days
+# delete any archive files older than 30 days. archived emails are in the email_archive CAS pool now
+# (docs/EMAIL_ARCHIVE.md); this removes what `ace email-archive migrate` left of the old files
 [ -d data/archive ] || exit 0
 find data/archive -type f -mtime +30 -delete

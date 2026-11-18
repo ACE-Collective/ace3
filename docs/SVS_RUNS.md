@@ -17,9 +17,9 @@ reasoning are in `docs/SVS.md`; the API's data dictionary is `docs/SVS_API.md`.
 
 | Permission | Grants |
 |---|---|
-| `svs:run_register` | The launcher's run lifecycle calls |
+| `svs:run_register` | The launcher's run lifecycle calls, and opening and ending a test host's maintenance windows |
 | `svs:run_read` | The Runs and Tests screens, run pages, the catalog, the test hosts, coverage, and their read APIs |
-| `svs:run_manage` | Ownership, cancel, close, review; a test's expectations, ignores and settings; manual association |
+| `svs:run_manage` | Ownership, ending early, cancel, close, review; a test's expectations, ignores and settings; manual association |
 | `svs:admin` | Adding, changing and removing test hosts; global ignores (and, for YARA, retiring and deleting samples) |
 | `alert:write` (existing) | From an alert's page, *Disassociate from run* and *Not a test* (*Test alerts in the alert list and on the alert page*) |
 
@@ -41,7 +41,8 @@ manages them on the SVS area's *Test hosts* tab, or through `/api/v2/svs/test-ho
 Matching ignores case, takes a target's hostname as either the short or the fully qualified name,
 and treats `CORP\alice`, `alice@corp.example` and `alice` as the same user
 (`saq/svs/hosts.py::match_target`). Every change is an AUDIT line in ACE's log with the host's
-fields (and, for a change, what they were before).
+fields (and, for a change, what they were before) and who made it (`actor`, `actor_user_id`,
+`actor_key_id`, ...).
 
 ```bash
 curl -X POST https://ace.example/api/v2/svs/test-hosts/ -H "x-ace-auth: $KEY" -H 'Content-Type: application/json' \
@@ -98,6 +99,10 @@ ace svs catalog status                 # each repository's commit, test count an
 ace svs catalog refresh [--force]      # read now; --force reads an unchanged commit again
 ```
 
+`GET /api/v2/svs/catalog/repositories` (`svs:run_read`) serves the same status. A launcher checks
+out the `commit` it names to run each test as the catalog has it, including the `src/` files a
+test's `content_hash` doesn't cover (`docs/SVS_API.md`, *Catalog repositories*).
+
 The catalog is read through `/api/v2/svs/tests` (`svs:run_read`): filter by technique (`T1059` also
 finds its sub-techniques), name, platform, executor, repository or `removed`.
 
@@ -135,9 +140,11 @@ person with `curl`) drives each run through `/api/v2/svs/runs` with an API key h
 | Call | Does |
 |---|---|
 | `POST /api/v2/svs/runs/` | Registers a run for one catalog test against one or more test hosts. Answers 201 with `run_id` and the run's **marker**. |
-| `POST /api/v2/svs/runs/{run_id}/start` | The test is about to fire: the windows start now, at the whole second (a stored time has no fraction, so the window never starts after the call). |
-| `POST /api/v2/svs/runs/{run_id}/executed` | Optional. How the test executed: a non-zero `exit_code` or an `error` moves the run to *error*. |
+| `POST /api/v2/svs/runs/{run_id}/start` | The test is about to fire: the windows start now, at the whole second (a stored time has no fraction, so the window never starts after the call). 409 when another run holds a target's host. |
+| `POST /api/v2/svs/runs/{run_id}/executed` | Optional. How the test executed: a non-zero `exit_code` or an `error` moves the run to *error*. `output` is what the test printed (*The test's output*, below). |
+| `POST /api/v2/svs/runs/{run_id}/cleanup` | Optional. The test's cleanup begins now (*Cleanup*, below). |
 | `POST /api/v2/svs/runs/{run_id}/cancel` | Stops the run. |
+| `POST /api/v2/svs/runs/validate` | Optional, a dry run. Takes the registration's body and answers what registering it would decide, without registering it (*Validating a registration*, below). |
 
 ```bash
 curl -X POST https://ace.example/api/v2/svs/runs/ -H "x-ace-auth: $KEY" -H 'Content-Type: application/json' \
@@ -170,9 +177,58 @@ curl -X POST https://ace.example/api/v2/svs/runs/$RUN/start -H "x-ace-auth: $KEY
   grants nothing (the API key does). **`batch_id`** (optional) is a label shared by runs registered
   together; **`extra`** (optional) is any JSON object the launcher wants kept with the run, at most
   `svs.runs.max_extra_bytes` (16 KiB) serialized. It is stored and shown on the run page.
+- **One run per test host.** A target whose test host another run holds is refused with 409, naming
+  that run (*One run per test host*, below). It creates no alert.
 - A call that doesn't apply to the run's state (starting a run twice, `executed` before `start`)
   answers 409 with the run's current state. Each call, accepted or not, is in the run's event log
   with its payload.
+
+### Validating a registration
+
+`POST /api/v2/svs/runs/validate` takes the same body as `POST /api/v2/svs/runs/` and the same
+permission, and answers 200 with what registering it would decide (`docs/SVS_API.md`, *Runs*):
+
+- `decision` is `accepted`, `refused`, `invalid` or `host_busy`, and `status_code` is what
+  registering would answer (201, 403, 422 or 409). An invalid registration's `message` is the 422's
+  detail; each target of a busy one lists the runs holding its host (`held_by`).
+- `targets` judges each target as registering would: whether it is accepted, why not, and the test
+  host it names with that host's platform. It is empty when the registration is invalid before its
+  targets are judged (a test not in the catalog, too many targets, `extra` too large).
+- An accepted registration also has the run's `platform`, `observation_seconds` with its
+  `observation_source`, `attribution_seconds` and `holds_host`.
+
+It only reads: no run, no event, no refusal row and no alert, so a launcher can check itself
+against production ACE and triage sees nothing. Each call is logged at INFO with the caller (`call`
+`validate`, `outcome`, `reasons`). What it reads can change before the launcher registers (a test
+host edited, an expectation decided), so registering still decides for itself.
+
+### The test's output
+
+`executed` takes `output`, what the executor printed (stdout and stderr), so a reviewer can see why
+an expected detection is missing. It is kept with the run (`launcher_output`) and shown on the run
+page, folded, under *Output*. Up to 64 KiB is kept as sent; longer output keeps its start and its
+last 16 KiB, where errors usually are, around a marker saying how many bytes were left out. The
+event log records the size the launcher sent and whether it was truncated, not the text.
+
+### Cleanup
+
+Atomic tests clean up after themselves (`cleanup_command`), inside the run's window, and what the
+cleanup does can fire signatures that are not what the test is about. A launcher that calls
+`POST /api/v2/svs/runs/{run_id}/cleanup` just before it runs the cleanup records when it began
+(`cleanup_at`), on a `started` run, once (409 in any other state, and the second time). The call is
+in the event log like the other launcher calls.
+
+- **Which detections.** Each attribution keeps the alert's event time it was judged by
+  (`event_time`); one at or after `cleanup_at` is the cleanup's (`cleanup` on the attribution and on
+  the run's alert). One written before event times were kept is the test's.
+- **Still the run's.** Its alerts are routed to the test queue, closed with the run and kept or
+  marked not a test like any other.
+- **Left out of what the run teaches.** A signature the test fired outside its cleanup is counted
+  by those alerts alone. One that fired only during the cleanup is `cleanup` in the result: never a
+  candidate, so a review never proposes it as an expectation. If it is expected, it is `missing`.
+  An analyst can still decide it by hand on the test (*Expectations and ignores*).
+- **On the run page,** the result lists what fired only during the cleanup apart, after the rest,
+  and the alerts and detections say *cleanup*.
 
 ### The marker
 
@@ -204,13 +260,99 @@ markers in file contents, as ASCII or UTF-16 text:
   `signature_dir` is inside a rules repository's checkout, `svs_marker/` shows up there as
   untracked: don't commit a directory of that name to the repository.
 
+## One run per test host
+
+Context attribution needs exactly one run that could have caused an alert, so ACE never lets two
+runs hold one test host at once, whoever registers them. A run **holds** its targets' test hosts:
+
+- from registration until it starts, times out or is canceled (one canceled before it started never
+  held them);
+- once started, in any state, until its **claim** ends: its observation window, or its attribution
+  window when its test **holds the host** (below). It is judged by time, as attribution is, so a
+  run that errored, was canceled or was closed early still holds its hosts until then.
+
+Registering a run, or starting one, on a host another run holds answers **409**,
+`{"detail": {"message", "holders": [{"host", "run_id", "state", "until"}]}}`, with `until` null for
+a run not started yet. It is a lifecycle conflict, not a refusal: no alert. Registrations and starts
+on a host are decided one at a time, under the host's row lock, so two launchers racing for a host
+get one run between them. `POST /api/v2/svs/runs/validate` reports it as `host_busy`.
+
+A launcher that runs a host's tests one after another therefore waits out each run's observation
+window before it registers the next. An alert caused after that, with its event time after the
+next run started, is the next run's (*Without a marker: context*, below).
+
+**A test that leaves something behind** (persistence, a scheduled task, a service) can cause alerts
+after its observation window. Its test settings say so: `PUT /api/v2/svs/tests/{guid}/settings`
+with `"holds_host": true` (`svs:run_manage`), or the checkbox on the test's page. Each run of it
+registered afterwards holds its hosts for its whole attribution window (`holds_host` on the run).
+
+## Maintenance windows
+
+Tests with prerequisites (`dependencies`) download or stage tools before they run, and installing or
+updating a launcher's own bundle on a host does the same; that is detectable. Before `start` its
+alerts would land in triage, and after it they would be attributed to the run and taught as
+expectations. A launcher opens a **maintenance window** on the test host for that instead:
+
+| Call | Does |
+|---|---|
+| `POST /api/v2/svs/test-hosts/{host}/maintenance` `{minutes, reason}` | Opens a window on the test host for `minutes`, at most `svs.runs.max_maintenance_minutes` (240). |
+| `DELETE /api/v2/svs/test-hosts/{host}/maintenance` | Ends its open window now. |
+| `GET /api/v2/svs/test-hosts/{host}/maintenance` | Its windows, latest first (`svs:run_read`). |
+
+`{host}` is the test host's id, or its short or fully qualified name. Opening and ending need
+`svs:run_register`.
+
+- **Only test hosts.** A name that is not a test host's, or a fully qualified name that isn't the
+  test host's own, is refused with 403 and alerts, exactly as a refused registration does (*Refused
+  registrations*, below).
+- **Never with a run.** A window and a run never hold one host at once (*One run per test host*,
+  above): opening a window on a host a run or another window holds, and registering or starting a
+  run on a host a window holds, answer 409 naming what holds it (`maintenance_id` for a window).
+- **What happens to its alerts.** An alert that involves the host (as attribution judges it: a
+  `hostname`/`fqdn` observable, or one of the test host's `ips`), with its event time inside the
+  window, that carries **no marker** and that no person associated with a run:
+  - is routed to `svs.queue` by the `svs_marker` router (decision `maintenance`) and tagged
+    `svs:maintenance`;
+  - once its last correlation pass (no analysis left delayed, or the analysis aborted) has judged
+    it the same way, is closed by the timers as `IGNORE` by the automation user, with the comment
+    *closed: SVS maintenance window … on test host …: <reason>*. `IGNORE` records nothing about its
+    detections, so nothing reaches any run's result.
+
+  It is kept, searchable and auditable, never dropped: find them by the `svs:maintenance` tag. An
+  analyst who takes one, or associates it with a run, before it is closed keeps it. An alert with a marker is judged as any other,
+  so a marker mismatch stays in triage, and one whose correlation pass finds a marker goes back to
+  the queue it came from.
+- **Over a run's late attribution.** A run's attribution window may still cover the window (its
+  claim ended before the window opened). What happens in the window is the window's: its alerts are
+  not attributed to the run by context, and a grouped hunt keys their suppression by the window
+  (`svs_maintenance:<window uuid>:<group value>`, *Hunt suppression during runs*, below) and never
+  records a match it drops there for the run (*Results*, above).
+- **Alongside a run on another host.** An alert that also involves another test host, which a run
+  holds at its event time, is the run's: the run is on its own host, and the window's host can only
+  be the other end of what it did.
+- **Removing the test host** ends its open window, by the person who removed it: what happens on a
+  host nobody tests is triage's, and nothing could end a window on it.
+- **Time.** A window expires at its end; the timers (`svs.runs.timer_interval_seconds`) record it.
+  Its alerts may arrive as late as a run's (`svs.runs.attribution_extra_hours`), which is how long
+  attribution keeps looking after a window ends.
+- **Logs.** Opening, ending and expiring a window are AUDIT records (`svs_maintenance`, `host`,
+  `reason`, `actor`), and each alert closed for one is an INFO record,
+  `svs maintenance window …: alert … closed as IGNORE`, with `svs_maintenance` and `alert_uuid`.
+
+```bash
+curl -X POST https://ace.example/api/v2/svs/test-hosts/win10-art-01/maintenance -H "x-ace-auth: $KEY" \
+     -H 'Content-Type: application/json' -d '{"minutes": 20, "reason": "staging T1003.001 prerequisites"}'
+# … stage the prerequisites …
+curl -X DELETE https://ace.example/api/v2/svs/test-hosts/win10-art-01/maintenance -H "x-ace-auth: $KEY"
+```
+
 ## Run states and timers
 
 | State | Reached by | Then |
 |---|---|---|
 | `created` | registration | `start`, `cancel`, or the start timeout |
-| `started` | `start` | the observation window passes → `ended`; `executed` with a failure → `error`; `cancel` → `canceled` |
-| `ended` | the observation window passed | waits for a person, who reviews or closes it (*Reviewing runs*) |
+| `started` | `start` | the observation window passes, or a person ends it early → `ended`; `executed` with a failure → `error`; `cancel` → `canceled` |
+| `ended` | the observation window passed, or a person ended it early | waits for a person, who reviews or closes it (*Reviewing runs*) |
 | `reviewed` | a person signed its result off | reviewed again after a late change |
 | `canceled` | `cancel` (the launcher or a person) | `closed` when the attribution window passes, or by a person |
 | `error` | `executed` reported a failure, or `start` never came | `closed` when the attribution window passes, or by a person |
@@ -239,7 +381,7 @@ A run has two windows, both starting at `start`:
   in this order:
   1. **the test's settings** (`PUT /api/v2/svs/tests/{guid}/settings`, `svs:run_manage`): an
      `observation_minutes` an operator set, used as it is, with no slack and no floor, from 1 minute up
-     to `ceiling_hours`;
+     to `ceiling_hours` (the settings also hold `holds_host`, *One run per test host*);
   2. **its expectations**: the worst-case latency of the slowest signature the test is expected to
      fire on the run's platform (and that isn't ignored), plus `slack_minutes`, within
      `floor_minutes` and `ceiling_hours`;
@@ -256,7 +398,8 @@ A run has two windows, both starting at `start`:
   run ended but inside it is still attributed, as *late*.
 
 The lengths are fixed at registration, so a run's windows don't move when hunts, expectations or
-settings change while it runs.
+settings change while it runs. The one exception is a person ending the run early, which ends its
+observation window then (*Reviewing runs*).
 
 ```yaml
 svs:
@@ -267,6 +410,7 @@ svs:
     max_extra_bytes: 16384
     max_targets: 16
     timer_interval_seconds: 30
+    max_maintenance_minutes: 240
 ```
 
 ## Refused registrations
@@ -333,13 +477,14 @@ the number of runs that need attention, when any do.
     the owner and reviewer.
   - Above the list, once a run is reviewed, is the share of missing expected signatures that were
     possibly suppressed, over every reviewed run's signed-off result. Past 50 reviewed runs or 90
-    days since the first review, a share above 10% says that keeping the hunter from suppressing
-    test targets is worth reconsidering (*Results*, below; `docs/SVS.md`, Part 3).
+    days since the first review, a share above 10% says that the suppression runs don't key by
+    themselves is worth reconsidering (*Results*, below; `docs/SVS.md`, Part 3).
 - **Batches** shows the same runs, one row per batch, summed: the runs by state, how many need
   attention, and the expected hits and missing signatures. The filters carry over between the two
   views, and opening a batch lists its runs.
-- **Bulk actions** need `svs:run_manage`. Select runs on the page, then *Take ownership*, *Cancel*
-  or *Close* them.
+- **Bulk actions** need `svs:run_manage`. Select runs on the page, then *Take ownership*, *End now*,
+  *Cancel* or *Close* them.
+  - *End now* asks for a reason (*Reviewing runs*, below).
   - *Close* asks for a reason, which an ended run needs (*Reviewing runs*, below).
   - A run someone else owns is not touched until you confirm, in a second dialog, that you take it
     from them.
@@ -362,8 +507,8 @@ to watch it on while it runs. It reloads itself while the run is `created` or `s
 its result is being recomputed.
 - **The header** has the test, the run's state, and a timeline of its observation and attribution
   windows. Below it are the marker, targets, platform, launcher and batch (which opens the batch's runs),
-  the windows' lengths, the owner, and the launcher's exit code, errors and `extra`.
-- **Its actions** need `svs:run_manage`: *Take ownership*, *Cancel* and *Close*, as in bulk, and
+  the windows' lengths, the owner, and the launcher's exit code, errors, the test's output and `extra`.
+- **Its actions** need `svs:run_manage`: *Take ownership*, *End now*, *Cancel* and *Close*, as in bulk, and
   *Mark reviewed* (*Review again* on a reviewed run).
   - The page lists what still stands in the way of a review: candidates to decide, context-only
     alerts to keep or mark not a test, a result being recomputed. *Mark reviewed* is enabled once
@@ -397,6 +542,8 @@ guid on a row of the Runs tab) shows one test.
   and dependencies.
 - **Its observation window** (*Windows*, above): computed, or the minutes an operator set. With
   `svs:run_manage` it is set here, or cleared to go back to the computed window.
+- **Whether its runs hold their hosts** until their attribution window ends (*One run per test
+  host*, above). With `svs:run_manage` it is set here.
 - **Expectations:** every decided signature, by platform, with who decided it, when, why and from
   which run. With `svs:run_manage`, *Remove* makes one a candidate again on that platform.
 - **Ignores** that apply to the test: its own, which `svs:run_manage` removes, and the global ones,
@@ -430,7 +577,7 @@ A marker **agrees** with its run when all three hold:
   not checked: process telemetry often doesn't carry it;
 - the alert's **event time** is inside the run's attribution window, from `start` to the window's
   end. The event time is the alert's (for a hunt, the query's event time), or when the alert was
-  created if it has none.
+  created if it has none (*Fallback event times*, below).
 
 A marker that doesn't agree (unknown, on another host, outside the window, or of a run that never
 started) is a **mismatch**. A mismatch is never routed, and it ends attribution for the whole
@@ -457,13 +604,41 @@ the marker only in the command line should expect file detections to be attribut
 - or the marker also shows in the file, in the alert's details, or in the detection itself (its
   description or details, which is where a hunt's query results usually carry it).
 
+### Fallback event times
+
+Windows are judged by the alert's event time, which is not always the event's own. The root says
+where its time came from (`RootAnalysis.event_time_source`), and `alert_event_time()` returns the
+time with its source:
+
+- a hunt that can't extract an event's timestamp uses the time it processed the query's results
+  (`query_time`);
+- `ace correlate` without `--reference-time`, `ace alert create`, an API submission without an
+  `event_time` and a manual file upload use the time they created the alert (`now`);
+- an alert with no event time at all is judged by when it was inserted (`insert_time`).
+
+Any of them can put an alert in the wrong run's window, or in none. Each attribution records which
+clock it was judged by (`event_time_source`: `event`, `query_time`, `now` or `insert_time`), a result row says
+when any of its signature's attributions rests on a fallback (`fallback_time`), and the run page
+says so next to *late*, on the alert, its detections and the result row. A hunt that alerted on a
+test host, inside a run's or a maintenance window, by its query's time is logged at WARNING as the
+alert is created, or at the later pass that first attributes it, naming the hunt, so its timestamp
+extraction can be fixed:
+`hunt … alerted on an svs test host without the event's own time` (`hunt`, `hunt_uuids`, `tool`,
+`tool_instance`, `alert_uuid`, `svs_run`, `event_time_source`).
+
 ### Without a marker: context
 
 An alert with no marker at all is attributed by **context** when exactly one run could have caused
 it: a run whose window covers the alert's event time and one of whose targets the alert involves.
-Context has no per-detection signal, so it attributes every detection. When two runs could claim
-the alert (overlapping runs on one host), nothing is attributed and a WARNING names both
-(`candidate_runs`): attributing to the wrong run would teach the wrong expectation.
+Context has no per-detection signal, so it attributes every detection. When several runs' windows
+cover the alert on its host, the run that started last claims it, as long as every other one's claim
+on the host ended before that run started (*One run per test host*, above): a test that leaves
+nothing behind causes nothing after its claim ends, so the alert is the latest run's. Each earlier
+run's own alerts keep its window: an alert whose event time is inside the earlier run's window and
+before the later run started is still the earlier run's, *late* if it is after its observation
+window. When the claims overlap, which only runs registered before one run per host was enforced
+can do, nothing is attributed and a WARNING names them (`candidate_runs`): attributing to the wrong
+run would teach the wrong expectation.
 
 An alert with no detections is never attributed.
 
@@ -517,8 +692,9 @@ None of this runs while no run is registered or inside its attribution window: e
 the database at most every `gate_cache_seconds` whether one is, and scans nothing while none is.
 Registering a run opens the gate before its test fires. A marker is looked up in the database the
 first time a process sees it; only runs that have started are kept in each process's cache, since
-nothing attribution needs of them changes afterwards, and a marker the cache doesn't have always
-goes to the database.
+nothing attribution needs of them changes afterwards except `observation_ends_at`, which a person
+ending the run early moves (so lateness is judged from the run's row when attributions are
+written, never from the cache), and a marker the cache doesn't have always goes to the database.
 
 ```yaml
 svs:
@@ -541,7 +717,7 @@ run has carries only `svs_marker`:
 | `svs attribution written` / `removed` | INFO | `alert_uuid`, `detection`, `confidence`, `late`, `source` |
 | `svs run … changed since review` | INFO | `alert_uuid` |
 | `svs run …: n alerts closed as SIMULATED` | INFO | `alert_uuids`, `left_alone` (taken by an analyst, or dispositioned, meanwhile), `late`, `actor` |
-| `AUDIT: svs alert associated with a run` / `disassociated from a run` / `svs context attribution kept` | INFO | `alert_uuid`, `actor`, `actor_user_id`, and `reason`, `late` or `not_a_test` (*Associating alerts by hand*, below) |
+| `AUDIT: svs alert associated with a run` / `disassociated from a run` / `svs context attribution kept` | INFO | `alert_uuid`, the actor fields `log_audit()` records have (`saq/logging.py::audit_actor`: `actor`, `actor_user_id`, `actor_key_id`, `actor_key_name`, `auth_type`), and `reason`, `late` or `not_a_test` (*Associating alerts by hand*, below) |
 
 `svs.log_search_url` makes the run page's *Logs* section a link to the site's own log search. ACE
 never queries it. It is an `http` or `https` URL in which `{run_uuid}`, `{marker}`, `{test_guid}`,
@@ -639,13 +815,15 @@ below), each signature is:
 |---|---|
 | `hit` | It is expected, and it fired |
 | `missing` | It is expected, and it did not fire |
-| `possibly_suppressed` | It is missing, it is a hunt with a `suppression` period, and the hunt alerted within that period before the run's window closed (below) |
+| `possibly_suppressed` | It is missing, it is a hunt, and the hunter dropped a match of it during the run, for its `suppression` or as a duplicate of its `dedup_key`, or (with a `suppression` period and without `group_by`) the hunt alerted within that period before the run's window closed (below) |
+| `cleanup` | It fired only during the test's cleanup, and it isn't expected (*Cleanup*, above) |
 | `candidate` | It fired, and nobody has decided about it yet |
 | `rejected` | It fired, and it was rejected for the test |
 | `ignored` | It fired, and it is ignored for the test or globally |
 
-- **Precedence.** A signature that fired is `ignored` before anything else, then `hit`, then
-  `rejected`, then `candidate`. An ignored signature is never missing either.
+- **Precedence.** A signature that fired only during the cleanup is `cleanup`, or `missing` when it
+  is expected. Any other that fired is `ignored` before anything else, then `hit`, then `rejected`,
+  then `candidate`. An ignored signature is never missing either.
 - **Signatures that never count.** `generic`, `legacy` and `yara_rule_match` stand for many
   unrelated detections (no specific signature, detections from before signatures were recorded, a
   YARA rule without a `uuid`). `observable_flagged_for_detection` fires on whatever analysts
@@ -657,15 +835,36 @@ below), each signature is:
   - the signature's family and name;
   - the content hash of the rule itself as it was when the result was computed. A missing row has
     one too: coverage uses it to tell when an expected rule changed.
-- **Possibly suppressed.** A hunt checks its `suppression` each time it runs, and the run that would
-  have caught the test comes up to its latency after the start. So ACE looks for an alert carrying
-  a detection of the hunt, inserted from `suppression` before the run started until the run ended,
-  and not attributed to this run. The latest one is named (`suppressing_alert_uuid`).
-  - For a hunt with `group_by` or `dedup_key` the answer is imprecise: that alert may have been for
-    another group or key. The row says so (`suppression_imprecise`).
-  - Only hunts in correlation mode put their detection on their alerts, so only theirs can be found.
-  - Keeping the hunter from suppressing test targets is deferred: it is revisited once reviewed runs
-    show how often a missing signature was possibly suppressed (`docs/SVS.md`, Part 3).
+- **Possibly suppressed.**
+  - **A hunt with `group_by`** suppresses each group on its own, inside its query results. During a
+    run, a group on one of the run's test hosts is suppressed under a key of the run's own (*Hunt
+    suppression during runs*, below), so it drops a match there only once that run's own first
+    match alerted, or when the runs couldn't be looked up. When it drops a match for its suppression
+    and the match's event time falls in a run's attribution
+    window, on one of the run's test hosts (its `hostname`, `fqdn` or test-host `ipv4` observables,
+    as attribution reads them), the hunter records it in `svs_suppressed_matches`: one row per run
+    and hunt, for the first such match, and the run's result goes stale. The match goes to the run
+    context attribution would give it to, so a run's test never counts against the run before it
+    on the host, or to each of them when their claims overlap (runs registered before claims were
+    enforced). The hunt is `possibly_suppressed` in that run's result exactly
+    when it has such a row, so that is not a guess, and no alert is named: the hunt's latest alert
+    may have been another group's. Nothing is recorded while no run is open, as for alerts, and a
+    failure to record is logged at ERROR and keeps the suppression.
+  - **A hunt with `dedup_key`**, grouped or not, has the collector drop a match whose key it has
+    seen before (`DuplicateSubmissionFilter`), whatever the hunt's `suppression`. The collector
+    hands what it dropped in each pass to `HunterCollector.duplicates_dropped`, which records it in
+    `svs_suppressed_matches` exactly as above, with the key in `dedup_key`. The hunt is
+    `possibly_suppressed` when its run has such a row, and no alert is named.
+  - **Any other hunt** suppresses as a whole and doesn't run at all while suppressed, so there is no
+    match to record. A hunt checks its `suppression` each time it runs, and the run that would have
+    caught the test comes up to its latency after the start. So ACE looks for an alert carrying a
+    detection of the hunt, inserted from `suppression` before the run started until the run ended,
+    and not attributed to this run. The latest one is named (`suppressing_alert_uuid`). Only hunts in
+    correlation mode put their detection on their alerts, so only theirs can be found.
+  - Such a hunt with `dedup_key` also suppresses itself after an execution whose every match was a
+    duplicate, which leaves no alert behind, so a test hidden that way reads `missing`.
+  - What runs don't key by themselves is revisited once reviewed runs show how often a missing
+    signature was possibly suppressed (`docs/SVS.md`, Part 3).
     `GET /api/v2/svs/runs/suppression-share` and the Runs tab show that share.
 - **Kept current.** The result is computed when the run ends. Anything that would change it marks
   it stale and the timers recompute it on their next pass (`svs.runs.timer_interval_seconds`):
@@ -679,8 +878,40 @@ below), each signature is:
 
 | Record | Level | Fields |
 |---|---|---|
+| `svs run …: hunt … suppressed a match for group_value …` | INFO, the first per run and hunt | `hunt_uuid`, `group_value` |
+| `svs run …: hunt … dropped a duplicate match of dedup_key …` | INFO, the first per run and hunt | `hunt_uuid`, `group_value`, `dedup_key` |
 | `svs run … result computed: …` | INFO, plus DEBUG per signature | `counts` (per status) |
-| `svs run … is missing expected signature …` | INFO, once each time a signature becomes missing | `signature_uuid`, `signature_family`, `possibly_suppressed`, `suppressing_alert_uuid`, `suppression_imprecise` |
+| `svs run … is missing expected signature …` | INFO, once each time a signature becomes missing | `signature_uuid`, `signature_family`, `possibly_suppressed`, `suppressing_alert_uuid` |
+
+### Hunt suppression during runs
+
+A hunt with a `suppression` period stays silent for a group after it alerted on it, which would
+make a test re-run inside that period read *missing*. So while a run is open, a hunt with `group_by`
+keys the suppression of each group by the run (`QueryHunt.key_suppression`):
+
+- **Which groups.** A group whose alert involves one of the run's test hosts (its `hostname`, `fqdn`
+  or test host `ipv4` observables, as attribution reads them) with its event time inside the run's
+  attribution window. Several runs' windows can cover it: the run context attribution would choose
+  is the one (*Without a marker: context*, above). A group whose alert context attribution gives
+  to a maintenance window is keyed by the window instead (`svs_maintenance:<window uuid>:<group
+  value>`), so a host's staging never suppresses production or a run (*Maintenance windows*,
+  above).
+- **What it does.** The group's suppression is recorded and checked under a key of its own for the
+  run (`svs_run:<run uuid>:<group value>`), so each run's first match alerts and the rest of that
+  run's are suppressed as usual. An alert before the run (production, or another run) doesn't hide
+  the test, and the test doesn't suppress the group for production or for the next run.
+- **What it doesn't reach.** A hunt without `group_by`, whose suppression stops the whole hunt from
+  running, and whose catch-up after suppression must not lose production alerts; a group whose
+  alert doesn't carry the test host (a `group_by` field other than the host, with no host
+  observable); and `dedup_key`. Those can still hide a test. For a hunt without `group_by` the
+  result reads *possibly suppressed* (*Results*, above), and so it does for a duplicate dropped on
+  the run's test host; a dropped match of a group that doesn't
+  carry the test host isn't recorded for the run either, so the hunt reads *missing*.
+- **Cost.** Nothing while no run is open (the attribution gate, *Cost*, above); otherwise one query
+  per hunt execution, and one more when it drops a match, to record it (*Results*, above).
+- **Logs.** Each group keyed by a run is logged at INFO, `hunt … group_value …: suppression keyed by
+  svs run …`, with the run's `svs_run`, `svs_test` and `svs_marker`, `hunt_uuid` and `group_value`.
+  A failure to look the runs up is logged at ERROR, and the hunt suppresses by group as before.
 
 ## Expectations and ignores
 
@@ -725,8 +956,24 @@ took it.
   person confirmed taking it from them (`confirmed_takes`), and it then becomes theirs; a run whose
   owner's account is disabled or gone counts as nobody's. *Take ownership* (`bulk/take-ownership`)
   does only that. Reviewing a run also takes it when nobody owns it.
+- **End now** (`bulk/end`) ends a started run before its observation window passes, for when the
+  person knows nothing more will fire: a first run waiting out the slowest hunt, say, whose test
+  plainly failed or whose expected signatures have all fired. The run becomes `ended`, as the
+  timer would make it, and is reviewed like any other run. It needs a reason, kept as the run's
+  `end_reason` and shown on the run page as *Ended early*.
+  - **Its observation window ends now** (`observation_ends_at`). An expected signature that hasn't
+    had time to fire is `missing` from the result, so a review of the run judges the test by it.
+  - **Its claim on its hosts ends** with it, so the launcher can start the next run on them, unless
+    its test holds the host (*One run per test host*).
+  - **Its attribution window is unchanged.** An alert the test causes anyway is still the run's, as
+    `late`, and marks a reviewed run *changed since review*, so an early end that was wrong shows up
+    rather than landing in triage. Once another run starts on the host, an alert without a marker
+    is that run's.
+  - **The launcher's `executed` and `cleanup` calls** apply only to a started run, so after an early
+    end they answer 409. End a run after the launcher is done with it.
 - **Cancel** (`bulk/cancel`) is the launcher's cancel, by a person: a created or started run is
-  canceled, and one that never started is closed at once.
+  canceled, and one that never started is closed at once. Nothing is learned from a canceled run;
+  to keep what a run found, end it instead.
 - **Close** (`bulk/close`) discards an ended, canceled or failed run: its fully attributed open
   alerts become `SIMULATED`, and nothing is learned from it. An ended run waited for a review, so
   closing it instead needs a reason.

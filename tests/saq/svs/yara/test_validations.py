@@ -2,7 +2,9 @@
 
 import json
 import uuid
+from contextlib import contextmanager
 from datetime import datetime, timedelta
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -31,6 +33,7 @@ from saq.svs.yara.diff import Category, Outcome, ResultRow
 from saq.svs.yara.replay import FileError, ReplayResult, SideReport
 from tests.saq.svs.conftest import RULE_UUID, graded_alert, set_disposition
 from tests.saq.svs.yara.conftest import REPOSITORY, stored_sample
+from tests.saq.helpers import person
 
 pytestmark = pytest.mark.integration
 
@@ -95,6 +98,9 @@ def test_an_identical_request_shares_the_queued_validation(svs_repository):
 
     assert _request() == (validation_uuid, False)
     assert _request(head="c" * 40)[1]
+    # API workers in other processes share it through this key, so it is the same in every process:
+    # sha256 of the JSON ["svs_rules", "a" * 40, "b" * 40], computed outside ACE
+    assert row.active_key == "e59ce04f87ba60c144f48f4908d4ff0b8772decf7fc1cbc807136670b50d2a6b"
 
 
 def test_a_completed_validation_answers_until_the_corpus_changes(svs_repository):
@@ -137,12 +143,12 @@ def test_the_corpus_version_follows_every_input(svs_repository):
         versions.append(corpus_version())
         assert versions[-1] != versions[-2]
 
-    actions.relabel(sha256, RULE_UUID, "fp", _user_id())
+    actions.relabel(sha256, RULE_UUID, "fp", person(_user_id()))
     _changed()
     # clearing a verdict bumps no change time; the history count catches it
-    actions.reset_label(sha256, RULE_UUID, _user_id())
+    actions.reset_label(sha256, RULE_UUID, person(_user_id()))
     _changed()
-    actions.retire(sha256, RULE_UUID, _user_id(), "intended")
+    actions.retire(sha256, RULE_UUID, person(_user_id()), "intended")
     _changed()
     set_disposition(alert.uuid, "FALSE_POSITIVE")
     _changed()
@@ -160,13 +166,37 @@ def test_the_engine_fingerprint_follows_the_disposition_classification(svs_repos
     assert engine_fingerprint(REPOSITORY) != fingerprint
 
 
+def test_the_engine_fingerprint_follows_the_detection_rules(svs_repository, monkeypatch):
+    # detection_blocker() in saq/signatures/yara_meta.py decides what a replayed match is, so a change
+    # to it must not be answered with a validation completed before it
+    fingerprint = engine_fingerprint(REPOSITORY)
+    read_bytes = Path.read_bytes
+    monkeypatch.setattr(Path, "read_bytes", lambda path: read_bytes(path) + (b"\n# changed" if path.name == "yara_meta.py" else b""))
+    assert engine_fingerprint(REPOSITORY) != fingerprint
+
+
 #
 # the lease
 #
 
 def test_only_one_worker_claims_a_validation(svs_repository):
     validation_uuid, _ = _request()
-    first = claim("node1", **LEASE)
+    real_transaction = validations.private_transaction
+    raced = {}
+
+    @contextmanager
+    def racing_transaction():
+        with real_transaction() as session:
+            yield session
+        # node1 claims the validation after node2 read the queue and before node2's UPDATE
+        if "first" not in raced:
+            raced["first"] = None
+            raced["first"] = claim("node1", **LEASE)
+
+    with patch.object(validations, "private_transaction", racing_transaction):
+        assert claim("node2", **LEASE) is None
+
+    first = raced["first"]
     assert (first.uuid, first.attempts) == (validation_uuid, 1)
     assert claim("node2", **LEASE) is None
 
@@ -266,7 +296,7 @@ def test_deleting_a_sample_removes_it_from_every_report(svs_repository):
     validation_uuid, _ = _request()
     _complete(validation_uuid, [_result_row(Category.REGRESSION, sha256), _result_row(Category.REGRESSION)])
 
-    actions.delete_sample(sha256, _user_id(), "privacy request", actor="unittest")
+    actions.delete_sample(sha256, person(_user_id(), "unittest"), "privacy request")
 
     remaining = get_db().execute(select(SVSValidationResult.sha256)).scalars().all()
     assert remaining == ["ab" * 32]

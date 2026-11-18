@@ -14,7 +14,6 @@
 """
 
 import json
-import logging
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Optional
@@ -22,6 +21,7 @@ from typing import Optional
 from sqlalchemy import and_, delete, func, or_, select, update
 from sqlalchemy.exc import IntegrityError
 
+from saq.auth import ApiAuthResult
 from saq.cas import get_cas
 from saq.cas.errors import LegalHoldActive
 from saq.cas.pool import CASPool
@@ -32,6 +32,7 @@ from saq.database.private_session import private_transaction
 from saq.detection_verdicts.constants import SOURCE_EXPLICIT, SOURCE_INHERITED_MULTI, VERDICT_TP
 from saq.detection_verdicts.store import SkipCause, VerdictBatch, VerdictNotAllowed, set_verdicts, verdict_refusal
 from saq.environment import get_global_runtime_settings
+from saq.logging import log_audit
 from saq.svs.samples import bytes_nodes, contributing_detections, get_captures, get_sample, is_local, to_utc_naive
 from saq.svs.storage import purge_deleted_file, release_capture_holds
 
@@ -148,35 +149,35 @@ def relabel_refusal(sha256: str, rule_uuid: str, detections: Optional[dict[int, 
     return "no contributing detection of the sample can take the verdict: " + "; ".join(sorted(reasons))
 
 
-def relabel(sha256: str, rule_uuid: str, verdict: str, user_id: int) -> LabelChange:
+def relabel(sha256: str, rule_uuid: str, verdict: str, auth: ApiAuthResult) -> LabelChange:
     """Stores the explicit verdict ('tp' or 'fp') on every contributing detection of the sample
     that can take one. Raises SampleNotFound, or VerdictNotAllowed when none can."""
     targets, alert_uuids = _targets(sha256, rule_uuid)
     _require_targets(targets)
-    batch = set_verdicts(targets, verdict, user_id)
-    _log_audit("svs sample relabeled", sha256, rule_uuid, user_id, verdict=verdict, changed=batch.changed)
+    batch = set_verdicts(targets, verdict, auth)
+    _log_audit("svs sample relabeled", sha256, rule_uuid, auth, verdict=verdict, changed=batch.changed)
     return _label_change(sha256, rule_uuid, batch, alert_uuids)
 
 
-def reset_label(sha256: str, rule_uuid: str, user_id: int) -> LabelChange:
+def reset_label(sha256: str, rule_uuid: str, auth: ApiAuthResult) -> LabelChange:
     """Clears the explicit verdicts on the sample's contributing detections, so its label is
     derived from its alerts' dispositions again. Only explicit detections are targeted, so one on
     an FP alert (whose override, if any, is masked) is not listed as skipped. Nothing to reset is
     not an error."""
     targets, alert_uuids = _targets(sha256, rule_uuid, SOURCE_EXPLICIT)
-    batch = set_verdicts(targets, None, user_id)
+    batch = set_verdicts(targets, None, auth)
     if targets:
-        _log_audit("svs sample label reset", sha256, rule_uuid, user_id, changed=batch.changed)
+        _log_audit("svs sample label reset", sha256, rule_uuid, auth, changed=batch.changed)
     return _label_change(sha256, rule_uuid, batch, alert_uuids)
 
 
-def confirm(sha256: str, rule_uuid: str, user_id: int) -> LabelChange:
+def confirm(sha256: str, rule_uuid: str, auth: ApiAuthResult) -> LabelChange:
     """Confirms the sample's unconfirmed (inherited_multi) TP detections: an explicit TP on each,
     which upgrades their source without changing the verdict. Nothing to confirm is not an error."""
     targets, alert_uuids = _targets(sha256, rule_uuid, SOURCE_INHERITED_MULTI)
-    batch = set_verdicts(targets, VERDICT_TP, user_id, only_source=SOURCE_INHERITED_MULTI)
+    batch = set_verdicts(targets, VERDICT_TP, auth, only_source=SOURCE_INHERITED_MULTI)
     if targets:
-        _log_audit("svs sample confirmed", sha256, rule_uuid, user_id, changed=batch.changed)
+        _log_audit("svs sample confirmed", sha256, rule_uuid, auth, changed=batch.changed)
     return _label_change(sha256, rule_uuid, batch, alert_uuids)
 
 
@@ -204,7 +205,7 @@ def get_retirement(sha256: str, rule_uuid: str) -> Optional[SVSSampleRetirement]
     return _retirement(get_db(), sha256, rule_uuid)
 
 
-def retire(sha256: str, rule_uuid: str, user_id: int, reason: str) -> SVSSampleRetirement:
+def retire(sha256: str, rule_uuid: str, auth: ApiAuthResult, reason: str) -> SVSSampleRetirement:
     """Retires the sample for its rule. Retiring a retired sample changes nothing. Raises
     SampleNotFound, or ValueError without a reason."""
     reason = _require_reason(reason)
@@ -224,7 +225,7 @@ def retire(sha256: str, rule_uuid: str, user_id: int, reason: str) -> SVSSampleR
             session.add(row)
 
         row.reason = reason
-        row.retired_by = user_id
+        row.retired_by = auth.auth_user_id
         row.retired_at = now
         row.unretired_by = None
         row.unretired_at = None
@@ -237,11 +238,11 @@ def retire(sha256: str, rule_uuid: str, user_id: int, reason: str) -> SVSSampleR
         session.rollback()
         raise
 
-    _log_audit("svs sample retired", sha256, rule_uuid, user_id, reason=reason)
+    _log_audit("svs sample retired", sha256, rule_uuid, auth, reason=reason)
     return row
 
 
-def unretire(sha256: str, rule_uuid: str, user_id: int) -> SVSSampleRetirement:
+def unretire(sha256: str, rule_uuid: str, auth: ApiAuthResult) -> SVSSampleRetirement:
     """Unretires the sample: it is expected to match its rule again. Raises NotRetired."""
     session = get_db()
     try:
@@ -249,14 +250,14 @@ def unretire(sha256: str, rule_uuid: str, user_id: int) -> SVSSampleRetirement:
         if row is None or row.unretired_at is not None:
             raise NotRetired(f"sample {sha256} is not retired for rule {rule_uuid}")
 
-        row.unretired_by = user_id
+        row.unretired_by = auth.auth_user_id
         row.unretired_at = datetime.now()
         session.commit()
     except Exception:
         session.rollback()
         raise
 
-    _log_audit("svs sample unretired", sha256, rule_uuid, user_id)
+    _log_audit("svs sample unretired", sha256, rule_uuid, auth)
     return row
 
 
@@ -314,7 +315,7 @@ def _remove_rows(sha256: str) -> list[tuple[int, Optional[str]]]:
         return captures
 
 
-def delete_sample(sha256: str, user_id: int, reason: str, *, actor: Optional[str]) -> SVSSampleDeletion:
+def delete_sample(sha256: str, auth: ApiAuthResult, reason: str) -> SVSSampleDeletion:
     """Deletes the file from SVS: every capture of the sha256 (for every rule) and its retirements,
     the holds on its match records (CAS GC collects them once nothing else holds them), and the
     file's bytes, purged from the pool. The audit row is committed first and kept.
@@ -343,14 +344,14 @@ def delete_sample(sha256: str, user_id: int, reason: str, *, actor: Optional[str
         raise LegalHoldActive(pool.name, sha256)
 
     if existing is None:
-        _record_deletion(sha256, user_id, reason, node)
+        _record_deletion(sha256, auth.auth_user_id, reason, node)
 
     captures = _remove_rows(sha256)
     for capture_id, record_digest in captures:
         if record_digest is not None:
             release_capture_holds(pool, capture_id, [record_digest])
 
-    if purge_deleted_file(pool, sha256, reason=f"svs sample deletion: {reason}", actor=actor):
+    if purge_deleted_file(pool, sha256, reason=f"svs sample deletion: {reason}", actor=auth.auth_name):
         with private_transaction() as session:
             session.execute(
                 update(SVSSampleDeletion)
@@ -361,9 +362,8 @@ def delete_sample(sha256: str, user_id: int, reason: str, *, actor: Optional[str
     # a fresh transaction, to see what the private ones wrote
     session.commit()
     deletion = get_deletion(sha256)
-    logging.info("AUDIT: svs sample deleted", extra={
-        "sha256": sha256, "rule_uuids": json.loads(deletion.rule_uuids), "capture_count": len(captures),
-        "purged": deletion.purged_at is not None, "actor_user_id": user_id, "reason": reason})
+    log_audit("svs sample deleted", auth=auth, sha256=sha256, rule_uuids=json.loads(deletion.rule_uuids),
+              capture_count=len(captures), purged=deletion.purged_at is not None, reason=reason)
     return deletion
 
 
@@ -371,8 +371,8 @@ def _is_captured(sha256: str) -> bool:
     return get_db().execute(select(SVSYaraCapture.id).where(SVSYaraCapture.sha256 == sha256).limit(1)).first() is not None
 
 
-def _log_audit(message: str, sha256: str, rule_uuid: str, user_id: int, **extra) -> None:
-    logging.info(f"AUDIT: {message}", extra={"sha256": sha256, "rule_uuid": rule_uuid, "actor_user_id": user_id, **extra})
+def _log_audit(message: str, sha256: str, rule_uuid: str, auth: ApiAuthResult, **extra) -> None:
+    log_audit(message, auth=auth, sha256=sha256, rule_uuid=rule_uuid, **extra)
 
 
 #

@@ -9,20 +9,12 @@ from saq.constants import F_TEST
 
 @pytest.mark.unit
 def test_pivot_links():
+    # stored in data.json, so the keys are literal
     link = PivotLink("test1", "test2", "test3")
-    assert link.url == "test1"
-    assert link.icon == "test2"
-    assert link.text == "test3"
+    assert link.to_dict() == {"url": "test1", "icon": "test2", "text": "test3"}
 
-    json_link = PivotLink.from_dict(link.to_dict())
-    assert link == json_link
-
-@pytest.mark.unit
-def test_add_pivot_links():
-    analysis = Analysis()
-    assert not analysis.pivot_links
-    analysis.add_pivot_link("test1", "test2", "test3")
-    assert analysis.pivot_links
+    restored = PivotLink.from_dict({"url": "test1", "icon": "test2", "text": "test3"})
+    assert (restored.url, restored.icon, restored.text) == ("test1", "test2", "test3")
 
 @pytest.mark.unit
 def test_root_analysis_pivot_link_serialization(tmpdir):

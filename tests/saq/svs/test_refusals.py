@@ -12,10 +12,11 @@ from saq.database.pool import get_db
 from saq.signatures.builtin import SVS_REGISTRATION_REFUSED
 from saq.svs import refusals
 from saq.svs.refusals import Caller, prune_refusals, refuse
+from tests.saq.helpers import person
 
 pytestmark = pytest.mark.integration
 
-CALLER = Caller(name="art-launcher", user_id=None, key_id=7, address="10.1.2.3")
+CALLER = Caller(person(None, "art-launcher", key_id=7), address="10.1.2.3")
 T0 = datetime(2026, 10, 14, 12, 10, 0)
 
 
@@ -73,7 +74,7 @@ def test_refusals_collapse_per_caller_host_and_hour(caplog):
 
     # another host, another caller, another hour each alert again
     assert refuse(CALLER, "prod-dc-02", None, "not a test host", now=T0) is not None
-    assert refuse(Caller(name="other-launcher"), "prod-dc-01", None, "not a test host", now=T0) is not None
+    assert refuse(Caller(person(None, "other-launcher")), "prod-dc-01", None, "not a test host", now=T0) is not None
     assert refuse(CALLER, "prod-dc-01", None, "not a test host", now=T0 + timedelta(hours=1)) is not None
     assert len(_alerts()) == 4
 
@@ -90,7 +91,7 @@ def test_a_host_in_another_domain_is_another_host():
 
 
 def test_an_ipv6_caller_is_not_an_ipv4_observable():
-    alert_uuid = refuse(Caller(name="art", address="::1"), "prod-dc-01", None, "not a test host", now=T0)
+    alert_uuid = refuse(Caller(person(None, "art"), address="::1"), "prod-dc-01", None, "not a test host", now=T0)
     root = load_alert(alert_uuid).root_analysis
     root.load()
     assert not [o for o in root.all_observables if o.type == F_IPV4]

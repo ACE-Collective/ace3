@@ -4,21 +4,28 @@
 #
 # under pytest-xdist every worker is its own pytest session, and several things a session
 # uses are host-wide: the data directory, the API server port, the network semaphore port,
-# the log file. each pytest process therefore gets a slot -- its xdist worker id (gw0, gw1,
-# ...) or "main" when not running under xdist -- and everything per-process is derived from
-# it here. the values reach the configuration through the same SAQ_UNITTEST_CONFIG_PATHS
-# overlay that tests/unittest_database.py writes for the per-session database names.
+# the Qdrant collections, the log file. each pytest process therefore gets a slot -- its xdist
+# worker id (gw0, gw1, ...) or "main" when not running under xdist -- and everything
+# per-process is derived from it here. what the checkouts of a container or a stack share (the
+# data directory base, the stack's Qdrant) is also named after the checkout; the ports need not
+# be, because one run at a time runs in a container (tests/session_lock.py). the values reach
+# the configuration through the same SAQ_UNITTEST_CONFIG_PATHS overlay that
+# tests/unittest_database.py writes for the per-session database names.
 #
 # this module deliberately imports nothing from saq: it runs before the configuration is
 # loaded, and bin/cleanup-unittest-databases.py imports it from outside a session.
 #
 
+import hashlib
 import os
 import re
+import select
+import threading
 
 import yaml
 
-DATA_DIR_NAME = "data_unittest"
+# not /tmp, which is a noexec tmpfs in the dev container
+DATA_DIR_BASE = "/var/tmp/ace-unittest"
 MAIN_SLOT = "main"
 WORKER_ENV_VAR = "PYTEST_XDIST_WORKER"
 
@@ -28,11 +35,55 @@ NETWORK_SEMAPHORE_BASE_PORT = 53560
 LOG_DIR = os.path.join("data", "logs")
 LOGGING_CONFIG_PATH = os.path.join("etc", "logging_configs", "unittest_logging.yaml")
 
-_SLOT_PATTERN = re.compile(r"^(main|gw\d+)$")
+
+# the checkout this suite's code is in
+CHECKOUT = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
 
 
 def get_project_root() -> str:
     return os.environ.get("SAQ_HOME", os.getcwd())
+
+
+def get_checkout_mismatch(saq_package_dir: str) -> str | None:
+    """Says how the run is set up for a checkout other than the one its tests are in, or None.
+
+    The dev image sets SAQ_HOME to /opt/ace, so a run started from a git worktree in dev without
+    SAQ_HOME on the worktree would take the main checkout's run marker, configuration and data
+    directory while it runs the worktree's tests. saq_package_dir is where saq was imported from:
+    this module imports nothing from saq."""
+    problems = []
+    project_root = os.path.realpath(get_project_root())
+    if project_root != CHECKOUT:
+        problems.append(f"SAQ_HOME is {project_root}")
+    saq_checkout = os.path.dirname(os.path.realpath(saq_package_dir))
+    if saq_checkout != CHECKOUT:
+        problems.append(f"saq is imported from {saq_checkout}")
+    if not problems:
+        return None
+
+    return (f"the tests are in {CHECKOUT}, but {' and '.join(problems)}. First run\n"
+            f"    export SAQ_HOME={CHECKOUT} PYTHONPATH={CHECKOUT} PATH={CHECKOUT}:{CHECKOUT}/bin:$PATH")
+
+
+def exit_with(pid: int) -> None:
+    """Ends this process when process pid exits, however that process exits.
+
+    The log collector's Manager server (tests/saq/helpers.py) runs this as its initializer, so
+    that it does not outlive a pytest process that was SIGKILLed: no finalizer of that process
+    runs to stop it, and an orphaned server keeps every record it holds. It is here rather than
+    in tests/saq/helpers.py because the server, started by the forkserver, imports the module of
+    its initializer, and this one imports nothing from saq."""
+    try:
+        pidfd = os.pidfd_open(pid)
+    except ProcessLookupError:
+        os._exit(1)
+
+    def wait_for_exit():
+        # bounded by the life of process pid: its pidfd turns readable when it exits
+        select.select([pidfd], [], [])
+        os._exit(0)
+
+    threading.Thread(target=wait_for_exit, name=f"exit-with-{pid}", daemon=True).start()
 
 
 def get_slot() -> str:
@@ -53,18 +104,25 @@ def get_slot_index() -> int:
     return int(match.group(1))
 
 
-def is_slot_name(name: str) -> bool:
-    return _SLOT_PATTERN.match(name) is not None
-
-
 def is_xdist_worker(config) -> bool:
     """True inside an xdist worker process (the controller and a plain pytest run are not)."""
     return hasattr(config, "workerinput")
 
 
 def get_data_dir_root() -> str:
-    """The directory that holds one data directory per slot."""
-    return os.path.join(get_project_root(), DATA_DIR_NAME)
+    """The directory that holds one data directory per slot.
+
+    It is outside the checkout, in the container's own filesystem: the checkout is a bind
+    mount from the host, where every mkdir and unlink is a round trip out of the VM, and the
+    suite deletes and recreates a data directory before every integration test. One per
+    checkout, named by a hash of its path, so two checkouts never share one."""
+    return os.path.join(DATA_DIR_BASE, get_checkout_hash())
+
+
+def get_checkout_hash() -> str:
+    """Names what belongs to this checkout in resources other checkouts share."""
+    checkout = os.path.realpath(get_project_root())
+    return hashlib.sha256(checkout.encode()).hexdigest()[:12]
 
 
 def get_session_data_dir() -> str:
@@ -82,25 +140,26 @@ def get_network_semaphore_port() -> int:
 def session_overrides() -> dict:
     """The configuration overlay that makes this slot's host-wide resources its own.
 
-    Paths are relative to SAQ_HOME (which is also the working directory): global.data_dir is
-    only the fallback when initialize_environment() is not handed a data_dir, storage.base_dir
-    is resolved against SAQ_HOME by saq/storage/factory.py, and the network semaphore's
-    stats_dir is used as-is by saq/network_semaphore/server.py."""
+    Paths are absolute: global.data_dir is only the fallback when initialize_environment() is
+    not handed a data_dir, storage.base_dir is joined to SAQ_HOME by saq/storage/factory.py
+    (which keeps an absolute path), and the network semaphore's stats_dir is used as-is by
+    saq/network_semaphore/server.py."""
     slot = get_slot()
-    relative_data_dir = os.path.join(DATA_DIR_NAME, slot)
+    data_dir = get_session_data_dir()
     api_port = get_api_port()
     semaphore_port = get_network_semaphore_port()
 
     return {
-        "global": {"data_dir": relative_data_dir},
-        "storage": {"base_dir": os.path.join(relative_data_dir, "storage")},
+        "global": {"data_dir": data_dir},
+        "storage": {"base_dir": os.path.join(data_dir, "storage")},
         "api": {"listen_port": api_port, "prefix": f"localhost:{api_port}"},
         "service_network_semaphore": {
             "bind_port": semaphore_port,
             "remote_port": semaphore_port,
-            "stats_dir": os.path.join(relative_data_dir, "var", "network_semaphore"),
+            "stats_dir": os.path.join(data_dir, "var", "network_semaphore"),
         },
-        "qdrant": {"collection_prefix": f"ace3-alerts-unittest-{slot}"},
+        # the stack's Qdrant is shared by every checkout
+        "qdrant": {"collection_prefix": f"ace3-alerts-unittest-{get_checkout_hash()}-{slot}"},
     }
 
 

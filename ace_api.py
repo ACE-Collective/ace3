@@ -22,10 +22,16 @@ pip install requests pytz tzlocal~=2.1
     sys.exit(1)
 
 try:
-    import requests
     import pytz
     import tzlocal
 except ImportError:
+    dump_pip_instructions_and_die()
+
+import importlib.util
+
+# requests is imported where a call is made (_execute_api_call): ACE imports this module in every process to
+# set its defaults, and only the processes that call an ACE node need requests
+if importlib.util.find_spec("requests") is None:
     dump_pip_instructions_and_die()
 
 import argparse
@@ -38,7 +44,6 @@ import logging
 import os
 import os.path
 import pickle
-import pprint
 import shutil
 import socket
 import tarfile
@@ -105,7 +110,7 @@ def _api_command(parser):
     parser.add_argument('--remote-host', required=False, default=os.environ.get('ICE_API_HOST', 'localhost:443'), dest='remote_host',
         help="The remote host to connect to in host[:port] format.")
     parser.add_argument('--ssl-verification', required=False, default=None, dest='ssl_verification',
-        help="Optional path to root CA ssl to load. Defaults to system installed CA.")
+        help="Optional path to root CA ssl to load. Defaults to the bundle requests uses (certifi's, or REQUESTS_CA_BUNDLE).")
     parser.add_argument('-S', '--disable-ssl-verification', required=False, default=False, dest='disable_ssl_verification', action='store_true',
         help="Do not perform SSL verification.")
     parser.add_argument('--disable-proxy', required=False, default=True, action='store_true',
@@ -147,7 +152,7 @@ def get_default_remote_host():
 def set_default_ssl_ca_path(ssl_verification):
     """Sets the default SSL verification mode. Behavior: 
       
-       - If set to None (the default) then the system installed CAs are used.
+       - If set to None (the default) then requests verifies against its default bundle (certifi's, or REQUESTS_CA_BUNDLE).
        - If set to False, then SSL verification is disabled.
        - Else, it is assumed to be a file that contains the CAs to be used to verify the SSL certificates.
 
@@ -212,7 +217,7 @@ def _execute_api_call(command,
         if api_key is None:
             api_key = os.environ.get("ACE_API_KEY", None)
 
-    ssl_verification = False
+    import requests  # see the note at the top of this module
 
     if method == METHOD_GET:
         func = requests.get
@@ -226,10 +231,9 @@ def _execute_api_call(command,
     kwargs = { 'stream': stream }
     if params is not None:
         kwargs['params'] = params
+    # None leaves requests' default, which verifies against certifi's bundle (or REQUESTS_CA_BUNDLE)
     if ssl_verification is not None:
         kwargs['verify'] = ssl_verification
-    else:
-        kwargs['verify'] = False
     if data is not None:
         kwargs['data'] = data
     if json is not None:
@@ -332,6 +336,7 @@ def submit(
     queue='default', 
     instructions=None,
     extensions=None,
+    event_time_source=None,
     *args, **kwargs):
     """Submit a request to ACE for analysis and/or correlation.
     
@@ -353,6 +358,8 @@ def submit(
         this alert is about and/or how to analyze the data contained in the
         alert.
     :param str extensions: (optional) An optional free-form dictionary used to pass additional data.
+    :param str event_time_source: (optional) Where event_time came from when it is not the event's own: query_time
+        (a hunt couldn't extract the event's timestamp) or now. Default: event; always now when event_time is not given.
     :return: A result dictionary. If submission was successful, the UUID of the analysis will be contained. Like this:
         {'result': {'uuid': '960b0a0f-3ea2-465f-852f-ebccac6ae282'}}
     :rtype: dict
@@ -364,6 +371,7 @@ def submit(
     # default event time is now
     if event_time is None:
         event_time = datetime.datetime.now()
+        event_time_source = 'now'
 
     # no timezone yet?
     # convert to UTC and then to the correct datetime format string for ACE
@@ -426,6 +434,7 @@ def submit(
             'queue': queue, 
             'instructions': instructions,
             'extensions': extensions,
+            'event_time_source': event_time_source,
         }),
     }, files=files_params, method=METHOD_POST, *args, **kwargs).json()
 
@@ -791,7 +800,7 @@ class Analysis(object):
     def set_ssl_verification(self, ssl_verification):
         """Set the ssl verification behavior.
 
-           - If set to None (the default) then the system installed CAs are used.
+           - If set to None (the default) then requests verifies against its default bundle (certifi's, or REQUESTS_CA_BUNDLE).
            - If set to False, then SSL verification is disabled.
            - Else, it is assumed to be a file that contains the CAs to be used to verify the SSL certificates.
 
@@ -1367,12 +1376,18 @@ def main():
 
     args = parser.parse_args()
 
+    # every command takes -S, and only submit passes it on by itself
+    if args.disable_ssl_verification:
+        args.ssl_verification = False
+
     if args.disable_proxy:
         for env_var in [ 'http_proxy', 'https_proxy', 'ftp_proxy' ]:
             if env_var in os.environ:
                 del os.environ[env_var]
             if env_var.upper() in os.environ:
                 del os.environ[env_var.upper()]
+
+    import pprint  # only the command line prints; ACE imports this module in every process
 
     try:
         result = args.func(args)

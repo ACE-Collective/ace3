@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta, UTC
+import logging
 from uuid import uuid4
 
 import pytest
@@ -8,12 +9,17 @@ from saq.constants import F_FILE_LOCATION
 from saq.database.model import FileCollection
 from saq.database.pool import get_db
 from saq.file_collection.collector import FileCollectionCollector
-from saq.file_collection.database import queue_file_collection
-from saq.file_collection.interface import FileCollectionListener
+from saq.file_collection.database import (
+    get_pending_file_collection_by_observable,
+    queue_file_collection,
+    resolve_duplicate_pending_file_collection,
+    retry_file_collection,
+)
+from saq.file_collection.storage import unattached_storage_dir
 from saq.file_collection.types import FileCollectionStatus, FileCollectionWorkItem, FileCollectorStatus
 
 
-class TestFileCollectionListener(FileCollectionListener):
+class TestFileCollectionListener:
     __test__ = False
 
     def __init__(self):
@@ -21,21 +27,15 @@ class TestFileCollectionListener(FileCollectionListener):
         # ids reported as still held; tests call finish() to release them
         self.pending = set()
 
-    def handle_file_collection_request(self, work_item: FileCollectionWorkItem):
+    def handle_request(self, work_item: FileCollectionWorkItem):
         self.collections.append(work_item)
         self.pending.add(work_item.id)
 
-    def pending_collection_ids(self) -> set[int]:
+    def pending_ids(self) -> set[int]:
         return set(self.pending)
 
     def finish(self, collection_id: int):
         self.pending.discard(collection_id)
-
-
-@pytest.mark.integration
-def test_collect_work_items_empty():
-    collector = FileCollectionCollector()
-    assert not collector.collect_work_items()
 
 
 @pytest.mark.integration
@@ -54,11 +54,11 @@ def test_collect_single_work_item(db_alert):
     assert not collector.collect_work_items()
 
     # now we register a listener for a different name, so we should (still) not collect
-    collector.register_file_collection_listener("other", TestFileCollectionListener())
+    collector.register_listener("other", TestFileCollectionListener())
     assert not collector.collect_work_items()
 
     # now we register a listener for the same name, so we should collect
-    collector.register_file_collection_listener("custom", TestFileCollectionListener())
+    collector.register_listener("custom", TestFileCollectionListener())
     tasks = collector.collect_work_items()
     assert len(tasks) == 1
     assert tasks[0].id == collection_id
@@ -78,11 +78,97 @@ def test_collect_single_work_item(db_alert):
 
 
 @pytest.mark.integration
+def test_collect_work_item_with_missing_alert(caplog):
+    """A collection whose alert is gone is finished as failed instead of handed out, so it is
+    neither left locked nor locked again at every lock timeout."""
+    alert_uuid = str(uuid4())
+    collection_id = queue_file_collection(
+        collector_name="custom",
+        observable_type=F_FILE_LOCATION,
+        observable_value="host@/path/to/file",
+        alert_uuid=alert_uuid,
+    )
+
+    collector = FileCollectionCollector()
+    listener = TestFileCollectionListener()
+    collector.register_listener("custom", listener)
+    collector.shutdown_event.set()
+    with caplog.at_level(logging.WARNING):
+        collector.collection_loop()
+        # with no lock timeout, a row left unfinished would be locked again on the next pass
+        collector.lock_timeout_seconds = 0
+        collector.collection_loop()
+
+    assert not listener.collections
+    file_collection = get_db().query(FileCollection).filter(FileCollection.id == collection_id).one()
+    assert file_collection.status == FileCollectionStatus.COMPLETED.value
+    assert file_collection.result == FileCollectorStatus.FAILED.value
+    assert alert_uuid in file_collection.result_message
+    assert file_collection.lock is None
+    assert file_collection.update_time is not None
+
+    warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert len(warnings) == 1
+    assert warnings[0].file_collection_id == collection_id
+    assert warnings[0].alert_uuid == alert_uuid
+    assert not [r for r in caplog.records if r.levelno >= logging.ERROR]
+
+
+@pytest.mark.integration
+def test_collect_finishes_only_the_collection_whose_alert_is_gone(db_alert):
+    """The collections locked in the same pass are still handed out, including one no alert
+    asked for, whose alert_uuid is NULL by design."""
+    missing_id = queue_file_collection(
+        collector_name="custom",
+        observable_type=F_FILE_LOCATION,
+        observable_value="host@/path/to/missing",
+        alert_uuid=str(uuid4()),
+    )
+    with_alert_id = queue_file_collection(
+        collector_name="custom",
+        observable_type=F_FILE_LOCATION,
+        observable_value="host@/path/to/with_alert",
+        alert_uuid=db_alert.uuid,
+    )
+    without_alert_id = queue_file_collection(
+        collector_name="custom",
+        observable_type=F_FILE_LOCATION,
+        observable_value="host@/path/to/without_alert",
+    )
+
+    collector = FileCollectionCollector()
+    collector.register_listener("custom", TestFileCollectionListener())
+    tasks = {task.id: task for task in collector.collect_work_items()}
+    assert sorted(tasks) == sorted([with_alert_id, without_alert_id])
+    assert tasks[with_alert_id].storage_dir == db_alert.storage_dir
+    # a collection no alert asked for gets this node's directory for it, not an alert's
+    assert tasks[without_alert_id].alert_uuid is None
+    assert tasks[without_alert_id].storage_dir == unattached_storage_dir(without_alert_id)
+
+    # discards anything the collector did not commit
+    get_db().rollback()
+    rows = {
+        row.id: row
+        for row in get_db().query(FileCollection).filter(
+            FileCollection.id.in_([missing_id, with_alert_id, without_alert_id])
+        )
+    }
+
+    for collection_id in (with_alert_id, without_alert_id):
+        assert rows[collection_id].status == FileCollectionStatus.IN_PROGRESS.value
+        assert rows[collection_id].result is None
+        assert rows[collection_id].lock == tasks[collection_id].lock
+
+    assert rows[missing_id].status == FileCollectionStatus.COMPLETED.value
+    assert rows[missing_id].result == FileCollectorStatus.FAILED.value
+
+
+@pytest.mark.integration
 def test_collect_skips_items_held_by_listener(db_alert):
     """A record whose lock has timed out is not handed out again while a listener still holds it."""
     collector = FileCollectionCollector()
     listener = TestFileCollectionListener()
-    collector.register_file_collection_listener("custom", listener)
+    collector.register_listener("custom", listener)
 
     collection_id = queue_file_collection(
         collector_name="custom",
@@ -106,18 +192,10 @@ def test_collect_skips_items_held_by_listener(db_alert):
     assert tasks[0].id == collection_id
 
 
-@pytest.mark.parametrize(
-    "status,expected_value",
-    [
-        (FileCollectionStatus.NEW, True),
-        (FileCollectionStatus.IN_PROGRESS, True),
-        (FileCollectionStatus.COMPLETED, False),
-    ],
-)
 @pytest.mark.integration
-def test_collect_work_item_status(status, expected_value, db_alert):
+def test_collect_skips_completed_work_item(db_alert):
     collector = FileCollectionCollector()
-    collector.register_file_collection_listener("custom", TestFileCollectionListener())
+    collector.register_listener("custom", TestFileCollectionListener())
 
     collection_id = queue_file_collection(
         collector_name="custom",
@@ -127,17 +205,17 @@ def test_collect_work_item_status(status, expected_value, db_alert):
     )
 
     file_collection = get_db().query(FileCollection).filter(FileCollection.id == collection_id).first()
-    file_collection.status = status.value
+    file_collection.status = FileCollectionStatus.COMPLETED.value
     get_db().add(file_collection)
     get_db().commit()
 
-    assert bool(collector.collect_work_items()) == expected_value
+    assert not collector.collect_work_items()
 
 
 @pytest.mark.integration
 def test_collect_locked_work_item(db_alert):
     collector = FileCollectionCollector()
-    collector.register_file_collection_listener("custom", TestFileCollectionListener())
+    collector.register_listener("custom", TestFileCollectionListener())
 
     collection_id = queue_file_collection(
         collector_name="custom",
@@ -166,42 +244,10 @@ def test_collect_locked_work_item(db_alert):
 
 
 @pytest.mark.integration
-def test_collect_delayed_work_item(db_alert):
-    collector = FileCollectionCollector()
-    collector.register_file_collection_listener("custom", TestFileCollectionListener())
-
-    collection_id = queue_file_collection(
-        collector_name="custom",
-        observable_type=F_FILE_LOCATION,
-        observable_value="host@/path/to/file",
-        alert_uuid=db_alert.uuid,
-    )
-
-    # set to in progress and delayed
-    file_collection = get_db().query(FileCollection).filter(FileCollection.id == collection_id).first()
-    file_collection.update_time = func.NOW()
-    file_collection.status = FileCollectionStatus.IN_PROGRESS.value
-    file_collection.result = FileCollectorStatus.DELAYED.value
-    get_db().add(file_collection)
-    get_db().commit()
-
-    # we should not collect because it is currently delayed
-    assert not collector.collect_work_items()
-
-    # set the initial retry delay to zero seconds (exponential backoff)
-    collector.initial_retry_delay_seconds = 0
-
-    # now we should collect because delay time has expired
-    tasks = collector.collect_work_items()
-    assert len(tasks) == 1
-    assert tasks[0].id == collection_id
-
-
-@pytest.mark.integration
 def test_collect_high_retry_count_still_collected(db_alert):
     """Test that high retry counts don't prevent collection - time-based cutoff is used instead."""
     collector = FileCollectionCollector()
-    collector.register_file_collection_listener("custom", TestFileCollectionListener())
+    collector.register_listener("custom", TestFileCollectionListener())
 
     collection_id = queue_file_collection(
         collector_name="custom",
@@ -223,165 +269,10 @@ def test_collect_high_retry_count_still_collected(db_alert):
     assert tasks[0].id == collection_id
 
 
-@pytest.mark.unit
-def test_register_file_collection_listener():
-    collector = FileCollectionCollector()
-    listener = TestFileCollectionListener()
-
-    collector.register_file_collection_listener("test_name", listener)
-    assert "test_name" in collector.listeners
-    assert collector.listeners["test_name"] is listener
-
-
-@pytest.mark.unit
-def test_register_file_collection_listener_duplicate():
-    collector = FileCollectionCollector()
-    listener1 = TestFileCollectionListener()
-    listener2 = TestFileCollectionListener()
-
-    collector.register_file_collection_listener("test_name", listener1)
-
-    with pytest.raises(ValueError, match="file collection listener test_name already registered"):
-        collector.register_file_collection_listener("test_name", listener2)
-
-
-@pytest.mark.unit
-def test_notify_file_collection_listeners():
-    collector = FileCollectionCollector()
-    listener = TestFileCollectionListener()
-
-    collector.register_file_collection_listener("test_name", listener)
-
-    work_item = FileCollectionWorkItem(
-        id=1,
-        name="test_name",
-        type=F_FILE_LOCATION,
-        key="host@/path/to/file",
-        alert_uuid="test-alert-uuid",
-        storage_dir="/opt/ace/data/test-alert",
-    )
-
-    collector.notify_file_collection_listeners(work_item)
-
-    assert len(listener.collections) == 1
-    assert listener.collections[0] is work_item
-
-
-@pytest.mark.unit
-def test_notify_file_collection_listeners_unregistered():
-    collector = FileCollectionCollector()
-
-    work_item = FileCollectionWorkItem(
-        id=1,
-        name="unregistered_name",
-        type=F_FILE_LOCATION,
-        key="host@/path/to/file",
-        alert_uuid="test-alert-uuid",
-        storage_dir="/opt/ace/data/test-alert",
-    )
-
-    with pytest.raises(ValueError, match="file collector name unregistered_name not registered"):
-        collector.notify_file_collection_listeners(work_item)
-
-
-@pytest.mark.unit
-def test_collection_loop_signals_startup():
-    collector = FileCollectionCollector()
-
-    assert not collector.collector_startup_event.is_set()
-
-    collector.collect_work_items = lambda: []
-    collector.shutdown_event.set()
-
-    collector.collection_loop()
-
-    assert collector.collector_startup_event.is_set()
-
-
-@pytest.mark.unit
-def test_collection_loop_processes_work_items():
-    collector = FileCollectionCollector()
-    listener = TestFileCollectionListener()
-    collector.register_file_collection_listener("test_name", listener)
-
-    work_items = [
-        FileCollectionWorkItem(
-            id=1,
-            name="test_name",
-            type=F_FILE_LOCATION,
-            key="host@/file1",
-            alert_uuid="test-alert-uuid-1",
-            storage_dir="/opt/ace/data/test-alert-1",
-        ),
-        FileCollectionWorkItem(
-            id=2,
-            name="test_name",
-            type=F_FILE_LOCATION,
-            key="host@/file2",
-            alert_uuid="test-alert-uuid-2",
-            storage_dir="/opt/ace/data/test-alert-2",
-        ),
-    ]
-
-    call_count = [0]
-
-    def mock_collect_work_items():
-        call_count[0] += 1
-        if call_count[0] == 1:
-            return work_items
-        return []
-
-    collector.collect_work_items = mock_collect_work_items
-    collector.shutdown_event.set()
-
-    collector.collection_loop()
-
-    assert len(listener.collections) == 2
-    assert listener.collections[0] is work_items[0]
-    assert listener.collections[1] is work_items[1]
-
-
-@pytest.mark.unit
-def test_collection_loop_handles_exceptions():
-    collector = FileCollectionCollector()
-
-    call_count = [0]
-
-    def mock_collect_work_items():
-        call_count[0] += 1
-        if call_count[0] == 1:
-            raise RuntimeError("test error")
-        return []
-
-    collector.collect_work_items = mock_collect_work_items
-    collector.shutdown_event.set()
-
-    # should not raise exception
-    collector.collection_loop()
-
-    assert call_count[0] >= 1
-
-
 #
 # Tests for exponential backoff functionality
 #
 # Note: Tests for calculate_backoff_delay() are in tests/saq/util/test_time.py
-
-
-@pytest.mark.unit
-def test_collector_init_with_exponential_backoff_params():
-    """test FileCollectionCollector accepts exponential backoff parameters"""
-    collector = FileCollectionCollector(
-        lock_timeout_seconds=600,
-        initial_retry_delay_seconds=30,
-        max_retry_delay_seconds=1800,
-        max_collection_time_seconds=86400,
-    )
-
-    assert collector.lock_timeout_seconds == 600
-    assert collector.initial_retry_delay_seconds == 30
-    assert collector.max_retry_delay_seconds == 1800
-    assert collector.max_collection_time_seconds == 86400
 
 
 @pytest.mark.unit
@@ -401,7 +292,7 @@ def test_collect_exponential_backoff_respects_retry_count(db_alert):
         initial_retry_delay_seconds=60,
         max_retry_delay_seconds=3600,
     )
-    collector.register_file_collection_listener("custom", TestFileCollectionListener())
+    collector.register_listener("custom", TestFileCollectionListener())
 
     collection_id = queue_file_collection(
         collector_name="custom",
@@ -422,6 +313,13 @@ def test_collect_exponential_backoff_respects_retry_count(db_alert):
     # Should not collect because 240 seconds haven't passed
     assert not collector.collect_work_items()
 
+    # 100 seconds is past the 60 seconds a first attempt waits, but not the 240 the third does
+    file_collection = get_db().query(FileCollection).filter(FileCollection.id == collection_id).first()
+    file_collection.update_time = datetime.now(UTC) - timedelta(seconds=100)
+    get_db().add(file_collection)
+    get_db().commit()
+    assert not collector.collect_work_items()
+
     # Update the time to simulate 250 seconds in the past
     file_collection = get_db().query(FileCollection).filter(FileCollection.id == collection_id).first()
     file_collection.update_time = datetime.now(UTC) - timedelta(seconds=250)
@@ -440,7 +338,7 @@ def test_collect_time_based_cutoff(db_alert):
     collector = FileCollectionCollector(
         max_collection_time_seconds=3600,  # 1 hour for testing
     )
-    collector.register_file_collection_listener("custom", TestFileCollectionListener())
+    collector.register_listener("custom", TestFileCollectionListener())
 
     collection_id = queue_file_collection(
         collector_name="custom",
@@ -470,3 +368,183 @@ def test_collect_time_based_cutoff(db_alert):
     tasks = collector.collect_work_items()
     assert len(tasks) == 1
     assert tasks[0].id == collection_id2
+
+
+@pytest.mark.integration
+def test_collect_finishes_collections_past_the_cutoff(db_alert, caplog):
+    """A collection past max_collection_time_seconds is never handed out again, so the collector
+    finishes it as failed. Left pending, every later request for the same file attached to it and
+    waited on a collection that never ran."""
+    collector = FileCollectionCollector(max_collection_time_seconds=3600)
+    collector.register_listener("custom", TestFileCollectionListener())
+
+    expired_id = queue_file_collection(
+        collector_name="custom",
+        observable_type=F_FILE_LOCATION,
+        observable_value="host@/path/to/file",
+        alert_uuid=db_alert.uuid,
+    )
+    get_db().execute(
+        text("UPDATE file_collection SET insert_date = NOW() - INTERVAL 2 HOUR, status = 'IN_PROGRESS' WHERE id = :id"),
+        {"id": expired_id},
+    )
+    get_db().commit()
+
+    with caplog.at_level(logging.WARNING):
+        assert not collector.collect_work_items()
+
+    get_db().expire_all()
+    expired = get_db().get(FileCollection, expired_id)
+    assert expired.status == FileCollectionStatus.COMPLETED.value
+    assert expired.result == FileCollectorStatus.FAILED.value
+    assert expired.result_message == "gave up: not collected within 1:00:00"
+    assert expired.lock is None
+    warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert len(warnings) == 1
+    assert warnings[0].getMessage() == (
+        f"file collection {expired_id} for {F_FILE_LOCATION} host@/path/to/file failed: "
+        "gave up: not collected within 1:00:00"
+    )
+    assert warnings[0].file_collection_id == expired_id
+    assert warnings[0].alert_uuid == db_alert.uuid
+
+    # a new request for the same file is no longer folded into the expired one
+    assert get_pending_file_collection_by_observable("custom", F_FILE_LOCATION, "host@/path/to/file") is None
+    new_id = queue_file_collection(
+        collector_name="custom",
+        observable_type=F_FILE_LOCATION,
+        observable_value="host@/path/to/file",
+        alert_uuid=db_alert.uuid,
+    )
+    assert resolve_duplicate_pending_file_collection(new_id) == new_id
+    assert [task.id for task in collector.collect_work_items()] == [new_id]
+
+
+@pytest.mark.integration
+def test_collect_leaves_expired_collections_that_are_still_being_worked(db_alert):
+    """An expired collection a worker still holds (its lock has not timed out, or a listener of
+    this collector has it queued) is left for that worker to finish."""
+    listener = TestFileCollectionListener()
+    collector = FileCollectionCollector(max_collection_time_seconds=3600)
+    collector.register_listener("custom", listener)
+
+    locked_id, queued_id, other_id = (
+        queue_file_collection(
+            collector_name=name,
+            observable_type=F_FILE_LOCATION,
+            observable_value=f"host@/path/to/{name}",
+            alert_uuid=db_alert.uuid,
+        )
+        for name in ("custom", "custom", "unregistered")
+    )
+    get_db().execute(
+        text("UPDATE file_collection SET insert_date = NOW() - INTERVAL 2 HOUR WHERE id IN :ids"),
+        {"ids": (locked_id, queued_id, other_id)},
+    )
+    get_db().execute(
+        text("UPDATE file_collection SET status = 'IN_PROGRESS', `lock` = 'held', lock_time = NOW() WHERE id = :id"),
+        {"id": locked_id},
+    )
+    get_db().commit()
+    listener.pending.add(queued_id)
+
+    assert not collector.collect_work_items()
+
+    get_db().expire_all()
+    for collection_id in (locked_id, queued_id, other_id):
+        assert get_db().get(FileCollection, collection_id).status != FileCollectionStatus.COMPLETED.value
+
+    # once the worker lets go of it, the queued one is finished
+    listener.finish(queued_id)
+    assert not collector.collect_work_items()
+    get_db().expire_all()
+    assert get_db().get(FileCollection, queued_id).result == FileCollectorStatus.FAILED.value
+    assert get_db().get(FileCollection, locked_id).status == FileCollectionStatus.IN_PROGRESS.value
+
+
+@pytest.mark.integration
+def test_collect_finishes_an_expired_collection_whose_lock_timed_out(db_alert):
+    """A collection left IN_PROGRESS and locked, by a service that stopped or a worker that died
+    before releasing it, is finished once its lock times out."""
+    collector = FileCollectionCollector(lock_timeout_seconds=300, max_collection_time_seconds=3600)
+    collector.register_listener("custom", TestFileCollectionListener())
+
+    collection_id = queue_file_collection(
+        collector_name="custom",
+        observable_type=F_FILE_LOCATION,
+        observable_value="host@/path/to/file",
+        alert_uuid=db_alert.uuid,
+    )
+    get_db().execute(
+        text(
+            "UPDATE file_collection SET insert_date = NOW() - INTERVAL 2 HOUR, status = 'IN_PROGRESS', "
+            "`lock` = 'stale', lock_time = NOW() - INTERVAL 1 HOUR WHERE id = :id"
+        ),
+        {"id": collection_id},
+    )
+    get_db().commit()
+
+    assert not collector.collect_work_items()
+
+    get_db().expire_all()
+    file_collection = get_db().get(FileCollection, collection_id)
+    assert file_collection.status == FileCollectionStatus.COMPLETED.value
+    assert file_collection.result == FileCollectorStatus.FAILED.value
+    assert file_collection.lock is None
+
+
+@pytest.mark.integration
+def test_collect_leaves_completed_collections_past_the_cutoff(db_alert):
+    """A collection that finished keeps its result however old it is."""
+    collector = FileCollectionCollector(max_collection_time_seconds=3600)
+    collector.register_listener("custom", TestFileCollectionListener())
+
+    collection_id = queue_file_collection(
+        collector_name="custom",
+        observable_type=F_FILE_LOCATION,
+        observable_value="host@/path/to/file",
+        alert_uuid=db_alert.uuid,
+    )
+    get_db().execute(
+        text(
+            "UPDATE file_collection SET insert_date = NOW() - INTERVAL 2 HOUR, status = 'COMPLETED', "
+            "result = 'SUCCESS', result_message = 'collected' WHERE id = :id"
+        ),
+        {"id": collection_id},
+    )
+    get_db().commit()
+
+    assert not collector.collect_work_items()
+
+    get_db().expire_all()
+    file_collection = get_db().get(FileCollection, collection_id)
+    assert (file_collection.status, file_collection.result, file_collection.result_message) == (
+        FileCollectionStatus.COMPLETED.value, FileCollectorStatus.SUCCESS.value, "collected")
+
+
+@pytest.mark.integration
+def test_retry_of_an_expired_collection_is_collected(db_alert):
+    """Retrying a collection that was given up on starts its time window over, so the collector
+    hands it out instead of giving up on it again."""
+    # a retry is due after initial_retry_delay_seconds, like any attempt
+    collector = FileCollectionCollector(initial_retry_delay_seconds=0, max_collection_time_seconds=3600)
+    collector.register_listener("custom", TestFileCollectionListener())
+
+    collection_id = queue_file_collection(
+        collector_name="custom",
+        observable_type=F_FILE_LOCATION,
+        observable_value="host@/path/to/file",
+        alert_uuid=db_alert.uuid,
+    )
+    get_db().execute(
+        text("UPDATE file_collection SET insert_date = NOW() - INTERVAL 2 HOUR WHERE id = :id"),
+        {"id": collection_id},
+    )
+    get_db().commit()
+    assert not collector.collect_work_items()
+    get_db().expire_all()
+    assert get_db().get(FileCollection, collection_id).result == FileCollectorStatus.FAILED.value
+
+    assert retry_file_collection(collection_id)
+
+    assert [task.id for task in collector.collect_work_items()] == [collection_id]

@@ -1,22 +1,21 @@
+import logging
 import os
 import pytest
-from unittest.mock import Mock, patch
-from subprocess import Popen, TimeoutExpired
+from unittest.mock import Mock
 
-from saq.configuration.config import get_config, get_analysis_module_config
+from saq.configuration.config import get_analysis_module_config
 from saq.constants import ANALYSIS_MODULE_DE4DOT, ANALYSIS_MODULE_ILSPY, F_FILE, AnalysisExecutionResult, R_EXTRACTED_FROM
+from saq.modules.file_analysis import dotnet
 from saq.modules.file_analysis.dotnet import (
     De4dotAnalysis,
     De4dotAnalyzer,
     IlspyAnalysis,
     IlspyAnalyzer,
-    KEY_STDOUT,
     KEY_STDERR,
-    KEY_ERROR,
     KEY_DEOBFUSCATED,
-    KEY_EXIT_CODE,
 )
 from saq.observables.file import FileObservable
+from saq.sandbox.runner import SandboxResult
 from tests.saq.test_util import create_test_context
 
 DOTNET_SAMPLE_HEX = os.path.join(os.path.dirname(__file__), "..", "test_file_analysis", "6346eea9dff4eac53113fc2ba3b8a497.hex")
@@ -36,19 +35,19 @@ def _write_dotnet_sample(path, truncate: int = 0) -> str:
     return str(path)
 
 
-def _popen_failing_on_call(call_number: int, failure):
-    """Runs the real Popen except for the given (1-based) call, which gets the failure instead."""
+def _stopped_on_call(cls, call_number: int):
+    """Runs the real run_sandboxed_tool except for the given (1-based) call, which returns None, as it does
+    for a tool that was stopped (a timeout, too much output) or could not be run."""
     calls = []
+    real = cls.run_sandboxed_tool
 
-    def _popen(*args, **kwargs):
+    def _run(self, args, target, **kwargs):
         calls.append(args)
         if len(calls) == call_number:
-            if isinstance(failure, Exception):
-                raise failure
-            return failure
-        return Popen(*args, **kwargs)
+            return None
+        return real(self, args, target, **kwargs)
 
-    return _popen
+    return _run
 
 
 @pytest.mark.unit
@@ -61,22 +60,6 @@ class TestDe4dotAnalysis:
         assert analysis.error is None
         assert analysis.deobfuscated is False
 
-    def test_display_name(self):
-        analysis = De4dotAnalysis()
-        assert analysis.display_name == "De4dot Analysis"
-
-    def test_stdout_property(self):
-        analysis = De4dotAnalysis()
-
-        # test getter with None
-        assert analysis.stdout is None
-
-        # test setter and getter
-        test_stdout = "test stdout output"
-        analysis.stdout = test_stdout
-        assert analysis.stdout == test_stdout
-        assert analysis.details[KEY_STDOUT] == test_stdout
-
     def test_stderr_property(self):
         analysis = De4dotAnalysis()
 
@@ -88,29 +71,6 @@ class TestDe4dotAnalysis:
         analysis.stderr = test_stderr
         assert analysis.stderr == test_stderr
         assert analysis.details[KEY_STDERR] == test_stderr
-
-    def test_error_property(self):
-        analysis = De4dotAnalysis()
-
-        # test getter with None
-        assert analysis.error is None
-
-        # test setter and getter
-        test_error = "test error message"
-        analysis.error = test_error
-        assert analysis.error == test_error
-        assert analysis.details[KEY_ERROR] == test_error
-
-    def test_deobfuscated_property(self):
-        analysis = De4dotAnalysis()
-
-        # test getter with False
-        assert analysis.deobfuscated is False
-
-        # test setter and getter
-        analysis.deobfuscated = True
-        assert analysis.deobfuscated is True
-        assert analysis.details[KEY_DEOBFUSCATED] is True
 
     def test_generate_summary_with_error(self):
         analysis = De4dotAnalysis()
@@ -130,34 +90,16 @@ class TestDe4dotAnalysis:
 @pytest.mark.unit
 class TestDe4dotAnalyzer:
 
-    def test_generated_analysis_type(self):
-        analyzer = De4dotAnalyzer(
-            context=create_test_context(),
-            config=get_analysis_module_config(ANALYSIS_MODULE_DE4DOT))
-        assert analyzer.generated_analysis_type == De4dotAnalysis
-
     def test_valid_observable_types(self):
         analyzer = De4dotAnalyzer(
             context=create_test_context(),
             config=get_analysis_module_config(ANALYSIS_MODULE_DE4DOT))
         assert analyzer.valid_observable_types == F_FILE
 
-    def test_execute_analysis_file_not_exists(self, root_analysis, tmpdir):
-        analyzer = De4dotAnalyzer(
-            context=create_test_context(root=root_analysis),
-            config=get_analysis_module_config(ANALYSIS_MODULE_DE4DOT))
-
-        # create a file observable for non-existent file by first creating it, then adding it, then deleting it
-        test_file = tmpdir / "temp.exe"
-        test_file.write("temp content")
-        file_observable = root_analysis.add_file_observable(str(test_file))
-        # now remove the file so it doesn't exist when the analyzer tries to process it
-        os.remove(str(test_file))
-
-        result = analyzer.execute_analysis(file_observable)
-        assert result == AnalysisExecutionResult.COMPLETED
-
-    def test_execute_analysis_not_dotnet_file(self, root_analysis, tmpdir):
+    def test_execute_analysis_not_dotnet_file(self, root_analysis, tmpdir, monkeypatch):
+        # de4dot -d detects nothing in a text file either, so only the tool not running shows the check
+        run = Mock(return_value=None)
+        monkeypatch.setattr(De4dotAnalyzer, "run_sandboxed_tool", run)
         analyzer = De4dotAnalyzer(
             context=create_test_context(root=root_analysis),
             config=get_analysis_module_config(ANALYSIS_MODULE_DE4DOT))
@@ -174,6 +116,7 @@ class TestDe4dotAnalyzer:
         # should not have created any analysis
         analysis = file_observable.get_analysis(De4dotAnalysis)
         assert analysis is None
+        run.assert_not_called()
 
     def test_execute_analysis_no_obfuscation_detected(self, root_analysis, tmpdir):
         analyzer = De4dotAnalyzer(
@@ -192,13 +135,9 @@ class TestDe4dotAnalyzer:
         assert analysis is None
         assert not os.path.exists(f"{file_observable.full_path}.deobfuscated")
 
-    @patch("saq.modules.file_analysis.dotnet.Popen")
-    def test_execute_analysis_detection_timeout(self, mock_popen, root_analysis, tmpdir):
-        # mock the -d detection check to timeout
-        mock_process = Mock()
-        mock_process.communicate.side_effect = [TimeoutExpired(cmd="de4dot", timeout=10), (b"", b"")]
-        mock_process.kill = Mock()
-        mock_popen.return_value = mock_process
+    def test_execute_analysis_detection_stopped(self, root_analysis, tmpdir, monkeypatch):
+        # the -d detection check does not finish: nothing is known about the file, so nothing is recorded
+        monkeypatch.setattr(De4dotAnalyzer, "run_sandboxed_tool", _stopped_on_call(De4dotAnalyzer, 1))
 
         analyzer = De4dotAnalyzer(
             context=create_test_context(root=root_analysis),
@@ -209,29 +148,7 @@ class TestDe4dotAnalyzer:
 
         result = analyzer.execute_analysis(file_observable)
         assert result == AnalysisExecutionResult.COMPLETED
-
-        # verify kill was called
-        mock_process.kill.assert_called_once()
         assert file_observable.get_analysis(De4dotAnalysis) is None
-
-    @patch("saq.modules.file_analysis.dotnet.Popen")
-    def test_execute_analysis_detection_exception(self, mock_popen, root_analysis, tmpdir):
-        # mock the -d detection check to raise an exception
-        mock_popen.side_effect = Exception("Test exception")
-
-        analyzer = De4dotAnalyzer(
-            context=create_test_context(root=root_analysis),
-            config=get_analysis_module_config(ANALYSIS_MODULE_DE4DOT))
-
-        test_file = _write_dotnet_sample(tmpdir / "test.exe")
-        file_observable = root_analysis.add_file_observable(test_file)
-
-        result = analyzer.execute_analysis(file_observable)
-        assert result == AnalysisExecutionResult.COMPLETED
-
-        # should not have created any analysis
-        analysis = file_observable.get_analysis(De4dotAnalysis)
-        assert analysis is None
 
     def test_execute_analysis_successful_deobfuscation(self, root_analysis, tmpdir):
         analyzer = De4dotAnalyzer(
@@ -255,6 +172,7 @@ class TestDe4dotAnalyzer:
         assert analysis.deobfuscated is True
 
         # check that deobfuscated file was added as observable
+        assert [o.file_name for o in analysis.observables] == [f"{file_observable.file_name}.deobfuscated"]
         deobfuscated_observable = None
         for obs in analysis.observables:
             if isinstance(obs, FileObservable) and obs.file_name.endswith(".deobfuscated"):
@@ -266,12 +184,9 @@ class TestDe4dotAnalyzer:
         assert deobfuscated_observable.has_relationship(R_EXTRACTED_FROM)
         assert deobfuscated_observable.redirection == file_observable
 
-    def test_execute_analysis_deobfuscation_timeout(self, root_analysis, tmpdir, monkeypatch):
-        # the real -d detection check runs, the deobfuscation process times out
-        mock_deobfuscate_process = Mock()
-        mock_deobfuscate_process.communicate.side_effect = [TimeoutExpired(cmd="de4dot", timeout=10), (b"", b"")]
-        mock_deobfuscate_process.kill = Mock()
-        monkeypatch.setattr("saq.modules.file_analysis.dotnet.Popen", _popen_failing_on_call(2, mock_deobfuscate_process))
+    def test_execute_analysis_deobfuscation_stopped(self, root_analysis, tmpdir, monkeypatch):
+        # the real -d detection check runs, the deobfuscation does not finish
+        monkeypatch.setattr(De4dotAnalyzer, "run_sandboxed_tool", _stopped_on_call(De4dotAnalyzer, 2))
 
         analyzer = De4dotAnalyzer(
             context=create_test_context(root=root_analysis),
@@ -283,17 +198,26 @@ class TestDe4dotAnalyzer:
         result = analyzer.execute_analysis(file_observable)
         assert result == AnalysisExecutionResult.COMPLETED
 
-        # verify kill was called
-        mock_deobfuscate_process.kill.assert_called_once()
-
-        # should have created analysis
         analysis = file_observable.get_analysis(De4dotAnalysis)
         assert analysis is not None
+        assert analysis.error == "de4dot did not finish"
         assert analysis.deobfuscated is True
+        # a stopped tool's output is never kept
+        assert not os.path.exists(f"{file_observable.full_path}.deobfuscated")
+        assert not analysis.observables
 
-    def test_execute_analysis_deobfuscation_exception(self, root_analysis, tmpdir, monkeypatch):
-        # the real -d detection check runs, the deobfuscation process raises
-        monkeypatch.setattr("saq.modules.file_analysis.dotnet.Popen", _popen_failing_on_call(2, Exception("Test exception")))
+    def test_a_deobfuscation_that_writes_nothing_fails(self, root_analysis, tmpdir, monkeypatch, caplog):
+        # the real -d detection check runs, the deobfuscation exits without writing its file
+        real = De4dotAnalyzer.run_sandboxed_tool
+        calls = []
+
+        def _run(self, args, target, **kwargs):
+            calls.append(args)
+            if len(calls) == 2:
+                return SandboxResult(returncode=1, stdout="", stderr="loading\nERROR: bad image\n")
+            return real(self, args, target, **kwargs)
+
+        monkeypatch.setattr(De4dotAnalyzer, "run_sandboxed_tool", _run)
 
         analyzer = De4dotAnalyzer(
             context=create_test_context(root=root_analysis),
@@ -302,14 +226,35 @@ class TestDe4dotAnalyzer:
         test_file = _write_dotnet_sample(tmpdir / "test.exe")
         file_observable = root_analysis.add_file_observable(test_file)
 
-        result = analyzer.execute_analysis(file_observable)
-        assert result == AnalysisExecutionResult.COMPLETED
+        assert analyzer.execute_analysis(file_observable) == AnalysisExecutionResult.COMPLETED
 
-        # should have created analysis with error
         analysis = file_observable.get_analysis(De4dotAnalysis)
-        assert analysis is not None
-        assert analysis.error == "Test exception"
-        assert analysis.deobfuscated is True
+        assert analysis.error == "de4dot exited with status 1: ERROR: bad image, without writing a deobfuscated file"
+        assert analysis.generate_summary().startswith("De4dot Analysis error: ")
+        assert not analysis.observables
+        [record] = [r for r in caplog.records if "failed on" in r.getMessage()]
+        assert record.levelno == logging.INFO
+        assert record.path == file_observable.full_path
+
+    @pytest.mark.skipif(not os.path.exists("/opt/de4dotEx/de4dot"), reason="de4dot is not installed")
+    def test_a_runtime_the_sandbox_keeps_from_starting_is_reported(self, root_analysis, tmpdir, monkeypatch, caplog):
+        # CoreCLR does not start without its own /proc/<pid>
+        monkeypatch.setattr(dotnet, "DOTNET_READ_DIRS", [])
+        analyzer = De4dotAnalyzer(
+            context=create_test_context(root=root_analysis),
+            config=get_analysis_module_config(ANALYSIS_MODULE_DE4DOT))
+        file_observable = root_analysis.add_file_observable(_write_dotnet_sample(tmpdir / "test.exe"))
+
+        assert analyzer.execute_analysis(file_observable) == AnalysisExecutionResult.COMPLETED
+
+        assert file_observable.get_analysis(De4dotAnalysis) is None
+        [record] = [r for r in caplog.records if "in the sandbox" in r.getMessage()]
+        assert record.levelno == logging.ERROR
+        assert "Failed to create CoreCLR" in record.getMessage()
+
+    def test_de4dot_runs_the_binary_not_the_wrapper(self):
+        # the wrapper script execs the binary in /opt/de4dotEx, which the sandbox would not let it read
+        assert get_analysis_module_config(ANALYSIS_MODULE_DE4DOT).binary_path == "/opt/de4dotEx/de4dot"
 
 
 @pytest.mark.unit
@@ -319,29 +264,6 @@ class TestIlspyAnalysis:
         analysis = IlspyAnalysis()
         assert analysis.stderr is None
         assert analysis.exit_code is None
-
-    def test_exit_code_property(self):
-        analysis = IlspyAnalysis()
-
-        # test getter with None
-        assert analysis.exit_code is None
-
-        # test setter and getter
-        analysis.exit_code = 0
-        assert analysis.exit_code == 0
-        assert analysis.details[KEY_EXIT_CODE] == 0
-
-    def test_stderr_property(self):
-        analysis = IlspyAnalysis()
-
-        # test getter with None
-        assert analysis.stderr is None
-
-        # test setter and getter
-        test_stderr = "test stderr output"
-        analysis.stderr = test_stderr
-        assert analysis.stderr == test_stderr
-        assert analysis.details[KEY_STDERR] == test_stderr
 
     def test_generate_summary_basic(self):
         analysis = IlspyAnalysis()
@@ -356,13 +278,6 @@ class TestIlspyAnalysis:
         summary = analysis.generate_summary()
         assert summary == "Ilspy Analysis: exit code 0"
 
-    def test_generate_summary_with_stderr(self):
-        analysis = IlspyAnalysis()
-        analysis.stderr = "some error message"
-
-        summary = analysis.generate_summary()
-        assert summary == "Ilspy Analysis: stderr: some error message"
-
     def test_generate_summary_with_both(self):
         analysis = IlspyAnalysis()
         analysis.exit_code = 1
@@ -371,44 +286,22 @@ class TestIlspyAnalysis:
         summary = analysis.generate_summary()
         assert summary == "Ilspy Analysis: exit code 1: stderr: error occurred"
 
+    def test_generate_summary_with_error(self):
+        analysis = IlspyAnalysis()
+        analysis.exit_code = 1
+        analysis.error = "ilspy exited with status 1, without writing IL"
+
+        assert analysis.generate_summary() == "Ilspy Analysis: failed: ilspy exited with status 1, without writing IL"
+
 
 @pytest.mark.unit
 class TestIlspyAnalyzer:
-
-    def test_generated_analysis_type(self):
-        analyzer = IlspyAnalyzer(
-            context=create_test_context(),
-            config=get_analysis_module_config(ANALYSIS_MODULE_ILSPY))
-        assert analyzer.generated_analysis_type == IlspyAnalysis
 
     def test_valid_observable_types(self):
         analyzer = IlspyAnalyzer(
             context=create_test_context(),
             config=get_analysis_module_config(ANALYSIS_MODULE_ILSPY))
         assert analyzer.valid_observable_types == F_FILE
-
-    def test_binary_path_property(self):
-        analyzer = IlspyAnalyzer(
-            context=create_test_context(),
-            config=get_analysis_module_config(ANALYSIS_MODULE_ILSPY))
-        # just verify the property returns something (it reads from config)
-        assert analyzer.binary_path is not None
-        assert isinstance(analyzer.binary_path, str)
-
-    def test_execute_analysis_file_not_exists(self, root_analysis, tmpdir):
-        analyzer = IlspyAnalyzer(
-            context=create_test_context(root=root_analysis),
-            config=get_analysis_module_config(ANALYSIS_MODULE_ILSPY))
-
-        # create a file observable for non-existent file by first creating it, then adding it, then deleting it
-        test_file = tmpdir / "temp.exe"
-        test_file.write("temp content")
-        file_observable = root_analysis.add_file_observable(str(test_file))
-        # now remove the file so it doesn't exist when the analyzer tries to process it
-        os.remove(str(test_file))
-
-        result = analyzer.execute_analysis(file_observable)
-        assert result == AnalysisExecutionResult.COMPLETED
 
     def test_execute_analysis_not_dotnet_file(self, root_analysis, tmpdir):
         analyzer = IlspyAnalyzer(
@@ -479,16 +372,26 @@ class TestIlspyAnalyzer:
         assert analysis.exit_code != 0
         assert "BadImageFormatException" in analysis.stderr
 
-    @patch("saq.modules.file_analysis.dotnet.Popen")
-    def test_execute_analysis_timeout(self, mock_popen, root_analysis, tmpdir):
-        # mock the ilspy process to timeout on first communicate, then return on second
-        mock_process = Mock()
-        mock_process.communicate.side_effect = [
-            TimeoutExpired(cmd="ilspy", timeout=10),
-            (None, b"")
-        ]
-        mock_process.kill = Mock()
-        mock_popen.return_value = mock_process
+    def test_ilspy_writes_its_own_file_and_skips_the_update_check(self, root_analysis, tmpdir, monkeypatch):
+        # writing stdout to the .il file was a few bytes per write(), minutes on a slow filesystem, and -o
+        # turns on a network update check unless it is disabled
+        run = Mock(return_value=None)
+        monkeypatch.setattr(IlspyAnalyzer, "run_sandboxed_tool", run)
+
+        analyzer = IlspyAnalyzer(
+            context=create_test_context(root=root_analysis),
+            config=get_analysis_module_config(ANALYSIS_MODULE_ILSPY))
+
+        test_file = _write_dotnet_sample(tmpdir / "test.exe")
+        analyzer.execute_analysis(root_analysis.add_file_observable(test_file))
+
+        argv = run.call_args.args[0]
+        assert "--disable-updatecheck" in argv
+        assert "-o" in argv
+
+    def test_execute_analysis_stopped(self, root_analysis, tmpdir, monkeypatch, caplog):
+        # ilspy does not finish, so it never wrote its file
+        monkeypatch.setattr(IlspyAnalyzer, "run_sandboxed_tool", _stopped_on_call(IlspyAnalyzer, 1))
 
         analyzer = IlspyAnalyzer(
             context=create_test_context(root=root_analysis),
@@ -500,17 +403,17 @@ class TestIlspyAnalyzer:
         result = analyzer.execute_analysis(file_observable)
         assert result == AnalysisExecutionResult.COMPLETED
 
-        # verify kill was called
-        mock_process.kill.assert_called_once()
-
-        # should have created analysis
         analysis = file_observable.get_analysis(IlspyAnalysis)
         assert analysis is not None
+        assert analysis.error == "ilspy did not finish"
+        assert analysis.generate_summary() == "Ilspy Analysis: failed: ilspy did not finish"
+        # with no .il written there is nothing to add, and no warning about a missing file
+        assert not [obs for obs in analysis.observables if obs.file_name.endswith(".il")]
+        assert "non-existant file" not in caplog.text
 
-    @patch("saq.modules.file_analysis.dotnet.Popen")
-    def test_execute_analysis_exception(self, mock_popen, root_analysis, tmpdir):
-        # mock the ilspy process to raise an exception
-        mock_popen.side_effect = Exception("Test exception")
+    def test_execute_analysis_that_writes_no_il_fails(self, root_analysis, tmpdir, monkeypatch, caplog):
+        monkeypatch.setattr(IlspyAnalyzer, "run_sandboxed_tool", Mock(
+            return_value=SandboxResult(returncode=1, stdout="", stderr="System.BadImageFormatException: bad\n")))
 
         analyzer = IlspyAnalyzer(
             context=create_test_context(root=root_analysis),
@@ -519,13 +422,14 @@ class TestIlspyAnalyzer:
         test_file = _write_dotnet_sample(tmpdir / "test.exe")
         file_observable = root_analysis.add_file_observable(test_file)
 
-        result = analyzer.execute_analysis(file_observable)
-        assert result == AnalysisExecutionResult.COMPLETED
+        assert analyzer.execute_analysis(file_observable) == AnalysisExecutionResult.COMPLETED
 
-        # should have created analysis with error in stderr
         analysis = file_observable.get_analysis(IlspyAnalysis)
-        assert analysis is not None
-        assert analysis.stderr == "Test exception"
+        assert analysis.exit_code == 1
+        assert analysis.error == "ilspy exited with status 1: System.BadImageFormatException: bad, without writing IL"
+        assert not analysis.observables
+        [record] = [r for r in caplog.records if "failed on" in r.getMessage()]
+        assert record.levelno == logging.INFO
 
     def test_execute_analysis_duplicate_filename(self, root_analysis, tmpdir):
         analyzer = IlspyAnalyzer(

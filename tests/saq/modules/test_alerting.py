@@ -11,8 +11,9 @@ from saq.database.util.alert import ALERT
 from saq.engine.core import Engine
 from saq.engine.engine_configuration import EngineConfiguration
 from saq.engine.enums import EngineExecutionMode
+from saq.modules.test import BasicTestAnalysis
 from saq.util.uuid import get_storage_dir
-from tests.saq.helpers import create_root_analysis, log_count, wait_for_log_count, wait_for_process
+from tests.saq.helpers import create_root_analysis, log_count, person, wait_for_log_count, wait_for_process
 
 @pytest.mark.integration
 def test_detection(root_analysis):
@@ -53,7 +54,7 @@ def test_no_detection(root_analysis):
     assert root_analysis.analysis_mode == 'test_groups'
 
     # make sure we detected the change in modes
-    assert log_count('analysis mode for RootAnalysis({}) changed from test_empty to correlation'.format(root_analysis.uuid)) == 0
+    assert log_count('analysis mode for RootAnalysis({}) changed from test_groups to correlation'.format(root_analysis.uuid)) == 0
     assert log_count('completed analysis RootAnalysis({})'.format(root_analysis.uuid)) == 1
 
 @pytest.mark.integration
@@ -67,18 +68,18 @@ def test_existing_alert(root_analysis):
     ALERT(root_analysis)
 
     # now analyze the alert that's already in the database
-    engine = Engine()
+    engine = Engine(config=EngineConfiguration(local_analysis_modes=[ANALYSIS_MODE_CORRELATION]))
     engine.configuration_manager.config.alerting_enabled = True
-    engine.configuration_manager.enable_module('basic_test')
+    engine.configuration_manager.enable_module('basic_test', ANALYSIS_MODE_CORRELATION)
     engine.start_single_threaded(execution_mode=EngineExecutionMode.SINGLE_SHOT)
 
-    assert load_alert(root_analysis.uuid)
-
-    # and we should have a warning about the alert already existing
-    #self.assertEqual(log_count('uuid {} already exists in alerts table'.format(root.uuid)), 1)
+    # ALERT() stored the alert before basic_test added its detection point, so the detection is
+    # there only if the engine synced the alert it analyzed
+    get_db().close()
+    assert load_alert(root_analysis.uuid).detection_count == 1
 
 @pytest.mark.integration
-def test_whitelisted(root_analysis):
+def test_a_whitelisted_tag_neither_stops_analysis_nor_suppresses_the_alert(root_analysis):
     root_analysis.analysis_mode = "test_groups"
     observable = root_analysis.add_observable_by_spec(F_TEST, 'test_8')
     root_analysis.save()
@@ -89,10 +90,14 @@ def test_whitelisted(root_analysis):
     engine.configuration_manager.enable_module('basic_test')
     engine.start_single_threaded(execution_mode=EngineExecutionMode.SINGLE_SHOT)
 
-    assert not load_alert(root_analysis.uuid)
+    alert = load_alert(root_analysis.uuid)
+    assert alert
+    assert alert.detection_count == 1
 
-    # and we should have a warning about the alert already existing
-    #self.assertEqual(log_count('uuid {} already exists in alerts table'.format(root.uuid)), 1)
+    # the observable basic_test added after tagging its parent was still analyzed
+    root = load_root(get_storage_dir(root_analysis.uuid))
+    (child,) = root.find_observables(lambda o: o.type == F_TEST and o.value == 'test_1')
+    assert child.get_and_load_analysis(BasicTestAnalysis)
 
 @pytest.mark.system
 def test_alert_dispositioned():
@@ -130,7 +135,7 @@ def test_alert_dispositioned():
     # set the disposition of this alert
     set_dispositions([root.uuid],
                         DISPOSITION_FALSE_POSITIVE, 
-                        get_db().query(User).first().id)
+                        person(get_db().query(User).first().id))
 
     # AnalysisExecutor._check_for_alert_disposition cancels the analysis mid-module
     assert wait_for_log_count("stopping analysis on dispositioned alert", 1)
@@ -225,7 +230,7 @@ def test_alert_continue_specific_disposition():
     # set the disposition of this alert
     set_dispositions([root.uuid],
                         DISPOSITION_DELIVERY,
-                        get_db().query(User).first().id)
+                        person(get_db().query(User).first().id))
 
     # DELIVERY is not in stop_analysis_on_dispositions, so
     # AnalysisExecutor._check_for_alert_disposition lets the analysis run on

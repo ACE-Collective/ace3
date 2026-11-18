@@ -24,8 +24,10 @@ from saq.svs.run_events import new_run_event
 from saq.svs.runs import Registration, TargetSpec
 from tests.aceapi_v2.conftest import api_key_client, make_api_key
 from tests.saq.svs.conftest import add_catalog_test
+from tests.saq.helpers import person
 
-pytestmark = pytest.mark.integration
+# several runs on one test host are fixtures here; the host's claim is tested in test_runs.py
+pytestmark = [pytest.mark.integration, pytest.mark.usefixtures("overlapping_runs")]
 
 GUID = "aaaaaaaa-1111-4111-8111-111111111111"
 LINUX_GUID = "bbbbbbbb-2222-4222-8222-222222222222"
@@ -36,8 +38,8 @@ UNKNOWN_RUN = "dddddddd-4444-4444-8444-444444444444"
 def setup(no_hunts):
     add_catalog_test(GUID)
     add_catalog_test(LINUX_GUID, platforms=("linux",), technique="T1003", name="Dump credentials")
-    create_host(build_spec("win10-01.lab.example", usernames=["svc_art"], platform="windows"), None)
-    create_host(build_spec("lnx-01", platform="linux"), None)
+    create_host(build_spec("win10-01.lab.example", usernames=["svc_art"], platform="windows"), person(None))
+    create_host(build_spec("lnx-01", platform="linux"), person(None))
 
 
 @pytest.fixture
@@ -48,7 +50,7 @@ def no_settle(monkeypatch):
 
 
 def _caller(user_id=None) -> Caller:
-    return Caller(name="art-launcher", user_id=user_id, address="10.1.2.3")
+    return Caller(person(user_id, "art-launcher"), address="10.1.2.3")
 
 
 def _register(created_at: datetime, *, guid=GUID, host="win10-01.lab.example", username="LAB\\svc_art",
@@ -374,7 +376,7 @@ class TestSuppressionShare:
         with private_transaction() as session:
             for status in reviewed:
                 session.add(SVSRunResult(run_id=run_id, signature_uuid=str(uuid.uuid4()), reviewed_status=status))
-            session.add(new_run_event(run_id, RunEventKind.REVIEWED, "unittest", now=at))
+            session.add(new_run_event(run_id, RunEventKind.REVIEWED, person(None), now=at))
 
     @pytest.mark.asyncio
     async def test_nothing_reviewed(self, client: AsyncClient):

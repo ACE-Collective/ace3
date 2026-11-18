@@ -1,29 +1,69 @@
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 import logging
-from threading import Event, Thread
 from typing import Optional
-from uuid import uuid4
 
-from sqlalchemy import or_, text
+from sqlalchemy import text
 from sqlalchemy.sql import func
 
 from saq.database.model import Alert, FileCollection
-from saq.database.pool import get_db, remove_all_sessions
-from saq.file_collection.interface import FileCollectionListener
-from saq.file_collection.types import FileCollectionStatus, FileCollectionWorkItem
+from saq.database.pool import get_db
+from saq.file_collection.storage import unattached_storage_dir
+from saq.file_collection.types import FileCollectionStatus, FileCollectionWorkItem, FileCollectorStatus
+from saq.queue_service import QueueCollector
 from saq.util.time import calculate_backoff_delay
 
 
-def create_file_collection_work_item(file_collection: FileCollection) -> Optional[FileCollectionWorkItem]:
+def give_up(file_collection: FileCollection, message: str, *conditions) -> bool:
+    """Finishes a collection this collector has locked as failed with the given message, when
+    `conditions` also hold, and returns whether it did. QueueCollector.collect_work_items commits
+    the update."""
+    update = FileCollection.__table__.update()
+    update = update.values(
+        lock=None,
+        status=FileCollectionStatus.COMPLETED.value,
+        result=FileCollectorStatus.FAILED.value,
+        result_message=message,
+        update_time=func.NOW(),
+    )
+    update = update.where(FileCollection.id == file_collection.id, FileCollection.lock == file_collection.lock, *conditions)
+    if get_db().execute(update).rowcount == 0:
+        return False
+
+    logging.warning(
+        f"file collection {file_collection.id} for {file_collection.type} {file_collection.key} failed: {message}",
+        extra={"file_collection_id": file_collection.id, "alert_uuid": file_collection.alert_uuid},
+    )
+    return True
+
+
+def create_file_collection_work_item(
+    file_collection: FileCollection, max_collection_time_seconds: int
+) -> Optional[FileCollectionWorkItem]:
     """Creates a FileCollectionWorkItem from a FileCollection database object.
 
-    Returns None if the associated alert cannot be found.
+    The collected file goes in the alert's storage directory, or for a collection no alert asked
+    for, in this node's directory for it (saq.file_collection.storage). Deleting an alert leaves
+    its collections behind. A collection with no work left is marked completed and failed, its
+    lock is released and None is returned: one older than max_collection_time_seconds, which is
+    no longer collected, and one whose alert no longer exists, which has nowhere to put its file.
+    Left pending, a collection is what every later request for the same file attaches to
+    (saq.file_collection.database).
     """
-    # Look up the alert to get its storage_dir
-    alert = get_db().query(Alert).filter(Alert.uuid == file_collection.alert_uuid).first()
-    if alert is None:
-        logging.error(f"Alert {file_collection.alert_uuid} not found for file collection {file_collection.id}")
+    # measured on the database clock, in the update, because insert_date is the database's
+    expired = func.NOW() >= func.DATE_ADD(
+        FileCollection.insert_date, text(f"INTERVAL {max_collection_time_seconds} SECOND")
+    )
+    if give_up(file_collection, f"gave up: not collected within {timedelta(seconds=max_collection_time_seconds)}", expired):
         return None
+
+    if file_collection.alert_uuid is None:
+        storage_dir = unattached_storage_dir(file_collection.id)
+    else:
+        alert = get_db().query(Alert).filter(Alert.uuid == file_collection.alert_uuid).first()
+        if alert is None:
+            give_up(file_collection, f"alert {file_collection.alert_uuid} no longer exists")
+            return None
+        storage_dir = alert.storage_dir
 
     return FileCollectionWorkItem(
         id=file_collection.id,
@@ -31,17 +71,21 @@ def create_file_collection_work_item(file_collection: FileCollection) -> Optiona
         type=file_collection.type,
         key=file_collection.key,
         alert_uuid=file_collection.alert_uuid,
-        storage_dir=alert.storage_dir,
+        storage_dir=storage_dir,
         retry_count=file_collection.retry_count,
         max_retries=file_collection.max_retries,
         lock=file_collection.lock,
     )
 
 
-class FileCollectionCollector:
-    """Responsible for collecting file collection jobs from the database and sending them to the appropriate workers."""
+class FileCollectionCollector(QueueCollector[FileCollectionWorkItem]):
+    """Responsible for collecting file collection jobs from the database and sending them to the appropriate workers.
 
-    collector_thread: Thread
+    Uses exponential backoff for retry delays based on retry_count. A collection still unfinished
+    max_collection_time_seconds after it was queued is finished as failed the next time it is due."""
+
+    model = FileCollection
+    label = "file collection"
 
     def __init__(
         self,
@@ -50,106 +94,16 @@ class FileCollectionCollector:
         max_retry_delay_seconds: int = 3600,
         max_collection_time_seconds: int = 604800,
     ):
-        self.lock_timeout_seconds = lock_timeout_seconds
+        super().__init__(lock_timeout_seconds=lock_timeout_seconds)
         self.initial_retry_delay_seconds = initial_retry_delay_seconds
         self.max_retry_delay_seconds = max_retry_delay_seconds
         self.max_collection_time_seconds = max_collection_time_seconds
-        self.collector_startup_event = Event()
-        self.shutdown_event = Event()
 
-        # maps a collector name to a FileCollectionListener instance
-        self.listeners: dict[str, FileCollectionListener] = {}
-
-    def start(self):
-        self.collector_thread = Thread(target=self.collection_loop, name="File Collection Collector")
-        self.collector_thread.start()
-
-    def start_single_threaded(self):
-        # execute the loop once and exit
-        self.shutdown_event.set()
-        self.collection_loop()
-
-    def wait_for_start(self, timeout: float) -> bool:
-        if not self.collector_startup_event.wait(timeout):
-            logging.error("file collection collector thread did not start")
-            return False
-
-        return True
-
-    def stop(self):
-        self.shutdown_event.set()
-
-    def wait(self):
-        self.collector_thread.join()
-
-    def register_file_collection_listener(self, name: str, listener: FileCollectionListener):
-        """Called to associate a file collector name with a listener.
-        Any jobs collected for this collector will be sent to this listener."""
-        if name in self.listeners:
-            raise ValueError(f"file collection listener {name} already registered")
-
-        self.listeners[name] = listener
-
-    def notify_file_collection_listeners(self, work_item: FileCollectionWorkItem):
-        """Called to queue a file collection for processing."""
-        if work_item.name not in self.listeners:
-            raise ValueError(f"file collector name {work_item.name} not registered")
-
-        self.listeners[work_item.name].handle_file_collection_request(work_item)
-
-    def pending_collection_ids(self) -> set[int]:
-        """Returns the ids of every file collection currently held by a listener (queued or in progress)."""
-        pending: set[int] = set()
-        for listener in self.listeners.values():
-            pending.update(listener.pending_collection_ids())
-        return pending
-
-    def collect_work_items(self) -> list[FileCollectionWorkItem]:
-        """Collects the file collection targets to process from the database.
-
-        Uses exponential backoff for retry delays based on retry_count,
-        and time-based cutoff based on max_collection_time_seconds.
-        """
-        lock_uuid = str(uuid4())
-
-        # First, get all potential candidates (not completed, not expired by time)
-        query = get_db().query(FileCollection)
-        # only get collections that are ...
-        # ...for the collectors we are interested in
-        query = query.filter(FileCollection.name.in_(self.listeners.keys()))
-        # ... not locked or that are locked but have timed out
-        query = query.filter(
-            or_(
-                FileCollection.lock == None,  # noqa: E711
-                func.NOW() >= func.DATE_ADD(
-                    FileCollection.lock_time, text(f"INTERVAL {self.lock_timeout_seconds} SECOND")
-                ),
-            )
-        )
-        # ... not completed
-        query = query.filter(FileCollection.status != FileCollectionStatus.COMPLETED.value)
-        # ... have not exceeded max collection time (time-based cutoff)
-        query = query.filter(
-            func.NOW() < func.DATE_ADD(
-                FileCollection.insert_date, text(f"INTERVAL {self.max_collection_time_seconds} SECOND")
-            )
-        )
-        query = query.order_by(FileCollection.insert_date.desc())
-
-        collection_objects = query.all()
-
-        # Skip anything a listener already holds. A worker's queue can hold an item longer than
-        # lock_timeout_seconds when collections are slow, and re-locking it here would push a
-        # duplicate copy into that queue.
-        pending_ids = self.pending_collection_ids()
-
+    def ready(self, rows: list[FileCollection]) -> list[FileCollection]:
         # Filter by per-record exponential backoff delay
         ready_for_retry = []
         now = datetime.now(UTC)
-        for c in collection_objects:
-            if c.id in pending_ids:
-                continue
-
+        for c in rows:
             # Calculate the required delay for this record based on its retry_count
             required_delay = calculate_backoff_delay(
                 c.retry_count,
@@ -171,49 +125,7 @@ class FileCollectionCollector:
                 if elapsed >= required_delay:
                     ready_for_retry.append(c)
 
-        target_ids = [c.id for c in ready_for_retry]
+        return ready_for_retry
 
-        if not target_ids:
-            return []
-
-        # attempt to lock found targets
-        update = FileCollection.__table__.update()
-        update = update.values(
-            lock=lock_uuid,
-            # the lock timeout is evaluated server-side against NOW(), so the lock timestamp has to
-            # come from the database clock too -- a client-side datetime with microseconds rounds up
-            # into a DATETIME(0) column and can land ahead of NOW(), which blocks reclaiming the row
-            lock_time=func.NOW(),
-            status=FileCollectionStatus.IN_PROGRESS.value,
-        )
-        update = update.where(FileCollection.id.in_(target_ids))
-        get_db().execute(update)
-        get_db().commit()
-
-        # fetch successfully locked targets
-        query = get_db().query(FileCollection)
-        query = query.filter(FileCollection.lock == lock_uuid)
-        query = query.order_by(FileCollection.insert_date.desc())
-        result = query.all()
-        # Filter out None results (when alert not found)
-        work_items = [create_file_collection_work_item(c) for c in result]
-        return [item for item in work_items if item is not None]
-
-    def collection_loop(self):
-        self.collector_startup_event.set()
-        while True:
-            try:
-                for work_item in self.collect_work_items():
-                    self.notify_file_collection_listeners(work_item)
-            except Exception as e:
-                logging.exception(f"error collecting file collections from database: {e}")
-            finally:
-                try:
-                    remove_all_sessions()
-                except Exception as e:
-                    logging.exception(f"error removing database connection: {e}")
-
-            if self.shutdown_event.is_set():
-                break
-
-            self.shutdown_event.wait(1)
+    def build_work_item(self, row: FileCollection) -> Optional[FileCollectionWorkItem]:
+        return create_file_collection_work_item(row, self.max_collection_time_seconds)

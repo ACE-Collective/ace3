@@ -53,23 +53,13 @@ class ModuleLoader:
         """
         # Build analysis mode to module section mapping
         analysis_mode_section_names_map = self._build_analysis_mode_mapping()
-        
-        # Get all unique module sections to load
-        analysis_module_sections = set()
-        for mode_sections in analysis_mode_section_names_map.values():
-            analysis_module_sections.update(mode_sections)
-        
-        # Add locally enabled modules
-        analysis_module_sections.update(self.locally_enabled_modules)
-        
+        analysis_module_sections = self._module_names_to_load(analysis_mode_section_names_map)
+
         logging.debug(f"loading {len(analysis_module_sections)} analysis modules...")
         
         # Load each module
         loaded_modules = {}
         for section_name in analysis_module_sections:
-            if not self._should_load_module(section_name):
-                continue
-            
             module = self._load_single_module(section_name)
             if module is None:
                 continue
@@ -85,6 +75,17 @@ class ModuleLoader:
         logging.debug(f"finished loading {len(loaded_modules)} modules")
         return loaded_modules
     
+    def module_names_to_load(self) -> Set[str]:
+        """Returns the names of the analysis modules load_modules() would load, without loading them."""
+        return self._module_names_to_load(self._build_analysis_mode_mapping())
+
+    def _module_names_to_load(self, analysis_mode_section_names_map: Dict[str, Set[str]]) -> Set[str]:
+        analysis_module_sections = set(self.locally_enabled_modules)
+        for mode_sections in analysis_mode_section_names_map.values():
+            analysis_module_sections.update(mode_sections)
+
+        return {name for name in analysis_module_sections if self._should_load_module(name)}
+
     def is_analysis_mode_supported(self, analysis_mode: str) -> bool:
         """Check if the given analysis mode is supported."""
         if analysis_mode in self.excluded_analysis_modes:
@@ -138,25 +139,45 @@ class ModuleLoader:
         for module_group_name in analysis_mode_config.module_groups:
             module_group_config = get_config().get_module_group_config(module_group_name)
             for module_name in module_group_config.modules:
-                # make sure the module exists
-                get_config().get_analysis_module_config(module_name)
+                if not self._is_module_configured(module_name, analysis_mode_config.name, module_group_name):
+                    continue
+
                 analysis_mode_module_names_map[analysis_mode_config.name].add(module_name)
-    
+
     def _add_individual_modules(self, analysis_mode_config: AnalysisModeConfig,
                                analysis_mode_module_names_map: Dict[str, Set[str]]):
         """Add or remove individual modules for an analysis mode."""
         # add any enabled modules
         for key_name in analysis_mode_config.enabled_modules:
-            # make sure the referenced module exists
-            get_config().get_analysis_module_config(key_name)
+            if not self._is_module_configured(key_name, analysis_mode_config.name):
+                continue
+
             analysis_mode_module_names_map[analysis_mode_config.name].add(key_name)
 
         # and then remove any disabled modules
         for key_name in analysis_mode_config.disabled_modules:
-            # make sure the referenced module exists
-            get_config().get_analysis_module_config(key_name)
+            if not self._is_module_configured(key_name, analysis_mode_config.name):
+                continue
+
             analysis_mode_module_names_map[analysis_mode_config.name].discard(key_name)
-    
+
+    def _is_module_configured(self, module_name: str, analysis_mode: str, module_group: Optional[str] = None) -> bool:
+        # a site overlay can still name a module ACE has since removed (or misspell one); failing on
+        # it would stop every engine worker, so the reference is skipped and logged at ERROR instead
+        if get_config().has_analysis_module_config(module_name):
+            return True
+
+        logging.error(
+            "analysis mode %s references analysis module %s%s, which has no analysis_module_%s "
+            "config (it was removed from ACE, or the name is misspelled); ignoring it, fix or "
+            "delete the reference in the config overlay that sets it",
+            analysis_mode, module_name,
+            f" through module group {module_group}" if module_group else "",
+            module_name,
+            extra={"analysis_mode": analysis_mode, "analysis_module": module_name, "module_group": module_group},
+        )
+        return False
+
     def _add_locally_mapped_modules(self, analysis_mode_config: AnalysisModeConfig, analysis_mode_module_names_map: Dict[str, Set[str]]):
         """Add locally mapped modules for testing."""
         assert isinstance(analysis_mode_config, AnalysisModeConfig)
@@ -170,9 +191,8 @@ class ModuleLoader:
     def _should_load_module(self, analysis_module_name: str) -> bool:
         """Determine if a module should be loaded based on configuration."""
         if not self.locally_enabled_modules:
-            module_config = get_config().get_analysis_module_config(analysis_module_name)
             # is this module disabled?
-            if not module_config.enabled:
+            if not get_config().is_analysis_module_enabled(analysis_module_name):
                 logging.debug(f"{analysis_module_name} is disabled")
                 return False
             

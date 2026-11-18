@@ -1,6 +1,5 @@
 import logging
 import os
-from subprocess import PIPE, Popen
 from typing import override
 from saq.analysis.analysis import Analysis
 from saq.constants import F_FILE, AnalysisExecutionResult
@@ -97,14 +96,21 @@ class DMGAnalyzer(AnalysisModule):
 
         analysis = self.create_analysis(_file)
 
-        # this simply creates the img file in the same folder the file is in
-        # replacing .dmg with .img
-        process = Popen(["dmg2img", local_file_path], stdout=PIPE, stderr=PIPE)
-        analysis.details["stdout"], analysis.details["stderr"] = process.communicate()
+        # the image is kept next to the dmg, replacing .dmg with .img
         image_file = local_file_path[:-4] + ".img"
+        result = self.run_sandboxed_tool(["dmg2img", local_file_path, "image.img"], local_file_path,
+                                         outputs={"image.img": image_file})
+        if result is None:
+            # whatever it wrote is incomplete, and was not kept
+            analysis.error = "dmg2img did not finish"
+            return AnalysisExecutionResult.COMPLETED
+
+        analysis.details["stdout"], analysis.details["stderr"] = result.stdout, result.stderr
 
         if not os.path.exists(image_file):
-            logging.debug(f"failed to create img file {image_file} from {local_file_path}")
+            analysis.error = f"{result.failure_reason('dmg2img')}, without writing an image"
+            logging.info("%s failed on %s: %s", self, local_file_path, analysis.error,
+                         extra={"module_name": self.name, "path": local_file_path, "root_uuid": self.get_root().uuid})
             return AnalysisExecutionResult.COMPLETED
 
         analysis.details["image_file"] = image_file
@@ -116,12 +122,22 @@ class DMGAnalyzer(AnalysisModule):
             file_observable.redirection = _file
 
         # get the list of files
-        process = Popen(['7z', 'l', image_file], stdout=PIPE, stderr=PIPE, universal_newlines=True)
-        _stdout, _stderr = process.communicate()
+        result = self.run_sandboxed_tool(['7z', 'l', image_file], image_file)
+        if result is None:
+            # the image is still analyzed on its own
+            analysis.error = "7z l did not finish, so the image's files are not listed"
+            return AnalysisExecutionResult.COMPLETED
+
+        # 7z exits 1 for a warning, and still lists what it read. above that the listing is kept, since it is
+        # whatever 7z read before it failed
+        if result.returncode > 1:
+            analysis.error = f"{result.failure_reason('7z l')}, so the image's file list may be incomplete"
+            logging.info("%s failed on %s: %s", self, image_file, analysis.error,
+                         extra={"module_name": self.name, "path": image_file, "root_uuid": self.get_root().uuid})
 
         # parse the output
         file_listing = False
-        for line in _stdout.split("\n"):
+        for line in result.stdout.split("\n"):
             if line.startswith("-------------------"):
                 file_listing = not file_listing
                 continue

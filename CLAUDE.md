@@ -8,11 +8,18 @@ ACE (Analysis Correlation Engine) 3.x — a security alert analysis and correlat
 
 ## Repo layout
 
-A working tree usually spans more than one upstream repo. This repo is the open-source ACE core; `signatures/` and each tree under `integrations/` are gitignored here but separately versioned, so their changes never appear in the outer `git status` and `grep`/`rg` skip them by default. Check them explicitly (`git -C signatures status`) and give them their own commits and PR descriptions.
+A working tree usually spans more than one upstream repo. This repo is the open-source ACE core; `signatures/` and each tree under `integrations/` are gitignored here but separately versioned, so their changes never appear in the outer `git status` and `grep`/`rg` skip them by default. Check them explicitly (`git -C signatures status`) and give them their own commits and PR descriptions. A git worktree gets a worktree of each integration repository of its own (see *From a git worktree* below).
+
+Known flaws in ACE's design that changes have had to work around are GitHub issues labeled `design flaw` (`gh issue list --label "design flaw"`), each describing the workaround that first ran into it. `/ace-review` files them. Before you write a workaround, check whether it is for one of them, and if so, follow the workaround its issue describes rather than inventing another.
 
 ## Environment
 
-Development happens **inside the `dev` container** (this is where Claude Code normally runs — check with `ls /.dockerenv`). `SAQ_HOME=/opt/ace`, Python 3.14 in `/venv`, user `ace`.
+Development happens **inside the `dev` container**, where `SAQ_HOME=/opt/ace`, Python 3.14 is in `/venv` and the user is `ace`. Claude Code runs either in that container or on the host, where the desktop app runs it in a git worktree under `.claude/worktrees/`. On a macOS host the shell is zsh, which fails a command whose glob matches nothing, so quote patterns (`grep --include='*.py'`), and there is no `timeout` command.
+
+**Where a command runs.** Check once per session with `ls /.dockerenv`:
+
+- **It exists: you are in `dev`.** Run every command directly, as written in this file: `pytest ...`, `ace ...`, `/venv/bin/python ...`, `make db-check`. Never use `bin/exec-in-container.sh`; it exits 1 there. In a git worktree, `SAQ_HOME` and `PYTHONPATH` must name the worktree and it must come first on `PATH` (`echo $SAQ_HOME`). A worktree made with `source bin/enter-worktree.sh` has all three; in any other, run `export SAQ_HOME=$PWD PYTHONPATH=$PWD PATH=$PWD:$PWD/bin:$PATH` from the worktree first. pytest refuses to start when `SAQ_HOME` or `saq` belong to another checkout. `ace` and the other commands do not check, and run the main checkout's code or configuration.
+- **It does not exist: you are on the host.** Anything that needs `/venv`, the databases or the stack (pytest, `ace`, `python`, `alembic`, `diff-cover`) goes through `bin/exec-in-container.sh <command> [args...]`, which runs it in `dev` at the checkout's path there with `SAQ_HOME` and `PYTHONPATH` on it. git, file edits, `docker compose` and `make` run on the host as they are (the Makefile goes through the script itself). The script passes its arguments unchanged, like `docker exec`, and runs no second shell over them: quote them as you would for the command itself, and wrap a pipe, `&&`, glob or redirect that must run in the container in `bash -c '...'` (`bin/exec-in-container.sh bash -c 'pytest -q tests/saq | tail -5'`). A path is relative to the checkout root, not to the directory you ran it from.
 
 From the host:
 ```bash
@@ -21,6 +28,27 @@ bin/attach-container.sh            # interactive shell in dev (falls back to ace
 bin/exec-in-container.sh pytest tests/saq/test_util.py   # one-shot command in dev
 ```
 GUI: https://localhost:5000/ace (analyst/analyst).
+
+**From a git worktree.** A worktree under `.claude/worktrees/<name>/` shares the main checkout's stack. The `dev` container mounts the main checkout at `/opt/ace`, so the worktree is at `/opt/ace/.claude/worktrees/<name>` in it. From the host, `bin/exec-in-container.sh` and the Makefile targets run a worktree's commands there, with `SAQ_HOME` and `PYTHONPATH` set to that path, so they run the worktree's code; in `dev`, the Makefile does the same in place. `docker compose exec dev` runs the main checkout's code. A worktree outside the checkout, like the ones T3 Code keeps under `~/.t3/worktrees/`, needs a mount of its own for the `dev` service; `bin/exec-in-container.sh` finds it with `docker inspect` (`docs/MULTI_INSTANCE.md`).
+
+**A worktree is used from the side that created it.** A worktree's `.git` file names its repository by absolute path, and the host and `dev` see the checkout at different paths, so `git` works in a worktree only on the side where it was created (unless the host checkout is itself at `/opt/ace`). Do its git work there. On the host, `bin/get-dev-container.sh`, and so `bin/exec-in-container.sh` and the Makefile, refuse a worktree created in `dev` rather than run the main checkout's code. A worktree created on the host runs its tests from the host through `bin/exec-in-container.sh`, which needs no `git` in `dev`; from a shell in `dev` it runs them directly, with the environment exported as above.
+
+The SessionStart hook in `.claude/settings.json` runs `bin/setup-worktree.sh`, which adds what git does not track:
+
+- `integrations/<name>`: a detached worktree of each integration repository in the main checkout. Create a branch in it before committing. Its changes do not show in this checkout's `git status`, so check it before deleting the worktree.
+- the `tests/test_external_integration_*` links into those repositories
+- each path in `.worktreeinclude` (`ssl/`), copied from the main checkout
+- `.claude/skills/<name>`: a link to each skill in the main checkout (most of its skills are gitignored) and in `~/.claude/skills` that the worktree does not have. A skill the worktree has wins, then the main checkout's. The session that makes the links does not list them until its second turn, so the hook's output names them for its first.
+- `local`: a link to the main checkout's `local/`, so PR descriptions written there outlive the worktree. A write through it lands outside the worktree, so auto mode asks about every one unless the main checkout's `local/` is a working directory of the session: add its absolute path to `permissions.additionalDirectories` in the main checkout's `.claude/settings.local.json`. A relative path, or the path of the link, does not count.
+
+It removes the integration repositories' records of deleted worktrees, but only of those under the main checkout or beside this worktree, never `git worktree prune`, which would remove the other side's. Run it by hand in a worktree made with `git worktree add`. A worktree created in `dev` needs nothing more. For a worktree created on the host, `diff-cover` is the exception to the rule above, since it needs `git` in `dev`: mount the main checkout's `.git` at its host path in `docker-compose.override.yml` and recreate `dev`:
+
+```yaml
+services:
+  dev:
+    volumes:
+      - ./.git:/absolute/host/path/to/the/checkout/.git
+```
 
 More than one ACE stack can run on a host: `ACE_STACK` (default `ace`) is the compose project
 name, and so the prefix on every container, the network and all ten named volumes. Only five host
@@ -35,7 +63,7 @@ before this: the volume names changed, so an existing stack has to be brought do
 
 ## Testing
 
-Tests must run inside the `dev` container, in the `/venv` virtualenv. The commands below work as written from a shell in that container; from the host, prefix each one with `docker compose exec dev /venv/bin/` (or run it through `bin/exec-in-container.sh`).
+Tests must run inside the `dev` container, in the `/venv` virtualenv. The commands below are written for a shell in that container, where they run as they are; from the host, prefix each one with `bin/exec-in-container.sh` (see *Where a command runs*).
 
 ```bash
 pytest                                    # default: -m "unit or integration or system" over tests/
@@ -51,29 +79,39 @@ Do NOT use `-p no:cacheprovider`. Some tests rely on the cache provider.
 
 Markers are strict (`pytest.ini`): `unit`, `integration`, `system`, `functional`, `subcutaneous`, `slow`. Tests marked `integration`/`system` trigger a full environment + database reset in `tests/conftest.py`; `unit` tests do not.
 
-Tests use `data_unittest/` as the data dir, driven by `etc/saq.unittest.default.yaml` (`instance_type: UNITTEST`).
+Tests use a data dir under `/var/tmp/ace-unittest/<hash of the checkout path>/`, in the container's own filesystem rather than the bind-mounted checkout, driven by `etc/saq.unittest.default.yaml` (`instance_type: UNITTEST`).
 
 **Every pytest session provisions its own databases.** `tests/unittest_database.py` creates a fresh `ace-unittest-<token>`, `brocess-unittest-<token>`, `email-archive-unittest-<token>` and `analysis-result-cache-unittest-<token>` (8 hex char token) at session start, migrates each to the head of its Alembic chain (`bin/upgrade_databases.py`), seeds the reference rows (`saq/database/seed.py`), points the config at them through `SAQ_UNITTEST_CONFIG_PATHS`, and drops them at session end. Between tests the existing row-level reset in `tests/conftest.py` is reused. This needs the `ace-superuser` credentials (`ACE_SUPERUSER_DB_USER_PASSWORD` or `/auth/passwords/ace-superuser`, see `saq/database/admin.py`); the tests themselves still connect as `ace-user`. What a session created is recorded in `$SAQ_HOME/.pytest-databases/` before anything is created, and the next session drops whatever a killed session left behind. `bin/cleanup-unittest-databases.py` does that from outside a session (`--list`, `--force`, `--orphans`). The old static `ace-unittest` / `ace-unittest-2` / `*-unittest` databases are no longer created or used by anything; a dev environment set up before September 2026 may still have them and they can be dropped by hand.
 
 ACE "integrations" tests are accessed through the `test_external_integration_*` symlinks. Never try to run these tests using their actual paths, *always* use the symlinks to access ACE integration tests.
 
-There is no configured linter/formatter in the repo.
+There is no configured linter/formatter in the repo. Before asking for a review, `/venv/bin/python .claude/skills/ace-review/scripts/prepare.py --check` lists the lines the branch adds that the review flags (a missing traceback, an unbounded wait, a copied function, an unmarked test), each with its fix, and exits 1 while there are any.
 
-**Parallel runs.** `pytest -n auto` (or `-n 4`) runs the suite under pytest-xdist; it is opt-in, the default is serial. Every pytest process has a *slot* (`tests/unittest_session.py`): its xdist worker id (`gw0`, `gw1`, ...) or `main`. The slot decides the process's databases, its data directory `data_unittest/<slot>/`, its API port (`24443` + index), its network semaphore port (`53560` + index) and its log file `data/logs/unittest-<slot>.log`, all applied through the `SAQ_UNITTEST_CONFIG_PATHS` overlay. Each worker pays the session start cost (four alembic chains plus seeding, a few seconds).
+**Parallel runs.** `pytest -n auto` (or `-n 4`) runs the suite under pytest-xdist; it is opt-in, the default is serial. Every pytest process has a *slot* (`tests/unittest_session.py`): its xdist worker id (`gw0`, `gw1`, ...) or `main`. The slot decides the process's databases, its data directory `/var/tmp/ace-unittest/<checkout hash>/<slot>/`, its API port (`24443` + index), its network semaphore port (`53560` + index), its Qdrant collection prefix `ace3-alerts-unittest-<checkout hash>-<slot>` and its log file `data/logs/unittest-<slot>.log`, all applied through the `SAQ_UNITTEST_CONFIG_PATHS` overlay. Each worker pays the session start cost (four alembic chains plus seeding, a few seconds).
 
-Start only one *run* of the test suite at a time. The slots of one run are distinct, but a second run would reuse them. This is per checkout, not per host: two ACE instances can each run the suite concurrently, because the marker lives at `$SAQ_HOME/.pytest-running` (each instance's own bind-mounted checkout), the databases are provisioned on that instance's own `ace-db`, and the suite's ports are never published to the host.
+One *run* of the test suite runs at a time per container, and one per checkout. Under xdist each worker loads all of ACE and an engine of its own, so two `pytest -n auto` runs in one container (the main checkout and a worktree, or two worktrees) run it out of memory; they would also take the same ports. And a second run of the same checkout would reuse the first one's data directories and Qdrant collections. Two ACE instances can each run the suite concurrently, because each has its own checkout, containers and Qdrant, the databases are provisioned on that instance's own `ace-db`, and the suite's ports are never published to the host, but nothing stops their runs from sharing the host's memory.
 
-This is enforced. `tests/session_lock.py` creates a marker file at
-`$SAQ_HOME/.pytest-running` when a run starts (the xdist controller, or the only process of
-a plain run) and removes it when the run ends (including on Ctrl-C and collection errors).
-While that file exists **no** other run may start — `pytest_configure` in `tests/conftest.py`
-fails the run with exit code 4 before collection, before any database access and before any
-data directory is wiped. There is no bypass flag. The marker records the pid, hostname, start
-time and command line of the process that created it, and the error message says whether
-that process is still running or whether the marker was left behind by a run that was killed.
-In the latter case, clear it with `rm /opt/ace/.pytest-running`. Holding the marker is also
-what makes it safe for a run to drop the databases an earlier, killed run left behind: the
-holder sweeps the registry in `pytest_configure`, before any of its workers provision.
+This is enforced by `tests/session_lock.py`, in `pytest_configure` in `tests/conftest.py`, by
+the xdist controller or the only process of a plain run, before collection, before any
+database access and before any data directory is wiped. There is no bypass flag.
+
+- **Per container, a run waits.** A run first takes an `flock` on `/tmp/ace-pytest-run.lock`,
+  in the container's own `/tmp`. A run that finds it taken prints the pid, start time, checkout
+  and command line of the run holding it and waits for that run to end; Ctrl-C stops waiting.
+  The kernel drops the lock when its holder exits, however it exits, so a killed run leaves no
+  lock behind. From an agent, a run that may have to wait goes in the background.
+- **Per checkout, a run is refused.** Holding the lock, the run creates a marker file,
+  `$SAQ_HOME/.pytest-running`, in the checkout every container of the stack mounts, and removes
+  it when the run ends (including on Ctrl-C and collection errors). If the marker already
+  exists, the run fails with exit code 4: either a run of the checkout is going on in another
+  container, or a killed run left the marker behind. The marker records the pid, hostname,
+  start time, checkout and command line of the process that created it, and the error message
+  says whether that process is still running. If it is not, clear the marker with the `rm` the
+  message prints. Holding the checkout's marker is also what makes it safe for a run to drop
+  the databases an earlier, killed run of that checkout left behind: the holder sweeps the
+  checkout's registry in `pytest_configure`, before any of its workers provision.
+
+**From a git worktree.** A worktree runs the suite in the same `dev` container: `pytest -n auto` from the worktree in `dev`, with its environment exported, or `bin/exec-in-container.sh pytest -n auto` from the host (see *Where a command runs*). It needs the main checkout's `ssl/`, which `.worktreeinclude` names and `bin/setup-worktree.sh` copies. Tests must not depend on what differs from `/opt/ace`: the worktree has no `data/` volume (nothing under `data/etc/`), `git` cannot read a worktree created on the host inside the container without the `.git` mount above (its `.git` file names a host path), and its path has a `.` in it (SVS replay refuses such a `work_dir`) and is long enough to push a unix socket under the data directory past the 108-byte `AF_UNIX` limit. A worktree's run waits for a run of the main checkout, or of another worktree, in the same container.
 
 ### The standard analysis-module test
 
@@ -103,7 +141,7 @@ Helpers live in `tests/saq/helpers.py` (`wait_for_condition`, `wait_for_log_coun
 
 Test a GUI change in a browser through the Playwright MCP **only when the user specifically asks for it**. Do **not** add browser-based tests to the ACE pytest suite, even though `playwright` is installed in `/venv`. That may come later, but not now.
 
-The development image has a headless Chromium driven by the `playwright-mcp` server (or Python `playwright`). Run `ace gui start --port <port>` in the background in the `dev` container (add `--api-v2` to also run a private API v2 from the checkout, with reload, when the change touches `aceapi_v2/`), log in as analyst/analyst, and read the GUI's log alongside the page. See `docs/GUI_TESTING.md`.
+The headless Chromium is not in the ACE image: the `browser-mcp` (`playwright-mcp` at `http://localhost:8931/mcp`) and `browser-server` (for Python `playwright`, `ws://localhost:3000/`) compose services run it in `dev`'s network namespace, under the `browser` profile. Run `ace gui start --port <port>` in the background in the `dev` container (add `--api-v2` to also run a private API v2 from the checkout, with reload, when the change touches `aceapi_v2/`), log in as analyst/analyst, and read the GUI's log alongside the page. See `docs/GUI_TESTING.md`.
 
 ## Databases and migrations
 
@@ -124,7 +162,7 @@ The email archive and analysis result cache tables are RANGE-partitioned by date
 
 `bin/upgrade_databases.py` runs `upgrade head` for any subset of the chains against named databases in one process (the alembic package is shadowed by the repo's `alembic/` directory, so it removes the project root from `sys.path` first); the test suite uses it to build its per-session databases, and so does the drift check.
 
-Use the Makefile targets (they exec into the `dev` container from the host):
+Use the Makefile targets (from the host they run in the `dev` container through `bin/exec-in-container.sh`; in `dev` they run in place):
 
 ```bash
 make db-revision MESSAGE="what changed"   # autogenerate
@@ -135,9 +173,11 @@ make brocess-db-revision MESSAGE="..." / brocess-db-upgrade / brocess-db-check
 make db-seed
 ```
 
+From a git worktree they run the worktree's models and migrations, but against the stack's shared databases. A worktree's migration applied there with `db-upgrade` leaves the main checkout's alembic on a revision it does not have, so downgrade it before you leave the worktree.
+
 Migrations are applied at startup by `docker/startup/setup.sh` (the `ace-setup` service), one `upgrade head` per chain.
 
-A transaction MySQL may pick as a deadlock victim runs through `run_private_transaction` (`saq/database/private_session.py`), which runs the whole private transaction again on 1213/1205; the function it runs must have no effects outside its session. Taking locks in a consistent order is still the fix; the retry is the backstop. `retry_on_deadlock` and `execute_with_retry` (`saq/database/retry.py`) are the same idea for the shared `get_db()` session and raw cursors.
+A transaction MySQL may pick as a deadlock victim runs through `run_private_transaction` (`saq/database/private_session.py`), which runs the whole private transaction again on 1213/1205; the function it runs must have no effects outside its session. Taking locks in a consistent order is still the fix; the retry is the backstop. `retry_on_deadlock` and `execute_with_retry` (`saq/database/retry.py`) are the same idea for the shared `get_db()` session and raw cursors. `execute_with_retry` runs again only what it was given, so it is given the whole transaction: a list of statements or a function. On a connection that already had uncommitted writes before the call, it raises the deadlock for the transaction's owner instead of retrying.
 
 CI enforces two things on PRs touching `saq/database/model.py` or any `versions/` dir: **a single Alembic head per chain** (rebase so one migration's `down_revision` points at the other) and **no model drift** vs. the migrated schema. Run the relevant `*-db-check` before pushing a model change. `bin/check_model_drift.py` builds a throwaway database, migrates it to head, compares and drops it; setting the chain's env var (`DATABASE_NAME=ace ...`) checks that existing database instead, which is what CI does.
 
@@ -152,7 +192,7 @@ All configuration is YAML, layered in this order (`saq/configuration/loader.py`)
 5. when unit testing: `etc/saq.unittest.default.yaml`, then files in `SAQ_UNITTEST_CONFIG_PATHS` (the test suite's per-session database names)
 6. `/docker-entrypoint-initdb.d/saq.database.passwords.yaml` (generated DB passwords), then `etc/saq.yaml` (dev overlay, never when unit testing)
 
-The configuration is loaded in three stages. Each YAML file is loaded with `yaml.SafeLoader` into a plain `dict`. A file may recursively pull in more files via a top-level `config:` key (list of paths or name→path map). Then each parsed dict is overlaid onto a running `YAMLConfig._data` via `deepmerge` (`saq/configuration/yaml_parser.py`). Nested dicts merge recursively, lists append, scalars/sets override. Later files win on conflicting keys. Finally, the merged dict is passed to `ACEConfig.model_validate(...)` (Pydantic models in `saq/configuration/schema.py`). The raw `YAMLConfig` is kept on `CONFIG.raw`. Unknown keys generally fail validation rather than being ignored — adding a config setting means adding it to the schema.
+The configuration is loaded in three stages. Each YAML file is loaded with `yaml.SafeLoader` into a plain `dict`. A file may recursively pull in more files via a top-level `config:` key (list of paths or name→path map). Then each parsed dict is overlaid onto a running `YAMLConfig._data` via `deepmerge` (`saq/configuration/yaml_parser.py`). Nested dicts merge recursively, lists append, scalars/sets override. Later files win on conflicting keys. Finally, the merged dict is passed to `ACEConfig.model_validate(...)` (Pydantic models in `saq/configuration/schema.py`). The raw `YAMLConfig` is kept on `CONFIG.raw`. The merged dict keeps its `env:VAR` and `file:PATH` references. Each section is resolved (`resolve_values()` in `yaml_parser.py`) when it is validated: the `ACEConfig` fields and the prefix-scanned families at load, a service, analysis module or observable export block when it is first used, and an integration's model when it is registered, or on its first `get_config(<name>)` if it names a variable the process does not have. So a process needs only the variables of the sections it reads. Unknown keys generally fail validation rather than being ignored — adding a config setting means adding it to the schema.
 
 The final validated config is read via `get_config()` / `get_engine_config()` / `get_service_config(name)`. 
 
@@ -176,7 +216,7 @@ Key top-level conventions:
 
 ### Analysis modules
 
-`saq/modules/` — subclass `AnalysisModule` (`saq/modules/base_module.py`), declare `generated_analysis_type` and `valid_observable_types`, implement `execute_analysis(observable) -> AnalysisExecutionResult` (`COMPLETED` or `INCOMPLETE`). Modules are instantiated from YAML config, never imported directly by the engine. Delayed analysis lets a module return early and be re-invoked later.
+`saq/modules/` — subclass `AnalysisModule` (`saq/modules/base_module.py`), declare `generated_analysis_type` and `valid_observable_types`, implement `execute_analysis(observable) -> AnalysisExecutionResult` (`COMPLETED` or `INCOMPLETE`). Modules are instantiated from YAML config, never imported directly by the engine. Delayed analysis lets a module return early and be re-invoked later. An analyst-editable YAML settings file a module reads (lists, weights, ignore pairs) is loaded through `self.watch_settings(config_path, Model)` (`saq/filesystem/notification.py`), whose `.value` is the last version of the file that validated and which loads on first use, reloads on change and logs a bad or missing file at ERROR. A module that writes a file named by analyzed content (an attachment, archive member or document part name) gets its path from `root.create_output_file(name)`, which cleans the name, keeps it inside the root's files directory and creates the file before anything is written; `create_file_path` is for names the module makes up itself. A module imports the libraries its analyzer runs in the method that runs them (`docs/IMPORTS.md`), because the search indexer, the GUI and the API import every analysis module they read an alert of. A module that runs an external program on a file from the alert (a parser, an extractor, a decompiler) runs it through `self.run_sandboxed_tool()`, in the Landlock sandbox, not `subprocess` or `run_tool()` (`docs/TOOL_SANDBOX.md`).
 
 ### Engine
 
@@ -187,6 +227,8 @@ Key top-level conventions:
 - `workload_manager/` — where work comes from (`database.py` for real runs, `memory.py` for tests).
 - `lock_manager/`, `node_manager/` — distributed locking and multi-node work distribution (nodes advertise themselves in the `nodes` table and can pull work from each other).
 - `configuration_manager.py` — resolves analysis mode → module set; `enable_module()` is the hook tests use.
+- Each forked worker leads its own process group, and `Worker.kill()` SIGKILLs the group: on a timeout or memory limit, past the shutdown budget, and for every worker found dead, so nothing a worker started that stays in its group outlives it. A child started in a session or group of its own (`start_new_session`, `process_group`) is out of reach of that kill, so the engine controller is a child subreaper (`WorkerManager.become_subreaper`): it adopts every orphan of a worker's descendants, reaps those that exit, and kills the rest after any worker dies and at shutdown (`kill_adopted`), waiting by pid so multiprocessing still reaps the workers. A worker never starts a child that runs Python before its exec (`preexec_fn`, `os.fork()`, fork-context multiprocessing): that child runs every at-fork hook in a copy of a process whose other threads may hold any lock, and one it needs is never released (`saq/database/pool.py`'s hook takes none for that reason). Use `setpriv --pdeathsig` for a parent-death signal.
+- `Worker.start()` calls `gc.freeze()` right before the fork and `gc.unfreeze()` right after it: the worker keeps what it inherited out of its collector's reach, so its collections don't copy the pages it shares with the engine process, and the engine process still collects its own garbage. The workers load their modules after the fork (`Worker.worker_loop`).
 
 Analysis caching (per-module result cache keyed on observable + module + config hash) is a significant subsystem — read `docs/ANALYSIS_CACHING.md` before touching `executor.py` cache paths or adding a cacheable module.
 
@@ -202,11 +244,11 @@ A service is a long-running process with a `start/wait/stop` lifecycle, launched
 
 - `app/` — Flask GUI (blueprints: `main`, `auth`, `analysis`, `events`, `remediation`, `file_collection`), Jinja templates, the analyst-facing alert view.
 - `aceapi_v2/` — the FastAPI app behind `/api/v2`, router-per-resource under `aceapi_v2/<resource>/router.py`.
-- Node-to-node routes (`/api/v2/engine/*`) are served by their own container, `http-api-engine` (`aceapi_v2.create_engine_app()`, `api_engine_uvicorn.py`), so user traffic on `http-api-v2` cannot starve the engines; nginx routes them there. Its worker count scales with the cluster and is set per node with `ACE_API_ENGINE_WORKERS` (`docs/ENGINE_API.md`).
+- Node-to-node routes (`/api/v2/engine/*`) are served by their own container, `http-api-engine` (`aceapi_v2.app_factory.create_engine_app()`, `api_engine_uvicorn.py`), so user traffic on `http-api-v2` cannot starve the engines; nginx routes them there. Its worker count scales with the cluster and is set per node with `ACE_API_ENGINE_WORKERS` (`docs/ENGINE_API.md`).
 
 ### CLI
 
-`./ace` is the entry point. Each subcommand lives in its own module under `saq/cli/commands/` and registers itself through `get_cli_subparsers()`: `service start`, `gui start`, `correlate`, `submit`, `hunt ...`, `user ...`, `persistence ...`, `integration ...`, `remediation ...`, `alert ...`, and more. `saq/cli/` holds the shared plumbing.
+`./ace` is the entry point. Each subcommand lives in its own module under `saq/cli/commands/` and registers itself through `get_cli_subparsers()`: `service start`, `gui start`, `correlate`, `submit`, `hunt ...`, `user ...`, `persistence ...`, `integration ...`, `remediation ...`, `alert ...`, and more. `ace` imports only the module of the command it runs, which it finds in `COMMANDS` in `saq/cli/commands/__init__.py`, so a new command module's top-level commands go in `COMMANDS` (`tests/saq/test_cli.py` checks that every module is there). `saq/cli/` holds the shared plumbing.
 
 ### Integrations
 
@@ -242,12 +284,10 @@ exception handler, the `AnalysisModuleMonitor` watchdog, and `Worker._handle_fai
 Nothing in the module may raise — it runs on paths where a failure would break analysis or hang a
 dying process. `analysis_module_crashes` is a derived index; the filesystem is authoritative. On by
 default and size-capped. `crash_reporting.replicate` (off by default, `saq/crash_replication.py`)
-copies each report into a bucket of `saq/storage/` that every node shares (the local backend on a
-shared filesystem, or a custom backend class that reaches an object store; ACE ships no object
-store client) so any node can serve any report; the upload runs on a never-joined daemon thread (a
-network backend bounds its own requests, but an object store round trip still does not belong on
-the crash path), and `ace crash sync` is the catch-up sweeper (hourly, from `etc/cron/hourly/crash-reports`).
-Error reports (`data/error_reports`, written for any record logged at ERROR with a traceback) are a
+copies each report to a shared bucket through `saq/storage/` so any node can serve any report; the
+upload runs on a never-joined daemon thread (S3 requests are bounded, but an object store round
+trip still does not belong on the crash path), and `ace crash sync` is the catch-up sweeper (hourly, from `etc/cron/hourly/crash-reports`).
+Error reports (`data/error_reports`, written for a record logged at ERROR with a traceback, once per cause every ten minutes) are a
 separate mechanism; a module failure is logged at WARNING and gets only the crash report.
 
 #### Content-addressed storage
@@ -255,7 +295,8 @@ separate mechanism; a module failure is logged at WARNING and gets only the cras
 `saq/cas/` stores immutable bytes by sha256 in *pools*, each a named policy for backend, encryption
 and retention (`docs/CAS.md`): `get_cas().pool(name).put(src, hold=Hold(kind, id))`, `open`,
 `materialize`, `release`, `purge`. The index tables `cas_objects`, `cas_holds` and `cas_purges`
-(main chain) are authoritative for what exists; backends (`local`, or a custom class) are dumb byte
+are authoritative for what exists, in the chain the pool's `index_database` names (the main chain
+by default); backends (`local`, or a custom class) are dumb byte
 stores that only the orphan sweep ever lists. `put` and `hold` lock the object row `FOR UPDATE`, and
 GC flips an unheld object to `deleting` with one conditional UPDATE before removing it, in batches
 of primary keys, never an unbounded DELETE. Only `saq/cas/index.py` writes the index tables, and
@@ -263,16 +304,34 @@ every CAS operation runs in its own private session, never on the caller's `get_
 Encrypted pools use the v1 `saq/crypto` file format (magic, key id, authenticated header); plain
 `encrypt()` still writes the v0 format because existing encrypted data is read across nodes.
 `ace cas gc|verify|orphans` run from `etc/cron/{hourly,weekly}/cas-*` on the primary node.
-`retention: ttl` is designed but not built; the config rejects it. A pool on an object store uses a
-`custom` backend class.
+A `retention: ttl` pool keeps its index in its own chain (never the main one) with a day-partitioned
+`cas_touches` table that every `put` appends to; GC collects an object with no touch within
+`ttl_days` and `ace partitions maintain` drops old touch partitions. `compression: gzip` is per pool.
+A node-local backend (`local`) means a single-node install: GC runs on the primary only, so on a
+cluster every pool needs a backend every node can reach, and the `cas.pool` monitor logs an ERROR
+(and reports `node_local` and `live_nodes`) for a node-local pool while more than one node is live.
+There is no object-store backend in the tree; an integration provides one as a `custom` backend.
+
+#### Email archive
+
+Every email the `email_archiver` module archives is an object in the `email_archive` CAS pool (`ttl`,
+30 days, encrypted, gzip, indexed in the email archive database), keyed by its sha256, and one row in
+the email archive database's weekly-partitioned `archived_messages` maps its Message-ID to it
+(`saq/email_archive/`, `docs/EMAIL_ARCHIVE.md`). That is all archiving writes: the archive is not
+searchable (email search is in the log platform, from what `email_logger` exports), and the URL
+pivot and recipient history are gone. `find_archived_email()` returns the newest email of a
+Message-ID the pool still has. `ace email-archive migrate` copies the legacy `archive`/`archive_index`
+Message-IDs into `archived_messages` and moves each node's old `<archive_dir>/<host>/<xx>/<sha>.gz.e`
+files into the pool; nothing else reads the legacy tables, which a later release drops. S3
+archiving (`email_archive.target: s3`) was removed and the config rejects it.
 
 #### YARA QA results
 
-A YARA rule with `modifiers = "qa"` never alerts; the files it matches are kept for review instead (`docs/YARA_QA.md`). The yara service records them, never the engine: a scanning worker hardlinks the matched file into `service_yara.qa_spool_dir` and writes a job after it has answered, and the service's qa recorder process calls `saq.yara_qa.store.record_qa_match()` from there (`saq/yara_scanning/qa.py`). Matches found by the module's local fallback scanner are logged and dropped. `record_qa_match()` puts the file and the full, untruncated match record into the `yara_qa` CAS pool (encrypted, `local` by default; a multi-node site redefines it with a shared backend) and indexes them in `yara_qa_matches`, with per (uuid, version) counters in `yara_qa_signatures`. Files are capped per (uuid, version) and per uuid (the version is the repo commit, so every commit is a new version), reserved by one conditional UPDATE so no recorder waits on a lock; every match is counted regardless. Holds expire `yara_qa.retention_days` after the last match and `ace yara-qa prune` (daily cron) removes expired rows in batches. The rule list, including QA rules that never matched, comes from the signature inventory, which reads `modifiers`/`enabled` with the same helpers as the scanner (`saq/signatures/yara_meta.py`). Analysts use `aceapi_v2/yara_qa/` (`/api/v2/signatures/yara-qa`, `signature:read`; file bytes need `signature:download` and come only as `infected`-password zips) and the **Signatures → Yara QA Results** page (`app/signatures/`, gated by `signature:read`), which is a shell over that API.
+A YARA rule with `modifiers = "qa"` never alerts; the files it matches are kept for review instead (`docs/YARA_QA.md`). The yara service records them, never the engine: a scanning worker hardlinks the matched file into `service_yara.qa_spool_dir` and writes a job after it has answered, and the service's qa recorder process calls `saq.yara_qa.store.record_qa_match()` from there (`saq/yara_scanning/qa.py`). Matches found by the module's local fallback scanner are logged and dropped. `record_qa_match()` puts the file and the full, untruncated match record into the `yara_qa` CAS pool (encrypted, `local` by default; a multi-node site redefines it with a shared backend) and indexes them in `yara_qa_matches`, with per (uuid, version) counters in `yara_qa_signatures`. Files are capped per (uuid, version) and per uuid (the version is the rule's content hash, which the yara service sends with each match, so a commit that does not touch the rule keeps its version), reserved by one conditional UPDATE so no recorder waits on a lock; every match is counted regardless. When the per-uuid cap stops a store, the recorder deletes one file of a version that has not matched for an hour to make room (rollover); the current version's own cap is never rolled over. Holds expire `yara_qa.retention_days` after the last match and `ace yara-qa prune` (daily cron) removes expired rows in batches. The rule list, including QA rules that never matched, comes from the signature inventory, which reads `modifiers`/`enabled` with the same helpers as the scanner (`saq/signatures/yara_meta.py`). Analysts use `aceapi_v2/yara_qa/` (`/api/v2/signatures/yara-qa`, `signature:read`; file bytes need `signature:download` and come only as `infected`-password zips; purging stored files needs `signature:qa_purge`) and the **Signatures → Yara QA Results** page (`app/signatures/`, gated by `signature:read`), which is a shell over that API.
 
 #### SVS sample capture
 
-When an alert's disposition classifies tp or fp, ACE keeps every file a YARA rule matched on it as an SVS sample (`docs/SVS_SAMPLES.md`, design in `docs/SVS.md` Part 2). The `svs_yara_sample_capture` module (`saq/modules/svs.py`) runs in `dispositioned` mode, in post-analysis, which runs on every pass, so every later disposition pass captures again (idempotently); `saq/svs/capture.py` takes one candidate per (file sha256, rule uuid) from the YARA detections on file observables (rules without a uuid and pre-SVS detections are skipped), and stores the file and its `scan_results` entry in the `svs_samples` CAS pool, held by `Hold("svs_capture", <row id>)` and indexed in `svs_yara_captures`, one row per (alert uuid, sha256, rule uuid), idempotent. The row has no foreign key to `alerts`, so a capture outlives its alert and its holds are never orphaned; a capture that could not be stored stays `missing` with a reason and is retried. A sample is one (sha256, rule uuid) over all its captures, and its label is never stored: `saq/svs/labels.py` derives it when read from the verdicts on its alerts' detections (`saq/detection_verdicts/`), strongest verdict source first, and `aceapi_v2/svs/samples/` (`/api/v2/svs/samples`, `signature:read`; files need `signature:download`) serves samples, labels and `infected`-password zips, which the **Signatures → Samples** page (`app/signatures/views/samples.py`, a `filter_list_page.js` shell) lists. Capture is on by default with a node-local pool; a multi-node site gives `svs_samples` a shared backend or disables the module. The analyst actions on a sample are `saq/svs/actions.py` (*Actions* in `docs/SVS_SAMPLES.md`): relabel, reset and confirm write verdicts through `saq/detection_verdicts/store.py::set_verdicts` (`alert:write`), and retire and delete need `svs:admin`. Delete removes the sha256 for every rule and keeps an `svs_sample_deletions` row, which capture checks before and after it stores. YARA validations (`docs/SVS_VALIDATION.md`) replay every stored sample under two commits of a rule repository (`saq/svs/yara/`, in the Landlock sandbox): the repository's CI requests one with an `svs:validate` key (`lib/signature_validator`'s `validate-yara`, `aceapi_v2/svs/yara/validations/`), and `service_svs` (`saq/svs/service.py`) runs the queue in `saq/svs/validations.py`, where workers hold a lease on a validation and a completed one answers repeat requests while the corpus version and engine fingerprint are unchanged; the **Signatures → Validations** page (`app/signatures/views/validations.py`, a `filter_list_page.js` shell) shows the reports, at the `report_path()` CI links to.
+When an alert's disposition classifies tp or fp, ACE keeps every file a YARA rule matched on it as an SVS sample (`docs/SVS_SAMPLES.md`, design in `docs/SVS.md` Part 2). The `svs_yara_sample_capture` module (`saq/modules/svs.py`) runs in `dispositioned` mode, in post-analysis, which runs on every pass, so every later disposition pass captures again (idempotently); `saq/svs/capture.py` takes one candidate per (file sha256, rule uuid) from the YARA detections on file observables (rules without a uuid and pre-SVS detections are skipped), and stores the file and its `scan_results` entry in the `svs_samples` CAS pool, held by `Hold("svs_capture", <row id>)` and indexed in `svs_yara_captures`, one row per (alert uuid, sha256, rule uuid), idempotent. The row has no foreign key to `alerts`, so a capture outlives its alert and its holds are never orphaned; a capture that could not be stored stays `missing` with a reason and is retried. A sample is one (sha256, rule uuid) over all its captures, and its label is never stored: `saq/svs/labels.py` derives it when read from the verdicts on its alerts' detections (`saq/detection_verdicts/`), strongest verdict source first, and `aceapi_v2/svs/samples/` (`/api/v2/svs/samples`, `signature:read`; files need `signature:download`) serves samples, labels and `infected`-password zips, which the **Signatures → Samples** page (`app/signatures/views/samples.py`, a `filter_list_page.js` shell) lists. Capture is on by default with a node-local pool; a multi-node site gives `svs_samples` a shared backend (a node-local pool means a single-node install whether or not capture runs). The analyst actions on a sample are `saq/svs/actions.py` (*Actions* in `docs/SVS_SAMPLES.md`): relabel, reset and confirm write verdicts through `saq/detection_verdicts/store.py::set_verdicts` (`alert:write`), and retire and delete need `svs:admin`. Delete removes the sha256 for every rule and keeps an `svs_sample_deletions` row, which capture checks before and after it stores. YARA validations (`docs/SVS_VALIDATION.md`) replay every stored sample under two commits of a rule repository (`saq/svs/yara/`, in the Landlock sandbox): the repository's CI requests one with an `svs:validate` key (`lib/signature_validator`'s `validate-yara`, `aceapi_v2/svs/yara/validations/`), and `service_svs` (`saq/svs/service.py`) runs the queue in `saq/svs/validations.py`, where workers hold a lease on a validation and a completed one answers repeat requests while the corpus version and engine fingerprint are unchanged; the **Signatures → Validations** page (`app/signatures/views/validations.py`, a `filter_list_page.js` shell) shows the reports, at the `report_path()` CI links to.
 
 #### SVS coverage
 
@@ -290,6 +349,10 @@ Periodic maintenance is one executable per task in `etc/cron/{hourly,daily,weekl
 
 The engine does not scan with YARA itself: `YaraScanner_v3_4` (`saq/modules/file_analysis/yara.py`) sends each file's path to the `yara` service (`saq/yara_scanning/`, `docs/YARA_SCANNER.md`) through a unix socket in `service_yara.socket_dir`, and the worker reads the file contents at that path. The path must be the same on both sides. The service is a pre-fork server. A manager process owns one listening socket and watches the rules. Each *generation* compiles the rules once, then forks the workers, which all accept on that socket. A rule change starts a new generation, and the old one retires only after the new one is serving, so a ruleset that fails to compile never replaces a working one. Each process is stopped through a control pipe from its parent (a byte, or EOF when the parent dies), never by a signal. Every forked child must close the pipe ends that belong to other processes, or a process never sees EOF when its parent dies. The client raises a different exception for each failure (`client.py`); only `YaraServiceUnavailable` falls back to an in-process scanner. The manager also runs a qa recorder process that records QA-mode matches the workers spool (see YARA QA results); nothing on the scanning path touches the database. The `yara_scanner_v2` library (3.0.0+) only compiles, tracks and filters rules; it no longer has a server. `ace yara scan FILE` scans through the running service.
 
+#### PCAP analysis
+
+`saq/modules/file_analysis/pcap.py` dissects pcap/pcapng files (recognized by magic number) with tshark, which only ever runs in the Landlock sandbox (`saq/sandbox/runner.py`: no network, nothing of ACE readable, timeout and output cap) and never unsandboxed (`docs/PCAP_ANALYSIS.md`). `pcap_analyzer` runs capinfos, then tshark twice (statistics, then fields and `--export-objects`), and keeps the capture *index* in `PcapAnalysis.details`; one class, `PcapCategoryAnalyzer`, is configured once per category (`pcap_dns`, `pcap_tls`, `pcap_http`, `pcap_files`) and only reads that index, so each category is its own collapsed node under the pcap. IPs, MACs and hostnames are added volatile. The settings the pcap modules share are the top-level `pcap:` section (`PcapConfig`), not each module's block. TLS key logs (NSS `SSLKEYLOGFILE` format) are found by content anywhere in the tree: `pcap_tls_decryption` decrypts in final analysis with every key log there and adds only what the plaintext index lacked, and `tls_keylog` applies a key log added after that analysis completed to the existing node.
+
 #### Documentation and training guides
 
 The GUI's **Documentation** area (`app/help/`, `/ace/help/`, any logged-in user) serves training guides written in Markdown: one directory per guide set under `app/help/content/<set>/`, one `<guide>.md` per guide plus `images/`, registered in `app/help/guides.py` and rendered by `app/help/rendering.py` (Python-Markdown `extra` + `toc`; `other.md#anchor` links become guide links, `> [!TIP]` becomes a callout, only `http(s)` links open a new tab). `tests/app/help/test_help_content.py` fails on a missing image, a dangling link or anchor, an unknown `/ace/...` GUI page, or an image no guide uses. The SVS guides' screenshots are reproducible on a dev stack: `bin/training/svs_demo_seed.py` seeds the demo data (DEV only; `setup` prints the `etc/saq.yaml` overlay it needs), then `bin/training/svs_guide_screenshots.py` retakes them from a GUI started from the checkout (`ace gui start --port 5050 --api-v2`).
@@ -302,7 +365,7 @@ js_deobfuscator has its own CLAUDE.md file available at `js_deobfuscator/CLAUDE.
 
 ## Engineering values
 
-What a change is judged on, in priority order: **uptime, logging, tests, performance**. A bug ranks by what it does to one of those. Software-engineering polish matters only as far as it keeps the code understandable, and GUI implementation style does not matter at all. The `/ace-review` skill (`.claude/skills/ace-review/`) reviews a branch against this section, so a rule that is not written here is not enforced.
+What a change is judged on, in priority order: **uptime, logging, tests, performance**. A bug ranks by what it does to one of those. A change does what its description says, and a bug fix removes the cause, not the symptom. Software-engineering polish matters only as far as it keeps the code understandable, and GUI implementation style does not matter at all. The `/ace-review` skill (`.claude/skills/ace-review/`) reviews a branch against this section as it is on the base branch, so a rule that is not written there is not enforced, and a branch that edits this section is still judged by the old text until the maintainer accepts the edit.
 
 ### Uptime
 
@@ -314,12 +377,13 @@ ACE is never down for more than a few minutes, and when something is wrong someo
 - A migration or DDL statement must be safe on a live, populated table. That means no full-table copy or long lock on a large table, and the partition rules in `docs/DATABASE_PARTITIONS.md` apply.
 - Code on the crash, shutdown or monitoring path never raises (`saq/crash_report.py`).
 - A new failure mode that an operator needs to hear about reaches them through a log record at ERROR plus an error report, or through a monitor (`saq/monitor.py`). It must not be logged at DEBUG and forgotten.
+- A change that can drop an event that should alert is a failure nobody hears about. That includes a filter, an exclusion or a suppression, and a cached answer one of them reads after the data behind it changed.
 
 ### Logging
 
 The goal is that a production failure can be diagnosed from the logs alone, without a shell on the node. Message formatting style (f-string, `%s`, `.format()`) is not a concern.
 
-- A caught exception that should be logged is logged at ERROR with its traceback: `logging.exception(...)` (or `exc_info=` at ERROR). `ErrorReportHandler` (`saq/error/reporting.py`), which `initialize_logging()` puts on the root logger, writes the error report and emits the monitor event for every such record, and skips both during shutdown. In a long-running loop's catch-all use `log_loop_exception(e, context)`, which also drops the record to INFO without the traceback during shutdown. A connection failure to a peer (redis, qdrant, a remote node) goes through `log_peer_unavailable()` instead.
+- A caught exception that should be logged is logged at ERROR with its traceback: `logging.exception(...)` (or `exc_info=` at ERROR). `ErrorReportHandler` (`saq/error/reporting.py`), which `initialize_logging()` puts on the root logger, writes the error report and emits the monitor event for every such record, once per cause (where it was logged, the exception's type and text) every ten minutes, and skips both during shutdown, so a failure that hits every item the same way needs no throttle of its own. In a long-running loop's catch-all use `log_loop_exception(e, context)`, which also drops the record to INFO without the traceback during shutdown. A connection failure to a peer (redis, qdrant, a remote node) goes through `log_peer_unavailable()` instead.
 - Every `except` either logs as above, or re-raises (with `from e`), or carries a comment saying why silence is correct. Never use a bare `except:` or `traceback.print_exc()`.
 - Each `context` string or log record carries the identifiers needed to find the thing that failed: alert/root uuid, observable, module, path, crash_id. Prefer putting them in `extra={}` (`saq/logging.py` turns these into Splunk fields).
 - A state change worth knowing about later (work claimed, item retired, fallback taken) gets an INFO record. Per-item chatter in a hot loop goes at DEBUG.
@@ -329,6 +393,7 @@ The goal is that a production failure can be diagnosed from the logs alone, with
 The target is close to full coverage. CI does not run the suite, so the PR is the only place tests are checked.
 
 - New and changed code comes with tests, and the failure paths get tested too: the exception raised, the log record emitted (`caplog`, `search_log`, `wait_for_log_count`), and the fallback taken.
+- A bug fix comes with a test that fails on the code before the fix.
 - Every test carries a `unit`, `integration` or `system` marker. A test without one is silently never run.
 - Wait with `wait_for_condition` / `wait_for_log_count` (`tests/saq/helpers.py`), never with `time.sleep`.
 - New module-level state (caches, registries, singletons) is reset in `global_function_setup` (`tests/conftest.py`). The suite runs in random order.
@@ -344,6 +409,17 @@ The analyst's experience comes first.
 - Nothing expensive per render or per request: no process forks, file opens, or reloading a `RootAnalysis` to read one field. Persist derived values instead.
 - An analysis module avoids redundant work across observables and uses analysis caching where it fits (`docs/ANALYSIS_CACHING.md`).
 
+### What a process imports
+
+Every service, `ace` command, engine worker and API worker holds what its modules import at module level, mostly as private memory, so an import added to a module that everything loads costs every process on every node. `docs/IMPORTS.md` has the reasoning, the examples and how to measure.
+
+- A package `__init__.py` runs whenever any one of its modules is imported, so it imports nothing heavier than that. A name from a module that loads more is re-exported through a PEP 562 `__getattr__` built by `saq.lazy_exports.lazy_getattr()` (`saq/analysis/__init__.py`), never under a name a submodule also has.
+- Core (`saq/`) never imports the web layer: Flask, FastAPI, `app/`, `aceapi_v2/`, `aceapi_ai/`, or `saq.gui.alert`. Integrations name their API router and GUI blueprint in their `integration_<name>:` block (`api_router`, `gui_blueprint`), which only the API and the GUI import.
+- `initialize_environment()` loads only what every process needs. A subsystem only some processes use (the ORM session, the email archive's CAS pool, phishkit's celery) is set up on first use.
+- An analysis module imports the libraries its analyzer runs (OCR, document parsers, network clients, celery) in the method that runs them. Reading an alert imports the module of every analysis in it, in processes that never analyze.
+- A name needed only for a type annotation is imported under `TYPE_CHECKING`.
+- A new service, entry point or heavy dependency gets a line in `tests/saq/test_imports.py`, which imports in fresh interpreters.
+
 ### Keep it lean
 
 - Before writing a helper, search for an existing one and use it (e.g. `saq/gui/filter_conditions.py`, `saq/util/`). If the existing one is close but not right, extend it.
@@ -351,6 +427,7 @@ The analyst's experience comes first.
 - Comments and docstrings say *why*, not what the code says. Skip the module docstring that retells the design doc.
 - No new module, base class, exception class or config knob without a second caller or a concrete need. A plain function in an existing module is the default.
 - Remove dead code you replace. Don't leave shims for callers that no longer exist.
+- A change that removes or renames a path, function or config key also updates the lines of CLAUDE.md, `docs/` and the skills that name it.
 
 ### GUI
 
@@ -364,7 +441,7 @@ GUI code (`app/`, templates, static JS/CSS) must work, be fast, and be safe: esc
 - **Sync code in the FastAPI apps (`aceapi_v2/`, `aceapi_ai/`) reaches a thread only through `aceapi_v2.sync.run_db_in_thread`**, whether or not it touches the database: endpoints and dependencies are `async`, and nothing calls `run_in_threadpool`, `asyncio.to_thread` or `run_in_executor` directly. A `get_db()` session belongs to the pool thread and outlives the request unless it is removed, and only `run_db_in_thread` removes it (`tests/aceapi_v2/test_sync.py` enforces this). A sync `BackgroundTask` or a sync iterator given to a streaming response also runs on Starlette's pool, out of the test's sight, so it must not use `get_db()`.
 - **Alembic + ORM, never raw SQL.** Write the SQLAlchemy model in `saq/database/model.py` first, then autogenerate the migration (see Databases and migrations above) — never hand-write a migration file. Prefer the ORM session (`get_db()`) over raw cursors.
 - **Integrations stay self-contained.** Everything for `integrations/<name>/` lives under that directory — never add integration-specific symbols to `saq/constants.py`, `saq/gui/`, or `saq/configuration/schema.py`. If the extension hook you need doesn't exist, extend the core mechanism generically (no vendor name in core) and register through it.
-- **Imports at module level**, not inside functions. If an import genuinely must be local (circular import, heavy startup cost), leave it and add a short comment saying why — no comment, no excuse.
+- **Imports at module level**, not inside functions. If an import genuinely must be local (circular import, or a heavy library only some callers need, as "What a process imports" above describes), leave it and add a short comment saying why — no comment, no excuse.
 - When possible, use the actual data types for type hints. For example, use `list` instead of the older `List`.
 
 ### Test data

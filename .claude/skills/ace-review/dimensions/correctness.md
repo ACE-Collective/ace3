@@ -4,6 +4,16 @@ You hunt for real bugs in the change. Rank each one by what it does to uptime, d
 
 Read the changed code *and its callers and callees*. Most bugs here come from old code with unstated assumptions.
 
+## Does it do what it says?
+
+Start here. From `pr.md` and `log.txt`, write `$B/intent.md`, at most three lines:
+
+1. The problem the change says it solves, in one line. If neither file says, write that and skip the rest.
+2. Whether the diff solves it: solved, partly (and what's left), or not.
+3. For a bug fix: the mechanism that caused the bug, and whether the change removes it or works around the symptom (catching the exception, special-casing the input that crashed, retrying around the failure). Then name the test that fails on the merge-base code, and its assertion. Say whether the mechanism is *shown* (a run on the unfixed code fails for the stated reason, in `pr.md`, `log.txt`, or a script you ran under `$B/` without editing the repo) or only *argued* from reading code.
+
+A change that doesn't do what it says, or that works around a symptom whose cause can be found and fixed within the change, is a finding ranked by what the remaining bug does. When the cause is a flaw in ACE's design that fixing would be work of its own, write it to `$B/flaws-correctness.json` instead (rubric.md, "Design flaws worked around"), and say so in line 3. A bug fix with no test that would fail without it is a fix-first with `dimension: tests`.
+
 ## Look for
 
 **Interaction with legacy code.**
@@ -26,6 +36,10 @@ Read the changed code *and its callers and callees*. Most bugs here come from ol
 - Encoding: bytes vs str, a file read without an explicit encoding, email and MIME edge cases.
 - An idempotency claim the code doesn't actually honor (a retry that duplicates rows).
 
+**Caches.** A persistent cache (a correlation step's `cache:`, the analysis result cache, a TTL in Redis) returns its answer until it expires, whatever has changed since.
+- A key that misses an input, so two different questions share one answer.
+- A lifetime longer than the data behind the answer stays the same, when that data changes outside the call: a remote list, another system's configuration, a file the key doesn't name. Name the lifetime, how soon the source can change, and what a stale answer does. A stale answer that filters an event out is worse than one that makes it alert.
+
 **Security.** ACE handles hostile input: malware, phishing email, attacker-controlled URLs.
 - Missing permission checks on new aceapi_v2 routes and GUI views. Compare with sibling routes for the permission they require.
 - SQL built by string formatting.
@@ -45,4 +59,5 @@ Read the changed code *and its callers and callees*. Most bugs here come from ol
 
 - Every finding names the concrete input or sequence that triggers it, and what the user or operator sees.
 - Uncertain but plausible bugs are fine to report. The verifier will mark them. Pure hypotheticals with no caller are not.
+- A setting the change copies or recommends from elsewhere (a cache lifetime, a timeout, a limit, a threshold) is right only if the reason it was chosen there holds here. Find that reason and check it.
 - If a finding is really about uptime (it hangs or crashes a service), set `dimension: uptime` so it ranks there.

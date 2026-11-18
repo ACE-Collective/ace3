@@ -9,18 +9,23 @@ from saq.signatures.builtin import (
     LEGACY_SIGNATURE_UUID,
     LEGACY_SIGNATURE_VERSION,
     SIGNATURE_VERSION_UNKNOWN,
-    get_builtin_signature_version,
 )
 
 
 @pytest.mark.unit
-def test_queue_round_trips_through_json():
-    dp = DetectionPoint("matched a rule", details={"k": "v"}, queue="experimental")
-    restored = DetectionPoint.from_json(dp.json)
+def test_json_is_the_stored_form():
+    """Detection points are stored in data.json, so the keys are literal: a key renamed on both
+    sides passes a round trip and loses the field of every stored alert."""
+    stored = {"description": "matched a rule", "details": {"k": "v"}, "queue": "experimental",
+              "signature_uuid": "abc-123", "signature_version": "deadbeef", "signature_family": "hunt"}
+    dp = DetectionPoint("matched a rule", details={"k": "v"}, queue="experimental",
+                        signature_uuid="abc-123", signature_version="deadbeef", signature_family="hunt")
+    assert dp.json == stored
 
-    assert restored.description == "matched a rule"
-    assert restored.details == {"k": "v"}
-    assert restored.queue == "experimental"
+    restored = DetectionPoint.from_json(dict(stored))
+    assert (restored.description, restored.details, restored.queue, restored.signature_uuid,
+            restored.signature_version, restored.signature_family) == \
+        ("matched a rule", {"k": "v"}, "experimental", "abc-123", "deadbeef", "hunt")
 
 
 @pytest.mark.unit
@@ -41,16 +46,10 @@ def test_equality_considers_queue():
 
 
 @pytest.mark.unit
-def test_signature_defaults_to_builtin():
-    dp = DetectionPoint("matched a rule")
-    assert dp.signature_uuid == BUILTIN_SIGNATURE_UUID
-    assert dp.signature_version == get_builtin_signature_version()
-
-
-@pytest.mark.unit
-def test_signature_version_from_ace_version_env(monkeypatch):
+def test_signature_defaults_to_builtin(monkeypatch):
     monkeypatch.setenv("ACE_VERSION", "9.9.9")
     dp = DetectionPoint("matched a rule")
+    assert dp.signature_uuid == BUILTIN_SIGNATURE_UUID
     assert dp.signature_version == "9.9.9"
 
 
@@ -59,14 +58,6 @@ def test_signature_version_falls_back_when_env_unset(monkeypatch):
     monkeypatch.delenv("ACE_VERSION", raising=False)
     dp = DetectionPoint("matched a rule")
     assert dp.signature_version == SIGNATURE_VERSION_UNKNOWN
-
-
-@pytest.mark.unit
-def test_explicit_signature_round_trips_through_json():
-    dp = DetectionPoint("matched a rule", signature_uuid="abc-123", signature_version="deadbeef")
-    restored = DetectionPoint.from_json(dp.json)
-    assert restored.signature_uuid == "abc-123"
-    assert restored.signature_version == "deadbeef"
 
 
 @pytest.mark.unit
@@ -99,14 +90,6 @@ def test_equality_considers_signature():
 
 
 @pytest.mark.unit
-def test_builtin_detections_still_equal_for_dedup():
-    # unmigrated callers all share the generic built-in -> dedup still works
-    a = DetectionPoint("same description")
-    b = DetectionPoint("same description")
-    assert a == b
-
-
-@pytest.mark.unit
 def test_id_unchanged_by_signature():
     # id is the UI/DOM display identity; signature attribution must not change it
     a = DetectionPoint("same", signature_uuid="zzz", signature_version="1")
@@ -122,12 +105,6 @@ def test_signature_family_defaults_from_uuid():
     assert DetectionPoint("d", signature_uuid=LEGACY_SIGNATURE_UUID).signature_family == "builtin"
     assert DetectionPoint("d", signature_uuid="not-a-builtin").signature_family is None
     assert DetectionPoint("d", signature_uuid="not-a-builtin", signature_family="yara").signature_family == "yara"
-
-
-@pytest.mark.unit
-def test_signature_family_round_trips_through_json():
-    dp = DetectionPoint("d", signature_uuid="u", signature_family="hunt")
-    assert DetectionPoint.from_json(dp.json).signature_family == "hunt"
 
 
 @pytest.mark.unit

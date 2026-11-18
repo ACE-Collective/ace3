@@ -34,7 +34,7 @@ def analyst(global_setup):
 
 @pytest.fixture(autouse=True, scope="function")
 def app(global_setup):
-    flask_app = create_app(testing=True)
+    flask_app = create_app()
     flask_app.config.update({
         "TESTING": True,
         "WTF_CSRF_ENABLED": False,  # Disable CSRF for tests
@@ -53,3 +53,8 @@ def web_client(app, analyst):
             "password": "password",
         })
         yield client
+
+@pytest.fixture
+def session_actor(analyst) -> tuple:
+    """audit_actor_of() a record of something web_client did: john, on a GUI session (no key)."""
+    return "john", analyst, None, "user"

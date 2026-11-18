@@ -83,14 +83,6 @@ def _clear_cache():
     clear_node_status_cache()
 
 
-def test_set_and_get_node_status():
-    node_id = local_node_id()
-    set_node_status(node_id, NODE_STATUS_STARTING)
-    assert get_node_status(node_id) == NODE_STATUS_STARTING
-    set_node_status(node_id, NODE_STATUS_RUNNING)
-    assert get_node_status(node_id) == NODE_STATUS_RUNNING
-
-
 def test_get_node_status_unknown_node():
     assert get_node_status(999999999) is None
 

@@ -31,6 +31,8 @@ Outcomes to handle:
       fallback to WHOIS (the registry told us the truth).
     - RDAP can't serve this TLD / bootstrap failed / RDAP server
       errored: fall back to ``python-whois``.
+    - WHOIS says the domain is not registered: authoritative negative,
+      recorded like RDAP's.
     - Both fail: surface a combined error so the analyst sees both
       failure modes.
     - Query succeeds but the registry omits creation / last-changed
@@ -45,18 +47,7 @@ import ipaddress
 import json
 import logging
 from datetime import datetime, timezone
-from typing import NamedTuple
-
-import tldextract
-import whois
-import whoisit
-from whois.exceptions import PywhoisError
-from whoisit.errors import (
-    BootstrapError,
-    QueryError,
-    ResourceDoesNotExist,
-    UnsupportedError,
-)
+from typing import NamedTuple, Optional
 
 from saq.analysis import Analysis
 from saq.analysis.presenter.analysis_presenter import (
@@ -65,11 +56,16 @@ from saq.analysis.presenter.analysis_presenter import (
 )
 from saq.constants import F_FQDN, F_IP, AnalysisExecutionResult
 from saq.modules import AnalysisModule
+from saq.modules.apex_domain import ApexDomainAnalysis
+from saq.observables.type_hierarchy import get_type_hierarchy
 from saq.util.strings import format_item_list_for_summary
 
-KEY_ERROR = "error"
+# whoisit, whois and tldextract (~16 MB with the requests and httpx they load) are imported in the functions that
+# query: the search indexer and the GUI import this module only to read RdapAnalysis
+
 KEY_LOOKUP_PROTOCOL = "lookup_protocol"
 KEY_RDAP_ATTEMPT_ERROR = "rdap_attempt_error"
+KEY_NOT_FOUND = "not_found"
 
 KEY_AGE_CREATED_IN_DAYS = "age_created_in_days"
 KEY_AGE_LAST_UPDATED_IN_DAYS = "age_last_updated_in_days"
@@ -151,6 +147,8 @@ def _registrable_domain(value: str) -> str:
     unchanged when no public suffix is identifiable (bare hostnames,
     internal names), matching ``saq/nrd/util.py``'s handling.
     """
+    import tldextract
+
     normalized = (value or "").strip().lower().rstrip(".")
     if not normalized:
         return value
@@ -165,6 +163,9 @@ def _ensure_rdap_bootstrap() -> str | None:
     bootstrap attempts are cheap because ``whoisit`` caches state in
     module-level globals.
     """
+    import whoisit
+    from whoisit.errors import BootstrapError
+
     try:
         if not whoisit.is_bootstrapped():
             whoisit.bootstrap()
@@ -202,6 +203,11 @@ def lookup_domain_creation_date(domain: str) -> DomainCreationLookup:
     An authoritative RDAP "domain not found" is terminal (no WHOIS attempt),
     matching ``RdapAnalyzer``'s handling.
     """
+    import whois
+    import whoisit
+    from whois.exceptions import PywhoisError
+    from whoisit.errors import QueryError, ResourceDoesNotExist, UnsupportedError
+
     memoized = _creation_date_memo.get(domain)
     if memoized is not None:
         return memoized
@@ -277,9 +283,9 @@ class RdapAnalysis(Analysis):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.details = {
-            KEY_ERROR: None,
             KEY_LOOKUP_PROTOCOL: None,
             KEY_RDAP_ATTEMPT_ERROR: None,
+            KEY_NOT_FOUND: None,
 
             KEY_AGE_CREATED_IN_DAYS: None,
             KEY_AGE_LAST_UPDATED_IN_DAYS: None,
@@ -307,14 +313,6 @@ class RdapAnalysis(Analysis):
         }
 
     @property
-    def error(self):
-        return self.details[KEY_ERROR]
-
-    @error.setter
-    def error(self, value):
-        self.details[KEY_ERROR] = value
-
-    @property
     def lookup_protocol(self):
         """``"rdap"`` | ``"whois"`` | ``None`` (both failed)."""
         return self.details[KEY_LOOKUP_PROTOCOL]
@@ -322,6 +320,15 @@ class RdapAnalysis(Analysis):
     @lookup_protocol.setter
     def lookup_protocol(self, value):
         self.details[KEY_LOOKUP_PROTOCOL] = value
+
+    @property
+    def not_found(self) -> Optional[str]:
+        """The registry's authoritative "does not exist" answer. An answer, not an error: it is cached."""
+        return self.details.get(KEY_NOT_FOUND)
+
+    @not_found.setter
+    def not_found(self, value: Optional[str]):
+        self.details[KEY_NOT_FOUND] = value
 
     @property
     def rdap_attempt_error(self):
@@ -510,6 +517,8 @@ class RdapAnalysis(Analysis):
 
         if self.error:
             parts.append(f"error: {self.error}")
+        elif self.not_found:
+            parts.append(self.not_found)
         else:
             if self.network_cidr:
                 network = self.network_cidr
@@ -539,6 +548,12 @@ class RdapAnalysis(Analysis):
         return f"RDAP Analysis{suffix}: " + ", ".join(parts)
 
 
+def _is_ip(observable) -> bool:
+    # the module also runs on subtypes of ip (email_first_hop_ip), which an
+    # exact type comparison would send down the domain path
+    return get_type_hierarchy().is_subtype(observable.type, F_IP)
+
+
 class RdapAnalyzer(AnalysisModule):
     """Analysis module performing RDAP (with WHOIS fallback) on FQDN
     observables.
@@ -555,9 +570,17 @@ class RdapAnalyzer(AnalysisModule):
     def custom_requirement(self, observable) -> bool:
         """Skip IP observables that are not globally routable (RFC1918,
         loopback, link-local, CGNAT, multicast, reserved) — they have no
-        public RDAP registration data."""
-        if observable.type != F_IP:
-            return True
+        public RDAP registration data.
+
+        Skip a subdomain FQDN that apex_domain_analyzer gave an apex
+        observable: registration data belongs to the apex, so RDAP runs once
+        there instead of once per subdomain. apex_domain_analyzer is a declared
+        dependency, so its result is known here; when it is disabled or did not
+        run on this observable, the subdomain is still looked up as before."""
+        if not _is_ip(observable):
+            apex_analysis = observable.get_analysis(ApexDomainAnalysis)
+            # the analysis is kept when the observable limit stopped the apex from being added
+            return not (isinstance(apex_analysis, ApexDomainAnalysis) and apex_analysis.get_observable_by_type(F_FQDN))
         try:
             return ipaddress.ip_address(observable.value).is_global
         except ValueError:
@@ -573,7 +596,7 @@ class RdapAnalyzer(AnalysisModule):
         now = datetime.now(timezone.utc)
         analysis.datetime_of_analysis = now.isoformat(" ")
 
-        is_ip = observable.type == F_IP
+        is_ip = _is_ip(observable)
         if is_ip:
             # IPs are queried verbatim; RDAP answers for the network the
             # address falls in, so no eTLD+1-style reduction applies.
@@ -602,6 +625,9 @@ class RdapAnalyzer(AnalysisModule):
         if whois_error is None:
             analysis.lookup_protocol = "whois"
             return AnalysisExecutionResult.COMPLETED
+        if whois_error == _WHOIS_NOT_FOUND_SENTINEL:
+            # the registry's authoritative "not found", like RDAP's above
+            return AnalysisExecutionResult.COMPLETED
 
         analysis.error = f"rdap: {rdap_error}; whois: {whois_error}"
         return AnalysisExecutionResult.COMPLETED
@@ -621,18 +647,21 @@ class RdapAnalyzer(AnalysisModule):
         Returns:
             ``None`` on success;
             ``_RDAP_NXDOMAIN_SENTINEL`` for an authoritative "does not
-                exist" answer (no fallback needed; the error is also
-                stored on the analysis);
+                exist" answer (no fallback needed; the answer is also
+                stored on the analysis as ``not_found``);
             a free-form error string for any other failure (caller
                 will fall back to WHOIS).
         """
+        import whoisit
+        from whoisit.errors import QueryError, ResourceDoesNotExist, UnsupportedError
+
         try:
             if is_ip:
                 result = whoisit.ip(query_target, include_raw=True)
             else:
                 result = whoisit.domain(query_target, include_raw=True)
         except ResourceDoesNotExist as e:
-            analysis.error = f"rdap: domain not found: {e}".split(
+            analysis.not_found = f"rdap: domain not found: {e}".split(
                 "\n", 1
             )[0].strip()[:200]
             return _RDAP_NXDOMAIN_SENTINEL
@@ -707,11 +736,22 @@ class RdapAnalyzer(AnalysisModule):
     ) -> str | None:
         """Populate ``analysis`` from a legacy WHOIS query for
         ``query_domain`` (the registrable domain reduced from
-        ``observable``). Returns ``None`` on success or an error string
-        on failure.
+        ``observable``). Returns ``None`` on success,
+        ``_WHOIS_NOT_FOUND_SENTINEL`` for the registry's authoritative
+        "not found" (stored on the analysis as ``not_found``), or an error
+        string on failure.
         """
+        import whois
+        # local, like whois: loaded only by the process that queries (see the note on imports above)
+        from whois.exceptions import PywhoisError, WhoisDomainNotFoundError
+
         try:
             whois_result = whois.whois(query_domain)
+        except WhoisDomainNotFoundError as e:
+            # python-whois puts the first line of the registry's reply in the message, which on its
+            # own does not say the domain is unregistered
+            analysis.not_found = f"whois: domain not found: {e}".split("\n", 1)[0].strip()[:200]
+            return _WHOIS_NOT_FOUND_SENTINEL
         except PywhoisError as e:
             return str(e).split("\n", 1)[0].strip()[:200] or "query failed"
         except Exception as e:  # noqa: BLE001
@@ -770,6 +810,7 @@ class RdapAnalyzer(AnalysisModule):
 # Sentinel returned by ``_try_rdap`` to distinguish "RDAP says no" from
 # "RDAP can't answer". Internal; never stored on the analysis.
 _RDAP_NXDOMAIN_SENTINEL = "__rdap_nxdomain__"
+_WHOIS_NOT_FOUND_SENTINEL = "__whois_not_found__"
 
 
 class RdapAnalysisPresenter(AnalysisPresenter):

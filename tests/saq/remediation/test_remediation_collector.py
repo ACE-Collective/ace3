@@ -1,29 +1,43 @@
+import logging
 from uuid import uuid4
 import pytest
 from sqlalchemy import func
+from sqlalchemy.orm import Query
 
 from saq.constants import F_TEST
 from saq.database.model import Remediation
 from saq.database.pool import get_db
 from saq.configuration.config import get_config
+from saq.configuration.schema import RemediatorConfig
 from saq.remediation.collector import RemediationCollector
-from saq.remediation.interface import RemediationListener
 from saq.remediation.target import RemediationTarget
-from saq.remediation.types import RemediationAction, RemediationStatus, RemediationWorkItem, RemediatorStatus
+from saq.remediation.types import RemediationAction, RemediationStatus, RemediationWorkItem, RemediatorResult, RemediatorStatus
+from saq.remediation.worker import RemediationWorker
+from tests.saq.remediation.test_remediator import TestRemediator
 
-class TestRemediationListener(RemediationListener):
+class TestRemediationListener:
     __test__ = False
 
     def __init__(self):
         self.remediations = []
 
-    def handle_remediation_request(self, remediation: RemediationWorkItem):
-        self.remediations.append(remediation)
+    def handle_request(self, work_item: RemediationWorkItem):
+        self.remediations.append(work_item)
 
-@pytest.mark.integration
-def test_collect_work_items_empty():
-    collector = RemediationCollector()
-    assert not collector.collect_work_items()
+    def pending_ids(self) -> set[int]:
+        # done with each item as soon as it has it
+        return set()
+
+class CountingRemediator(TestRemediator):
+    __test__ = False
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.removed: list[RemediationWorkItem] = []
+
+    def remove(self, target: RemediationWorkItem) -> RemediatorResult:
+        self.removed.append(target)
+        return super().remove(target)
 
 @pytest.mark.integration
 def test_collect_single_work_item():
@@ -37,38 +51,34 @@ def test_collect_single_work_item():
     assert not collector.collect_work_items()
 
     # now we register a listener for a different name, so we should (still) not collect any remediations
-    collector.register_remediation_listener("other", TestRemediationListener())
+    collector.register_listener("other", TestRemediationListener())
     assert not collector.collect_work_items()
 
     # now we register a listener for the same name, so we should collect the remediation
-    collector.register_remediation_listener("custom", TestRemediationListener())
+    collector.register_listener("custom", TestRemediationListener())
     tasks = collector.collect_work_items()
     assert len(tasks) == 1
 
-@pytest.mark.parametrize("status,expected_value", [
-    (RemediationStatus.NEW, True),
-    (RemediationStatus.IN_PROGRESS, True),
-    (RemediationStatus.COMPLETED, False),
-])
 @pytest.mark.integration
-def test_collect_work_item_status(status, expected_value):
+def test_collect_work_item_status():
+    """A completed remediation is not collected again (test_collect_single_work_item collects a new one)."""
     collector = RemediationCollector()
-    collector.register_remediation_listener("custom", TestRemediationListener())
+    collector.register_listener("custom", TestRemediationListener())
 
     target = RemediationTarget("custom", F_TEST, "test")
     id = target.queue_remediation(RemediationAction.REMOVE, get_config().global_settings.automation_user_id)
 
     remediation = get_db().query(Remediation).filter(Remediation.id == id).first()
-    remediation.status = status.value
+    remediation.status = RemediationStatus.COMPLETED.value
     get_db().add(remediation)
     get_db().commit()
 
-    assert bool(collector.collect_work_items()) == expected_value
+    assert not collector.collect_work_items()
 
 @pytest.mark.integration
 def test_collect_locked_work_item():
     collector = RemediationCollector()
-    collector.register_remediation_listener("custom", TestRemediationListener())
+    collector.register_listener("custom", TestRemediationListener())
 
     target = RemediationTarget("custom", F_TEST, "test")
     id = target.queue_remediation(RemediationAction.REMOVE, get_config().global_settings.automation_user_id)
@@ -95,7 +105,7 @@ def test_collect_locked_work_item():
 @pytest.mark.integration
 def test_collect_delayed_work_item():
     collector = RemediationCollector()
-    collector.register_remediation_listener("custom", TestRemediationListener())
+    collector.register_listener("custom", TestRemediationListener())
 
     target = RemediationTarget("custom", F_TEST, "test")
     id = target.queue_remediation(RemediationAction.REMOVE, get_config().global_settings.automation_user_id)
@@ -119,243 +129,15 @@ def test_collect_delayed_work_item():
     assert len(tasks) == 1
     assert tasks[0].id == id
 
-@pytest.mark.integration
-def test_collect_delayed_and_locked_work_item():
-    collector = RemediationCollector()
-    collector.register_remediation_listener("custom", TestRemediationListener())
-
-    target = RemediationTarget("custom", F_TEST, "test")
-    id = target.queue_remediation(RemediationAction.REMOVE, get_config().global_settings.automation_user_id)
-
-    # set to in progress and delayed and locked
-    remediation = get_db().query(Remediation).filter(Remediation.id == id).first()
-    remediation.update_time = func.NOW()
-    remediation.status = RemediationStatus.IN_PROGRESS.value
-    remediation.result = RemediatorStatus.DELAYED.value
-    remediation.lock = str(uuid4())
-    remediation.lock_time = func.NOW()
-    get_db().add(remediation)
-    get_db().commit()
-
-    # we not should collect the remediation because it is in progress and currently delayed and locked
-    assert not collector.collect_work_items()
-
-    # set the delay time to zero seconds
-    collector.delay_time_seconds = 0
-
-    # should still fail to collect because it is still locked
-    assert not collector.collect_work_items()
-
-    # set the lock time to zero seconds
-    collector.lock_timeout_seconds = 0
-
-    # now we should collect the remediation because it is in progress and the delay time and lock has expired
-    tasks = collector.collect_work_items()
-    assert len(tasks) == 1
-    assert tasks[0].id == id
-
-@pytest.mark.unit
-def test_register_remediation_listener():
-    collector = RemediationCollector()
-    listener = TestRemediationListener()
-
-    # should successfully register a listener
-    collector.register_remediation_listener("test_name", listener)
-    assert "test_name" in collector.listeners
-    assert collector.listeners["test_name"] is listener
-
-@pytest.mark.unit
-def test_register_remediation_listener_duplicate():
-    collector = RemediationCollector()
-    listener1 = TestRemediationListener()
-    listener2 = TestRemediationListener()
-
-    # register first listener
-    collector.register_remediation_listener("test_name", listener1)
-
-    # attempting to register a second listener with the same name should raise ValueError
-    with pytest.raises(ValueError, match="remediation listener test_name already registered"):
-        collector.register_remediation_listener("test_name", listener2)
-
-@pytest.mark.unit
-def test_register_multiple_remediation_listeners():
-    collector = RemediationCollector()
-    listener1 = TestRemediationListener()
-    listener2 = TestRemediationListener()
-    listener3 = TestRemediationListener()
-
-    # should successfully register multiple listeners with different names
-    collector.register_remediation_listener("listener_1", listener1)
-    collector.register_remediation_listener("listener_2", listener2)
-    collector.register_remediation_listener("listener_3", listener3)
-
-    assert len(collector.listeners) == 3
-    assert collector.listeners["listener_1"] is listener1
-    assert collector.listeners["listener_2"] is listener2
-    assert collector.listeners["listener_3"] is listener3
-
-@pytest.mark.unit
-def test_notify_remediation_listeners():
-    collector = RemediationCollector()
-    listener = TestRemediationListener()
-
-    # register a listener
-    collector.register_remediation_listener("test_name", listener)
-
-    # create a work item
-    work_item = RemediationWorkItem(
-        id=1,
-        action=RemediationAction.REMOVE,
-        name="test_name",
-        type=F_TEST,
-        key="test_key",
-        restore_key=None
-    )
-
-    # notify the listener
-    collector.notify_remediation_listeners(work_item)
-
-    # verify the listener received the work item
-    assert len(listener.remediations) == 1
-    assert listener.remediations[0] is work_item
-
-@pytest.mark.unit
-def test_notify_remediation_listeners_unregistered():
-    collector = RemediationCollector()
-
-    # create a work item for an unregistered listener
-    work_item = RemediationWorkItem(
-        id=1,
-        action=RemediationAction.REMOVE,
-        name="unregistered_name",
-        type=F_TEST,
-        key="test_key",
-        restore_key=None
-    )
-
-    # attempting to notify an unregistered listener should raise ValueError
-    with pytest.raises(ValueError, match="remediation name unregistered_name not registered"):
-        collector.notify_remediation_listeners(work_item)
-
-@pytest.mark.unit
-def test_notify_remediation_listeners_multiple():
-    collector = RemediationCollector()
-    listener1 = TestRemediationListener()
-    listener2 = TestRemediationListener()
-
-    # register two listeners
-    collector.register_remediation_listener("listener_1", listener1)
-    collector.register_remediation_listener("listener_2", listener2)
-
-    # create work items for each listener
-    work_item_1 = RemediationWorkItem(
-        id=1,
-        action=RemediationAction.REMOVE,
-        name="listener_1",
-        type=F_TEST,
-        key="test_key_1",
-        restore_key=None
-    )
-
-    work_item_2 = RemediationWorkItem(
-        id=2,
-        action=RemediationAction.RESTORE,
-        name="listener_2",
-        type=F_TEST,
-        key="test_key_2",
-        restore_key="restore_key_2"
-    )
-
-    # notify each listener
-    collector.notify_remediation_listeners(work_item_1)
-    collector.notify_remediation_listeners(work_item_2)
-
-    # verify each listener received only their work item
-    assert len(listener1.remediations) == 1
-    assert listener1.remediations[0] is work_item_1
-
-    assert len(listener2.remediations) == 1
-    assert listener2.remediations[0] is work_item_2
-
-@pytest.mark.unit
-def test_notify_remediation_listeners_same_listener_multiple_times():
-    collector = RemediationCollector()
-    listener = TestRemediationListener()
-
-    # register a listener
-    collector.register_remediation_listener("test_name", listener)
-
-    # create multiple work items for the same listener
-    work_item_1 = RemediationWorkItem(
-        id=1,
-        action=RemediationAction.REMOVE,
-        name="test_name",
-        type=F_TEST,
-        key="test_key_1",
-        restore_key=None
-    )
-
-    work_item_2 = RemediationWorkItem(
-        id=2,
-        action=RemediationAction.RESTORE,
-        name="test_name",
-        type=F_TEST,
-        key="test_key_2",
-        restore_key="restore_key_2"
-    )
-
-    # notify the listener multiple times
-    collector.notify_remediation_listeners(work_item_1)
-    collector.notify_remediation_listeners(work_item_2)
-
-    # verify the listener received both work items
-    assert len(listener.remediations) == 2
-    assert listener.remediations[0] is work_item_1
-    assert listener.remediations[1] is work_item_2
-
 def _queue(name: str, key: str, action: RemediationAction = RemediationAction.REMOVE, restore_key=None) -> int:
     target = RemediationTarget(name, F_TEST, key)
     return target.queue_remediation(action, get_config().global_settings.automation_user_id, restore_key)
-
-def _counting_collect(collector: RemediationCollector, on_call=None) -> list[int]:
-    """Wraps the real collect_work_items to count how often the loop calls it."""
-    calls = [0]
-    real_collect = collector.collect_work_items
-
-    def collect_work_items():
-        calls[0] += 1
-        if on_call:
-            on_call(calls[0])
-        return real_collect()
-
-    collector.collect_work_items = collect_work_items
-    return calls
-
-class RaisingRemediationListener(RemediationListener):
-    def handle_remediation_request(self, remediation: RemediationWorkItem):
-        raise RuntimeError("test error in handle_remediation_request")
-
-@pytest.mark.integration
-def test_collection_loop_signals_startup():
-    collector = RemediationCollector()
-
-    # startup event should not be set initially
-    assert not collector.collector_startup_event.is_set()
-
-    # set shutdown event so loop exits immediately
-    collector.shutdown_event.set()
-
-    # run the collection loop
-    collector.collection_loop()
-
-    # verify startup event was set
-    assert collector.collector_startup_event.is_set()
 
 @pytest.mark.integration
 def test_collection_loop_processes_work_items():
     collector = RemediationCollector()
     listener = TestRemediationListener()
-    collector.register_remediation_listener("test_name", listener)
+    collector.register_listener("test_name", listener)
 
     remove_id = _queue("test_name", "test_key_1")
     restore_id = _queue("test_name", "test_key_2", RemediationAction.RESTORE, "restore_key_2")
@@ -384,125 +166,13 @@ def test_collection_loop_processes_work_items():
     assert rows[other_id].status == RemediationStatus.NEW.value
     assert rows[other_id].lock is None
 
-@pytest.mark.unit
-def test_collection_loop_handles_exceptions_in_collect():
-    collector = RemediationCollector()
-
-    # mock collect_work_items to raise an exception first, then return empty list
-    call_count = [0]
-    def mock_collect_work_items():
-        call_count[0] += 1
-        if call_count[0] == 1:
-            raise RuntimeError("test error in collect_work_items")
-        return []
-
-    collector.collect_work_items = mock_collect_work_items
-
-    # set shutdown event so loop exits after processing
-    collector.shutdown_event.set()
-
-    # run the collection loop - should not raise exception
-    collector.collection_loop()
-
-    # verify collect_work_items was called
-    assert call_count[0] >= 1
-
-@pytest.mark.integration
-def test_collection_loop_handles_exceptions_in_notify(caplog):
-    collector = RemediationCollector()
-    collector.register_remediation_listener("test_name", RaisingRemediationListener())
-    _queue("test_name", "test_key")
-
-    # set shutdown event so loop exits after processing
-    collector.shutdown_event.set()
-
-    # run the collection loop - should not raise exception
-    collector.collection_loop()
-
-    errors = [r for r in caplog.records if r.levelname == "ERROR" and "error collecting remediations from database" in r.getMessage()]
-    assert len(errors) == 1
-    assert errors[0].exc_info is not None
-
-@pytest.mark.integration
-def test_collection_loop_removes_database_connection():
-    from unittest.mock import patch
-    from saq.database.pool import remove_all_sessions
-
-    collector = RemediationCollector()
-
-    # set shutdown event so loop exits
-    collector.shutdown_event.set()
-
-    with patch("saq.remediation.collector.remove_all_sessions", wraps=remove_all_sessions) as mock_remove:
-        collector.collection_loop()
-
-    # verify database sessions were removed
-    mock_remove.assert_called_once()
-
-@pytest.mark.integration
-def test_collection_loop_handles_db_remove_exception():
-    from unittest.mock import patch
-
-    collector = RemediationCollector()
-
-    # set shutdown event so loop exits
-    collector.shutdown_event.set()
-
-    with patch("saq.remediation.collector.remove_all_sessions", side_effect=RuntimeError("test db error")) as mock_remove:
-        # should not raise exception
-        collector.collection_loop()
-
-    # verify remove was attempted
-    mock_remove.assert_called_once()
-
-@pytest.mark.integration
-def test_collection_loop_exits_on_shutdown_event():
-    collector = RemediationCollector()
-    call_count = _counting_collect(collector)
-
-    # set shutdown event immediately
-    collector.shutdown_event.set()
-
-    # run the collection loop
-    collector.collection_loop()
-
-    # verify collect_work_items was called only once
-    assert call_count[0] == 1
-
-@pytest.mark.integration
-def test_collection_loop_waits_between_iterations():
-    collector = RemediationCollector()
-
-    def _on_call(count: int):
-        # set shutdown after second call
-        if count >= 2:
-            collector.shutdown_event.set()
-
-    call_count = _counting_collect(collector, _on_call)
-
-    # mock shutdown_event.wait to track calls and set shutdown
-    original_wait = collector.shutdown_event.wait
-    wait_calls = [0]
-    def mock_wait(timeout):
-        wait_calls[0] += 1
-        return original_wait(timeout)
-
-    collector.shutdown_event.wait = mock_wait
-
-    # run the collection loop
-    collector.collection_loop()
-
-    # verify wait was called with 1 second timeout
-    assert wait_calls[0] >= 1
-    assert call_count[0] == 2
-
 @pytest.mark.integration
 def test_collection_loop_processes_multiple_listeners():
     collector = RemediationCollector()
     listener1 = TestRemediationListener()
     listener2 = TestRemediationListener()
-    collector.register_remediation_listener("listener_1", listener1)
-    collector.register_remediation_listener("listener_2", listener2)
+    collector.register_listener("listener_1", listener1)
+    collector.register_listener("listener_2", listener2)
 
     id_1 = _queue("listener_1", "test_key_1")
     id_2 = _queue("listener_2", "test_key_2", RemediationAction.RESTORE, "restore_key_2")
@@ -517,3 +187,203 @@ def test_collection_loop_processes_multiple_listeners():
     # verify each listener received their work items
     assert {item.id for item in listener1.remediations} == {id_1, id_3}
     assert [item.id for item in listener2.remediations] == [id_2]
+
+
+def _lock(remediation_id: int) -> tuple:
+    get_db().expire_all()
+    remediation = get_db().query(Remediation).filter(Remediation.id == remediation_id).one()
+    return remediation.lock, remediation.lock_time
+
+
+@pytest.mark.integration
+def test_release_unlocks_rows_still_holding_the_collectors_lock(caplog):
+    collector = RemediationCollector()
+    collector.register_listener("custom", TestRemediationListener())
+    target = RemediationTarget("custom", F_TEST, "test")
+    ids = [target.queue_remediation(RemediationAction.REMOVE, get_config().global_settings.automation_user_id) for _ in range(2)]
+    work_items = collector.collect_work_items()
+    assert sorted(work_item.id for work_item in work_items) == sorted(ids)
+    assert all(work_item.lock is not None for work_item in work_items)
+
+    # the second row's lock timed out and another node locked it again
+    get_db().execute(Remediation.__table__.update().values(lock="other node").where(Remediation.id == ids[1]))
+    get_db().commit()
+    caplog.set_level(logging.INFO)
+
+    collector.release(work_items)
+
+    assert _lock(ids[0]) == (None, None)
+    assert _lock(ids[1])[0] == "other node"
+    records = [r for r in caplog.records if r.levelno == logging.INFO and "released 1 of 2 queued remediation rows" in r.getMessage()]
+    assert len(records) == 1
+    # the ids go in a field, since a backlog can hold thousands of them
+    assert sorted(records[0].row_ids) == sorted(ids)
+    # the released row is collected again without waiting out the lock timeout
+    assert [work_item.id for work_item in collector.collect_work_items()] == [ids[0]]
+
+
+@pytest.mark.integration
+def test_release_unlocks_rows_of_several_collection_passes(monkeypatch, caplog):
+    # several batches per lock too
+    monkeypatch.setattr("saq.queue_service.RELEASE_BATCH_SIZE", 1)
+    collector = RemediationCollector()
+    collector.register_listener("custom", TestRemediationListener())
+    target = RemediationTarget("custom", F_TEST, "test")
+    automation_user_id = get_config().global_settings.automation_user_id
+    # a backlog built over two passes, each of which locks its rows under a lock of its own
+    ids = [target.queue_remediation(RemediationAction.REMOVE, automation_user_id) for _ in range(2)]
+    first_pass = collector.collect_work_items()
+    ids += [target.queue_remediation(RemediationAction.REMOVE, automation_user_id) for _ in range(2)]
+    second_pass = collector.collect_work_items()
+    assert len(first_pass) == len(second_pass) == 2
+    assert first_pass[0].lock != second_pass[0].lock
+    caplog.set_level(logging.INFO)
+
+    collector.release(first_pass + second_pass)
+
+    assert [_lock(remediation_id) for remediation_id in ids] == [(None, None)] * 4
+    assert any("released 4 of 4 queued remediation rows" in r.getMessage() for r in caplog.records)
+
+
+@pytest.mark.integration
+def test_release_logs_failure_and_leaves_rows_locked(monkeypatch, caplog):
+    collector = RemediationCollector()
+    collector.register_listener("custom", TestRemediationListener())
+    remediation_id = RemediationTarget("custom", F_TEST, "test").queue_remediation(RemediationAction.REMOVE, get_config().global_settings.automation_user_id)
+    work_items = collector.collect_work_items()
+
+    class _UnreachableDatabase:
+        def execute(self, statement):
+            raise RuntimeError("database is gone")
+
+    monkeypatch.setattr("saq.queue_service.get_db", lambda: _UnreachableDatabase())
+
+    collector.release(work_items)
+
+    errors = [r for r in caplog.records if r.levelno == logging.ERROR and r.exc_info]
+    assert len(errors) == 1
+    assert "unable to release queued remediation rows (0 of 1 released before the failure): database is gone" in errors[0].getMessage()
+    assert errors[0].row_ids == [remediation_id]
+    assert _lock(remediation_id)[0] == work_items[0].lock
+
+
+@pytest.mark.integration
+def test_release_failure_after_a_batch_says_how_many_were_released(monkeypatch, caplog):
+    monkeypatch.setattr("saq.queue_service.RELEASE_BATCH_SIZE", 1)
+    collector = RemediationCollector()
+    collector.register_listener("custom", TestRemediationListener())
+    target = RemediationTarget("custom", F_TEST, "test")
+    ids = [target.queue_remediation(RemediationAction.REMOVE, get_config().global_settings.automation_user_id) for _ in range(2)]
+    work_items = collector.collect_work_items()
+    session = get_db()
+
+    class _DatabaseLostAfterOneBatch:
+        """The real session for the first batch, then a lost connection."""
+        statements = 0
+
+        def execute(self, statement):
+            self.statements += 1
+            if self.statements > 1:
+                raise RuntimeError("database is gone")
+            return session.execute(statement)
+
+        def commit(self):
+            session.commit()
+
+    database = _DatabaseLostAfterOneBatch()
+    monkeypatch.setattr("saq.queue_service.get_db", lambda: database)
+
+    collector.release(work_items)
+
+    errors = [r for r in caplog.records if r.levelno == logging.ERROR and r.exc_info]
+    assert len(errors) == 1
+    assert "1 of 2 released before the failure" in errors[0].getMessage()
+    assert sorted(_lock(remediation_id)[0] is None for remediation_id in ids) == [False, True]
+
+
+@pytest.mark.integration
+def test_release_logs_failed_session_reset(monkeypatch, caplog):
+    collector = RemediationCollector()
+    collector.register_listener("custom", TestRemediationListener())
+    remediation_id = RemediationTarget("custom", F_TEST, "test").queue_remediation(RemediationAction.REMOVE, get_config().global_settings.automation_user_id)
+    work_items = collector.collect_work_items()
+
+    def _fail():
+        raise RuntimeError("pool gone")
+
+    monkeypatch.setattr("saq.queue_service.remove_all_sessions", _fail)
+
+    collector.release(work_items)
+
+    assert _lock(remediation_id) == (None, None)
+    errors = [r for r in caplog.records if r.levelno == logging.ERROR and r.exc_info]
+    assert len(errors) == 1
+    assert "error removing database connection: pool gone" in errors[0].getMessage()
+
+
+@pytest.mark.integration
+def test_collect_skips_remediation_still_queued_after_lock_timeout():
+    # the remediator is behind: the row waits in its worker's queue past the lock timeout
+    remediator = CountingRemediator(RemediatorConfig(
+        name="custom",
+        display_name="Custom Remediator",
+        description="Custom remediator for testing",
+        observable_type=F_TEST,
+        python_module="value",
+        python_class="value",
+    ))
+    worker = RemediationWorker(remediator)
+    collector = RemediationCollector(lock_timeout_seconds=0)
+    collector.register_listener("custom", worker)
+    id = _queue("custom", "test")
+
+    collector.start_single_threaded()
+    collector.collection_loop()
+
+    assert worker.work_queue.qsize() == 1
+
+    worker.start_single_threaded()
+
+    assert [target.id for target in remediator.removed] == [id]
+    # finished, it is not collected again, and a new remediation is
+    new_id = _queue("custom", "test_2")
+    assert [item.id for item in collector.collect_work_items()] == [new_id]
+
+@pytest.mark.integration
+def test_collect_does_not_reopen_remediation_finished_during_collection(monkeypatch):
+    class HoldingListener(TestRemediationListener):
+        __test__ = False
+
+        def __init__(self):
+            super().__init__()
+            self.held: set[int] = set()
+
+        def pending_ids(self) -> set[int]:
+            return set(self.held)
+
+    listener = HoldingListener()
+    collector = RemediationCollector(lock_timeout_seconds=0)
+    collector.register_listener("custom", listener)
+    id = _queue("custom", "test")
+    assert [item.id for item in collector.collect_work_items()] == [id]
+    listener.held.add(id)
+
+    # the worker finishes the remediation and lets go of it right after the collector's query has
+    # read it unfinished
+    query_all = Query.all
+    def all_then_finish(query):
+        rows = query_all(query)
+        if listener.held:
+            get_db().execute(Remediation.__table__.update().values(
+                status=RemediationStatus.COMPLETED.value, lock=None).where(Remediation.id == id))
+            get_db().commit()
+            listener.held.clear()
+        return rows
+
+    monkeypatch.setattr(Query, "all", all_then_finish)
+
+    assert not collector.collect_work_items()
+    get_db().expire_all()
+    remediation = get_db().get(Remediation, id)
+    assert remediation.status == RemediationStatus.COMPLETED.value
+    assert remediation.lock is None

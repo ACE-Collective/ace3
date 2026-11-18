@@ -8,12 +8,18 @@ import os
 import subprocess
 
 import pytest
+from pydantic import ValidationError
 
 from saq.configuration.config import get_config, get_service_config
 from saq.constants import ANALYSIS_MODULE_OBSERVABLE_MODIFIER, SERVICE_YARA_SCANNER
 from saq.configuration.schema import HuntRuleDirConfig, HuntTypeConfig
-from saq.environment import get_base_dir
-from saq.signatures.locations import get_all_signature_locations, get_signature_locations
+from saq.environment import get_global_runtime_settings
+from saq.signatures.locations import (
+    CONFIG_ANALYSIS_MODULE_OBSERVABLE_MODIFIER,
+    CONFIG_SERVICE_YARA,
+    get_all_signature_locations,
+    get_signature_locations,
+)
 from saq.signatures.model import SignatureType
 
 
@@ -80,11 +86,38 @@ def test_yara_location(tmp_path, monkeypatch):
 
 
 @pytest.mark.unit
-def test_yara_signature_dir_is_resolved_against_saq_home(monkeypatch):
+def test_missing_yara_config_has_no_locations(caplog):
+    del get_config().raw._data[CONFIG_SERVICE_YARA]
+    get_config().load_service_configs()
+
+    with caplog.at_level(logging.WARNING):
+        assert get_signature_locations(SignatureType.YARA) == []
+
+    assert any("no service_yara configuration" in record.getMessage() for record in caplog.records)
+
+
+@pytest.mark.unit
+def test_invalid_yara_config_raises():
+    # a section that is there but fails to validate is not "no yara signatures are loaded"
+    get_config().raw._data[CONFIG_SERVICE_YARA]["git_repo_dirs"] = "bv"
+    get_config().load_service_configs()
+
+    with pytest.raises(ValidationError, match="git_repo_dirs"):
+        get_signature_locations(SignatureType.YARA)
+
+
+@pytest.fixture
+def saq_home(monkeypatch) -> str:
+    """A SAQ_HOME that is not the working directory, which the test suite's is."""
+    monkeypatch.setattr(get_global_runtime_settings(), "saq_home", "/srv/ace")
+    return "/srv/ace"
+
+
+@pytest.mark.unit
+def test_yara_signature_dir_is_resolved_against_saq_home(monkeypatch, saq_home):
     _set_yara_config(monkeypatch, "signatures/yara", [])
 
-    assert get_signature_locations(SignatureType.YARA)[0].path == os.path.join(
-        get_base_dir(), "signatures", "yara")
+    assert get_signature_locations(SignatureType.YARA)[0].path == "/srv/ace/signatures/yara"
 
 
 @pytest.mark.unit
@@ -161,13 +194,13 @@ def test_hunt_locations(tmp_path):
 
 
 @pytest.mark.unit
-def test_hunt_rule_dirs_are_resolved_against_saq_home():
+def test_hunt_rule_dirs_are_resolved_against_saq_home(saq_home):
     _set_hunt_types(_hunt_type("splunk", [
         HuntRuleDirConfig(rule_dir="signatures/hunts/splunk", git_dir="signatures")]))
 
     location = get_signature_locations(SignatureType.HUNT)[0]
-    assert location.path == os.path.join(get_base_dir(), "signatures", "hunts", "splunk")
-    assert location.git_dirs == (os.path.join(get_base_dir(), "signatures"),)
+    assert location.path == "/srv/ace/signatures/hunts/splunk"
+    assert location.git_dirs == ("/srv/ace/signatures",)
 
 
 @pytest.mark.unit
@@ -217,13 +250,13 @@ def test_observable_modifier_location(tmp_path, monkeypatch):
 
 
 @pytest.mark.unit
-def test_observable_modifier_paths_are_resolved_against_saq_home(monkeypatch):
+def test_observable_modifier_paths_are_resolved_against_saq_home(monkeypatch, saq_home):
     config = _observable_modifier_config()
     monkeypatch.setattr(config, "rules_config_path", "etc/observable_modifier_rules.yaml")
     monkeypatch.setattr(config, "git_dir", None)
 
     location = get_signature_locations(SignatureType.OBSERVABLE_MODIFIER)[0]
-    assert location.path == os.path.join(get_base_dir(), "etc", "observable_modifier_rules.yaml")
+    assert location.path == "/srv/ace/etc/observable_modifier_rules.yaml"
     assert location.git_dirs == ()
 
 
@@ -237,17 +270,40 @@ def test_disabled_observable_modifier_has_no_locations(monkeypatch, caplog):
     assert any("disabled" in record.getMessage() for record in caplog.records)
 
 
+@pytest.mark.unit
+def test_missing_observable_modifier_config_has_no_locations(caplog):
+    del get_config().raw._data[CONFIG_ANALYSIS_MODULE_OBSERVABLE_MODIFIER]
+    get_config().load_analysis_module_configs()
+
+    with caplog.at_level(logging.WARNING):
+        assert get_signature_locations(SignatureType.OBSERVABLE_MODIFIER) == []
+
+    assert any("no analysis_module_observable_modifier configuration" in record.getMessage()
+               for record in caplog.records)
+
+
+@pytest.mark.unit
+def test_invalid_observable_modifier_config_is_reported(caplog):
+    get_config().raw._data[CONFIG_ANALYSIS_MODULE_OBSERVABLE_MODIFIER]["undeclared_setting"] = True
+    get_config().load_analysis_module_configs()
+
+    with caplog.at_level(logging.WARNING):
+        assert get_signature_locations(SignatureType.OBSERVABLE_MODIFIER) == []
+
+    # with a traceback, the record gets an error report; the block is there, so it is not "no configuration"
+    (record,) = [record for record in caplog.records if record.levelno >= logging.WARNING]
+    assert record.levelno == logging.ERROR
+    assert "undeclared_setting" in str(record.exc_info[1])
+    assert record.analysis_module == ANALYSIS_MODULE_OBSERVABLE_MODIFIER
+
+
 #
 # built-ins and the union
 #
 
 @pytest.mark.unit
-def test_builtin_signatures_have_no_location():
-    assert get_signature_locations(SignatureType.BUILTIN) == []
-
-
-@pytest.mark.unit
 def test_get_all_signature_locations(tmp_path, monkeypatch):
+    # built-in signatures are a table in code, so they have no location
     _set_yara_config(monkeypatch, str(tmp_path / "yara"), [])
     _set_hunt_types(_hunt_type("splunk", [HuntRuleDirConfig(rule_dir=str(tmp_path / "hunts"))]))
     monkeypatch.setattr(_observable_modifier_config(), "rules_config_path", str(tmp_path / "rules.yaml"))

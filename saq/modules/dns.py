@@ -157,6 +157,11 @@ class FQDNAnalysis(Analysis):
         return message
 
 
+def _add_error(analysis: FQDNAnalysis, message: str):
+    """Both apex lookups can fail; the analyst sees each."""
+    analysis.error = f"{analysis.error}; {message}" if analysis.error else message
+
+
 class FQDNAnalyzer(AnalysisModule):
     """What IP address does this FQDN resolve to?"""
 
@@ -200,6 +205,7 @@ class FQDNAnalyzer(AnalysisModule):
         except Exception as e:
             logging.warning(f"Problem resolving FQDN {fqdn}: {e}")
             analysis.status = STATUS_DNS_ERROR
+            analysis.error = f"A lookup failed: {str(e) or type(e).__name__}"
             return AnalysisExecutionResult.COMPLETED
 
         analysis.status = STATUS_OK
@@ -231,6 +237,7 @@ class FQDNAnalyzer(AnalysisModule):
             analysis.mx = []
         except Exception as e:
             logging.warning(f"Problem resolving MX for {fqdn}: {e}")
+            _add_error(analysis, f"MX lookup failed: {str(e) or type(e).__name__}")
 
         try:
             resolver.resolve(f"{WILDCARD_PROBE_LABEL}.{fqdn}", "A")
@@ -242,3 +249,4 @@ class FQDNAnalyzer(AnalysisModule):
             analysis.wildcard_dns = False
         except Exception as e:
             logging.warning(f"Problem probing {fqdn} for wildcard DNS: {e}")
+            _add_error(analysis, f"wildcard probe failed: {str(e) or type(e).__name__}")

@@ -17,16 +17,9 @@ docker compose up -d
 With an offset of 100 the second instance's GUI is at `https://localhost:5100/ace`, nginx at
 8543 and 9543. The original checkout needs no `.env` and keeps every default it has today.
 
-> **Use a clone, not a `git worktree`.** A worktree's `.git` is a *file* holding an absolute host
-> path back to the parent repo (`gitdir: /path/to/parent/.git/worktrees/<name>`). The containers
-> bind-mount only the worktree directory itself at `/opt/ace`, so that path does not exist inside
-> them and every `git` command against the checkout fails with `fatal: not a git repository`.
-> Nothing in the running stack depends on the ACE checkout being a git repository — the signature
-> and hunt repositories are separate repos with real `.git` directories and are unaffected — but
-> the test suite does, and
-> `tests/saq/configuration/test_analysis_mode_config.py::test_no_duplicate_keys_in_any_tracked_config_yaml`
-> fails on `git ls-files`. If you want a worktree anyway, also bind-mount the parent repo's `.git`
-> into the container at the same absolute path the gitdir names.
+> **Use a clone, not a `git worktree`.** A worktree has no stack of its own: its scripts find the
+> stack of the checkout it was made from (see *Working with a specific instance* below), so it
+> cannot be a second instance.
 
 ## How the isolation works
 
@@ -114,6 +107,39 @@ cd /opt/ace2 && make db-upgrade
 cd /opt/ace2 && bin/ace-shutdown.sh
 ```
 
+A git worktree under a checkout has no stack of its own. In a worktree, `get-dev-container.sh` and
+`get-ace-container.sh` find the stack of the checkout the worktree was made from, and
+`exec-in-container.sh` runs its command from the worktree's own path in the container, with
+`SAQ_HOME` set to that path. It is for the host only: inside the container, which has no `docker`,
+it exits 1, and commands run directly, with `SAQ_HOME` and `PYTHONPATH` exported to the worktree and
+the worktree first on `PATH` (a worktree made with `bin/enter-worktree.sh` has them). The `Makefile`
+runs its commands in place there.
+
+A worktree's `.git` file names its repository by absolute path, and the host sees the checkout at a
+different path than the container's `/opt/ace`, so `git` works in a worktree only on the side that
+created it, and its git work is done there. On the host, the scripts refuse a worktree that git
+cannot open rather than fall back to the main checkout's stack and code. A host worktree's
+commands run in the container without git, through `exec-in-container.sh` from the host.
+
+A worktree outside its checkout (T3 Code keeps them under `~/.t3/worktrees/<repo>/`) is not visible
+in the container until you mount it. In the checkout's `docker-compose.override.yml`, mount the
+directory that holds the worktrees, and `local/` at its host path, because such a worktree's `local`
+link is absolute:
+
+```yaml
+services:
+  dev:
+    volumes:
+      - ./.git:/absolute/host/path/to/the/checkout/.git
+      - ./local:/absolute/host/path/to/the/checkout/local
+      - /absolute/host/path/to/the/worktrees:/opt/ace-worktrees
+```
+
+Recreate `dev` with `docker compose up -d --no-deps dev`. `exec-in-container.sh` asks `docker inspect`
+for the bind mounts and uses the deepest one above the worktree, so the destination can be any path.
+Keep it short: a long path can push a unix socket under the data directory past the 108-byte
+`AF_UNIX` limit, and a `.` in it makes SVS replay refuse the `work_dir`.
+
 They find the stack by asking compose (`docker compose ps -q <service>`), which means they
 resolve whichever compose file that checkout would use by default. A deployment that runs its
 own compose file rather than the one at the repo root — `integrations/bv_ace/docker-compose.yml`,
@@ -131,14 +157,15 @@ file's directory, which is the behaviour such a deployment already has.
 
 Two instances can run the suite at the same time. They do not share state:
 
-- the `.pytest-running` marker lives at `$SAQ_HOME/.pytest-running`, which is each stack's own
-  bind-mounted checkout (`tests/session_lock.py`);
+- the run marker lives at `$SAQ_HOME/.pytest-running`, which is each stack's own
+  bind-mounted checkout, and the run lock at `/tmp/ace-pytest-run.lock`, which is each
+  container's own (`tests/session_lock.py`);
 - each session provisions its own databases on its own `ace-db`;
 - the suite's API (24443+) and network-semaphore (53560+) ports are internal to the container
   and never published to the host.
 
-`CLAUDE.md`'s rule against starting more than one run at a time is about one checkout, not one
-host.
+So the run lock keeps a second run out of one container, not off the host. Two instances'
+`pytest -n auto` runs share the host's memory, and enough of them at once run it out.
 
 ## Upgrading an existing environment
 

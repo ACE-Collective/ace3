@@ -55,7 +55,7 @@ class FileCollectionWorkItem(BaseModel):
     type: str = Field(..., description="The observable type (e.g., file_location).")
     key: str = Field(..., description="The observable value (e.g., hostname@/path/to/file).")
     alert_uuid: Optional[str] = Field(default=None, description="UUID of the originating alert.")
-    storage_dir: Optional[str] = Field(default=None, description="Path to the alert's storage directory for collected files.")
+    storage_dir: Optional[str] = Field(default=None, description="The directory collected files go in: the alert's storage directory, or the collection's own directory when no alert asked for it.")
     retry_count: int = Field(default=0, description="Number of previous retry attempts.")
     max_retries: int = Field(default=10, description="Maximum number of retry attempts.")
     lock: Optional[str] = Field(

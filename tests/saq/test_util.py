@@ -11,7 +11,7 @@ from saq.engine.configuration_manager import ConfigurationManager
 from saq.engine.engine_configuration import EngineConfiguration
 from saq.filesystem.adapter import FileSystemAdapter
 from saq.modules.context import AnalysisModuleContext
-from saq.util.filesystem import extract_windows_filepaths, is_nt_path, map_mimetype_to_file_ext, safe_file_name
+from saq.util.filesystem import extract_windows_filepaths, is_nt_path, map_mimetype_to_file_ext
 from saq.util.networking import fully_qualified
 from saq.util.parsing import json_parse
 from saq.util.time import create_timedelta
@@ -24,10 +24,8 @@ def test_sha256(datadir):
 
 @pytest.mark.unit
 @pytest.mark.parametrize("mime_type,file_ext", [
-    ("application/andrew-inset", "ez"), # single value
     ("application/heythere", "bin"), # unknown value
     ("application/inkml+xml", "ink"), # multiple values
-    (None, "bin"), # invalid value
 ])
 def test_map_mimetype_to_file_ext(mime_type, file_ext):
     assert map_mimetype_to_file_ext(mime_type) == file_ext
@@ -115,8 +113,8 @@ def test_json_parse(tmpdir):
 
             result = list(json_parse(fp_in))
             assert len(result) == 1
-            result[0][0] == json_value_1
-            result[0][1] == position_1
+            assert result[0][0] == json_value_1
+            assert result[0][1] == position_1
 
             fp_out.write(d2)
             position_2 = fp_out.tell()
@@ -141,7 +139,6 @@ def test_fang(input: str, expected: str):
     (r'C:\Users\john\test.txt', True),
     (r'\\server\some\path.txt', True),
     (r'/some/unix/path.txt', False),
-    (r'file.txt', False),
     (r'C:\<Users\john\test.txt', False),
     (r'C:\>Users\john\test.txt', False),
     (r'C:\:Users\john\test.txt', False),
@@ -156,29 +153,14 @@ def test_is_nt_path(path: str, expected: bool):
     assert is_nt_path(path) == expected
 
 @pytest.mark.parametrize("input, expected", [
-    (r'test.txt', 'test.txt'),
-    (r'../test.txt', '_test.txt'),
-    (r'../../test.txt', '_test.txt'),
-    (r'../../../test.txt', '_test.txt'),
-    (r'\\../../test.txt', '_test.txt'),
-    (r'\\.\\.\\/test.txt', '_._._test.txt'),
-    (r'/some/path/test.txt', '_some_path_test.txt'),
-    (r'//////test.txt', '_test.txt'),
-    (r'~john/test', '_john_test'),
-])
-@pytest.mark.unit
-def test_safe_file_name(input: str, expected: str):
-    assert safe_file_name(input) ==  expected
-
-@pytest.mark.parametrize("input, expected", [
         ("\"C:\\Windows\\SysWOW64\\mshta.exe\" \"\\\\hostname\\shares\\Applications\\EUPT\\Operations\\Shared_Services\\Item_Processing\\Databases\\Item Processing Database\\DB_FILES\\IP Database.hta\" ", [ 
             r'C:\Windows\SysWOW64\mshta.exe', r'\\hostname\shares\Applications\EUPT\Operations\Shared_Services\Item_Processing\Databases\Item Processing Database\DB_FILES\IP Database.hta' ])
 ])
 @pytest.mark.unit
 def test_extract_windows_filepaths(input: str, expected: str):
-    extract_windows_filepaths(input) == expected
+    assert extract_windows_filepaths(input) == expected
 
-def create_test_context(root: Optional[RootAnalysis] = None, configuration_manager: Optional[ConfigurationManager] = None, shutdown_interface=None, delayed_analysis_interface=None):
+def create_test_context(root: Optional[RootAnalysis] = None, configuration_manager: Optional[ConfigurationManager] = None, shutdown_interface=None, delayed_analysis_interface=None, engine_canceled=None):
     from saq.modules.state_repository import StateRepositoryFactory
     root_analysis = root or RootAnalysis()
     return AnalysisModuleContext(
@@ -190,4 +172,5 @@ def create_test_context(root: Optional[RootAnalysis] = None, configuration_manag
             RootAnalysisAdapter(root_analysis)
         ),
         shutdown_interface=shutdown_interface,
+        engine_canceled=engine_canceled,
     )

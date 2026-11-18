@@ -1,8 +1,8 @@
 /* Theme tokens. Colors ACE sets itself are --ace-* properties, redefined per theme
    below; everything else uses Bootstrap's own variables, which follow data-bs-theme.
-   Dark, data-ace-theme="jd" (a high-contrast light mode) and data-ace-theme="halloween"
-   (built on dark) also redefine Bootstrap's variables as their own palette (core.html sets
-   both attributes). */
+   Dark, data-ace-theme="jd" (a high-contrast light mode), data-ace-theme="sepia" (a low-glare
+   light mode) and data-ace-theme="halloween" (built on dark) also redefine Bootstrap's variables
+   as their own palette (core.html sets both attributes). */
 :root {
     --ace-obs-user: #0000ff;
     --ace-obs-o365-group: #4d4dff;
@@ -275,6 +275,232 @@
     outline-offset: 2px;
 }
 
+/* 👓 Sepia: brown ink on aged paper, for long sessions. A tan page with no pure white or black,
+   so there is less glare and less blue light, with JD's larger text. Every text color, observables
+   included, is AAA (7:1) on every panel shade. Builds on Bootstrap's light theme. */
+[data-ace-theme=sepia] {
+    font-size: 13px;
+    --bs-body-bg: #e8d9b8;
+    --bs-body-bg-rgb: 232, 217, 184;
+    --bs-tertiary-bg: #e0cfaa;
+    --bs-tertiary-bg-rgb: 224, 207, 170;
+    --bs-secondary-bg: #d6c39b;
+    --bs-secondary-bg-rgb: 214, 195, 155;
+    --bs-body-color: #1f170e;
+    --bs-body-color-rgb: 31, 23, 14;
+    --bs-emphasis-color: #150d04;
+    --bs-emphasis-color-rgb: 21, 13, 4;
+    --bs-secondary-color: #46301c;
+    --bs-secondary-color-rgb: 70, 48, 28;
+    --bs-tertiary-color: #46301c;
+    --bs-tertiary-color-rgb: 70, 48, 28;
+    --bs-border-color: #93704c;
+    --bs-border-color-translucent: rgba(110, 66, 28, 0.45);
+    --bs-link-color: #562a06;
+    --bs-link-color-rgb: 86, 42, 6;
+    --bs-link-hover-color: #3d1f06;
+    --bs-link-hover-color-rgb: 61, 31, 6;
+    --bs-primary: #562a06;
+    --bs-primary-rgb: 86, 42, 6;
+    --bs-secondary: #46301c;
+    --bs-secondary-rgb: 70, 48, 28;
+    --bs-success: #283a0d;
+    --bs-success-rgb: 40, 58, 13;
+    /* a fill under black text (text-bg-warning); --ace-warning-text is the amber for text */
+    --bs-warning: #a0701a;
+    --bs-warning-rgb: 160, 112, 26;
+    --ace-warning-text: #473001;
+    --bs-danger: #621c0c;
+    --bs-danger-rgb: 98, 28, 12;
+    --bs-info: #193a3a;
+    --bs-info-rgb: 25, 58, 58;
+    --bs-light: #e0cfaa;
+    --bs-light-rgb: 224, 207, 170;
+    --bs-dark: #1f170e;
+    /* .bg-white and the like read this; white would be the brightest thing on the page */
+    --bs-white-rgb: 232, 217, 184;
+    --bs-code-color: #621c0c;
+    --bs-highlight-bg: #d4ac45;
+    --bs-highlight-color: #150d04;
+    --bs-focus-ring-width: 0.3rem;
+    --bs-focus-ring-color: rgba(86, 42, 6, 0.5);
+
+    --bs-primary-text-emphasis: color-mix(in srgb, var(--bs-primary) 80%, var(--bs-emphasis-color));
+    --bs-primary-bg-subtle: color-mix(in srgb, var(--bs-primary) 15%, var(--bs-body-bg));
+    --bs-primary-border-subtle: color-mix(in srgb, var(--bs-primary) 35%, var(--bs-body-bg));
+    --bs-success-text-emphasis: color-mix(in srgb, var(--bs-success) 80%, var(--bs-emphasis-color));
+    --bs-success-bg-subtle: color-mix(in srgb, var(--bs-success) 15%, var(--bs-body-bg));
+    --bs-success-border-subtle: color-mix(in srgb, var(--bs-success) 35%, var(--bs-body-bg));
+    --bs-warning-text-emphasis: var(--ace-warning-text);
+    --bs-warning-bg-subtle: color-mix(in srgb, var(--bs-warning) 15%, var(--bs-body-bg));
+    --bs-warning-border-subtle: color-mix(in srgb, var(--bs-warning) 35%, var(--bs-body-bg));
+    --bs-danger-text-emphasis: color-mix(in srgb, var(--bs-danger) 80%, var(--bs-emphasis-color));
+    --bs-danger-bg-subtle: color-mix(in srgb, var(--bs-danger) 15%, var(--bs-body-bg));
+    --bs-danger-border-subtle: color-mix(in srgb, var(--bs-danger) 35%, var(--bs-body-bg));
+    --bs-info-text-emphasis: color-mix(in srgb, var(--bs-info) 80%, var(--bs-emphasis-color));
+    --bs-info-bg-subtle: color-mix(in srgb, var(--bs-info) 15%, var(--bs-body-bg));
+    --bs-info-border-subtle: color-mix(in srgb, var(--bs-info) 35%, var(--bs-body-bg));
+    --bs-secondary-bg-subtle: var(--bs-secondary-bg);
+    --bs-light-bg-subtle: var(--bs-tertiary-bg);
+
+    --ace-obs-user: #1e355f;
+    --ace-obs-o365-group: #29315c;
+    --ace-obs-email: #333056;
+    --ace-obs-ipv4: #123a3a;
+    --ace-obs-ipv4-conversation: #163a3a;
+    --ace-obs-asset: #183b3b;
+    --ace-obs-fqdn: #492f00;
+    --ace-obs-hostname: #4c3000;
+    --ace-obs-printer: #582610;
+    --ace-obs-file: #641a0c;
+    --ace-obs-email-subject: #1c3a34;
+    --ace-obs-file-path: #641c0a;
+    --ace-obs-file-name: #4b140b;
+    --ace-obs-yara-rule: #203c0c;
+    --ace-obs-indicator: #1e3651;
+    --ace-obs-url: #363600;
+    --ace-observable-shadow: none;
+    --ace-link-hover-shadow: none;
+    --ace-interesting-bg: #dbc080;
+    --ace-flash-bg: #cfa46c;
+    --ace-json-key: #562a06;
+    --ace-json-boolean: #562a06;
+    --ace-json-number: #283a0d;
+    --ace-json-string: #46301c;
+    --ace-json-muted: #46301c;
+    --ace-search-hit-uuid: #46301c;
+}
+
+/* Buttons with a color of their own (primary, success, danger, warning, info) keep Bootstrap's
+   colors, like tags. Only the neutral grey ones take the palette's brown, under page-colored text. */
+[data-ace-theme=sepia] .btn-secondary {
+    --bs-btn-color: var(--bs-body-bg);
+    --bs-btn-bg: var(--bs-secondary);
+    --bs-btn-border-color: var(--bs-secondary);
+    --bs-btn-hover-color: var(--bs-body-bg);
+    --bs-btn-hover-bg: color-mix(in srgb, var(--bs-secondary) 85%, #000);
+    --bs-btn-hover-border-color: color-mix(in srgb, var(--bs-secondary) 85%, #000);
+    --bs-btn-active-color: var(--bs-body-bg);
+    --bs-btn-active-bg: color-mix(in srgb, var(--bs-secondary) 75%, #000);
+    --bs-btn-active-border-color: color-mix(in srgb, var(--bs-secondary) 75%, #000);
+    --bs-btn-disabled-color: var(--bs-body-bg);
+    --bs-btn-disabled-bg: var(--bs-secondary);
+    --bs-btn-disabled-border-color: var(--bs-secondary);
+}
+[data-ace-theme=sepia] .btn-outline-secondary {
+    --bs-btn-color: var(--bs-secondary);
+    --bs-btn-border-color: var(--bs-secondary);
+    --bs-btn-hover-color: var(--bs-body-bg);
+    --bs-btn-hover-bg: var(--bs-secondary);
+    --bs-btn-hover-border-color: var(--bs-secondary);
+    --bs-btn-active-color: var(--bs-body-bg);
+    --bs-btn-active-bg: var(--bs-secondary);
+    --bs-btn-active-border-color: var(--bs-secondary);
+    --bs-btn-disabled-color: var(--bs-secondary);
+    --bs-btn-disabled-border-color: var(--bs-secondary);
+}
+[data-ace-theme=sepia] .btn-outline-dark {
+    --bs-btn-color: var(--bs-body-color);
+    --bs-btn-border-color: var(--bs-border-color);
+    --bs-btn-hover-color: var(--bs-emphasis-color);
+    --bs-btn-hover-bg: var(--bs-secondary-bg);
+    --bs-btn-hover-border-color: var(--bs-secondary-color);
+}
+
+[data-ace-theme=sepia] :focus-visible {
+    outline: 3px solid var(--bs-emphasis-color);
+    outline-offset: 2px;
+}
+
+/* Bootstrap draws card headers with a translucent near-black, which turns olive over tan */
+[data-ace-theme=sepia] .card {
+    --bs-card-cap-bg: #ddcaa7;
+}
+
+/* A browner navbar that spans the window, so it has no side edges, and fades into the page below
+   instead of ending at a hard line. bg-body-tertiary reads --bs-tertiary-bg-rgb, so the navbar's
+   shade is set there; the margins undo container-fluid's padding and the padding puts it back
+   inside, so the navbar's contents stay where they were. */
+[data-ace-theme=sepia] .navbar {
+    --ace-navbar-bg-rgb: 222, 207, 178;
+    --bs-tertiary-bg-rgb: var(--ace-navbar-bg-rgb);
+    --bs-navbar-color: var(--bs-body-color);
+    --bs-navbar-hover-color: var(--bs-emphasis-color);
+    --bs-navbar-active-color: var(--bs-emphasis-color);
+    --bs-navbar-brand-color: var(--bs-emphasis-color);
+    --bs-navbar-brand-hover-color: var(--bs-emphasis-color);
+    margin-inline: calc(var(--bs-gutter-x) * -0.5);
+    padding-inline: calc(var(--bs-gutter-x) * 0.5);
+}
+/* the fade sits in the navbar's mb-3 gap, so it never covers what comes after */
+[data-ace-theme=sepia] .navbar::after {
+    content: "";
+    position: absolute;
+    inset: 100% 0 auto 0;
+    height: 1rem;
+    background: linear-gradient(to bottom, rgb(var(--ace-navbar-bg-rgb)), transparent);
+    pointer-events: none;
+}
+
+/* a menu's highlighted item takes the colors of an active toggle button (Indent Guide): the
+   secondary brown under page-colored text */
+[data-ace-theme=sepia] .dropdown-menu {
+    --bs-dropdown-link-hover-bg: var(--bs-secondary);
+    --bs-dropdown-link-hover-color: var(--bs-body-bg);
+    --bs-dropdown-link-active-bg: var(--bs-secondary);
+    --bs-dropdown-link-active-color: var(--bs-body-bg);
+}
+
+/* the same for the chosen options of a list box (select multiple); Chrome paints a selected option
+   only from a background image, so the color is a one-color gradient */
+[data-ace-theme=sepia] select option:checked {
+    background: linear-gradient(var(--bs-secondary), var(--bs-secondary));
+    color: var(--bs-body-bg);
+}
+
+/* Bootstrap's light focus glow and checked boxes are a hard-coded blue */
+[data-ace-theme=sepia] :is(.form-control, .form-select, .form-check-input):focus {
+    border-color: color-mix(in srgb, var(--bs-primary) 50%, var(--bs-body-bg));
+    box-shadow: 0 0 0 0.25rem rgba(var(--bs-primary-rgb), 0.25);
+}
+[data-ace-theme=sepia] .form-check-input:is(:checked, [type=checkbox]:indeterminate) {
+    background-color: var(--bs-secondary);
+    border-color: var(--bs-secondary);
+}
+
+/* screenshots of web pages are mostly white, the brightest thing on a tan page; hovering one shows
+   it as captured */
+[data-ace-theme=sepia] img:not(.navbar img) {
+    filter: brightness(0.9);
+    transition: filter 0.2s;
+}
+[data-ace-theme=sepia] img:not(.navbar img):hover {
+    filter: none;
+}
+
+[data-ace-theme=sepia] #analysis-overview-card {
+    line-height: 1.6;
+}
+
+[data-ace-theme=sepia] .help-callout {
+    background-color: var(--bs-tertiary-bg);
+}
+[data-ace-theme=sepia] .help-guide blockquote {
+    color: var(--bs-secondary-color);
+}
+
+/* tags keep Bootstrap's own colors, whichever theme draws the page around them */
+[data-ace-theme=sepia] .badge[class*="text-bg-"] {
+    --bs-primary-rgb: 13, 110, 253;
+    --bs-secondary-rgb: 108, 117, 125;
+    --bs-success-rgb: 25, 135, 84;
+    --bs-info-rgb: 13, 202, 240;
+    --bs-warning-rgb: 255, 193, 7;
+    --bs-danger-rgb: 220, 53, 69;
+    --bs-light-rgb: 248, 249, 250;
+    --bs-dark-rgb: 33, 37, 41;
+}
+
 /* btn-outline-dark is used all over the templates; on a dark page it would be dark-on-dark,
    so it follows the emphasis color there instead */
 [data-bs-theme=dark] .btn-outline-dark {
@@ -399,35 +625,35 @@
 .json-string { color: var(--ace-json-string); }
 .json-muted { color: var(--ace-json-muted); }
 
-/* jQuery UI and the date pickers ship light-only stylesheets; dark overrides go here rather
-   than in the vendor files */
-[data-bs-theme=dark] .ui-widget-content {
+/* jQuery UI and the date pickers ship light-only stylesheets with white backgrounds; dark and
+   Sepia overrides go here rather than in the vendor files */
+:is([data-bs-theme=dark], [data-ace-theme=sepia]) .ui-widget-content {
     background: var(--bs-body-bg);
     color: var(--bs-body-color);
     border-color: var(--bs-border-color);
 }
-[data-bs-theme=dark] .ui-widget-header {
+:is([data-bs-theme=dark], [data-ace-theme=sepia]) .ui-widget-header {
     background: var(--bs-tertiary-bg);
     color: var(--bs-emphasis-color);
     border-color: var(--bs-border-color);
 }
-[data-bs-theme=dark] .ui-state-default,
-[data-bs-theme=dark] .ui-widget-content .ui-state-default,
-[data-bs-theme=dark] .ui-widget-header .ui-state-default {
+:is([data-bs-theme=dark], [data-ace-theme=sepia]) .ui-state-default,
+:is([data-bs-theme=dark], [data-ace-theme=sepia]) .ui-widget-content .ui-state-default,
+:is([data-bs-theme=dark], [data-ace-theme=sepia]) .ui-widget-header .ui-state-default {
     background: var(--bs-secondary-bg);
     color: var(--bs-body-color);
     border-color: var(--bs-border-color);
 }
-[data-bs-theme=dark] .ui-state-hover,
-[data-bs-theme=dark] .ui-widget-content .ui-state-hover,
-[data-bs-theme=dark] .ui-state-focus,
-[data-bs-theme=dark] .ui-widget-content .ui-state-focus {
+:is([data-bs-theme=dark], [data-ace-theme=sepia]) .ui-state-hover,
+:is([data-bs-theme=dark], [data-ace-theme=sepia]) .ui-widget-content .ui-state-hover,
+:is([data-bs-theme=dark], [data-ace-theme=sepia]) .ui-state-focus,
+:is([data-bs-theme=dark], [data-ace-theme=sepia]) .ui-widget-content .ui-state-focus {
     background: var(--bs-tertiary-bg);
     color: var(--bs-emphasis-color);
     border-color: var(--bs-border-color);
 }
-[data-bs-theme=dark] .ui-state-highlight,
-[data-bs-theme=dark] .ui-widget-content .ui-state-highlight {
+:is([data-bs-theme=dark], [data-ace-theme=sepia]) .ui-state-highlight,
+:is([data-bs-theme=dark], [data-ace-theme=sepia]) .ui-widget-content .ui-state-highlight {
     background: var(--bs-warning-bg-subtle);
     color: var(--bs-warning-text-emphasis);
     border-color: var(--bs-warning-border-subtle);
@@ -436,52 +662,52 @@
     filter: invert(1);
 }
 
-[data-bs-theme=dark] .daterangepicker,
-[data-bs-theme=dark] .daterangepicker .calendar-date {
+:is([data-bs-theme=dark], [data-ace-theme=sepia]) .daterangepicker,
+:is([data-bs-theme=dark], [data-ace-theme=sepia]) .daterangepicker .calendar-date {
     background: var(--bs-body-bg);
     border-color: var(--bs-border-color);
     color: var(--bs-body-color);
 }
-[data-bs-theme=dark] .daterangepicker .daterangepicker_start_input label,
-[data-bs-theme=dark] .daterangepicker .daterangepicker_end_input label {
+:is([data-bs-theme=dark], [data-ace-theme=sepia]) .daterangepicker .daterangepicker_start_input label,
+:is([data-bs-theme=dark], [data-ace-theme=sepia]) .daterangepicker .daterangepicker_end_input label {
     color: var(--bs-body-color);
     text-shadow: none;
 }
-[data-bs-theme=dark] .daterangepicker .ranges .input-mini {
+:is([data-bs-theme=dark], [data-ace-theme=sepia]) .daterangepicker .ranges .input-mini {
     background: var(--bs-body-bg);
     border-color: var(--bs-border-color);
     color: var(--bs-body-color);
 }
-[data-bs-theme=dark] .daterangepicker .ranges li {
+:is([data-bs-theme=dark], [data-ace-theme=sepia]) .daterangepicker .ranges li {
     background: var(--bs-tertiary-bg);
     border-color: var(--bs-tertiary-bg);
     color: var(--bs-link-color);
 }
-[data-bs-theme=dark] .daterangepicker .ranges li.active,
-[data-bs-theme=dark] .daterangepicker .ranges li:hover {
+:is([data-bs-theme=dark], [data-ace-theme=sepia]) .daterangepicker .ranges li.active,
+:is([data-bs-theme=dark], [data-ace-theme=sepia]) .daterangepicker .ranges li:hover {
     background: var(--bs-primary);
     border-color: var(--bs-primary);
     color: var(--bs-body-bg);
 }
-[data-bs-theme=dark] .daterangepicker td.available:hover,
-[data-bs-theme=dark] .daterangepicker th.available:hover {
+:is([data-bs-theme=dark], [data-ace-theme=sepia]) .daterangepicker td.available:hover,
+:is([data-bs-theme=dark], [data-ace-theme=sepia]) .daterangepicker th.available:hover {
     background: var(--bs-secondary-bg);
 }
-[data-bs-theme=dark] .daterangepicker td.in-range {
+:is([data-bs-theme=dark], [data-ace-theme=sepia]) .daterangepicker td.in-range {
     background: var(--bs-primary-bg-subtle);
 }
-[data-bs-theme=dark] .daterangepicker td.off,
-[data-bs-theme=dark] .daterangepicker td.disabled,
-[data-bs-theme=dark] .daterangepicker td.week,
-[data-bs-theme=dark] .daterangepicker th.week {
+:is([data-bs-theme=dark], [data-ace-theme=sepia]) .daterangepicker td.off,
+:is([data-bs-theme=dark], [data-ace-theme=sepia]) .daterangepicker td.disabled,
+:is([data-bs-theme=dark], [data-ace-theme=sepia]) .daterangepicker td.week,
+:is([data-bs-theme=dark], [data-ace-theme=sepia]) .daterangepicker th.week {
     color: var(--bs-tertiary-color);
 }
-[data-bs-theme=dark] .daterangepicker.opensleft:after,
-[data-bs-theme=dark] .daterangepicker.opensright:after,
-[data-bs-theme=dark] .daterangepicker.openscenter:after {
+:is([data-bs-theme=dark], [data-ace-theme=sepia]) .daterangepicker.opensleft:after,
+:is([data-bs-theme=dark], [data-ace-theme=sepia]) .daterangepicker.opensright:after,
+:is([data-bs-theme=dark], [data-ace-theme=sepia]) .daterangepicker.openscenter:after {
     border-bottom-color: var(--bs-body-bg);
 }
-[data-bs-theme=dark] .ui-timepicker-div .ui_tpicker_time .ui_tpicker_time_input {
+:is([data-bs-theme=dark], [data-ace-theme=sepia]) .ui-timepicker-div .ui_tpicker_time .ui_tpicker_time_input {
     border-bottom-color: var(--bs-border-color);
 }
 
@@ -1168,6 +1394,16 @@ span.multiselect-native-select select {
 
 .jump-highlight {
     animation: highlight-flash 2.0s ease-out;
+}
+
+/* Sepia's flash rises gently, holds, then fades slowly, so it is easy to follow without a jolt */
+@keyframes sepia-highlight-flash {
+    0% { background-color: transparent; }
+    15%, 45% { background-color: var(--ace-flash-bg); }
+    100% { background-color: transparent; }
+}
+[data-ace-theme=sepia] .jump-highlight {
+    animation: sepia-highlight-flash 4.5s ease-in-out;
 }
 
 .comment-text,

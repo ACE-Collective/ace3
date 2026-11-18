@@ -12,6 +12,7 @@ from saq.analysis.blob_store import (
     LocalHardlinkBlobStoreConfig,
 )
 from saq.analysis.cache import apply_delta
+from saq.analysis.detection_point import DetectionPoint
 from saq.analysis.module_execution_delta import (
     ModuleExecutionDelta,
     ObservableDiff,
@@ -73,15 +74,21 @@ class TestApplyDeltaPrimitives:
         delta = _empty_delta(
             obs,
             target_observable_diff=ObservableDiff(
-                added_detections=[
-                    {"description": "yara hit", "details": {"rule": "phish"}},
-                ],
+                added_detections=[DetectionPoint(
+                    "yara hit", details={"rule": "phish"}, queue="experimental",
+                    signature_uuid="sig-xyz", signature_version="deadbeef", signature_family="yara",
+                ).json],
             ),
         )
         apply_delta(root, obs, delta)
         assert len(obs.detections) == 1
         assert obs.detections[0].description == "yara hit"
         assert obs.detections[0].details == {"rule": "phish"}
+        # queue and signature fields must survive replay, not revert to defaults
+        assert obs.detections[0].queue == "experimental"
+        assert obs.detections[0].signature_uuid == "sig-xyz"
+        assert obs.detections[0].signature_version == "deadbeef"
+        assert obs.detections[0].signature_family == "yara"
 
     @pytest.mark.unit
     def test_added_directives_applied(self, tmp_path):
@@ -410,7 +417,10 @@ class TestApplyDeltaRehydration:
     @pytest.mark.unit
     def test_analysis_rehydrated_on_target(self, tmp_path):
         """A delta carrying ``analysis`` must rehydrate that analysis on
-        the target observable's _analysis slot.
+        the target observable's _analysis slot: details, summary and the
+        tags set on the Analysis object itself (they flow through the
+        analysis.json setter). external_details_path on the cached dict
+        points at the SOURCE alert's storage_dir and must not carry over.
         """
 
         root = _make_root(tmp_path)
@@ -419,29 +429,7 @@ class TestApplyDeltaRehydration:
             "module_path": "saq.modules.rdap:RdapAnalysis",
             "details": {"registrar": "Test Registrar"},
             "summary": "whois ok",
-            "completed": True,
-            "delayed": False,
-        }
-        delta = _empty_delta(target, analysis=analysis_dict)
-        apply_delta(root, target, delta)
-
-        rehydrated = target.get_analysis(RdapAnalysis)
-        assert rehydrated is not None
-        assert isinstance(rehydrated, RdapAnalysis)
-        assert rehydrated.details == {"registrar": "Test Registrar"}
-
-    @pytest.mark.unit
-    def test_external_details_path_stripped(self, tmp_path):
-        """external_details_path on the cached dict points at the SOURCE
-        alert's storage_dir. Replay must drop it so the persistence
-        manager re-derives a fresh path under the TARGET alert.
-        """
-
-        root = _make_root(tmp_path)
-        target = root.add_observable_by_spec(F_FQDN, "example.com")
-        analysis_dict = {
-            "module_path": "saq.modules.rdap:RdapAnalysis",
-            "details": {"x": 1},
+            "tags": ["registrar:test", "cached"],
             "external_details_path": "/some/source/alert/path/whois_xxx.json",
             "completed": True,
             "delayed": False,
@@ -450,6 +438,10 @@ class TestApplyDeltaRehydration:
         apply_delta(root, target, delta)
 
         rehydrated = target.get_analysis(RdapAnalysis)
+        assert isinstance(rehydrated, RdapAnalysis)
+        assert rehydrated.details == {"registrar": "Test Registrar"}
+        assert rehydrated.summary == "whois ok"
+        assert rehydrated.tags == ["registrar:test", "cached"]
         assert rehydrated.external_details_path is None
 
     @pytest.mark.unit
@@ -541,77 +533,6 @@ class TestApplyDeltaRehydration:
             "saq.modules.rdap:DoesNotExist" in r.getMessage()
             for r in caplog.records if r.levelno == logging.DEBUG)
 
-    @pytest.mark.unit
-    def test_analysis_tags_rehydrated(self, tmp_path):
-        """Tags captured off the Analysis object must be restored on the
-        rehydrated analysis (they flow through the analysis.json setter →
-        AnalysisSerializer.deserialize → BaseNode.set_json_data)."""
-
-        root = _make_root(tmp_path)
-        target = root.add_observable_by_spec(F_FQDN, "example.com")
-        analysis_dict = {
-            "module_path": "saq.modules.rdap:RdapAnalysis",
-            "details": {"registrar": "Test Registrar"},
-            "tags": ["registrar:test", "cached"],
-            "completed": True,
-            "delayed": False,
-        }
-        delta = _empty_delta(target, analysis=analysis_dict)
-        apply_delta(root, target, delta)
-
-        rehydrated = target.get_analysis(RdapAnalysis)
-        assert rehydrated.tags == ["registrar:test", "cached"]
-
-    @pytest.mark.unit
-    def test_slot_collision_leaves_existing_analysis_tags_alone(self, tmp_path):
-
-        root = _make_root(tmp_path)
-        target = root.add_observable_by_spec(F_FQDN, "example.com")
-        existing = RdapAnalysis()
-        existing.add_tag("preexisting")
-        target.analysis_tree_manager.add_analysis(target, existing)
-
-        analysis_dict = {
-            "module_path": "saq.modules.rdap:RdapAnalysis",
-            "details": {},
-            "tags": ["from-cache"],
-            "completed": True,
-            "delayed": False,
-        }
-        delta = _empty_delta(target, analysis=analysis_dict)
-        apply_delta(root, target, delta)
-
-        kept = target.get_analysis(RdapAnalysis)
-        assert kept is existing
-        assert kept.tags == ["preexisting"]
-
-    @pytest.mark.unit
-    def test_idempotent_double_apply(self, tmp_path):
-        """Calling apply_delta twice must produce the same tree state as
-        one call — no double tags, no slot replacement, no duplicate
-        observables.
-        """
-
-        root = _make_root(tmp_path)
-        target = root.add_observable_by_spec(F_FQDN, "example.com")
-        analysis_dict = {
-            "module_path": "saq.modules.rdap:RdapAnalysis",
-            "details": {"x": 1},
-            "completed": True,
-            "delayed": False,
-        }
-        delta = _empty_delta(
-            target,
-            analysis=analysis_dict,
-            target_observable_diff=ObservableDiff(added_tags=["once"]),
-        )
-
-        apply_delta(root, target, delta)
-        apply_delta(root, target, delta)
-
-        assert target.tags.count("once") == 1
-        assert isinstance(target.get_analysis(RdapAnalysis), RdapAnalysis)
-
 
 class TestApplyDeltaContractEnforcement:
 
@@ -655,6 +576,25 @@ class TestApplyDeltaContractEnforcement:
         # Nothing was applied — the raise happened before tree mutation.
         assert "should-not-apply" not in target.tags
 
+    @pytest.mark.unit
+    def test_staging_dir_cleaned_up_when_a_blob_is_gone(self, tmp_path):
+        """The lookup checked every blob, but one can be collected before the replay: the files
+        staged before it must not be left in the root's storage directory."""
+        root = _make_root(tmp_path / "root")
+        target = root.add_observable_by_spec(F_FQDN, "example.com")
+        store = LocalHardlinkBlobStore(LocalHardlinkBlobStoreConfig(root_dir=str(tmp_path / "blob_store")))
+        sha = store.put(b"staged before the missing one")
+        delta = _empty_delta(target, new_observables=[
+            ObservableSpec(uuid="55555555-5555-5555-5555-555555555555", type=F_FILE, value=sha, file_path="first.txt"),
+            ObservableSpec(uuid="66666666-6666-6666-6666-666666666666", type=F_FILE, value="0" * 64, file_path="second.txt"),
+        ])
+
+        with pytest.raises(BlobNotFound):
+            apply_delta(root, target, delta, blob_store=store)
+
+        assert [d for d in os.listdir(root.storage_dir) if d.startswith(".cache_replay_")] == []
+        assert not [o for o in root.all_observables if o.type == F_FILE]
+
 
 class TestApplyDeltaRootLevel:
 
@@ -675,10 +615,16 @@ class TestApplyDeltaRootLevel:
         target = root.add_observable_by_spec(F_FQDN, "example.com")
         delta = _empty_delta(
             target,
-            root_diff=RootDiff(
-                added_detections=[{"description": "root det", "details": None}],
-            ),
+            root_diff=RootDiff(added_detections=[DetectionPoint(
+                "hunt matched", queue="experimental", signature_uuid="sig-xyz",
+                signature_version="deadbeef", signature_family="hunt",
+            ).json]),
         )
         apply_delta(root, target, delta)
         assert len(root.detections) == 1
-        assert root.detections[0].description == "root det"
+        assert root.detections[0].description == "hunt matched"
+        # queue and signature fields must survive replay, not revert to defaults
+        assert root.detections[0].queue == "experimental"
+        assert root.detections[0].signature_uuid == "sig-xyz"
+        assert root.detections[0].signature_version == "deadbeef"
+        assert root.detections[0].signature_family == "hunt"

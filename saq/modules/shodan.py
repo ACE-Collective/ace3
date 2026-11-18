@@ -1,5 +1,6 @@
 # vim: sw=4:ts=4:et
 
+import functools
 import json
 import logging
 import os.path
@@ -15,7 +16,6 @@ from saq.constants import F_IP, F_IPV4, F_SHA1, SUMMARY_DETAIL_FORMAT_PRE, Analy
 from saq.modules import AnalysisModule
 
 KEY_SHODAN_RESULTS = 'shodan_results'
-KEY_ERROR = 'error'
 
 DIRECTIVE_QUERY_SHODAN = 'query_shodan'
 register_directive(DIRECTIVE_QUERY_SHODAN, 'query shodan API for details', gui=True)
@@ -26,13 +26,16 @@ CONFIG_SHODAN_API_KEY = "api_key"
 TAG_SHODAN = "shodan"
 TAG_X509 = "x509"
 
+# the shodan client sets no timeout on its requests: without one a stalled connection holds the
+# engine worker until the module's watchdog kills it
+SHODAN_REQUEST_TIMEOUT = 30
+
 class ShodanAnalysis(Analysis):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
         self.details = {
             KEY_SHODAN_RESULTS: None,
-            KEY_ERROR: None,
         }
 
     @property
@@ -42,14 +45,6 @@ class ShodanAnalysis(Analysis):
     @shodan_results.setter
     def shodan_results(self, value):
         self.details[KEY_SHODAN_RESULTS] = value
-
-    @property
-    def error(self):
-        return self.details[KEY_ERROR]
-
-    @error.setter
-    def error(self, value):
-        self.details[KEY_ERROR] = value
 
     @property
     def dns(self):
@@ -80,8 +75,6 @@ class ShodanAnalysis(Analysis):
             return None
 
 class ShodanAnalyzer(AnalysisModule):
-    _test_data = None
-
     @property
     def generated_analysis_type(self):
         return ShodanAnalysis
@@ -108,9 +101,16 @@ class ShodanAnalyzer(AnalysisModule):
                 analysis.shodan_results = self.search_host(observable.value)
             elif observable.type == F_SHA1:
                 analysis.shodan_results = self.search_cert(observable.value)
+        except shodan.APIError as e:
+            # Shodan's own answer (no information for the host, a bad key, a rate limit, or it could not be
+            # reached), which is about Shodan and not a fault in ACE
+            analysis.error = str(e) or type(e).__name__
+            logging.warning(f"unable to query shodan for {observable.value}: {e}", exc_info=True,
+                            extra=self._log_extra(observable))
+            return AnalysisExecutionResult.COMPLETED
         except Exception as e:
-            analysis.error = str(e)
-            logging.warning(f"unable to query shodan: {e}")
+            analysis.error = str(e) or type(e).__name__
+            logging.exception(f"unable to query shodan for {observable.value}", extra=self._log_extra(observable))
             return AnalysisExecutionResult.COMPLETED
 
         file_path = os.path.join(self._context.root.storage_dir, f'{observable.value}.shodan')
@@ -166,10 +166,15 @@ class ShodanAnalyzer(AnalysisModule):
                                 self._add_cert_observable(analysis, observable.value, cert)
 
         except Exception as e:
-            analysis.error = str(e)
-            logging.warning(f"unable to parse shodan results: {e}")
+            analysis.error = str(e) or type(e).__name__
+            logging.exception(f"unable to parse shodan results for {observable.value}",
+                              extra=self._log_extra(observable))
 
         return AnalysisExecutionResult.COMPLETED
+
+    def _log_extra(self, observable: Observable) -> dict:
+        return {"root_uuid": self.get_root().uuid, "observable_uuid": observable.uuid,
+                "observable_value": observable.value}
         
     def _add_cert_observable(self, analysis: ShodanAnalysis, filename: str, cert: str):
         file_path = os.path.join(self._context.root.storage_dir, f'{filename}.x509')
@@ -189,20 +194,16 @@ class ShodanAnalyzer(AnalysisModule):
         if not api_key:
             raise ValueError("missing api key for shodan")
 
-        return shodan.Shodan(api_key)
+        client = shodan.Shodan(api_key)
+        client._session.request = functools.partial(client._session.request, timeout=SHODAN_REQUEST_TIMEOUT)
+        return client
 
     def search_cert(self, sha1):
-        if self._test_data:
-            return self._test_data
-
         client = self._get_shodan_client()
         logging.info(f"searching shodan cert {sha1}")
         return client.search(f"ssl.cert.fingerprint:{sha1}")
 
     def search_host(self, value):
-        if self._test_data:
-            return self._test_data
-
         client = self._get_shodan_client()
         logging.info(f"searching shodan host {value}")
         return client.host(value)

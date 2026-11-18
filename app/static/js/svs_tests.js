@@ -31,7 +31,7 @@
     const RUN_STATES = {
         created: {css: "text-muted", title: "registered; the launcher hasn't started it"},
         started: {css: "text-primary", title: "running: its observation window is open"},
-        ended: {css: "text-warning-emphasis fw-semibold", title: "the observation window passed; it waits for a review"},
+        ended: {css: "text-warning-emphasis fw-semibold", title: "the observation window passed, or a person ended it early; it waits for a review"},
         reviewed: {css: "text-success", title: "signed off"},
         canceled: {css: "text-muted", title: "canceled; it still attributes alerts until its attribution window ends"},
         error: {css: "text-danger fw-semibold", title: "the launcher reported a failure, or never started it"},
@@ -121,6 +121,7 @@
         const info = RUN_STATES[row.state] || {css: "", title: ""};
         const node = el("span", info.css, row.state);
         node.title = info.title + (row.error_reason ? ": " + row.error_reason : "") +
+            (row.end_reason ? ": ended early: " + row.end_reason : "") +
             (row.close_reason ? ": " + row.close_reason : "");
         return node;
     }
@@ -577,9 +578,17 @@
                 if (settings.can_manage) {
                     text.appendChild(button("Use the computed window", "btn-link p-0 align-baseline",
                                             "the window computed from the latency of the signatures expected of it, as for any test", function() {
-                        remove("Use the computed window?",
-                               "Runs of this test registered from now on get the window computed from the latency of the signatures expected of it.",
-                               "Use it", test_path + "/settings", "The test's runs get the computed window again.");
+                        const title = "Use the computed window?";
+                        const body = "Runs of this test registered from now on get the window computed from the latency of the signatures expected of it.";
+                        const done = "The test's runs get the computed window again.";
+                        if (!current.holds_host) {
+                            remove(title, body, "Use it", test_path + "/settings", done);
+                            return;
+                        }
+                        // the settings are replaced as a whole: keep holds_host
+                        act(ask(title, body, "Use it").then(function(confirmed) {
+                            return confirmed ? save_settings(null, true) : false;
+                        }), done);
                     }));
                 }
             } else {
@@ -587,10 +596,22 @@
                        "within a floor and a ceiling (svs.runs.observation_window).");
             }
             node.appendChild(text);
+            node.appendChild(el("div", "small", current && current.holds_host
+                ? "Each run holds its test hosts until its attribution window ends: the test leaves something behind."
+                : "Each run holds its test hosts until its observation window ends; no other run can start on them before that."));
             const field = document.getElementById("svs_test_window_minutes");
             if (field && document.activeElement !== field) {
                 field.value = current && current.observation_minutes ? String(current.observation_minutes) : "";
             }
+            const holds = document.getElementById("svs_test_holds_host");
+            if (holds) {
+                holds.checked = Boolean(current && current.holds_host);
+            }
+        }
+
+        // a PUT replaces the test's settings, so each change sends both
+        function save_settings(minutes, holds_host) {
+            return aceApi.put(test_path + "/settings", {observation_minutes: minutes, holds_host: holds_host});
         }
 
         function expectation_order(a, b) {
@@ -761,8 +782,17 @@
             form.addEventListener("submit", function(event) {
                 event.preventDefault();
                 const minutes = Number(document.getElementById("svs_test_window_minutes").value);
-                act(aceApi.put(test_path + "/settings", {observation_minutes: minutes}),
+                act(save_settings(minutes, Boolean(state.settings && state.settings.holds_host)),
                     "Runs of this test registered from now on observe for " + plural(minutes, "minute") + ".");
+            });
+        }
+        const holds_host = document.getElementById("svs_test_holds_host");
+        if (holds_host) {
+            holds_host.addEventListener("change", function() {
+                const minutes = state.settings && state.settings.observation_minutes ? state.settings.observation_minutes : null;
+                act(save_settings(minutes, holds_host.checked), holds_host.checked
+                    ? "Runs of this test registered from now on hold their hosts until their attribution window ends."
+                    : "Runs of this test registered from now on hold their hosts until their observation window ends.");
             });
         }
 

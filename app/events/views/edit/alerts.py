@@ -25,7 +25,8 @@ def remove_alerts():
 
     get_db().commit()
 
-    if '/manage' in request.referrer:
+    # browsers can be set not to send a referrer
+    if request.referrer and '/manage' in request.referrer:
         return redirect(url_for('events.manage'))
     else:
         return redirect(url_for('events.index', direct=event_id))

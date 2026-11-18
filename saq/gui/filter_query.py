@@ -256,6 +256,30 @@ def get_analysis_type_labels(module_paths: list) -> dict[str, str]:
                 .filter(AnalysisType.module_path.in_(module_paths)))
 
 
+def observable_value_condition(observable_type: str, observable_value: str, type_column=Observable.type,
+                               value_column=Observable.value, sha256_column=Observable.sha256):
+    """The condition an observables row meets when it is this type (or ANY_OBSERVABLE_TYPE) and value."""
+    if observable_type == ANY_OBSERVABLE_TYPE:
+        # No type means nothing to normalize against, so match the digest of the raw value
+        # (correct for every type but `file`, whose sha256 is unhex(value)) OR the stored
+        # bytes, which covers `file` and anything that does not round-trip.
+        encoded = observable_value.encode('utf8', errors='ignore')
+        return or_(
+            sha256_column == hashlib.sha256(encoded).digest(),
+            value_column == encoded,
+        )
+
+    try:
+        identity = resolve_observable_identity(observable_type, observable_value)
+    except InvalidDetectionValue:
+        # A value that is impossible for its type matches nothing. It must not raise: a
+        # saved filter or a pasted share link can carry anything, and a 500 would lock the
+        # analyst out of a page they cannot escape without clearing cookies.
+        return false()
+
+    return and_(type_column == identity.type, sha256_column == identity.value_sha256)
+
+
 # exact match, provides type drop down menu with text input for value
 class TypeValueFilter(SelectFilter):
     """Alerts carrying an observable of a given type and value.
@@ -274,25 +298,8 @@ class TypeValueFilter(SelectFilter):
             self.options.insert(0, ANY_OBSERVABLE_TYPE)
 
     def _condition(self, observable_type: str, observable_value: str):
-        if observable_type == ANY_OBSERVABLE_TYPE:
-            # No type means nothing to normalize against, so match the digest of the raw value
-            # (correct for every type but `file`, whose sha256 is unhex(value)) OR the stored
-            # bytes, which covers `file` and anything that does not round-trip.
-            encoded = observable_value.encode('utf8', errors='ignore')
-            return or_(
-                self.sha256_column == hashlib.sha256(encoded).digest(),
-                self.value_column == encoded,
-            )
-
-        try:
-            identity = resolve_observable_identity(observable_type, observable_value)
-        except InvalidDetectionValue:
-            # A value that is impossible for its type matches nothing. It must not raise: a
-            # saved filter or a pasted share link can carry anything, and a 500 would lock the
-            # analyst out of a page they cannot escape without clearing cookies.
-            return false()
-
-        return and_(self.column == identity.type, self.sha256_column == identity.value_sha256)
+        return observable_value_condition(observable_type, observable_value, self.column, self.value_column,
+                                          self.sha256_column)
 
     def apply(self, query, values):
         conditions = [self._condition(value[0], value[1]) for value in values]

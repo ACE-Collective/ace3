@@ -9,7 +9,6 @@ croniter
 cryptography
 dateparser
 deepmerge
-dhash
 diff-cover
 distorm3
 dnspython
@@ -18,7 +17,6 @@ Flask
 flask-executor
 Flask-Login
 Flask-Script
-Flask-SQLAlchemy
 Flask-WTF
 fluent-logger
 glom
@@ -47,9 +45,10 @@ psutil
 pyasn1
 pydantic
 pyenchant
-PyExifTool
 pylint
-PyMySQL
+# aiomysql 0.3.2 calls pymysql.converters.escape_bytes_prefixed, which PyMySQL 1.2.1+ no longer
+# provides (1.2.3 leaves a placeholder string), so every bytes parameter on the async engine fails
+PyMySQL==1.2.0
 pysimdjson
 pysip
 PySocks
@@ -59,7 +58,6 @@ pytest-asyncio
 pytest-cov
 pytest-datadir
 pytest-print
-pytest-pythonpath
 pytest-randomly
 pytest-xdist
 python-dateutil
@@ -93,7 +91,6 @@ zstandard
 
 # LLM stuff
 numpy
-pandas
 tqdm
 qdrant-client
 

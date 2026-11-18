@@ -12,7 +12,7 @@ def disassemble(path, offset, first_instr_offset, match_len, context_bytes, deco
         instructions = distorm3.Decode(offset+off, context_bytes[off:], decoder) 
         for instr in instructions:
             #If one of the instructions aligns with the first byte of the signature match, then our alignment is probably correct. Return result
-            if instr[0] == first_instr_offset:
+            if instr[0] == offset + first_instr_offset:
                 return render_disassembly(instructions, offset+first_instr_offset, match_len)
     # We failed to align an instruction with the signature match. Just disassemble from the start of context
     logging.debug('Failed to align disassembly with context: {} first byte offset: 0x{}'.format(binascii.hexlify(context_bytes), first_instr_offset))

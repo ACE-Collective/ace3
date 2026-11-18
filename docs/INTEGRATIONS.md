@@ -73,6 +73,7 @@ Follow these steps to bulid a new integration.
 1. (optional) Put executables in `etc/cron/hourly`, `etc/cron/daily` or `etc/cron/weekly` to run them on that schedule alongside ACE's own maintenance tasks, one file per task. See `docs/CRON.md`.
 1. (optional) Add correlation hunt query sources or command types. See [Extending correlation hunts](#extending-correlation-hunts).
 1. (optional) Add an alert router that decides which queue an alert goes to. See [Routing alerts](#routing-alerts).
+1. (optional) Add GUI pages. See [Adding GUI pages](#adding-gui-pages).
 1. (optional) Add API routes for your pages and actions to call. See [Adding API routes](#adding-api-routes).
 
 You can use the example provided in `integrations.example` as a starting point to create a new integration.
@@ -91,14 +92,32 @@ integration_example:
   enabled: true
   # a brief description of what the integration provides
   description: "Example Integration"
-  # the python package to import
+  # the python package to import, in every ACE process: it runs your registration hooks
+  # (register_integration_configuration(), register_directive(), ...), so its __init__.py imports
+  # only what they need
   python_module: example
+  # optional: your FastAPI router, as module:attribute, served under /api/v2/integrations/<name>
+  # (see Adding API routes). only the API imports it
+  api_router: example.api.router:router
+  # optional: a function, as module:attribute, that the GUI calls with its Flask app to register
+  # your blueprints (see Adding GUI pages). only the GUI imports it, so its module is also where
+  # register_observable_action() and register_alert_action() go
+  gui_blueprint: example.app.blueprint:register
   # extra keys are permitted and ignored
   author: unixfreak0037@gmail.com
   repo: https://github.com/unixfreak0037/ace3-example-integration
 ```
 
 **The `integration_<name>:` block is mandatory.** 
+
+Every ACE process imports `python_module`, so its package init registers only what every process
+needs (`register_integration_configuration()`, `register_directive()`) and imports nothing heavier
+(`docs/IMPORTS.md`). Register what only the GUI uses, `register_observable_action()` and
+`register_observable_presenter()` (`saq/analysis/presenter/observable_presenter.py`) and
+`register_alert_action()` (`saq/gui/alert_actions.py`), at module level in the module your
+`gui_blueprint` names, or a module it imports: only the GUI imports it, once, when it builds its app.
+`integrations.example/example/src/example/app/observable_actions.py`, which
+`example/app/blueprint.py` imports, is a working example.
 
 ACE logs a warning at startup for any discovered integration directory that has no
 `integration_*:` block.
@@ -227,7 +246,8 @@ message is shown on the trace.
 - `hunt_start_time`, `hunt_end_time`
 - `timeout` (a `timedelta`)
 - `temp_dir`, the hunt's scratch directory, which is deleted after the step
-- `config`, the raw merged configuration
+- `config`, the raw merged configuration. Its `env:` and `file:` references are not resolved;
+  `saq.configuration.yaml_parser.resolve_values()` resolves a section of it
 
 Checklist:
 
@@ -277,8 +297,8 @@ alert_routers:
 
 Subclass `AlertRouter` (`saq/alert_routing/router.py`): accept `name` and `priority` (and your
 `kwargs`) in `__init__` and pass the first two to `super().__init__()`, and implement
-`route(root, stage) -> RouteDecision | None`. A decision is `RouteDecision(queue, reason)`; the
-registry fills in your router's name.
+`route(root, stage, final) -> RouteDecision | None`. A decision is `RouteDecision(queue, reason)`;
+the registry fills in your router's name.
 
 The two stages:
 
@@ -291,6 +311,12 @@ The two stages:
   alert, for routing evidence that only appears once the alert is analyzed. The decision moves
   the alert through `move_alert_to_queue()`, but only while it is `OPEN` and nobody has taken it
   (the automation user counts as nobody). An alert an analyst is working stays where it is.
+
+`final` is `True` on the alert's last analysis pass: `POST_ANALYSIS` with no delayed analysis
+outstanding, or after the engine aborted the analysis (a timeout or an exception), which abandons
+what was delayed. Act on it for anything that must wait until a later pass can no longer change the
+tree (a marker a delayed module may still find, say); don't read `root.delayed` for this, which
+stays set after an aborted pass. It is always `False` at `PRE_INSERT`.
 
 The contract:
 
@@ -313,14 +339,14 @@ The contract:
   load, and `saq.alert_routing.get_alert_router_load_errors()` reports why.
 
 To move an alert yourself (an analyst action, an API), call
-`saq.database.util.alert.move_alert_to_queue(alert, queue, reason, actor_user_id, router=...)`. It
-updates the row, records the move with who made it, refreshes the alert's search payload and
-writes an audit line; `get_last_queue_change(alert_id)` returns the newest move, which says what
+`saq.database.util.alert.move_alert_to_queue(alert, queue, reason, auth, router=...)`, where `auth`
+is the caller's `ApiAuthResult` (`ApiAuthResult.system(<router name>)` for a router, as the engine
+passes). It updates the row, records the move with who made it, refreshes the alert's search payload and writes an AUDIT record with `log_audit()`; `get_last_queue_change(alert_id)` returns the newest move, which says what
 queue the alert came from.
 
 **Tests.** Call `saq.alert_routing.register_alert_router()` in a test and
 `reset_alert_routers()` after it (`tests/saq/alert_routing/conftest.py` does this for every
-test there), then call `route_alert(root, stage)` or `ALERT(root)`.
+test there), then call `route_alert(root, stage, final=...)` or `ALERT(root)`.
 
 `integrations.example/example/src/example/routing.py` (`ExampleTagRouter`) routes a new alert
 that carries one tag to one queue and does nothing to any other alert.
@@ -329,7 +355,7 @@ that carries one tag to one queue and does nothing to any other alert.
 
 An integration adds a button to the alert page's toolbar with an **alert action**
 (`saq/gui/alert_actions.py`), the alert-level counterpart of `register_observable_action()`.
-Subclass `AlertAction` and register the class when your package is imported:
+Subclass `AlertAction` and register the class from the module of your `gui_blueprint`:
 
 ```python
 from saq.gui.alert_actions import AlertAction, register_alert_action
@@ -388,11 +414,65 @@ markup:
   `renderJsonTree()` node (`app/static/js/ace.js`) is also searchable, so raw events stay
   findable inside a collapsed section.
 
+## Offering an alert template for manual analysis
+
+The **Alert Template** list on the Manual Analysis page offers `analysis/alert.html` and the names
+in `custom_alerts.selectable_templates`. Templates in `custom_alerts.dirs` are not offered unless
+they are listed, because most of them read details only their own alert type has and fail on a
+manual alert. List only a template that renders any alert's details. The default,
+**Automatic**, stores no template, so the alert page looks one up for the `manual` alert type as
+for any other alert: `analysis/alert.html`, unless the site has a `manual.html` in
+`custom_alerts.dirs` or maps `manual` in `custom_alerts_backward_compatibility`. To offer an
+integration's alert template there, append its Jinja name in the integration's config:
+
+```yaml
+custom_alerts:
+  selectable_templates:
+    - vendor/vendor_alert.html
+```
+
+A name the GUI cannot load is left out of the list and logged at ERROR with an error report. The chosen template is
+stored in the alert's `alert_template` extension, which is how a hunt's `alert_template` setting
+(`docs/HUNTS.md`) works as well. A submitted value that is not in the list is refused.
+
+## Adding GUI pages
+
+An integration's pages, templates and static files live in a Flask blueprint. Name a function that
+registers it in your `integration_<name>:` block as `gui_blueprint`, and the GUI calls it with its
+Flask app when it builds the app:
+
+```python
+# src/vendor/app/blueprint.py
+from flask import Blueprint, Flask
+
+vendor_bp = Blueprint("vendor", __name__, url_prefix="/vendor", template_folder="../templates")
+
+def register(flask_app: Flask) -> None:
+    import vendor.app.views  # noqa: F401  (views imports vendor_bp from this module)
+    flask_app.register_blueprint(vendor_bp)
+```
+
+```yaml
+# etc/saq.integration.yaml
+integration_vendor:
+  name: vendor
+  ...
+  gui_blueprint: vendor.app.blueprint:register
+```
+
+- **Only the GUI imports it.** Every ACE process imports your package, so don't import Flask or the
+  blueprint from it.
+- A function that fails to import, or raises, is logged at ERROR and the GUI starts without your
+  pages.
+
+`integrations.example/example/src/example/app/blueprint.py` is a working example.
+
 ## Adding API routes
 
 Anything an integration's pages, observable actions or alert actions fetch or change goes through
-the API (`aceapi_v2`), not through routes in its Flask blueprint. Register a FastAPI router when
-your package is imported, and its routes are served under `/api/v2/integrations/<name>`:
+the API (`aceapi_v2`), not through routes in its Flask blueprint. Name your FastAPI router in your
+`integration_<name>:` block as `api_router`, and its routes are served under
+`/api/v2/integrations/<name>`:
 
 ```python
 # src/vendor/api/router.py
@@ -406,16 +486,26 @@ async def submit(
     auth: Annotated[ApiAuthResult, Depends(require_permission("observable", "write"))],
 ) -> ObservableAnalysisRequested:
     observable = await run_db_in_thread(service.request_submission, alert_uuid, observable_uuid)
-    logger.info("AUDIT: user %s requested a submission for observable %s in alert %s",
-                auth.auth_name, observable, alert_uuid)
+    # saq.logging.log_audit: "AUDIT: ..." at INFO, with the caller's actor fields in extra={}
+    log_audit("user %s requested a submission for observable %s in alert %s",
+              auth.auth_name, observable, alert_uuid, auth=auth, alert_uuid=alert_uuid)
     return ObservableAnalysisRequested(message="Submission requested.")
-
-# src/vendor/__init__.py
-from aceapi_v2.integrations import register_integration_router
-from vendor.api.router import router as vendor_api_router
-
-register_integration_router("vendor", vendor_api_router)
 ```
+
+```yaml
+# etc/saq.integration.yaml
+integration_vendor:
+  name: vendor
+  ...
+  api_router: vendor.api.router:router
+```
+
+- **Only the API imports the router.** Every ACE process imports your package, but only the API
+  serves the routes, so don't import the router module from it. The API imports `api_router` when it
+  builds its app. A router that fails to import is logged at ERROR and left out, and the API starts
+  without it.
+- **The integration's name is the URL prefix**, so an integration with an `api_router` is named
+  with lowercase letters, digits, dashes and underscores. Any other name fails config validation.
 
 - **Every route needs a permission gate** (`require_permission()`, from `aceapi_v2/dependencies.py`).
   The `/integrations` prefix only requires a valid credential; `tests/saq/test_permission_catalog.py`
@@ -433,8 +523,7 @@ register_integration_router("vendor", vendor_api_router)
 - **Call the route from the template with `aceApi`** (`app/static/js/ace_api.js`), which prefixes
   `/api/v2`, sends the session cookie and rejects with the API's own error message:
   `aceApi.post("/integrations/vendor/alerts/{{alert.uuid}}/observables/{{_observable.uuid}}/submit")`.
-- The router is registered once, under one name; registering another router under the same name
-  is an error. Keep the Flask blueprint only for templates, static files and pages.
+- Keep the Flask blueprint only for templates, static files and pages.
 
 `integrations.example/example/src/example/api/router.py` is a working example.
 

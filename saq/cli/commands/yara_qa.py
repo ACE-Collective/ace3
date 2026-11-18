@@ -39,7 +39,8 @@ def cli_list(args):
     if args.json:
         print(json.dumps([{
             "signature_uuid": s.signature_uuid, "name": s.name, "status": s.status.value,
-            "enabled": s.enabled, "current_version": s.current_version, "source_path": s.source_path,
+            "enabled": s.enabled, "current_version": s.current_version,
+            "current_content_hash": s.current_content_hash, "source_path": s.source_path,
             "match_count": s.match_count, "stored_count": s.stored_count, "version_count": s.version_count,
             "last_match_at": s.last_match_at.isoformat() if s.last_match_at else None,
         } for s in signatures], indent=2))

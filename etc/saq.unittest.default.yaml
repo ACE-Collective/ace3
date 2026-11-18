@@ -67,7 +67,7 @@ api:
   ssl_cert: ssl/ace.cert.pem
   ssl_key: ssl/ace.key.pem
   # listen on a different port since apache already has 443 taken (most likely)
-  # (the test suite adds the pytest-xdist worker index to this port per slot)
+  # (the test suite overrides this port per slot -- see tests/unittest_session.py)
   listen_port: 24443
   prefix: localhost:24443
   api_key: dcef0db0-556f-44b3-9e1b-3d97b435d264
@@ -120,6 +120,13 @@ analysis_module_basic_test:
   python_class: BasicTestAnalyzer
   enabled: false
 
+analysis_module_cache_test:
+  name: cache_test
+  python_module: saq.modules.test
+  python_class: CacheTestAnalyzer
+  enabled: false
+  cache_ttl: 3600
+
 analysis_module_generic_test:
   name: generic_test
   python_module: saq.modules.test
@@ -158,6 +165,12 @@ analysis_module_test_slow_delayed_analysis:
   name: test_slow_delayed_analysis
   python_module: saq.modules.test
   python_class: SlowDelayedAnalysisTestModule
+  enabled: false
+
+analysis_module_test_time_left:
+  name: test_time_left
+  python_module: saq.modules.test
+  python_class: TimeLeftTestModule
   enabled: false
 
 analysis_module_test_engine_locking:
@@ -259,6 +272,26 @@ analysis_module_declared_dep_on_no_produce:
     - declared_no_produce
   python_module: saq.modules.test
   python_class: DeclaredDepOnNoProduceModule
+  enabled: false
+
+analysis_module_retry_on_failure:
+  name: retry_on_failure
+  python_module: saq.modules.test
+  python_class: RetryOnFailureModule
+  enabled: false
+
+analysis_module_retry_child:
+  name: retry_child
+  python_module: saq.modules.test
+  python_class: RetryChildModule
+  enabled: false
+
+analysis_module_depends_on_retry:
+  name: depends_on_retry
+  dependencies:
+    - retry_on_failure
+  python_module: saq.modules.test
+  python_class: DependsOnRetryModule
   enabled: false
 
 analysis_module_declared_cycle_x:
@@ -525,6 +558,9 @@ module_group_unittest:
     - declared_dep_c
     - declared_no_produce
     - declared_dep_on_no_produce
+    - retry_on_failure
+    - depends_on_retry
+    - retry_child
     - declared_cycle_x
     - declared_cycle_y
     - custom_req_sees_dep
@@ -550,15 +586,11 @@ module_group_queues:
     #- analysis_cache_test
 
 service_network_semaphore:
-  # (the test suite adds the pytest-xdist worker index to these ports per slot)
+  # (the test suite overrides these ports per slot -- see tests/unittest_session.py)
   bind_address: 127.0.0.1
   bind_port: 53560
   remote_address: 127.0.0.1
   remote_port: 53560
-
-smtp:
-  server: localhost
-  mail_from: ace@localhost
 
 ldap:
   ldap_server: localhost
@@ -738,6 +770,14 @@ analysis_module_splunk_api:
 analysis_module_user_defined_tagging:
   priority: 1
 
+# the shipped paths are in data/etc/, which docker/startup/initialize.sh creates in the instance's
+# data volume and which a git worktree does not have
+analysis_module_network_identifier:
+  csv_file: tests/data/etc/local_networks.csv
+
+analysis_module_site_tagger:
+  csv_file: tests/data/etc/site_tags.csv
+
 test_api:
   timezone: UTC
   uri: https://www.test.com
@@ -766,6 +806,13 @@ cas:
       backend: local
       encryption: none
       retention: permanent
+    test_ttl:
+      backend: local
+      encryption: none
+      compression: gzip
+      retention: ttl
+      ttl_days: 2
+      index_database: email_archive
 
 # yara qa storage (tests/saq/yara_qa). the yara_qa pool itself comes from saq.default.yaml; small caps
 # so the tests reach them, small prune batches with no pause so the batching loop runs, and no
@@ -781,6 +828,11 @@ yara_qa:
 svs:
   samples:
     inventory_refresh_seconds: 0
+  yara:
+    sandbox:
+      # as for hunter.correlation.executable: the shipped [] needs Landlock ABI 4 (Linux 6.7), so the
+      # validation tests run on any kernel the sandbox supports
+      allowed_tcp_ports: null
 
 storage:
   target: local

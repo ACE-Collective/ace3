@@ -7,7 +7,7 @@ import time
 from typing import Optional
 from enum import Enum
 
-from saq.analysis.analysis import Analysis
+from saq.analysis.analysis import Analysis, mark_analysis_failed
 from saq.analysis.blob_store import get_blob_store
 from saq.analysis.cache import (
     apply_delta,
@@ -247,6 +247,8 @@ class AnalysisExecutor:
                     filesystem=FileSystemAdapter(),
                     state_repository=state_repository,
                     shutdown_interface=self.shutdown_interface,
+                    # the flag rather than its value: the keepalive thread cancels while a module runs
+                    engine_canceled=lambda: context.cancel_analysis_flag,
                 )
             )
 
@@ -590,19 +592,23 @@ class AnalysisExecutor:
             # do we need to execute the dependency anaylysis?
             if dep.ready:
                 logging.debug(f"analyzing ready dependency {dep}")
-                # has this already been completed?
+                target_analysis_module = (
+                    self._get_analysis_module_by_generated_analysis(
+                        dep.target_analysis_type
+                    )
+                )
+                # has this already been completed? a failed analysis the target module
+                # retries has not answered yet: the retry runs through this edge
                 existing_analysis = dep.target_observable.get_analysis(
                     dep.target_analysis_type
                 )
-                if existing_analysis is False or existing_analysis is not None:
+                retrying = target_analysis_module is not None and self._will_retry(
+                    context, dep.target_observable, target_analysis_module, existing_analysis
+                )
+                if existing_analysis is False or (existing_analysis is not None and not retrying):
                     logging.debug(f"already analyzed obs {dep.target_observable} target {dep.target_analysis_type}")
                     dep.increment_status()
                 else:
-                    target_analysis_module = (
-                        self._get_analysis_module_by_generated_analysis(
-                            dep.target_analysis_type
-                        )
-                    )
                     if target_analysis_module is None:
                         raise RuntimeError(
                             "cannot find target analysis for {}".format(dep)
@@ -634,6 +640,13 @@ class AnalysisExecutor:
         assert isinstance(context.work_stack, WorkStack)
         while len(context.work_stack) > 0:
             work_item = context.work_stack.popleft()
+
+            # a retry's delete_analysis() removes the observables the failed analysis added,
+            # but their work items are still queued: anything analyzed on them would be saved
+            # with no way to reach it from the tree
+            if work_item.observable and context.root.get_observable(work_item.observable.uuid) is not work_item.observable:
+                logging.debug("skipping %s: its observable was removed from the tree", work_item)
+                continue
 
             # is this work item waiting on a dependency?
             if work_item.observable:
@@ -672,17 +685,8 @@ class AnalysisExecutor:
         if not work_item.observable:
             return ObservableExclusionResult.OK
 
-        # has this thing been whitelisted?
-        if work_item.observable.whitelisted:
-            logging.info(f"{work_item.observable} was whitelisted -- not analyzing")
-            if work_item.dependency:
-                work_item.dependency.set_status_failed("whitelisted")
-                work_item.dependency.increment_status()
-
-            return ObservableExclusionResult.EXCLUDED
-
         # is this observable globally excluded? matches() is exact for most
-        # observable types and CIDR-aware for ip/ipv4
+        # observable types, CIDR-aware for ip/ipv4 and notation-blind for mac_address
         excluded = any(
             work_item.observable.matches(exclusion)
             for exclusion in self.config.observable_exclusions.get(
@@ -790,6 +794,21 @@ class AnalysisExecutor:
         else:
             return get_config().global_settings.maximum_analysis_time
 
+    def _get_analysis_deadline(
+        self, analysis_module: AnalysisModuleInterface, analysis_mode: str, current_total_time: float
+    ) -> float:
+        """Returns the time.monotonic() value past which a module call starting now is stopped:
+        AnalysisModuleMonitor kills the worker past the module's maximum_analysis_time, and
+        _check_for_analysis_timeout abandons the pass past the cumulative fail time."""
+        seconds_left = float(analysis_module.maximum_analysis_time)
+        if analysis_mode not in get_engine_config().analysis_modes_ignore_cumulative_timeout:
+            seconds_left = min(
+                seconds_left,
+                self._get_maximum_cumulative_analysis_fail_time(analysis_mode) - current_total_time,
+            )
+
+        return time.monotonic() + seconds_left
+
     def _get_root_save_frequency(self, analysis_mode: str) -> Optional[int]:
         """Returns the mid-pass save policy for the given analysis mode.
 
@@ -859,13 +878,56 @@ class AnalysisExecutor:
             else:
                 raise AnalysisTimeoutError(f"ACE took too long to analyze {root}")
 
+    def _retry_used_up(self, context: EngineExecutionContext, observable: Observable, analysis: Analysis) -> bool:
+        """Returns True if this work item does not retry analysis, a failed analysis on
+        observable that its module would retry. A work item retries a failed analysis once:
+        each retry adds an analysis, which queues the observable again, so a failure that
+        persists would otherwise rerun the module on every pass until the cumulative
+        analysis time ran out. The next work item on the root retries it again. Final
+        analysis mode never retries: the module cannot run execute_analysis() there, so a
+        retry would delete the failed analysis and leave no analysis in its place."""
+        return (
+            context.final_analysis_mode
+            or (observable.uuid, analysis.module_path) in context.retried_analysis
+        )
+
+    def _will_retry(
+        self,
+        context: EngineExecutionContext,
+        observable: Observable,
+        analysis_module: AnalysisModuleInterface,
+        analysis: Analysis | bool | None,
+    ) -> bool:
+        """Returns True if this work item will retry analysis, the failed analysis of
+        analysis_module on observable."""
+        return (
+            isinstance(analysis, Analysis)
+            and analysis_module.will_retry(analysis)
+            and not self._retry_used_up(context, observable, analysis)
+        )
+
     def _check_module_acceptance(
-        self, work_item: WorkTarget, analysis_module: AnalysisModuleInterface
+        self,
+        context: EngineExecutionContext,
+        work_item: WorkTarget,
+        analysis_module: AnalysisModuleInterface,
     ) -> bool:
         """Checks to see if the analysis module accepts the work item."""
         if work_item.observable:
-            # does this module accept this observable type?
-            if not analysis_module.accepts(work_item.observable):
+            # does this module accept this observable type? a failed analysis the module
+            # would retry, but which this work item does not retry, is final for now
+            existing_analysis = work_item.observable.get_analysis(
+                analysis_module.generated_analysis_type, instance=analysis_module.instance
+            )
+            retry_used_up = (
+                isinstance(existing_analysis, Analysis)
+                and analysis_module.will_retry(existing_analysis)
+                and self._retry_used_up(context, work_item.observable, existing_analysis)
+            )
+            if retry_used_up:
+                logging.debug("%s does not retry %s on %s in this work item", analysis_module, existing_analysis, work_item.observable)
+
+            if retry_used_up or not analysis_module.accepts(work_item.observable):
                 if work_item.dependency:
                     work_item.dependency.set_status_failed("unaccepted for analysis")
                     work_item.dependency.increment_status()
@@ -890,6 +952,7 @@ class AnalysisExecutor:
 
     def _process_generated_analysis(
         self,
+        context: EngineExecutionContext,
         analysis_result: AnalysisExecutionResult,
         root: RootAnalysis,
         work_item: WorkTarget,
@@ -938,8 +1001,27 @@ class AnalysisExecutor:
         if work_item.dependency:
             # did we analyze the target analysis of a dependency?
             if work_item.dependency.ready:
+                # a target cancelled mid-run (shutdown, lost lock) has not answered yet: the
+                # dependency stays ready and is serialized that way, so the requeued pass runs
+                # the target again instead of handing the source a permanent "nothing". the
+                # cancel flag is what guarantees the loop stops rather than retrying it here
+                if (
+                    not output_analysis
+                    and analysis_result == AnalysisExecutionResult.INCOMPLETE
+                    and context.cancel_analysis_flag
+                ):
+                    logging.info(
+                        "analysis cancelled before %s answered dependency %s - leaving it unresolved",
+                        analysis_module, work_item.dependency,
+                        extra={
+                            "root_uuid": root.uuid,
+                            "module_name": analysis_module.name,
+                            "observable_uuid": work_item.observable.uuid,
+                        },
+                    )
+
                 # if we did not generate any analysis then the dependency has failed
-                if not output_analysis:
+                elif not output_analysis:
                     logging.debug(
                         "analysis module {} did not generate analysis to resolve dep {}".format(
                             analysis_module, work_item.dependency
@@ -1095,9 +1177,11 @@ class AnalysisExecutor:
           (the slot already existed, no delayed→completed transition)
           slips past ``put_cached_delta``'s still-delayed check — which
           inspects the analysis dict — and a partial result gets cached.
-        - the analysis was not closed out by a delayed-analysis deadline
-          expiry (``delay_analysis_timed_out``) — that path returns
-          COMPLETED with an empty result the module never received.
+        - the analysis has no error (``Analysis.error``): a failure is not an
+          answer, and caching it would replay the failure into every root
+          analyzing the same observable for the TTL. That includes a
+          delayed-analysis deadline expiry, which returns COMPLETED with an
+          empty result the module never received.
 
         ``prior_deltas`` are the earlier delayed-cycle deltas recorded for
         this (module_path, observable); their tree mutations are merged
@@ -1113,24 +1197,20 @@ class AnalysisExecutor:
         if not get_config().analysis_cache.enabled:
             return
 
-        # A delayed-analysis deadline expiry also returns COMPLETED, with the
-        # analysis closed out empty -- the module never received its result.
-        # Caching that would replay "nothing" into every root that analyzes
-        # the same observable for the TTL. Tool-side partial timeouts are
-        # different: those flow back through the module with real output and
-        # stay cacheable.
+        # a failed analysis is not an answer: the next root to see this observable runs the module
+        # again. Tool-side partial timeouts the module reports without an error stay cacheable
         target_analysis = None
         if analysis_module.generated_analysis_type is not None:
             target_analysis = observable.get_analysis(
                 analysis_module.generated_analysis_type, instance=analysis_module.instance
             )
-        if getattr(target_analysis, "delay_analysis_timed_out", False):
+        if isinstance(target_analysis, Analysis) and target_analysis.error is not None:
             logging.info(
                 "skipping cache write",
                 extra={
                     "module_name": analysis_module.name,
                     "observable_type": observable.type,
-                    "skip_reason": "delay_analysis_timed_out",
+                    "skip_reason": "analysis_error",
                 },
             )
             return
@@ -1177,7 +1257,10 @@ class AnalysisExecutor:
             )
 
     def _seed_declared_dependencies(
-        self, work_item: WorkTarget, analysis_module: AnalysisModuleInterface
+        self,
+        context: EngineExecutionContext,
+        work_item: WorkTarget,
+        analysis_module: AnalysisModuleInterface,
     ) -> bool:
         """Ensure this module's declared dependencies are satisfied before it runs.
 
@@ -1189,11 +1272,14 @@ class AnalysisExecutor:
         deferred to a later pass; False if all declared dependencies are satisfied
         and the module may run now.
 
-        A dependency is treated as satisfied (mirroring wait_for_analysis) when the
+        A dependency is treated as satisfied when the
         dependency module does not accept the observable, an existing dependency edge
         is completed/resolved/failed, or the target analysis is already present as a
         completed Analysis or the "no analysis" (False) sentinel. A present-but-not-
-        completed (delayed) target analysis is NOT satisfied -- we keep waiting.
+        completed (delayed) target analysis is NOT satisfied -- we keep waiting -- and
+        neither is a failed one the dependency module will retry, until the edge the
+        retry runs through is terminal. wait_for_analysis differs here: it only has the
+        analysis type, not the module, so it returns such a failed analysis.
         """
         dependency_modules = self.configuration_manager.get_declared_dependencies(
             analysis_module.config.name
@@ -1222,10 +1308,14 @@ class AnalysisExecutor:
                 dependency_module.generated_analysis_type,
                 instance=dependency_module.instance,
             )
-            # satisfied if we have a completed Analysis or the False no-analysis sentinel
+            # satisfied if we have a completed Analysis the dependency module will not
+            # retry, or the False no-analysis sentinel
             if existing_analysis is not None and not (
                 isinstance(existing_analysis, Analysis)
-                and not existing_analysis.completed
+                and (
+                    not existing_analysis.completed
+                    or self._will_retry(context, observable, dependency_module, existing_analysis)
+                )
             ):
                 continue
 
@@ -1298,12 +1388,12 @@ class AnalysisExecutor:
             return
 
         # does this module accept the work item?
-        if not self._check_module_acceptance(work_item, analysis_module):
+        if not self._check_module_acceptance(context, work_item, analysis_module):
             return
 
         # ensure declared dependencies are satisfied before running this module;
         # if any are unmet, the dependency edges are seeded and we defer this module
-        if self._seed_declared_dependencies(work_item, analysis_module):
+        if self._seed_declared_dependencies(context, work_item, analysis_module):
             return
 
         try:
@@ -1359,6 +1449,24 @@ class AnalysisExecutor:
                     "analysis module failed in previous execution"
                 )
 
+            # a failed analysis the module retries is replaced now that the module is about
+            # to run, with everything it added (observables, detection points, details file)
+            existing_analysis = work_item.observable.get_analysis(
+                analysis_module.generated_analysis_type, instance=analysis_module.instance
+            )
+            if self._will_retry(context, work_item.observable, analysis_module, existing_analysis):
+                context.retried_analysis.add((work_item.observable.uuid, existing_analysis.module_path))
+                logging.info(
+                    "retrying %s on %s: deleting its failed analysis (%s)",
+                    analysis_module, work_item.observable, existing_analysis.error,
+                    extra={
+                        "root_uuid": root.uuid,
+                        "observable_uuid": work_item.observable.uuid,
+                        "module_name": analysis_module.config.name,
+                    },
+                )
+                work_item.observable.delete_analysis(existing_analysis)
+
             # delayed_analysis=True must only be passed to the module that is actually
             # being resumed from its prior delay_analysis() call -- not to every module
             # invoked during a DelayedAnalysisRequest resumption. context.is_delayed_analysis
@@ -1376,8 +1484,9 @@ class AnalysisExecutor:
             # completed), so replay would collide with that slot -- marking it
             # complete without its own result and abandoning the work the
             # module has in flight. Outside a resume, accepts() returning True
-            # means the observable has no analysis at this module_path, so
-            # replay does not conflict. The inner try/except deliberately does
+            # means the observable has no analysis at this module_path (a failed
+            # one being retried was deleted just above), so replay does not
+            # conflict. The inner try/except deliberately does
             # NOT re-raise — replay failure must fall through to the live path
             # so the outer except Exception below doesn't treat it as a module
             # failure (which would write a crash report spuriously).
@@ -1396,7 +1505,7 @@ class AnalysisExecutor:
                             lookup_result,
                         )
                         self._process_generated_analysis(
-                            AnalysisExecutionResult.COMPLETED, root, work_item,
+                            context, AnalysisExecutionResult.COMPLETED, root, work_item,
                             work_stack, work_stack_buffer, analysis_module,
                         )
                         self._save_root(context, root)
@@ -1435,6 +1544,16 @@ class AnalysisExecutor:
 
             # track the analysis module that is currently analyzing this work item
             self.tracking_message_manager.track_current_analysis_module(analysis_module, work_item.observable)
+
+            # tell the module how long it has (AnalysisModule.time_left()). set before the monitor
+            # starts its clock so the module's deadline is never later than the kill
+            analysis_module.set_analysis_deadline(
+                self._get_analysis_deadline(
+                    analysis_module,
+                    root.analysis_mode,
+                    total_analysis_time_seconds + (datetime.now() - start_time).total_seconds(),
+                )
+            )
 
             # start a monitor thread that will kill the process if the analysis module takes too long
             monitor = AnalysisModuleMonitor(
@@ -1583,18 +1702,21 @@ class AnalysisExecutor:
                 # make sure we stop the monitor thread
                 monitor.stop()
                 cancel_hang_stack_dump()
+                analysis_module.set_analysis_deadline(None)
 
                 # clear the tracking message for the analysis module
                 self.tracking_message_manager.clear_module_tracking()
 
-            # did the module cancel the analysis?
-            if analysis_module.is_canceled_analysis():
+            # did the module cancel the analysis? is_canceled_analysis() also reports a cancel from
+            # the engine, which is already on the context
+            if analysis_module.is_canceled_analysis() and not context.cancel_analysis_flag:
                 logging.info(
                     f"analysis module {analysis_module} cancelled analysis for {root} when analyzing {work_item}"
                 )
                 context.cancel_analysis()
 
             self._process_generated_analysis(
+                context,
                 analysis_result,
                 root,
                 work_item,
@@ -1666,7 +1788,7 @@ class AnalysisExecutor:
             # the analyst-facing record: one directory, named by a crash id that is logged,
             # carrying the traceback, the tree and the file the module died on. see
             # docs/CRASH_REPORTS.md
-            record_module_crash(
+            crash_id = record_module_crash(
                 crash_type=CRASH_TYPE_EXCEPTION,
                 module_path=MODULE_PATH(analysis_module),
                 module_name=analysis_module.name,
@@ -1675,6 +1797,10 @@ class AnalysisExecutor:
                 exception=e,
                 maximum_analysis_time=analysis_module.maximum_analysis_time,
             )
+
+            # and the analyst-facing mark on the analysis itself, so the alert shows the module
+            # failed instead of the analysis silently missing. the crash id leads to the report
+            self._record_module_exception(root, work_item.observable, analysis_module, e, crash_id)
 
             if work_item.dependency:
                 work_item.dependency.set_status_failed("error: {}".format(e))
@@ -1697,19 +1823,47 @@ class AnalysisExecutor:
             )
 
         # when analyze() executes it populates the work_stack_buffer with things that need to be analyzed
-        # if the thing that was just analyzed turned out to be whitelisted (tagged with 'whitelisted')
-        # then we stop analyzing this entire analysis tree (the whole thing is considered whitelisted)
-        if work_item.observable and work_item.observable.whitelisted:
-            logging.info(
-                "{} was whitelisted - ignoring {} items on work stack buffer and stopping analysis".format(
-                    work_item, len(work_stack_buffer)
-                )
-            )
-            work_stack_buffer.clear()
-            context.cancel_analysis()
-        else:
-            self._drain_work_stack_buffer(
-                context, root, work_stack, work_stack_buffer
+        self._drain_work_stack_buffer(
+            context, root, work_stack, work_stack_buffer
+        )
+
+    def _record_module_exception(
+        self,
+        root: RootAnalysis,
+        observable: Optional[Observable],
+        analysis_module: AnalysisModuleInterface,
+        exception: Exception,
+        crash_id: Optional[str],
+    ) -> None:
+        """Records that a module raised, where the analyst sees it: on its analysis of the observable,
+        or, if it raised before creating one, in the root's analysis failures. Either way the module
+        does not run on that observable again in this root. Never raises: it runs on the crash path."""
+        if observable is None or analysis_module.generated_analysis_type is None:
+            return
+
+        try:
+            module_path = MODULE_PATH(analysis_module)
+            analysis = observable.get_analysis(module_path)
+            # a module that recorded why it failed before it raised knows better than the exception
+            if isinstance(analysis, Analysis) and analysis.error is not None:
+                message = analysis.error
+            else:
+                message = f"{type(exception).__name__}: {exception}"
+
+            if crash_id:
+                message = f"{message} (crash_id {crash_id})"
+
+            if not mark_analysis_failed(observable, module_path, message):
+                root.set_analysis_failed(module_path, observable.type, observable.value, error_message=message)
+        except Exception:
+            logging.exception(
+                "unable to mark analysis failed",
+                extra={
+                    "module_name": analysis_module.name,
+                    "root_uuid": root.uuid,
+                    "observable_uuid": observable.uuid,
+                    "crash_id": crash_id,
+                },
             )
 
     def _drain_work_stack_buffer(

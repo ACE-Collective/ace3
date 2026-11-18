@@ -60,6 +60,7 @@ class TestCacheTtlValidation:
 
     @pytest.mark.unit
     def test_grouped_by_time_without_cache_ttl_ok(self):
-        cfg = AnalysisModuleConfig(**_base_config(is_grouped_by_time=True))
+        cfg = AnalysisModuleConfig(**_base_config(
+            is_grouped_by_time=True, observation_grouping_time_range=timedelta(minutes=10)))
         assert cfg.is_grouped_by_time is True
         assert cfg.cache_ttl is None

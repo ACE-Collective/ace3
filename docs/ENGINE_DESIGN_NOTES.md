@@ -33,7 +33,7 @@ still resolve.
 - [19.13 `WorkStack` could not actually hold `Analysis`](#1913-workstack-could-not-actually-hold-analysis--fixed)
 - [19.14 `ORDER BY RAND() ... LIMIT 128` on the workload query](#1914-order-by-rand--limit-128-on-the-workload-query) — *open*
 - [19.15 Two context objects for one execution](#1915-two-context-objects-for-one-execution--fixed)
-- [19.16 Config reload on SIGHUP is not implemented](#1916-config-reload-on-sighup-is-not-implemented) — *open*
+- [19.16 Config reload on SIGHUP is not implemented](#1916-config-reload-on-sighup-is-not-implemented--removed) — *removed*
 - [19.17 The post-analysis COMPLETED skip never fired](#1917-the-post-analysis-completed-skip-never-fired--fixed)
 
 ---
@@ -133,7 +133,8 @@ thirteen unit tests over `_process_observable_exclusions` with a mocked
 configuration manager: exact match, the `oogle.com` near-miss, the
 `mail.google.com` subdomain, `ipv4` exact and CIDR (in and out of range), an
 exclusion value containing a colon, unlisted types, the dependency-failure
-bookkeeping, and the untouched `whitelisted` / `DIRECTIVE_EXCLUDE_ALL` branches.
+bookkeeping, a `whitelisted` tag (which excludes nothing), and the untouched
+`DIRECTIVE_EXCLUDE_ALL` branch.
 Config parsing is covered by
 `test_engine_configuration_observable_exclusions*` in
 `tests/saq/engine/test_configuration_manager.py` (including
@@ -223,13 +224,11 @@ returns `True`.
 
 Refusing rather than raising is what the module side already knows how to
 handle — it is the same answer the deadline-expiry branch just above gives.
-`AnalysisModule.delay_analysis` sets the transient
-`analysis.delay_analysis_timed_out`, closes the analysis out `COMPLETED`, and the
-executor's cache-write gate (`executor.py`) keeps that empty result out of the
-analysis cache (§10.1, §11). The attribute keeps its name: it is already the
-general "the engine refused the delay" marker, and renaming it would churn the
-cache-attribution `skip_reason` for no behavioral gain. The root loses one
-module's analysis instead of hanging.
+`AnalysisModule.delay_analysis` closes the analysis out `COMPLETED` with
+`analysis.error` set, and the executor's cache-write gate (`executor.py`) keeps
+that empty result out of the analysis cache like any failed analysis (§10.1,
+§11, §12.4). The root loses one module's analysis, which the analyst sees as
+failed, instead of hanging.
 
 The `-> bool` annotation and the "True = recorded" docstring were pushed through
 `WorkloadManagerInterface` / `WorkloadManagerAdapter` / `DatabaseWorkloadManager`
@@ -384,13 +383,13 @@ double count:
 
 - `_execute_recursive_analysis` wraps the MAIN LOOP in `try`/`finally` and squares
   the budget up on the way out (`executor.py:1990`). The `finally` is load
-  bearing: `AnalysisTimeoutError` (§12.4) and a cancelled analysis (§12.2) both
+  bearing: `AnalysisTimeoutError` (§12.5) and a cancelled analysis (§12.2) both
   leave the loop that way, and `AnalysisOrchestrator._execute_analysis` saves the
   root on both paths.
 - `_execute_module_analysis` persists the running figure where `current_total_time`
   is already computed (`executor.py:1409`). The executor saves the root after
   every module invocation (§15), so this is what survives a worker killed
-  mid-module — the monitor's `os._exit(1)` or the manager's `SIGKILL` (§12.5).
+  mid-module — the monitor's `os._exit(1)` or the manager's `SIGKILL` (§12.6).
 
 *The budget covers one logical analysis run, not the root's lifetime.* `execute()`
 (`executor.py:431`) now seeds on `context.is_delayed_analysis`: a
@@ -653,8 +652,8 @@ restarted during a `SINGLE_SHOT` or `UNTIL_COMPLETE` run comes back in normal
 mode. The controller loop's own immediate `_controlled_stop()` masks this in
 practice, but it is unsound.
 
-`restart_workers()` — the SIGHUP path (§4.2) — had the identical bare
-`worker.start()`.
+`restart_workers()` — the SIGHUP path, since removed (§19.16) — had the
+identical bare `worker.start()`.
 
 The mode is only ever read inside the forked child: `worker_loop` sets the
 controlled-shutdown flag up front for `UNTIL_COMPLETE` and breaks after one work
@@ -666,31 +665,30 @@ exists only during the initial fork. `WorkerManager.__init__` initializes
 `self.execution_mode = EngineExecutionMode.NORMAL` — the same default
 `Worker.start` already carried, so a manager whose workers were never started
 through `start_workers()` behaves exactly as before — `start_workers()` records
-the mode it was handed, and both restart paths replay it:
+the mode it was handed, and the restart path replays it:
 
 ```python
 new_worker.start(execution_mode=self.execution_mode)   # restart_worker
-worker.start(execution_mode=self.execution_mode)       # restart_workers
 ```
 
 No signatures changed and no call site in `core.py` moved. This is a soundness
 fix, not a behavior change any running deployment will observe: `SINGLE_SHOT`
 and `UNTIL_COMPLETE` still break out of `main_controller_loop` to
 `_controlled_stop()` on the first iteration, so `check_workers()` never runs in
-those modes, and SIGHUP is only reachable from `NORMAL`. What it removes is the
+those modes. What it removes is the
 dependency of one on the other — supervision no longer has to be unreachable for
 the pool to stay in the mode it was started in.
 
 *Regression guard.* `tests/saq/engine/test_worker_restart_execution_mode.py` —
-nine unit tests, seven of which failed before the fix. Eight drive a real
+eight unit tests, six of which failed before the fix (a ninth, for the SIGHUP
+path, went with it). Seven drive a real
 `WorkerManager` over a `FakeWorker` that records the mode each `start()` was
 given: the mode is retained by `start_workers()`; a replacement comes back in
 `SINGLE_SHOT`, `UNTIL_COMPLETE` and `NORMAL` respectively (the `NORMAL` case
 passed before and pins that the fix did not invert the default); a manager that
 never called `start_workers()` still restarts as `NORMAL`; the same assertion
-driven through `check_workers()`, the real caller in the controller loop; the
-SIGHUP `restart_workers()` path; and name / `idle_timeout_max` /
-`analysis_mode_priority` still carrying over to the replacement. The ninth uses a
+driven through `check_workers()`, the real caller in the controller loop; and name / `idle_timeout_max` /
+`analysis_mode_priority` still carrying over to the replacement. The eighth uses a
 real `Worker` with `ACE_MP_CONTEXT` mocked and asserts on the fork itself — both
 the initial and the replacement `Process(...)` get
 `kwargs={"execution_mode": UNTIL_COMPLETE}` — since those kwargs are the only
@@ -1040,13 +1038,26 @@ property and no longer assignable, and `test_functionality.py`'s
 `record_execution_statistics` tests patch `saq.engine.execution_context` rather
 than `saq.engine.executor` now that the method lives there.
 
-## 19.16 Config reload on SIGHUP is not implemented
+## 19.16 Config reload on SIGHUP is not implemented — **removed**
 
-`main_controller_loop` handles SIGHUP by restarting workers, with the actual
+`main_controller_loop` handled SIGHUP by restarting workers, with the actual
 `load_configuration()` call commented out and a `TODO`. Since workers re-import
 and re-instantiate every module on start, module *code* and module *config*
-changes do take effect — but only because the fork re-reads the already-parsed
-config in a fresh process. The parent's `CONFIG` is never refreshed.
+changes did take effect — but only because the fork re-read the already-parsed
+config in a fresh process. The parent's `CONFIG` was never refreshed.
+
+The worker restart itself was broken too (issue #976): `restart_workers()` set
+the controlled-shutdown flag and then called `start()` on the same `Worker`
+objects, which dropped the old processes from supervision (no analysis timeout,
+no memory limit, no kill of what they left behind) and started new ones that
+inherited the set flag and exited at once, so `check_workers()` replaced every
+worker a second time.
+
+*Resolution.* The SIGHUP handler and `WorkerManager.restart_workers()` were
+removed rather than fixed. They date from before ACE ran in containers; a
+deployment now picks up new code or configuration by restarting the container.
+The engine installs no signal handler of its own; SIGTERM and SIGINT belong to
+the `ShutdownCoordinator` (`docs/SHUTDOWN.md`).
 
 ## 19.17 The post-analysis COMPLETED skip never fired — **fixed**
 
@@ -1073,8 +1084,8 @@ and each in-tree one depends on running again:
   mode leaks those entries in the worker and drops the cost metrics of later passes.
 - `alert_added_to_event` would check `EventMapping` only on the first disposition
   pass, so an alert added to an event later would never move to `event` mode.
-- `correlated_tag_analyzer` and `configuration_defined_tagging` would complete in
-  `analysis`/`email` mode and never see the tags that correlation-mode modules add.
+- `configuration_defined_tagging` would complete in `analysis`/`email` mode and
+  never see the tags that correlation-mode modules add.
 
 `svs_yara_sample_capture` (always INCOMPLETE), `email_logger` (returns `True`) and
 `email_archiver` (returns `None`) never matched COMPLETED and are unaffected.

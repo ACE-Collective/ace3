@@ -317,17 +317,22 @@ class GitManagerService(ACEServiceInterface):
 
     def run(self, repo: GitRepo):
         while not self.shutdown_event.is_set():
-            try:
-                repo.update()
-            except subprocess.TimeoutExpired:
-                logging.warning("git command timed out for repo %s", repo.config.name)
-            except Exception:
-                logging.error("unexpected error updating repo %s", repo.config.name, exc_info=True)
+            self.update_repo(repo)
             self.shutdown_event.wait(repo.config.update_frequency)
 
+    def update_repo(self, repo: GitRepo):
+        try:
+            repo.update()
+        except subprocess.TimeoutExpired:
+            logging.warning("git command timed out for repo %s", repo.config.name)
+        except Exception:
+            logging.error("unexpected error updating repo %s", repo.config.name, exc_info=True)
+
     def start_single_threaded(self):
+        # one update of each repo, then wait() returns
+        self.shutdown_event.set()
         for repo in get_configured_repos():
-            self.run(repo)
+            self.update_repo(repo)
 
     def wait_for_start(self, timeout: float = 5) -> bool:
         return self.started_event.wait(timeout)
@@ -336,7 +341,7 @@ class GitManagerService(ACEServiceInterface):
         self.shutdown_event.set()
 
     def wait(self):
-        if not self.threads:
+        if not self.threads and not self.shutdown_event.is_set():
             # nothing to join. block until stop() so that a container restart policy
             # does not loop on an immediate exit 0 when no repos are configured
             logging.info("no git repos configured, git service idling until stopped")

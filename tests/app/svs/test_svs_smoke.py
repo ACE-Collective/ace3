@@ -88,11 +88,6 @@ def svs_admin():
 
 
 class TestSVSIsPagesOnly:
-    def test_page_views_exist(self, app):
-        for endpoint in PAGE_VIEWS + ("svs.run_detail", "svs.test_detail", "svs.coverage_detail",
-                                    "svs.worklist_signature"):
-            assert endpoint in app.view_functions, endpoint
-
     def test_svs_blueprint_serves_only_get_pages(self, app):
         offenders = []
         for rule in app.url_map.iter_rules():
@@ -106,6 +101,8 @@ class TestSVSIsPagesOnly:
 
 class TestRunsPages:
     def test_requires_auth(self, app):
+        # the login gate is the blueprint's before_request (app/svs/views/access.py), so one page
+        # stands for every page of the area
         with app.test_client() as client:
             resp = client.get(url_for("svs.runs"))
             assert resp.status_code == 302
@@ -178,12 +175,6 @@ class TestRunsPages:
 
 
 class TestRunPage:
-    def test_requires_auth(self, app):
-        with app.test_client() as client:
-            resp = client.get(url_for("svs.run_detail", run_id=RUN_ID))
-            assert resp.status_code == 302
-            assert "login" in resp.location
-
     def test_the_page_is_driven_by_the_v2_api(self, app, run_reader):
         with app.test_client() as client:
             _login(client, run_reader)
@@ -241,13 +232,6 @@ class TestRunPage:
 
 
 class TestTestsPages:
-    def test_requires_auth(self, app):
-        with app.test_client() as client:
-            for page_url in (url_for("svs.tests"), url_for("svs.test_detail", guid=TEST_GUID)):
-                resp = client.get(page_url)
-                assert resp.status_code == 302, page_url
-                assert "login" in resp.location
-
     def test_the_list_is_driven_by_the_v2_api(self, app, run_reader):
         with app.test_client() as client:
             _login(client, run_reader)
@@ -265,15 +249,6 @@ class TestTestsPages:
             assert (data.index(b"ace_api.js") < data.index(b"saved_filters.js")
                     < data.index(b"filter_list_page.js") < data.index(b"svs_tests.js"))
             assert b'id="save_filter_modal"' in data and b'id="manage_filters_modal"' in data
-
-    def test_the_list_seeds_the_default_saved_filters_once(self, app, run_reader):
-        assert _saved_filter_names(run_reader, "svs_tests") == []
-        with app.test_client() as client:
-            _login(client, run_reader)
-            client.get(url_for("svs.tests"))
-            assert _saved_filter_names(run_reader, "svs_tests") == ["In the catalog"]
-            client.get(url_for("svs.tests"))
-            assert _saved_filter_names(run_reader, "svs_tests") == ["In the catalog"]
 
     def test_the_test_page_is_driven_by_the_v2_api(self, app, run_reader):
         with app.test_client() as client:
@@ -321,13 +296,6 @@ class TestTestsPages:
 
 
 class TestCoveragePages:
-    def test_requires_auth(self, app):
-        with app.test_client() as client:
-            for page_url in (url_for("svs.coverage"), url_for("svs.coverage_detail", technique="T1059")):
-                resp = client.get(page_url)
-                assert resp.status_code == 302, page_url
-                assert "login" in resp.location
-
     def test_the_list_is_driven_by_the_v2_api(self, app, run_reader):
         with app.test_client() as client:
             _login(client, run_reader)
@@ -348,16 +316,6 @@ class TestCoveragePages:
             assert (data.index(b"ace_api.js") < data.index(b"saved_filters.js")
                     < data.index(b"filter_list_page.js") < data.index(b"svs_coverage.js"))
             assert b'id="save_filter_modal"' in data and b'id="manage_filters_modal"' in data
-
-    def test_the_list_seeds_the_default_saved_filters_once(self, app, run_reader):
-        assert _saved_filter_names(run_reader, "svs_coverage") == []
-        expected = ["All", "Endpoint platforms", "Gaps and failures"]
-        with app.test_client() as client:
-            _login(client, run_reader)
-            client.get(url_for("svs.coverage"))
-            assert _saved_filter_names(run_reader, "svs_coverage") == expected
-            client.get(url_for("svs.coverage"))
-            assert _saved_filter_names(run_reader, "svs_coverage") == expected
 
     def test_the_technique_page_is_driven_by_the_v2_api(self, app, run_reader):
         with app.test_client() as client:
@@ -412,13 +370,6 @@ class TestCoveragePages:
 
 
 class TestWorklistPages:
-    def test_requires_auth(self, app):
-        with app.test_client() as client:
-            for page_url in (url_for("svs.worklist"), url_for("svs.worklist_signature", signature_uuid=SIGNATURE_UUID)):
-                resp = client.get(page_url)
-                assert resp.status_code == 302, page_url
-                assert "login" in resp.location
-
     def test_the_list_is_driven_by_the_v2_api(self, app, run_reader):
         with app.test_client() as client:
             _login(client, run_reader)
@@ -438,16 +389,6 @@ class TestWorklistPages:
             assert (data.index(b"ace_api.js") < data.index(b"saved_filters.js")
                     < data.index(b"filter_list_page.js") < data.index(b"svs_worklist.js"))
             assert b'id="save_filter_modal"' in data and b'id="manage_filters_modal"' in data
-
-    def test_the_list_seeds_the_default_saved_filters_once(self, app, run_reader):
-        assert _saved_filter_names(run_reader, "svs_worklist") == []
-        expected = ["Needs decision", "Remove pending", "Undeclared"]
-        with app.test_client() as client:
-            _login(client, run_reader)
-            client.get(url_for("svs.worklist"))
-            assert _saved_filter_names(run_reader, "svs_worklist") == expected
-            client.get(url_for("svs.worklist"))
-            assert _saved_filter_names(run_reader, "svs_worklist") == expected
 
     def test_the_signature_page_is_driven_by_the_v2_api(self, app, run_reader):
         with app.test_client() as client:
@@ -488,6 +429,22 @@ class TestWorklistPages:
                 data = client.get(page_url).data
                 assert b'data-can-manage="true"' in data, page_url
                 assert b'id="svs_worklist_resolve_modal"' in data, page_url
+
+
+@pytest.mark.parametrize("endpoint, screen, expected", [
+    ("svs.tests", "svs_tests", ["In the catalog"]),
+    ("svs.coverage", "svs_coverage", ["All", "Endpoint platforms", "Gaps and failures"]),
+    ("svs.worklist", "svs_worklist", ["Needs decision", "Remove pending", "Undeclared"]),
+])
+def test_the_list_seeds_the_default_saved_filters_once(app, run_reader, endpoint, screen, expected):
+    # the Runs tab's own test is TestRunsPages::test_the_list_pages_seed_the_default_saved_filters_once
+    assert _saved_filter_names(run_reader, screen) == []
+    with app.test_client() as client:
+        _login(client, run_reader)
+        client.get(url_for(endpoint))
+        assert _saved_filter_names(run_reader, screen) == expected
+        client.get(url_for(endpoint))
+        assert _saved_filter_names(run_reader, screen) == expected
 
 
 class TestNavigation:

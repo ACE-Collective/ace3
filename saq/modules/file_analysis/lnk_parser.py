@@ -14,7 +14,6 @@ import LnkParse3
 import warnings
 warnings.filterwarnings("ignore", module="LnkParse3")
 
-KEY_ERROR = "error"
 KEY_INFO = "info"
 
 def get_target_path(info: dict) -> Optional[str]:
@@ -62,7 +61,6 @@ class LnkParseAnalysis(Analysis):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.details = {
-            KEY_ERROR: None,
             KEY_INFO: {},
         }
 
@@ -70,14 +68,6 @@ class LnkParseAnalysis(Analysis):
     @property
     def display_name(self) -> str:
         return "LnkParse Analysis"
-
-    @property
-    def error(self):
-        return self.details[KEY_ERROR]
-
-    @error.setter
-    def error(self, value):
-        self.details[KEY_ERROR] = value
 
     @property
     def info(self):
@@ -193,6 +183,6 @@ class LnkParseAnalyzer(AnalysisModule):
 
         except Exception as e:
             logging.exception(f'LnkParse failed for {local_file_path}')
-            analysis.error = str(e)
+            analysis.error = str(e) or type(e).__name__
         
         return AnalysisExecutionResult.COMPLETED

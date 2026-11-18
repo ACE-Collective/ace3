@@ -1,6 +1,6 @@
 import re
 import shutil
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 from flask import url_for
 from jinja2 import ChoiceLoader, DictLoader
@@ -9,55 +9,30 @@ import pytest
 from sqlalchemy import update
 
 from app.analysis.views.index import TreeNode, _prune, _recurse
+from app.application import b64escape
 
 from saq.analysis.analysis import Analysis
 from saq.analysis.detection_identity import detection_content_hash, node_identity
 from saq.analysis.module_execution_delta import ModuleExecutionDelta
 from saq.analysis.module_path import MODULE_PATH
 from saq.configuration.config import get_analysis_module_config, get_config
-from saq.constants import ANALYSIS_MODULE_BASIC_TEST, F_TEST, F_YARA_RULE
-from saq.database.model import Alert
+from saq.analysis.presenter.observable_presenter import create_observable_presenter
+from saq.constants import ACTION_MARK_INTERESTING, ACTION_UNMARK_INTERESTING, ANALYSIS_MODULE_BASIC_TEST, F_TEST, F_YARA_RULE
+from saq.database.model import Alert, Comment, Observable as DBObservable, ObservableComment
 from saq.database.pool import get_db
 from saq.database.util.alert import ALERT
+from saq.database.util.observable_detection import create_observable_detection, resolve_observable_identity
 from saq.gui import alert_actions
 from saq.gui.alert_actions import AlertAction, register_alert_action
-from saq.observables.testing import TestObservable
 from saq.modules.adapter import AnalysisModuleAdapter
 from saq.modules.file_analysis.yara import YaraScanResults_v3_4
 
-@pytest.mark.skip(reason="skipping tests with api_server")
-@pytest.mark.system
-def test_index(web_client, root_analysis, api_server, test_context):
+@pytest.mark.integration
+def test_index_unknown_alert_redirects_to_manage(web_client):
     result = web_client.get(url_for("analysis.index"), query_string={"direct": str(uuid4())})
 
-    # unknown uuid should return redirect to manage
     assert result.status_code == 302
     assert result.location == url_for("analysis.manage")
-
-    test_observable = root_analysis.add_observable_by_spec(F_TEST, "test_1")
-    assert isinstance(test_observable, TestObservable)
-
-    from saq.modules.test import BasicTestAnalyzer, BasicTestAnalysis
-    from saq.modules.context import AnalysisModuleContext
-    analyzer = AnalysisModuleAdapter(BasicTestAnalyzer(
-        context=test_context,
-        config=get_analysis_module_config(ANALYSIS_MODULE_BASIC_TEST)))
-    context = AnalysisModuleContext(root=root_analysis)
-    analyzer.set_context(context)
-    analyzer.execute_analysis(test_observable)
-    analysis = test_observable.get_and_load_analysis(BasicTestAnalysis)
-    assert isinstance(analysis, BasicTestAnalysis)
-
-    root_analysis.save() # TODO ALERT should save()
-    alert = ALERT(root_analysis)
-    assert isinstance(alert, Alert)
-
-    result = web_client.get(url_for("analysis.index"), query_string={
-            "direct": root_analysis.uuid,
-            "observable_uuid": test_observable.uuid,
-            "module_path": MODULE_PATH(analysis),
-        })
-    assert result.status_code == 200
 
 @pytest.mark.integration
 def test_index_no_load(web_client, root_analysis):
@@ -222,43 +197,17 @@ class TestTreeNode:
         obs_node = TreeNode(test_observable)
         assert obs_node.should_render
 
+        # a volatile observable is hidden when volatile nodes are pruned, unless it leads to a detection
+        volatile = root_analysis.add_observable_by_spec(F_TEST, "volatile_test", volatile=True)
+        assert TreeNode(volatile).should_render
+        pruned_node = TreeNode(volatile, prune_volatile=True)
+        assert not pruned_node.should_render
+        pruned_node.visible = True
+        assert pruned_node.should_render
+
 @pytest.mark.integration
 class TestIndexHelperFunctions:
     """Test helper functions in index.py."""
-    
-    def test_recurse_function(self, root_analysis, test_context):
-        """Test the _recurse helper function."""
-        from app.analysis.views.index import TreeNode, _recurse
-        from saq.modules.test import BasicTestAnalyzer
-        from saq.modules.context import AnalysisModuleContext
-        
-        # Add test observable and analysis
-        test_observable = root_analysis.add_observable_by_spec(F_TEST, "recurse_test")
-        analyzer = AnalysisModuleAdapter(BasicTestAnalyzer(
-            context=test_context,
-            config=get_analysis_module_config(ANALYSIS_MODULE_BASIC_TEST)))
-        context = AnalysisModuleContext(root=root_analysis)
-        analyzer.set_context(context)
-        analyzer.execute_analysis(test_observable)
-        
-        # Create tree and recurse
-        root_node = TreeNode(root_analysis)
-        _recurse(root_node)
-        
-        # Should have children for observables
-        assert len(root_node.children) > 0
-        
-        # Find the test observable node
-        test_obs_node = None
-        for child in root_node.children:
-            if hasattr(child.obj, 'value') and child.obj.value == "recurse_test":
-                test_obs_node = child
-                break
-        
-        assert test_obs_node is not None
-        # Should have analysis children (if analysis was created)
-        # Note: analysis might not be created in test environment
-        # assert len(test_obs_node.children) > 0
     
     def test_sort_function(self, root_analysis):
         """Test the _sort helper function."""
@@ -280,81 +229,15 @@ class TestIndexHelperFunctions:
         parent_node.add_child(child2)
         parent_node.add_child(child3)
         
-        # Sort the tree
-        _sort(parent_node)
-        
-        # Children should be sorted
-        assert len(parent_node.children) == 3
-        # Note: actual sorting depends on sort_order property and object comparison
-    
-    def test_prune_function(self, root_analysis, test_context):
-        """Test the _prune helper function."""
-        from app.analysis.views.index import TreeNode, _recurse, _prune
-        from saq.modules.test import BasicTestAnalyzer
-        from saq.modules.context import AnalysisModuleContext
-        
-        # Create a tree with analysis
-        test_observable = root_analysis.add_observable_by_spec(F_TEST, "prune_test")
-        analyzer = AnalysisModuleAdapter(BasicTestAnalyzer(
-            context=test_context,
-            config=get_analysis_module_config(ANALYSIS_MODULE_BASIC_TEST)))
-        context = AnalysisModuleContext(root=root_analysis)
-        analyzer.set_context(context)
-        analyzer.execute_analysis(test_observable)
-        
-        root_node = TreeNode(root_analysis)
-        _recurse(root_node)
-        
-        # Before pruning, some nodes may not be visible
-        def count_visible(node):
-            count = 1 if node.visible else 0
-            for child in node.children:
-                count += count_visible(child)
-            return count
-        
-        visible_before = count_visible(root_node)
-        
-        # Prune the tree
-        _prune(root_node)
-        # root node is visible (as done in the actual code)
-        root_node.visible = True
-        
-        # Root should be visible after pruning
-        assert root_node.visible
-        
-        # Some nodes should be visible now
-        visible_after = count_visible(root_node)
-        assert visible_after >= 1  # At least root should be visible
-    
-    def test_resolve_references_function(self, root_analysis):
-        """Test the _resolve_references helper function."""
-        from app.analysis.views.index import TreeNode, _resolve_references
-        
-        # Create nodes with references
-        test_observable = root_analysis.add_observable_by_spec(F_TEST, "resolve_test")
-        node1 = TreeNode(test_observable)
-        node2 = TreeNode(test_observable)
-        
-        # Create a child for node2
-        child_obs = root_analysis.add_observable_by_spec(F_TEST, "child_resolve")
-        child_node = TreeNode(child_obs)
-        node2.add_child(child_node)
-        
-        # Make node1 refer to node2
-        node1.refer_to(node2)
-        
-        # Make node1 visible but not node2
-        node1.visible = True
-        node2.visible = False
-        
-        # Resolve references
-        _resolve_references(node1)
-        
-        # node1 should now have node2's children and no reference
-        assert node1.reference_node is None
-        assert len(node1.children) == 1
-        assert node1.children[0].obj == child_obs
+        # and children of a child, to see the sort reach them
+        child1.add_child(TreeNode(root_analysis.add_observable_by_spec(F_TEST, "y_test")))
+        child1.add_child(TreeNode(root_analysis.add_observable_by_spec(F_TEST, "b_test")))
 
+        _sort(parent_node)
+
+        assert [child.obj.value for child in parent_node.children] == ["a_test", "m_test", "z_test"]
+        assert [child.obj.value for child in child1.children] == ["b_test", "y_test"]
+    
     def test_resolve_references_leaves_one_jump_target(self, root_analysis):
         """A node that is not visible is still rendered, so after a visible referent takes over its
         analysis it has to become a referent itself. Otherwise the observable is displayed twice
@@ -391,20 +274,6 @@ class TestIndexHelperFunctions:
 
 
 @pytest.mark.integration
-def test_index_with_session_variables(web_client, root_analysis, app):
-    """Test index view with different session variables."""
-    root_analysis.save()
-    alert = ALERT(root_analysis)
-    
-    with web_client.session_transaction() as sess:
-        sess['prune'] = False
-        sess['prune_volatile'] = False
-    
-    result = web_client.get(url_for("analysis.index"), query_string={"direct": root_analysis.uuid})
-    assert result.status_code == 200
-
-
-@pytest.mark.integration
 def test_index_with_observable_and_module_path(web_client, root_analysis, test_context):
     """Test index view with observable_uuid and module_path parameters."""
     from saq.modules.test import BasicTestAnalyzer, BasicTestAnalysis
@@ -428,8 +297,12 @@ def test_index_with_observable_and_module_path(web_client, root_analysis, test_c
         "observable_uuid": test_observable.uuid,
         "module_path": MODULE_PATH(analysis)
     })
-    
+
     assert result.status_code == 200
+    body = result.data.decode()
+    # the page shows that analysis's details instead of the alert's analysis tree
+    assert "{&#39;test_result&#39;: True}" in body
+    assert 'id="analysis-overview-card"' not in body
 
 
 @pytest.mark.integration
@@ -446,14 +319,23 @@ def test_index_template_context(web_client, root_analysis):
 
 
 @pytest.mark.integration
-def test_index_database_queries(web_client, root_analysis):
-    """Test that index view handles database queries correctly."""
+def test_index_has_no_email_file(web_client, root_analysis, tmp_path):
+    """Emailing a file from an alert was removed: the page has no email form, and nothing serves
+    the route its form posted to."""
+    target_path = tmp_path / "test_file.txt"
+    target_path.write_text("test")
+    assert root_analysis.add_file_observable(str(target_path))
     root_analysis.save()
-    alert = ALERT(root_analysis)
-    
-    # Test that the view handles database queries without errors
+    ALERT(root_analysis)
+
     result = web_client.get(url_for("analysis.index"), query_string={"direct": root_analysis.uuid})
     assert result.status_code == 200
+    assert b'email_modal' not in result.data
+    assert b'btn-submit-email' not in result.data
+
+    # the route sat next to upload_file in the analysis blueprint
+    email_file_url = url_for("analysis.upload_file").replace("upload_file", "email_file")
+    assert web_client.post(email_file_url, data={"toemail": "test@example.com"}).status_code == 404
 
 
 @pytest.mark.integration
@@ -470,17 +352,6 @@ def test_index_error_handling(web_client, root_analysis):
     
     # Should handle gracefully with redirect
     assert result.status_code == 302
-
-
-@pytest.mark.integration
-def test_index_with_comments(web_client, root_analysis):
-    """Test index view handles comments correctly."""
-    root_analysis.save()
-    alert = ALERT(root_analysis)
-    
-    # The view should handle cases where comments query might fail
-    result = web_client.get(url_for("analysis.index"), query_string={"direct": root_analysis.uuid})
-    assert result.status_code == 200
 
 
 def _run_basic_analyzer(root_analysis, test_context):
@@ -631,33 +502,6 @@ def test_index_no_added_by_subtext_for_engine_observables(
     assert "added by <strong>" not in body
 
 
-@pytest.mark.integration
-def test_index_tree_display_logic(web_client, root_analysis, test_context):
-    """Test the tree display logic in index view."""
-    from saq.modules.test import BasicTestAnalyzer
-    from saq.modules.context import AnalysisModuleContext
-    
-    # Add some observables to create a tree
-    test_observable = root_analysis.add_observable_by_spec(F_TEST, "tree_test")
-    analyzer = AnalysisModuleAdapter(BasicTestAnalyzer(
-        context=test_context,
-        config=get_analysis_module_config(ANALYSIS_MODULE_BASIC_TEST)))
-    context = AnalysisModuleContext(root=root_analysis)
-    analyzer.set_context(context)
-    analyzer.execute_analysis(test_observable)
-    
-    root_analysis.save()
-    alert = ALERT(root_analysis)
-    
-    # Test with different prune settings
-    with web_client.session_transaction() as sess:
-        sess['prune'] = True
-        sess['prune_volatile'] = True
-    
-    result = web_client.get(url_for("analysis.index"), query_string={"direct": root_analysis.uuid})
-    assert result.status_code == 200
-
-
 #
 # Batched detection / interesting lookups for the observable action menu.
 #
@@ -672,7 +516,8 @@ def test_index_does_not_query_per_observable_for_actions(
 ):
     """Rendering the analysis tree must not issue per-observable detection or
     interesting lookups -- the view batches both before building the tree."""
-    import saq.analysis.presenter.observable_presenter as presenter_module
+    # the presenter imports these from saq.database.database_observable when it calls them
+    import saq.database.database_observable as database_observable
 
     detection_calls = []
     interesting_calls = []
@@ -681,12 +526,12 @@ def test_index_does_not_query_per_observable_for_actions(
         detection_calls.append(observable.uuid)
         return False
 
-    def _spy_run_async(fn, *args, **kwargs):
-        interesting_calls.append(args)
+    def _spy_interesting(observable):
+        interesting_calls.append(observable.uuid)
         return False
 
-    monkeypatch.setattr(presenter_module, "observable_is_set_for_detection", _spy_detection)
-    monkeypatch.setattr(presenter_module, "run_async_with_session", _spy_run_async)
+    monkeypatch.setattr(database_observable, "observable_is_set_for_detection", _spy_detection)
+    monkeypatch.setattr(database_observable, "observable_is_interesting", _spy_interesting)
 
     _run_basic_analyzer(root_analysis, test_context)
     root_analysis.save()
@@ -733,11 +578,78 @@ def test_index_renders_detection_and_interesting_actions(
     body = result.data.decode("utf-8")
     assert "Disable observable for future detection" in body
     assert "Enable observable for future detection" not in body
+    assert "(detect enabled" in body
+    assert "(detection expired" not in body
 
     # disable and adjust-expiration address the detection by id through /api/v2/detection, and the
     # expiration dialog opens with the detection's current expiration
     assert f'aceApi.del("/detection/{detection_id}")' in body
     assert re.search(rf'show_detection_expiration_modal_for\(\s*{detection_id},\s*"2099-01-02 03:04:05"\)', body)
+
+
+@pytest.mark.integration
+def test_index_marks_edited_comments(web_client, root_analysis, test_context):
+    """An alert or observable comment changed after it was made says when; an unedited one does
+    not."""
+    test_observable, _ = _run_basic_analyzer(root_analysis, test_context)
+    root_analysis.save()
+    alert = ALERT(root_analysis)
+
+    db = get_db()
+    user_id = get_config().global_settings.automation_user_id
+    db.add(Comment(uuid=alert.uuid, user_id=user_id, comment="never edited alert comment"))
+    db.add(Comment(uuid=alert.uuid, user_id=user_id, comment="edited alert comment",
+                   edited_at=datetime(2026, 3, 4, 5, 6, 7)))
+
+    identity = resolve_observable_identity(test_observable.type, test_observable.value)
+    db_observable = db.query(DBObservable).filter(
+        DBObservable.type == identity.type, DBObservable.sha256 == identity.value_sha256).one_or_none()
+    if db_observable is None:
+        db_observable = DBObservable(type=identity.type, sha256=identity.value_sha256,
+                                     value=identity.value.encode("utf8"))
+        db.add(db_observable)
+        db.flush()
+    db.add(ObservableComment(user_id=user_id, observable_id=db_observable.id,
+                             comment="never edited observable comment"))
+    db.add(ObservableComment(user_id=user_id, observable_id=db_observable.id,
+                             comment="edited observable comment", edited_at=datetime(2026, 5, 6, 7, 8, 9)))
+    db.commit()
+
+    result = web_client.get(url_for("analysis.index"), query_string={"direct": root_analysis.uuid})
+    assert result.status_code == 200
+
+    body = result.data.decode("utf-8")
+    assert "edited alert comment" in body
+    assert "edited observable comment" in body
+    assert "(edited 2026-03-04 05:06:07)" in body
+    assert "(edited 2026-05-06 07:08)" in body
+    assert body.count("(edited ") == 2
+
+
+@pytest.mark.integration
+def test_index_labels_an_expired_detection_expired(
+    web_client, root_analysis, test_context,
+):
+    """An expired detection no longer fires, so the page must not call it enabled; disable and
+    adjust-expiration stay offered, since the row still exists and enable would be refused."""
+    test_observable, _ = _run_basic_analyzer(root_analysis, test_context)
+    root_analysis.save()
+    ALERT(root_analysis)
+
+    detection = create_observable_detection(
+        test_observable.type, test_observable.value, get_config().global_settings.automation_user_id,
+        detection_context="enabled by tester", expires_on=datetime(2020, 1, 2, 3, 4, 5))
+
+    result = web_client.get(
+        url_for("analysis.index"),
+        query_string={"direct": root_analysis.uuid},
+    )
+    assert result.status_code == 200
+
+    body = result.data.decode("utf-8")
+    assert "(detection expired" in body
+    assert "(detect enabled" not in body
+    assert re.search(rf'show_detection_expiration_modal_for\(\s*{detection.id},\s*"2020-01-02 03:04:05"\)', body)
 
 
 @pytest.mark.integration
@@ -758,8 +670,40 @@ def test_index_enable_detection_action_posts_to_the_api(
 
     body = result.data.decode("utf-8")
     assert "Enable observable for future detection" in body
-    assert 'aceApi.post("/detection/", {' in body
+    assert 'show_enable_detection_modal_for({' in body
     assert f'value: "{test_observable.value}"' in body
+    assert 'id="detection_expiration_new"' in body
+    assert 'name="observable_expiration_time"' in body
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("default_lifetime,days", [("14:00:00:00", 14), (None, None)])
+def test_index_enable_detection_prefills_configured_expiration(
+    web_client, root_analysis, test_context, monkeypatch, default_lifetime, days,
+):
+    """The enable dialog opens with the configured default, or with "never expires" when the
+    default is null (the setting that keeps the old behavior)."""
+    monkeypatch.setattr(get_config(), "observable_expiration_default", default_lifetime)
+    monkeypatch.setattr(get_config(), "observable_expiration_mappings", {})
+    _run_basic_analyzer(root_analysis, test_context)
+    root_analysis.save()
+    ALERT(root_analysis)
+
+    before = datetime.now(timezone.utc).replace(tzinfo=None, microsecond=0)
+    result = web_client.get(
+        url_for("analysis.index"), query_string={"direct": root_analysis.uuid})
+    after = datetime.now(timezone.utc).replace(tzinfo=None)
+    assert result.status_code == 200
+    body = result.data.decode("utf-8")
+    prefills = re.findall(r'show_enable_detection_modal_for\(\{.*?\}, (null|"[^"]*")\)', body, re.DOTALL)
+    assert prefills
+    if days is None:
+        assert set(prefills) == {"null"}
+    else:
+        assert "null" not in prefills
+        for prefill in prefills:
+            expires_on = datetime.strptime(prefill.strip('"'), "%Y-%m-%d %H:%M:%S")
+            assert before + timedelta(days=days) <= expires_on <= after + timedelta(days=days)
 
 
 @pytest.mark.integration
@@ -789,20 +733,48 @@ def test_index_renders_unmark_interesting_for_interesting_observable(
     assert "Unmark as interesting" in body
 
 
+@pytest.mark.integration
+def test_index_mark_interesting_inserts_display_value_as_text(
+    web_client, root_analysis, test_context,
+):
+    """Marking an observable interesting adds it to the summary card client-side. The display
+    value is analyzed data (e.g. an attachment filename), so it must reach the DOM as a text
+    node: concatenating it into the HTML string given to append() was a stored XSS (#815)."""
+    payload = '"/><img src=x onerror=alert(1)><b>'
+    root_analysis.add_observable_by_spec(F_TEST, payload)
+    root_analysis.save()
+    ALERT(root_analysis)
+
+    result = web_client.get(
+        url_for("analysis.index"),
+        query_string={"direct": root_analysis.uuid},
+    )
+    assert result.status_code == 200
+
+    body = result.data.decode("utf-8")
+    assert "Mark as interesting" in body
+    assert b64escape(payload) in body
+    assert "<img src=x onerror=alert(1)>" not in body
+
+    assert "document.createTextNode(displayValue)" in body
+    assert "$('<b>').text(displayType)" in body
+    assert not re.search(r"\+\s*displayValue\b|\bdisplayValue\s*\+", body), \
+        "the decoded display value is concatenated into an HTML string"
+
+
 @pytest.mark.unit
 def test_available_actions_built_once_per_presenter(root_analysis, monkeypatch):
     """available_actions is read three times per observable by
     default_observable.html; it must only do the lookups once."""
-    import saq.analysis.presenter.observable_presenter as presenter_module
-    from saq.analysis.presenter import create_observable_presenter
+    # the presenter imports these from saq.database.database_observable when it calls them
+    import saq.database.database_observable as database_observable
+    from saq.analysis.presenter.observable_presenter import create_observable_presenter
 
     detection_calls = []
     monkeypatch.setattr(
-        presenter_module, "observable_is_set_for_detection",
+        database_observable, "observable_is_set_for_detection",
         lambda observable: detection_calls.append(observable.uuid) or False)
-    monkeypatch.setattr(
-        presenter_module, "run_async_with_session",
-        lambda fn, *args, **kwargs: False)
+    monkeypatch.setattr(database_observable, "observable_is_interesting", lambda observable: False)
 
     observable = root_analysis.add_observable_by_spec(F_TEST, "cached_actions")
     presenter = create_observable_presenter(observable)
@@ -816,15 +788,16 @@ def test_available_actions_built_once_per_presenter(root_analysis, monkeypatch):
 @pytest.mark.unit
 def test_available_actions_uses_supplied_context(root_analysis, monkeypatch):
     """When the view supplies the batched values, no lookup is performed."""
-    import saq.analysis.presenter.observable_presenter as presenter_module
-    from saq.analysis.presenter import create_observable_presenter
+    # the presenter imports these from saq.database.database_observable when it calls them
+    import saq.database.database_observable as database_observable
+    from saq.analysis.presenter.observable_presenter import create_observable_presenter
     from saq.constants import ACTION_DISABLE_DETECTION, ACTION_UNMARK_INTERESTING
 
     def _fail(*args, **kwargs):
         raise AssertionError("per-observable lookup should not run")
 
-    monkeypatch.setattr(presenter_module, "observable_is_set_for_detection", _fail)
-    monkeypatch.setattr(presenter_module, "run_async_with_session", _fail)
+    monkeypatch.setattr(database_observable, "observable_is_set_for_detection", _fail)
+    monkeypatch.setattr(database_observable, "observable_is_interesting", _fail)
 
     observable = root_analysis.add_observable_by_spec(F_TEST, "supplied_context")
     presenter = create_observable_presenter(
@@ -835,11 +808,26 @@ def test_available_actions_uses_supplied_context(root_analysis, monkeypatch):
     assert ACTION_UNMARK_INTERESTING in action_names
 
 
+@pytest.mark.integration
+def test_available_actions_looks_up_what_is_not_supplied(root_analysis):
+    """Outside the alert view nothing is supplied, so the presenter asks the database."""
+    observable = root_analysis.add_observable_by_spec(F_TEST, "looked_up")
+    assert ACTION_MARK_INTERESTING in [action.name for action in create_observable_presenter(observable).available_actions]
+
+    get_db().add(DBObservable(type=observable.type, sha256=observable.sha256_bytes,
+                              value=observable.value.encode("utf8"), is_interesting=True))
+    get_db().commit()
+
+    action_names = [action.name for action in create_observable_presenter(observable).available_actions]
+    assert ACTION_UNMARK_INTERESTING in action_names
+    assert ACTION_MARK_INTERESTING not in action_names
+
+
 @pytest.mark.unit
 def test_the_observable_menu_starts_with_an_action(root_analysis):
     """The menu opens with the detection action, not a divider, and offers no whitelisting (the
     Whitelist and Un-Whitelist actions were deleted)."""
-    from saq.analysis.presenter import create_observable_presenter
+    from saq.analysis.presenter.observable_presenter import create_observable_presenter
     from saq.gui import ObservableActionSeparator
 
     observable = root_analysis.add_observable_by_spec(F_TEST, "menu")
@@ -853,7 +841,7 @@ def test_the_observable_menu_starts_with_an_action(root_analysis):
 @pytest.mark.unit
 def test_a_url_can_be_crawled(root_analysis):
     """URL observables offer the crawl action (phishkit), next to the clicker actions."""
-    from saq.analysis.presenter import create_observable_presenter
+    from saq.analysis.presenter.observable_presenter import create_observable_presenter
     from saq.constants import ACTION_CHECK_FOR_CLICKERS, ACTION_URL_CRAWL, F_URL
 
     observable = root_analysis.add_observable_by_spec(F_URL, "https://evil.example/login")
@@ -1176,11 +1164,10 @@ def test_alert_page_collapsed_tree_node_stays_searchable(web_client, root_analys
 
 
 @pytest.mark.integration
-@pytest.mark.xfail(strict=True, reason="get_analysis_module_config_by_module_path ignores the class name, so every "
-                   "analysis of a python module that hosts several modules gets the last-registered module's config")
 def test_alert_page_collapses_by_the_analysis_modules_own_config(web_client, root_analysis, monkeypatch):
     monkeypatch.setattr(get_analysis_module_config(ANALYSIS_MODULE_BASIC_TEST), "default_collapsed", True)
 
     body = _render_collapsible_tree(web_client, root_analysis)
 
     assert body.count('<ul hidden="until-found">') == 1
+    assert re.search(r'<ul hidden="until-found">\s*<li [^>]*data-observable-value="found by searching"', body)

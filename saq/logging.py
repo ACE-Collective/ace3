@@ -12,7 +12,10 @@ from typing import Optional
 import uuid
 import yaml
 
-from fluent.handler import FluentRecordFormatter
+from fluent.handler import FluentHandler, FluentRecordFormatter
+from fluent.sender import FluentSender
+
+from saq.auth import ApiAuthResult
 
 
 # Attributes the logging framework itself puts on a LogRecord, plus the ones ACE
@@ -87,6 +90,46 @@ class ExtraAwareFluentFormatter(FluentRecordFormatter):
         for key, value in iter_extra_fields(record, exclude=data.keys()):
             data[key] = value
         return data
+
+
+def utf8_safe(value):
+    """``value`` with every string made encodable as UTF-8, in nested dicts and lists too.
+
+    ACE decodes names it does not control (file names, archive members) with ``surrogateescape``,
+    so a string can hold lone surrogates, which UTF-8 cannot encode. They become the ``\\udcXX``
+    escapes ``repr()`` shows, which still identify the byte."""
+    if isinstance(value, str):
+        return value.encode("utf-8", "backslashreplace").decode("utf-8")
+    if isinstance(value, dict):
+        return {utf8_safe(key): utf8_safe(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [utf8_safe(item) for item in value]
+    return value
+
+
+class UTF8SafeFluentSender(FluentSender):
+    """``FluentSender`` that sends a record holding a string UTF-8 cannot encode with that string
+    escaped (``utf8_safe``).
+
+    Why: the upstream sender replaces such a record with "Can't output to log" and the traceback
+    of the encoding error. When the error happened while an exception naming the same string was
+    being handled, that traceback cannot be encoded either, and the exception escapes from the
+    ``logging`` call, out of code that must never raise. Every ACE sender is this class.
+    """
+
+    def _make_packet(self, label, timestamp, data):
+        try:
+            return super()._make_packet(label, timestamp, data)
+        except UnicodeEncodeError:
+            return super()._make_packet(label, timestamp, utf8_safe(data))
+
+
+class UTF8SafeFluentHandler(FluentHandler):
+    """The root logger's fluent handler (``etc/logging_configs/ace_logging.yaml``), sending
+    through ``UTF8SafeFluentSender``."""
+
+    def getSenderClass(self):
+        return UTF8SafeFluentSender
 
 
 class ExtraAwareTextFormatter(logging.Formatter):
@@ -282,6 +325,24 @@ def _install_transaction_id_filter():
             handler.addFilter(TransactionIdFilter())
 
 
+def audit_actor(auth: Optional[ApiAuthResult]) -> dict:
+    """The extra={} fields naming who did an audited thing, the same on every log_audit() record so
+    one Splunk field finds what a user (actor_user_id) or an API key (actor_key_id) did. The user
+    id alone is not enough: it does not say which of the user's keys acted, and a config key has no
+    user at all. ACE's own actors (the svs timers, a router: ApiAuthResult.system) have auth_type
+    "system". None names nobody, and its record still carries every field."""
+    if auth is None:
+        return {"actor": None, "actor_user_id": None, "actor_key_id": None, "actor_key_name": None, "auth_type": None}
+    return {"actor": auth.auth_name, "actor_user_id": auth.auth_user_id, "actor_key_id": auth.key_id,
+            "actor_key_name": auth.key_name, "auth_type": auth.auth_type}
+
+
+def log_audit(message: str, *args, auth: Optional[ApiAuthResult], **fields) -> None:
+    """Log an INFO "AUDIT: <message>" record of something auth did, with its audit_actor() fields and
+    `fields` in extra={}. The actor fields come from auth alone: `fields` never names the actor."""
+    logging.getLogger().info(f"AUDIT: {message}", *args, extra={**audit_actor(auth), **fields}, stacklevel=2)
+
+
 # base configuration for logging
 LOGGING_BASE_CONFIG = {
     'version': 1,
@@ -345,3 +406,48 @@ def initialize_logging(logging_config_path: str, log_sql: Optional[bool]=False, 
     # stamp a per-task transaction id onto every record for log correlation
     _install_transaction_id_filter()
     initialize_transaction_id()
+
+
+class _RecordBuffer(logging.Handler):
+    def __init__(self):
+        super().__init__()
+        self.records: list[logging.LogRecord] = []
+
+    def emit(self, record: logging.LogRecord):
+        self.records.append(record)
+
+
+@contextlib.contextmanager
+def deferred_startup_logging():
+    """Holds every record logged in the block until the block has configured logging, then hands
+    each one to the handlers it configured. initialize_environment() loads integrations and the
+    configuration before it can call initialize_logging(); without this a failure logged there goes
+    to the stderr handler logging.basicConfig() installs implicitly (and dictConfig() then removes),
+    so it never reaches the log file or fluent-bit and ErrorReportHandler never writes its report.
+
+    Does nothing when the root logger already has handlers, since the records reach them anyway. If
+    the block ends with no handlers configured, because it raised before initialize_logging() ran,
+    the records go to stderr."""
+    root_logger = logging.getLogger()
+    if root_logger.handlers:
+        yield
+        return
+
+    buffer = _RecordBuffer()
+    root_logger.addHandler(buffer)
+    try:
+        yield
+    finally:
+        # dictConfig() has usually removed it already
+        root_logger.removeHandler(buffer)
+        if root_logger.handlers:
+            for record in buffer.records:
+                logger = logging.getLogger(record.name)
+                # the configuration can raise a logger's level after the record was made
+                if logger.isEnabledFor(record.levelno):
+                    logger.handle(record)
+        else:
+            stderr_handler = logging.StreamHandler(sys.stderr)
+            stderr_handler.setFormatter(logging.Formatter(logging.BASIC_FORMAT))
+            for record in buffer.records:
+                stderr_handler.handle(record)

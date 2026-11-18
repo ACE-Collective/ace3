@@ -11,12 +11,14 @@ and materialize() never hand out unverified bytes: a plaintext object is re-hash
 encrypted one has its tag checked before anything is released.
 """
 
+import gzip
 import hashlib
 import logging
 import os
 import shutil
 import tempfile
 import time
+import zlib
 from contextlib import ExitStack, contextmanager
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
@@ -55,6 +57,8 @@ _ORPHAN_LOOKUP_BATCH = 500
 _DELETING_POLL_SECONDS = 0.5
 # a verify run's record carries at most this many failed digests; the full list is on stdout
 _MAX_REPORTED_FAILURES = 20
+# compressed pools: about the ratio of 9 at a fraction of the time
+_GZIP_LEVEL = 6
 
 # the cas_failure / failure value on an integrity report (docs/CAS.md, "Observability")
 FAILURE_DIGEST_MISMATCH = "digest_mismatch"     # plaintext bytes hash to something else
@@ -131,6 +135,40 @@ class OrphanStats:
     temp_files_removed: int = 0
 
 
+class _GunzipWriter:
+    """A write() target that gunzips what passes through into target. A decompression error is
+    kept, not raised, so that the caller can finish authenticating the stream first; finish()
+    returns it (or a truncated stream), None when the stream was whole."""
+
+    def __init__(self, target: BinaryIO):
+        self.target = target
+        self.decompressor = zlib.decompressobj(wbits=31)    # gzip framing
+        self.error: Optional[str] = None
+
+    def write(self, data: bytes) -> int:
+        if self.error is None:
+            try:
+                self.target.write(self.decompressor.decompress(data))
+                if self.decompressor.unused_data:
+                    self.error = "trailing data after the gzip stream"
+            except zlib.error as e:
+                self.error = str(e)
+
+        return len(data)
+
+    def finish(self) -> Optional[str]:
+        if self.error is None:
+            try:
+                self.target.write(self.decompressor.flush())
+            except zlib.error as e:
+                self.error = str(e)
+
+        if self.error is None and not self.decompressor.eof:
+            self.error = "the gzip stream is truncated"
+
+        return self.error
+
+
 @dataclass
 class _Spooled:
     path: str
@@ -166,6 +204,8 @@ class CASPool:
         self.backend = backend
         self.cache = cache
         self.grace_seconds = config.grace_seconds if config.grace_seconds is not None else cas_config.default_grace_seconds
+        # the database whose chain holds this pool's index tables
+        self.database = config.index_database
 
     def __repr__(self) -> str:
         return f"CASPool({self.name!r})"
@@ -175,8 +215,24 @@ class CASPool:
         return self.config.encryption == "system"
 
     @property
+    def compressed(self) -> bool:
+        return self.config.compression == "gzip"
+
+    @property
     def retention(self) -> str:
         return self.config.retention
+
+    @property
+    def gc_age_seconds(self) -> int:
+        """How long after its last put, hold or release an unheld object becomes collectable."""
+        if self.retention == "ttl":
+            return self.config.ttl_days * 86400 + self.grace_seconds
+
+        return self.grace_seconds
+
+    @property
+    def ttl_days(self) -> Optional[int]:
+        return self.config.ttl_days if self.retention == "ttl" else None
 
     def key(self, digest: str) -> str:
         return object_key(self.name, digest)
@@ -190,7 +246,7 @@ class CASPool:
     # re-hashing); everything else goes through the read cache as a verified plaintext copy
     @property
     def _direct(self) -> bool:
-        return not self.encrypted and self.backend.node_local and hasattr(self.backend, "link")
+        return not self.encrypted and not self.compressed and self.backend.node_local and hasattr(self.backend, "link")
 
     #
     # write side
@@ -215,20 +271,32 @@ class CASPool:
                     raise DigestMismatch(digest, spooled.digest)
 
                 stored_path, stored_size, key_id = spooled.path, spooled.size, None
-                encrypted_path = None
-                if self.encrypted:
-                    with timer.phase("encrypt"):
-                        fd, encrypted_path = tempfile.mkstemp(dir=get_temp_dir(), prefix="cas-enc-")
-                        with open(spooled.path, "rb") as fp_in, os.fdopen(fd, "wb") as fp_out:
-                            result = encrypt_stream(fp_in, fp_out, size=spooled.size, format_version=FORMAT_V1)
-
-                    stored_path, stored_size, key_id = encrypted_path, result.stored_size, result.key_id
-
+                temp_paths = []
                 try:
+                    if self.compressed:
+                        with timer.phase("compress"):
+                            fd, compressed_path = tempfile.mkstemp(dir=get_temp_dir(), prefix="cas-gz-")
+                            temp_paths.append(compressed_path)
+                            with open(spooled.path, "rb") as fp_in, os.fdopen(fd, "wb") as fp_out:
+                                # mtime=0: the stored bytes depend only on the content
+                                with gzip.GzipFile(fileobj=fp_out, mode="wb", mtime=0, compresslevel=_GZIP_LEVEL) as fp_gz:
+                                    shutil.copyfileobj(fp_in, fp_gz, _CHUNK)
+
+                        stored_path, stored_size = compressed_path, os.path.getsize(compressed_path)
+
+                    if self.encrypted:
+                        with timer.phase("encrypt"):
+                            fd, encrypted_path = tempfile.mkstemp(dir=get_temp_dir(), prefix="cas-enc-")
+                            temp_paths.append(encrypted_path)
+                            with open(stored_path, "rb") as fp_in, os.fdopen(fd, "wb") as fp_out:
+                                result = encrypt_stream(fp_in, fp_out, size=stored_size, format_version=FORMAT_V1)
+
+                        stored_path, stored_size, key_id = encrypted_path, result.stored_size, result.key_id
+
                     self._commit_put(spooled.digest, spooled.size, stored_size, key_id, stored_path, hold, created_by, timer)
                 finally:
-                    if encrypted_path is not None:
-                        _unlink_quietly(encrypted_path)
+                    for path in temp_paths:
+                        _unlink_quietly(path)
             finally:
                 if spooled.owned:
                     _unlink_quietly(spooled.path)
@@ -275,7 +343,7 @@ class CASPool:
         while True:
             # "index" is the whole transaction including its commit; "lock" is the part of it spent
             # getting the row lock, which is where concurrent puts of one digest (and GC) wait
-            with timer.phase("index"), index.transaction() as session:
+            with timer.phase("index"), index.transaction(self.database) as session:
                 with timer.phase("lock"):
                     # the insert takes the row's exclusive lock whether or not the row existed, so
                     # concurrent puts of one digest queue here: the second blocks until the first
@@ -300,6 +368,9 @@ class CASPool:
                         index.upsert_hold(session, self.name, digest, hold, created_by)
 
                     index.touch_last_held(session, self.name, digest)
+                    if self.retention == "ttl":
+                        index.record_touch(session, self.name, digest)
+
                     return
 
             timer.count("waited_deleting")
@@ -317,7 +388,7 @@ class CASPool:
     def hold(self, digest: str, hold: Hold, *, created_by: Optional[str] = None) -> None:
         """Take (or renew) a hold. Idempotent; a new expires_at replaces the old one."""
         self._check_digest(digest)
-        with operation_timer(self.name, "hold") as timer, index.transaction() as session:
+        with operation_timer(self.name, "hold") as timer, index.transaction(self.database) as session:
             with timer.phase("lock"):
                 row = index.lock_object(session, self.name, digest)
 
@@ -334,7 +405,7 @@ class CASPool:
         """Release a hold. Returns False when there was no such hold (not an error). The object's
         grace period counts from the last release."""
         self._check_digest(digest)
-        with operation_timer(self.name, "release") as timer, index.transaction() as session:
+        with operation_timer(self.name, "release") as timer, index.transaction(self.database) as session:
             with timer.phase("lock"):
                 row = index.lock_object(session, self.name, digest)
 
@@ -353,12 +424,12 @@ class CASPool:
 
     def exists(self, digest: str) -> bool:
         self._check_digest(digest)
-        with index.transaction() as session:
+        with index.transaction(self.database) as session:
             return index.get_object(session, self.name, digest) is not None
 
     def stat(self, digest: str) -> ObjectStat:
         self._check_digest(digest)
-        with index.transaction() as session:
+        with index.transaction(self.database) as session:
             row = index.get_object(session, self.name, digest)
             if row is None:
                 raise ObjectNotFound(self.name, digest)
@@ -371,7 +442,7 @@ class CASPool:
 
     def holds(self, digest: str) -> list[Hold]:
         self._check_digest(digest)
-        with index.transaction() as session:
+        with index.transaction(self.database) as session:
             return [Hold(row.holder_kind, row.holder_id, row.expires_at)
                     for row in index.list_holds(session, self.name, digest)]
 
@@ -379,7 +450,7 @@ class CASPool:
         # a deleting row is still opened: the reader may find the bytes gone mid-way and get
         # ObjectNotFound, which is the accepted race (docs/CAS.md)
         self._check_digest(digest)
-        with index.transaction() as session:
+        with index.transaction(self.database) as session:
             if index.get_object(session, self.name, digest) is None:
                 raise ObjectNotFound(self.name, digest)
 
@@ -391,11 +462,13 @@ class CASPool:
         is reported here, once, whoever the caller is; operation names the caller in the report."""
         key = self.key(digest)
         writer = _HashingWriter(target)
+        # decrypted (or read) bytes go through the decompressor on their way to the hash
+        sink = _GunzipWriter(writer) if self.compressed else writer
         try:
             with self.backend.open(key) as source:
                 if self.encrypted:
                     try:
-                        decrypt_stream(source, writer)
+                        decrypt_stream(source, sink)
                     except KeyMismatchError as e:
                         self._report_integrity_failure(digest, operation, FAILURE_KEY_MISMATCH, e,
                                                        stored_key_id=e.header_key_id, loaded_key_id=e.current_key_id)
@@ -404,9 +477,18 @@ class CASPool:
                         self._report_integrity_failure(digest, operation, FAILURE_AUTHENTICATION, e)
                         raise IntegrityError(f"cas object {self.name}/{digest}: {e}") from e
                 else:
-                    shutil.copyfileobj(source, writer, _CHUNK)
+                    shutil.copyfileobj(source, sink, _CHUNK)
         except BackendKeyNotFound:
             raise self._missing(digest, operation) from None
+
+        # checked only after decryption has verified the tag, so tampered ciphertext is reported as
+        # an authentication failure and not as bad compressed data
+        if isinstance(sink, _GunzipWriter):
+            failure = sink.finish()
+            if failure is not None:
+                error = IntegrityError(f"cas object {self.name}/{digest}: stored bytes do not decompress: {failure}")
+                self._report_integrity_failure(digest, operation, FAILURE_DIGEST_MISMATCH, error)
+                raise error
 
         if writer.digest != digest:
             error = IntegrityError(f"cas object {self.name}/{digest}: stored bytes hash to {writer.digest}")
@@ -438,7 +520,7 @@ class CASPool:
         """After a read found no bytes: True when the index still says the object is present and
         the backend still has nothing, i.e. they disagree. False for the accepted race with GC or
         purge (the row is deleting or gone) and for bytes that a put has re-uploaded meanwhile."""
-        with index.transaction() as session:
+        with index.transaction(self.database) as session:
             row = index.get_object(session, self.name, digest)
             state = row.state if row is not None else None
 
@@ -570,7 +652,7 @@ class CASPool:
         if not reason:
             raise ValueError("a purge needs a reason")
 
-        with index.transaction() as session:
+        with index.transaction(self.database) as session:
             row = index.lock_object(session, self.name, digest)
             if row is None:
                 raise ObjectNotFound(self.name, digest)
@@ -584,7 +666,7 @@ class CASPool:
         # next GC run finishes the job (its resume step)
         self._delete_bytes(digest)
 
-        with index.transaction() as session:
+        with index.transaction(self.database) as session:
             index.delete_object_row(session, self.name, digest)
             index.insert_purge(session, self.name, digest, reason, actor)
 
@@ -594,7 +676,7 @@ class CASPool:
         """Delete the bytes, then the row, of an object already flipped to deleting."""
         started = time.monotonic()
         try:
-            with index.transaction() as session:
+            with index.transaction(self.database) as session:
                 row = index.get_object(session, self.name, digest)
                 stored_size = row.stored_size if row is not None else 0
 
@@ -607,7 +689,7 @@ class CASPool:
                 stats.errors += 1
                 return
 
-            with index.transaction() as session:
+            with index.transaction(self.database) as session:
                 index.delete_object_row(session, self.name, digest)
 
             stats.deleted += 1
@@ -621,12 +703,12 @@ class CASPool:
             stats.pause_seconds += self.cas_config.gc_batch_pause_seconds
 
     def gc(self, *, dry_run: bool = False) -> GCStats:
-        """Garbage-collect a held pool: finish deletions a previous run left behind, then remove
-        every object that has had no live hold for longer than the grace period, in batches of
-        primary keys with a pause between them, then prune expired hold rows the same way.
-        A permanent pool is never collected."""
+        """Garbage-collect a held or ttl pool: finish deletions a previous run left behind, then
+        remove every collectable object (held: no live hold for longer than the grace period; ttl:
+        also not put within ttl_days), in batches of primary keys with a pause between them, then
+        prune expired hold rows the same way. A permanent pool is never collected."""
         stats = GCStats(pool=self.name, dry_run=dry_run)
-        if self.retention != "held":
+        if self.retention == "permanent":
             stats.skipped = True
             return stats
 
@@ -637,7 +719,7 @@ class CASPool:
         # 0. resume: objects flipped by a run (or a purge) that died before removing them
         while True:
             scan_started = time.monotonic()
-            with index.transaction() as session:
+            with index.transaction(self.database) as session:
                 digests = index.deleting_objects(session, self.name, batch)
 
             stats.scan_seconds += time.monotonic() - scan_started
@@ -659,8 +741,8 @@ class CASPool:
         after = ""
         while True:
             scan_started = time.monotonic()
-            with index.transaction() as session:
-                digests = index.gc_candidates(session, self.name, self.grace_seconds, after, batch)
+            with index.transaction(self.database) as session:
+                digests = index.gc_candidates(session, self.name, self.gc_age_seconds, after, batch, self.ttl_days)
 
             stats.scan_seconds += time.monotonic() - scan_started
 
@@ -673,8 +755,8 @@ class CASPool:
                     continue
 
                 flip_started = time.monotonic()
-                with index.transaction() as session:
-                    flipped = index.flip_to_deleting(session, self.name, digest, self.grace_seconds)
+                with index.transaction(self.database) as session:
+                    flipped = index.flip_to_deleting(session, self.name, digest, self.gc_age_seconds, self.ttl_days)
 
                 stats.flip_seconds += time.monotonic() - flip_started
 
@@ -694,7 +776,7 @@ class CASPool:
         if not dry_run:
             while True:
                 prune_started = time.monotonic()
-                with index.transaction() as session:
+                with index.transaction(self.database) as session:
                     pruned = index.delete_expired_holds_batch(session, self.name, batch)
 
                 stats.prune_seconds += time.monotonic() - prune_started
@@ -723,7 +805,7 @@ class CASPool:
         stats = VerifyStats(pool=self.name, dry_run=dry_run)
         started = time.monotonic()
         count = sample_size if sample_size is not None else self.cas_config.verify_sample_size
-        with index.transaction() as session:
+        with index.transaction(self.database) as session:
             digests = [row.digest for row in index.sample_objects(session, self.name, count)]
 
         # each failure is logged (and emitted as error.cas_integrity) by _verify_and_fill
@@ -752,7 +834,7 @@ class CASPool:
 
             stats.verified += 1
             if not dry_run:
-                with index.transaction() as session:
+                with index.transaction(self.database) as session:
                     index.set_verified(session, self.name, digest)
 
         logging.info("cas verify", extra={
@@ -774,7 +856,7 @@ class CASPool:
         pending = []
 
         def flush():
-            with index.transaction() as session:
+            with index.transaction(self.database) as session:
                 present = index.digests_present(session, self.name, [digest_from_key(entry.key) for entry in pending])
 
             for entry in pending:

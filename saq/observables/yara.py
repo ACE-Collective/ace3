@@ -1,7 +1,6 @@
 from saq.analysis.observable import Observable
 from saq.constants import F_YARA_RULE, F_YARA_STRING
 from saq.observables.base import ObservableValueError
-from saq.observables.generator import register_observable_type
 
 
 class YaraRuleObservable(Observable):
@@ -11,10 +10,6 @@ class YaraRuleObservable(Observable):
     @Observable.value.setter
     def value(self, new_value):
         self._value = new_value.strip()
-
-    @property
-    def jinja_available_actions(self):
-        return []
 
 class YaraStringObservable(Observable):
     def __init__(self, *args, **kwargs):
@@ -30,10 +25,6 @@ class YaraStringObservable(Observable):
     @Observable.value.setter
     def value(self, new_value):
         self._value = new_value.strip()
-
-    @property
-    def jinja_available_actions(self):
-        return []
 
     @property
     def rule(self):
@@ -53,6 +44,3 @@ class YaraStringObservable(Observable):
             return None
 
         return parsed[1]
-
-register_observable_type(F_YARA_RULE, YaraRuleObservable)
-register_observable_type(F_YARA_STRING, YaraStringObservable)

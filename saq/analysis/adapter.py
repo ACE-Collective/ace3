@@ -25,13 +25,6 @@ class RootAnalysisAdapter:
         return self._root.alert_type
 
     @property
-    def whitelisted(self) -> bool:
-        return self._root.whitelisted
-
-    def whitelist(self):
-        self._root.whitelist()
-
-    @property
     def uuid(self) -> str:
         return self._root.uuid
 
@@ -109,6 +102,9 @@ class RootAnalysisAdapter:
 
     def create_file_path(self, relative_path: str) -> str:
         return self._root.create_file_path(relative_path)
+
+    def create_output_file(self, name: str) -> str:
+        return self._root.create_output_file(name)
 
     def has_detections(self) -> bool:
         return self._root.has_detections()

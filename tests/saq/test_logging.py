@@ -1,21 +1,32 @@
 """Tests for the extra-aware formatters and the transaction id correlation field."""
+import importlib
 import logging
 import logging.config
+from logging.handlers import BufferingHandler
+import os
 import threading
 import uuid
 
 import pytest
+import yaml
 
+from aceapi_v2.auth.schemas import ApiAuthResult
+from aceapi_v2.auth.utils import API_AUTH_TYPE_USER, API_CREDENTIAL_USER_KEY
 from saq.logging import (
     ExtraAwareFluentFormatter,
     ExtraAwareTextFormatter,
     TransactionIdFilter,
     _install_transaction_id_filter,
+    deferred_startup_logging,
     get_transaction_id,
+    audit_actor,
     initialize_transaction_id,
+    log_audit,
     set_transaction_id,
     transaction_id,
 )
+from saq.environment import get_base_dir
+from tests.saq.helpers import fluent_receiver, unconfigured_logging
 
 
 def _make_formatter():
@@ -69,26 +80,6 @@ def test_existing_renames_preserved():
     assert "levelname" not in data
     # 'name' would be the logger name, but the fmt dict renames it to logSource.
     assert "name" not in data
-
-
-@pytest.mark.unit
-def test_extras_appear_as_top_level_fields():
-    """``extra={"k": v}`` keys must land in the output dict so Splunk's
-    JSON-mode auto-KV extraction can break them out as searchable fields.
-    """
-    formatter = _make_formatter()
-    record = _make_record(
-        msg="cache_stats summary",
-        total_rows=121,
-        expired_rows=0,
-        modules=1,
-        module_name="rdap_analyzer",
-    )
-    data = formatter.format(record)
-    assert data["total_rows"] == 121
-    assert data["expired_rows"] == 0
-    assert data["modules"] == 1
-    assert data["module_name"] == "rdap_analyzer"
 
 
 @pytest.mark.unit
@@ -146,6 +137,7 @@ def test_via_logging_call_extra_flows_through():
             "op": "insert",
             "module_name": "rdap_analyzer",
             "compressed_bytes": 187,
+            "expired_rows": 0,
         },
     )
 
@@ -155,6 +147,8 @@ def test_via_logging_call_extra_flows_through():
     assert rec["op"] == "insert"
     assert rec["module_name"] == "rdap_analyzer"
     assert rec["compressed_bytes"] == 187
+    # a falsy value is a field too
+    assert rec["expired_rows"] == 0
 
 
 @pytest.mark.unit
@@ -234,14 +228,6 @@ def test_text_formatter_keeps_traceback_after_fields():
 
 
 @pytest.mark.unit
-def test_text_formatter_no_extras_leaves_line_untouched():
-    """Most log calls pass no extras at all; they must not gain a trailing space."""
-    formatter = ExtraAwareTextFormatter("[%(levelname)s] %(message)s")
-    record = _make_record(msg="starting engine")
-    assert formatter.format(record) == "[INFO] starting engine"
-
-
-@pytest.mark.unit
 def test_text_formatter_configurable_via_dictconfig():
     """The shipped YAML configs declare the formatter with a ``format:`` key,
     but logging.Formatter's parameter is ``fmt``. dictConfig bridges that, and
@@ -274,15 +260,17 @@ def test_transaction_id_per_thread_isolation():
     """a transaction id set on another thread must not change this thread's value
     (confirms the ContextVar gives per-thread isolation)"""
     with transaction_id("main-thread"):
+        seen = []
 
         def _worker():
             set_transaction_id("child-thread")
-            assert get_transaction_id() == "child-thread"
+            seen.append(get_transaction_id())
 
         thread = threading.Thread(target=_worker)
         thread.start()
-        thread.join()
+        thread.join(timeout=5)
 
+        assert seen == ["child-thread"]
         # the child's set did not leak into this thread
         assert get_transaction_id() == "main-thread"
 
@@ -346,3 +334,193 @@ def test_install_transaction_id_filter_idempotent():
         assert len(installed) == 1
     finally:
         root_logger.removeHandler(handler)
+
+
+def _configure(root_logger: logging.Logger) -> BufferingHandler:
+    """What dictConfig() does to the root logger: its handlers are replaced by the configured ones."""
+    collector = BufferingHandler(capacity=100)
+    root_logger.handlers[:] = [collector]
+    return collector
+
+
+@pytest.mark.unit
+def test_deferred_startup_logging_replays_into_configured_handlers(capsys):
+    """records logged before logging is configured reach the configured handlers, in order and
+    with their tracebacks, and nothing goes to stderr in the meantime"""
+    with unconfigured_logging() as root_logger:
+        with deferred_startup_logging():
+            logging.getLogger("saq.test_deferred").warning("early warning")
+            try:
+                raise RuntimeError("early failure")
+            except RuntimeError:
+                logging.exception("early exception")
+
+            collector = _configure(root_logger)
+
+    assert [r.getMessage() for r in collector.buffer] == ["early warning", "early exception"]
+    assert collector.buffer[1].levelname == "ERROR"
+    assert collector.buffer[1].exc_info[0] is RuntimeError
+    assert capsys.readouterr().err == ""
+
+
+@pytest.mark.unit
+def test_deferred_startup_logging_respects_configured_levels():
+    """a record the configuration would have filtered out is not replayed"""
+    quiet_logger = logging.getLogger("saq.test_deferred.quiet")
+    try:
+        with unconfigured_logging() as root_logger:
+            with deferred_startup_logging():
+                quiet_logger.warning("filtered")
+                logging.warning("kept")
+
+                collector = _configure(root_logger)
+                quiet_logger.setLevel(logging.ERROR)
+    finally:
+        quiet_logger.setLevel(logging.NOTSET)
+
+    assert [r.getMessage() for r in collector.buffer] == ["kept"]
+
+
+@pytest.mark.unit
+def test_deferred_startup_logging_writes_to_stderr_when_never_configured(capsys):
+    """when the block fails before configuring logging, the records go to stderr and the
+    exception still propagates"""
+    with unconfigured_logging() as root_logger:
+        with pytest.raises(ValueError):
+            with deferred_startup_logging():
+                logging.getLogger("saq.test_deferred").warning("early warning")
+                raise ValueError("bad config")
+
+        assert root_logger.handlers == []
+
+    assert "WARNING:saq.test_deferred:early warning" in capsys.readouterr().err
+
+
+@pytest.mark.unit
+def test_deferred_startup_logging_replays_when_block_fails_after_configuring():
+    """an exception raised after logging is configured still replays what was held"""
+    with unconfigured_logging() as root_logger:
+        with pytest.raises(ValueError):
+            with deferred_startup_logging():
+                logging.warning("early warning")
+                collector = _configure(root_logger)
+                raise ValueError("late failure")
+
+    assert [r.getMessage() for r in collector.buffer] == ["early warning"]
+
+
+@pytest.mark.unit
+def test_deferred_startup_logging_passes_through_when_already_configured():
+    """with logging already configured, records go straight to the handlers, once"""
+    with unconfigured_logging() as root_logger:
+        collector = _configure(root_logger)
+        with deferred_startup_logging():
+            logging.warning("direct")
+            assert [r.getMessage() for r in collector.buffer] == ["direct"]
+
+    assert [r.getMessage() for r in collector.buffer] == ["direct"]
+
+
+@pytest.mark.unit
+def test_log_audit_names_the_key_that_acted(caplog):
+    auth = ApiAuthResult(auth_type=API_AUTH_TYPE_USER, auth_name="alice", auth_user_id=12, key_id=34,
+                         key_name="ci", credential=API_CREDENTIAL_USER_KEY)
+    with caplog.at_level(logging.INFO):
+        log_audit("user %s deleted thing %s", "alice", 5, auth=auth, thing_id=5)
+
+    (record,) = caplog.records
+    assert (record.levelno, record.getMessage()) == (logging.INFO, "AUDIT: user alice deleted thing 5")
+    assert (record.actor, record.actor_user_id, record.actor_key_id, record.actor_key_name, record.auth_type,
+            record.thing_id) == ("alice", 12, 34, "ci", API_AUTH_TYPE_USER, 5)
+    # the caller's location, not the helper's
+    assert record.funcName == "test_log_audit_names_the_key_that_acted"
+
+
+@pytest.mark.unit
+def test_audit_actor_without_auth_has_every_field():
+    """A record nobody authenticated for still carries the fields, so a search on them never
+    depends on which caller wrote it."""
+    assert audit_actor(None) == {"actor": None, "actor_user_id": None, "actor_key_id": None,
+                                 "actor_key_name": None, "auth_type": None}
+
+
+# a file name that is not UTF-8, as os.listdir() and every other surrogateescape decode hands it to ACE
+UNDECODABLE_PATH = "/opt/ace/data/crash_reports/file/" + b"\xe9\xe9.pdf".decode("utf-8", "surrogateescape")
+# what Splunk receives in its place: the escapes repr() shows
+ESCAPED_PATH = "/opt/ace/data/crash_reports/file/\\udce9\\udce9.pdf"
+
+
+@pytest.fixture
+def production_fluent_logger():
+    """A logger with the fluent handler etc/logging_configs/ace_logging.yaml gives the root logger,
+    sending to a local socket in place of fluent-bit. Yields ``(logger, receive)``."""
+    with open(os.path.join(get_base_dir(), "etc", "logging_configs", "ace_logging.yaml")) as fp:
+        handler_config = yaml.safe_load(fp)["handlers"]["fluent"]
+
+    module_name, _, class_name = handler_config["class"].rpartition(".")
+    handler_class = getattr(importlib.import_module(module_name), class_name)
+
+    with fluent_receiver() as (port, receive):
+        handler = handler_class(handler_config["tag"], host="127.0.0.1", port=port,
+                                nanosecond_precision=handler_config["nanosecond_precision"])
+        handler.setFormatter(_make_formatter())
+        handler.addFilter(TransactionIdFilter())
+        # outside the logger hierarchy, so pytest's capture, which attaches to the root and to every
+        # registered logger that does not propagate, never holds these records: pytest-xdist cannot
+        # send a report with surrogates in it to the controller
+        logger = logging.Logger(f"test_fluent_{uuid.uuid4().hex}")
+        logger.addHandler(handler)
+        try:
+            yield logger, receive
+        finally:
+            logger.removeHandler(handler)
+            handler.close()
+
+
+@pytest.mark.unit
+def test_fluent_logging_an_exception_with_undecodable_text_does_not_raise(production_fluent_logger):
+    """The shape of saq/crash_replication.py's handler: the caught exception names an undecodable
+    path, so the record does, and so does the traceback the fluent library's fallback record
+    carries. That fallback failed to encode as well, and the logging call raised."""
+    logger, receive = production_fluent_logger
+    try:
+        raise RuntimeError(f"unexpected error uploading file {UNDECODABLE_PATH}")
+    except RuntimeError as e:
+        logger.warning("unable to replicate crash report %s: %s", "abc", e)
+
+    data = receive()
+    assert data["severity"] == "WARNING"
+    assert data["message"] == f"unable to replicate crash report abc: unexpected error uploading file {ESCAPED_PATH}"
+
+
+@pytest.mark.unit
+def test_fluent_logging_exception_keeps_a_traceback_with_undecodable_text(production_fluent_logger):
+    logger, receive = production_fluent_logger
+    try:
+        raise RuntimeError(UNDECODABLE_PATH)
+    except RuntimeError:
+        logger.exception("failed")
+
+    message = receive()["message"]
+    assert message.startswith("failed\nTraceback (most recent call last):")
+    assert message.endswith(f"RuntimeError: {ESCAPED_PATH}")
+
+
+@pytest.mark.unit
+def test_fluent_logging_keeps_a_record_whose_extra_field_is_undecodable(production_fluent_logger):
+    """Without an exception being handled the fluent library did not raise, but it sent
+    "Can't output to log" in place of the record."""
+    logger, receive = production_fluent_logger
+    logger.warning("uploaded", extra={"path": UNDECODABLE_PATH, "files": [UNDECODABLE_PATH], "count": 3})
+
+    data = receive()
+    assert (data["message"], data.get("path"), data.get("files"), data.get("count")) == ("uploaded", ESCAPED_PATH, [ESCAPED_PATH], 3)
+
+
+@pytest.mark.unit
+def test_fluent_logging_leaves_encodable_text_alone(production_fluent_logger):
+    logger, receive = production_fluent_logger
+    logger.warning("uploaded %s", "/tmp/café \\udce9.pdf", extra={"path": "naïve"})
+
+    data = receive()
+    assert (data["message"], data["path"]) == ("uploaded /tmp/café \\udce9.pdf", "naïve")

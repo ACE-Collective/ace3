@@ -8,8 +8,11 @@ import hashlib
 import logging
 import os
 import subprocess
+from unittest.mock import Mock
 
+import plyara.exceptions
 import pytest
+import yara_scanner
 
 from saq.environment import get_base_dir
 from saq.signatures.builtin import BUILTIN_SIGNATURES, SIGNATURE_VERSION_UNKNOWN
@@ -21,6 +24,12 @@ from saq.signatures.loaders import (
     load_yara_signatures,
 )
 from saq.signatures.loaders.builtin import BUILTIN_SOURCE_PATH
+from saq.signatures.loaders import yara as yara_loader
+from saq.signatures.loaders.yara import (
+    MAX_RULE_SOURCE_BYTES,
+    attach_rule_details,
+    compiled_rule_details,
+)
 from saq.signatures.model import SignatureType
 
 TEST_GIT_REMOTE = "git@example.com:atu/test-signatures.git"
@@ -233,7 +242,9 @@ def _rules_file(root: str) -> str:
 def test_load_yara_signatures(signature_repo):
     signatures = load_yara_signatures(_yara_dir(signature_repo))
 
-    # the rule with no uuid meta is skipped, the other two still load
+    # the rule with no uuid meta is skipped, the other two still load. The traversal is the
+    # scanner's, signature_dir/<rule set>/*.yar: the loose .yar, the nested rule directory, the
+    # generated observable_export rules and the svs_marker rule are not in the list.
     assert [s.name for s in signatures] == ["second_tracked_rule", "tracked_rule"]
 
     tracked = [s for s in signatures if s.name == "tracked_rule"][0]
@@ -245,20 +256,6 @@ def test_load_yara_signatures(signature_repo):
 
     # native rule tags merged with mitre_attack, sorted and deduplicated
     assert tracked.tags == ("mitre:T1566.003", "mitre:T1566.004", "phishing", "smishing")
-
-
-@pytest.mark.unit
-def test_yara_traversal_matches_the_scanner(signature_repo):
-    """The scanner loads signature_dir/<rule set>/*.yar and nothing else."""
-    names = [s.name for s in load_yara_signatures(_yara_dir(signature_repo))]
-
-    # a .yar loose in the signature_dir is not in any rule set
-    assert "loose_rule" not in names
-    # the scanner does not recurse into a rule directory
-    assert "nested_rule" not in names
-    # generated observable export rules and the svs marker rule are not authored signatures
-    assert "generated_rule" not in names
-    assert "marker_dir_rule" not in names
 
 
 @pytest.mark.unit
@@ -465,6 +462,12 @@ def test_observable_modifier_hash_ignores_other_rules(signature_repo):
 
     after = load_observable_modifier_signatures(_rules_file(signature_repo))[0]
     assert after.content_hash == before.content_hash
+
+    # while a change to the rule itself is a new hash
+    _write(_rules_file(signature_repo),
+           OBSERVABLE_MODIFIER_RULES.replace('["suspect url observed"]', '["suspect url seen"]'))
+    edited = load_observable_modifier_signatures(_rules_file(signature_repo))[0]
+    assert edited.content_hash != before.content_hash
 
 
 @pytest.mark.unit
@@ -700,3 +703,261 @@ def test_yara_parse_cache_reuses_unchanged_files(signature_repo, monkeypatch):
     os.remove(os.path.join(signature_repo, "yara", "bv", "rules.yar"))
     assert load_yara_signatures(_yara_dir(signature_repo), parse_cache=cache) == []
     assert cache == {}
+
+
+PATTERN_RULES = r"""
+rule pattern_rule
+{
+    strings:
+        $text = "say \"hi\"" nocase wide
+        $hex = { 4D 5A ?? 90 }
+        $re = /ab+c[0-9]/i
+        $xor = "key" xor(0x01-0xff) private
+        $ = "anonymous"
+    condition:
+        any of them
+}
+
+rule other_rule
+{
+    strings:
+        $a = "other"
+    condition:
+        $a
+}
+"""
+
+
+def _write_rule_file(directory, name: str, source: str) -> str:
+    path = os.path.join(str(directory), name)
+    with open(path, "w") as fp:
+        fp.write(source)
+
+    return path
+
+
+def _load(namespaces: dict[str, list[str]]) -> yara_scanner.YaraScanner:
+    """A YaraScanner that loaded the rule files, by namespace."""
+    scanner = yara_scanner.YaraScanner()
+    for namespace, paths in namespaces.items():
+        scanner.tracked_dirs[namespace] = dict.fromkeys(paths)
+        # the namespace is a bare name, not a directory, so yara_scanner 3.2+ would hold its files to
+        # ./<namespace> and refuse them all: hold them to the directory they are in, as
+        # saq/svs/yara/child.py does for the namespaces it fills in by hand
+        scanner.include_boundaries[namespace] = os.path.commonpath([os.path.dirname(_) for _ in paths])
+    scanner.load_rules()
+    return scanner
+
+
+def _read(namespaces: dict[str, list[str]]) -> dict:
+    return compiled_rule_details(_load(namespaces))
+
+
+def _patterns(details: dict) -> dict:
+    return {key: rule["patterns"] for key, rule in details.items()}
+
+
+@pytest.mark.unit
+def test_rule_details_of_every_rule_by_namespace(tmp_path):
+    first = _write_rule_file(tmp_path, "a.yar", PATTERN_RULES)
+    second = _write_rule_file(tmp_path, "b.yar", 'rule other_rule { strings: $b = "b" condition: $b }')
+
+    assert _patterns(_read({"ns1": [first], "ns2": [second]})) == {
+        ("ns1", "pattern_rule"): {
+            "$text": '"say \\"hi\\"" nocase wide',
+            "$hex": "{ 4D 5A ?? 90 }",
+            "$re": "/ab+c[0-9]/i",
+            "$xor": '"key" xor(0x01-0xff) private',
+        },
+        ("ns1", "other_rule"): {"$a": '"other"'},
+        # the same rule name in another namespace is another rule
+        ("ns2", "other_rule"): {"$b": '"b"'},
+    }
+
+
+@pytest.mark.unit
+def test_rule_details_carry_each_rule_source(tmp_path):
+    path = _write_rule_file(tmp_path, "rules.yar", PATTERN_RULES)
+    details = _read({"ns": [path]})
+
+    other = details[("ns", "other_rule")]["source"]
+    assert other["file"] == "rules.yar"
+    assert other["start_line"] == PATTERN_RULES.splitlines().index("rule other_rule") + 1
+    assert other["text"] == 'rule other_rule\n{\n    strings:\n        $a = "other"\n    condition:\n        $a\n}\n'
+    assert details[("ns", "pattern_rule")]["source"]["text"].startswith("rule pattern_rule\n")
+
+
+@pytest.mark.unit
+def test_rule_source_over_the_cap_is_not_kept(tmp_path, caplog):
+    strings = "".join(f'        $s{i} = "{"x" * 60}"\n' for i in range(MAX_RULE_SOURCE_BYTES // 70 + 1))
+    path = _write_rule_file(tmp_path, "big.yar", f"rule big_rule\n{{\n    strings:\n{strings}    condition:\n        any of them\n}}\n")
+
+    with caplog.at_level(logging.INFO):
+        details = _read({"ns": [path]})
+
+    assert details[("ns", "big_rule")]["source"] is None
+    # the patterns and the content hash are still kept
+    assert details[("ns", "big_rule")]["patterns"]["$s0"] == '"' + "x" * 60 + '"'
+    with open(path) as fp:
+        assert details[("ns", "big_rule")]["content_hash"] == hashlib.sha256(fp.read().encode()).hexdigest()
+    assert [r.yara_rule for r in caplog.records if "its source is not shown" in r.getMessage()] == ["big_rule"]
+
+
+HASHED_RULES = """rule first_rule
+{
+    meta:
+        uuid = "11111111-1111-4111-8111-111111111111"
+    strings:
+        $a = "first"
+    condition:
+        $a
+}
+
+rule second_rule
+{
+    meta:
+        uuid = "22222222-2222-4222-8222-222222222222"
+    strings:
+        $b = "second"
+    condition:
+        $b
+}
+"""
+
+
+def _content_hashes(details: dict) -> dict:
+    return {key: rule["content_hash"] for key, rule in details.items()}
+
+
+@pytest.mark.unit
+def test_rule_details_carry_the_content_hash_the_inventory_gives(tmp_path):
+    rule_dir = tmp_path / "ns"
+    rule_dir.mkdir()
+    path = _write_rule_file(rule_dir, "rules.yar", HASHED_RULES)
+
+    inventory = {("ns", s.name): s.content_hash for s in load_yara_signatures(str(tmp_path), [])}
+
+    assert _content_hashes(_read({"ns": [path]})) == inventory
+    # each rule is hashed on its own, not the file
+    assert len(set(inventory.values())) == 2
+
+
+@pytest.mark.unit
+def test_editing_one_rule_changes_only_its_content_hash(tmp_path):
+    path = _write_rule_file(tmp_path, "rules.yar", HASHED_RULES)
+    before = _content_hashes(_read({"ns": [path]}))
+
+    _write_rule_file(tmp_path, "rules.yar", HASHED_RULES.replace('"second"', '"edited"'))
+    after = _content_hashes(_read({"ns": [path]}))
+
+    assert after[("ns", "first_rule")] == before[("ns", "first_rule")]
+    assert after[("ns", "second_rule")] != before[("ns", "second_rule")]
+
+
+@pytest.mark.unit
+def test_rule_details_skip_the_files_the_scanner_left_out(tmp_path):
+    latin1 = str(tmp_path / "latin1.yar")
+    with open(latin1, "wb") as fp:
+        fp.write(b'rule latin1_rule { meta: author = "caf\xe9" strings: $a = "a" condition: $a }\n')
+    broken = _write_rule_file(tmp_path, "broken.yar", 'rule broken { strings: $b = "b" condition: nope }')
+    good = _write_rule_file(tmp_path, "good.yar", 'rule good { strings: $g = "g" condition: $g }')
+
+    assert _patterns(_read({"ns": [latin1, broken, good]})) == {("ns", "good"): {"$g": '"g"'}}
+
+
+@pytest.mark.unit
+def test_rule_details_are_of_the_text_the_scanner_compiled(tmp_path):
+    path = _write_rule_file(tmp_path, "rules.yar", 'rule edited { strings: $a = "before" condition: $a }\n')
+    scanner = _load({"ns": [path]})
+
+    # an edit after the load is not what the rules match with
+    _write_rule_file(tmp_path, "rules.yar", 'rule edited { strings: $a = "after" condition: $a }\n')
+    details = compiled_rule_details(scanner)
+
+    assert details[("ns", "edited")]["patterns"] == {"$a": '"before"'}
+    assert details[("ns", "edited")]["source"]["text"] == 'rule edited { strings: $a = "before" condition: $a }\n'
+
+
+@pytest.mark.unit
+def test_rule_details_of_rules_pulled_in_by_include(tmp_path):
+    rule_dir = tmp_path / "ns"
+    (rule_dir / "inc").mkdir(parents=True)
+    _write_rule_file(rule_dir / "inc", "outer.inc", 'include "inner.inc"\nrule outer_rule { strings: $o = "o" condition: $o }\n')
+    _write_rule_file(rule_dir / "inc", "inner.inc", 'rule inner_rule { strings: $i = "i" condition: $i }\n')
+    _write_rule_file(rule_dir, "main.yar", 'include "inc/outer.inc"\nrule main_rule { strings: $m = "m" condition: $m }\n')
+
+    scanner = yara_scanner.YaraScanner(signature_dir=str(tmp_path))
+    assert scanner.load_rules()
+    details = compiled_rule_details(scanner)
+
+    namespace = str(rule_dir)
+    assert _patterns(details) == {
+        (namespace, "main_rule"): {"$m": '"m"'},
+        (namespace, "outer_rule"): {"$o": '"o"'},
+        # a nested include, which resolves against the file that includes it
+        (namespace, "inner_rule"): {"$i": '"i"'},
+    }
+    assert details[(namespace, "inner_rule")]["source"] == {
+        "file": "inner.inc", "start_line": 1, "text": 'rule inner_rule { strings: $i = "i" condition: $i }\n'}
+
+    # and a match on an included rule carries them
+    target = _write_rule_file(tmp_path, "target.txt", "i")
+    scanner.scan(target)
+    attach_rule_details(scanner.scan_results, details)
+    (match,) = scanner.scan_results
+    assert match["string_patterns"] == {"$i": '"i"'}
+    assert match["rule_source"]["file"] == "inner.inc"
+
+
+@pytest.mark.unit
+def test_rule_details_skip_a_file_plyara_cannot_parse(tmp_path, monkeypatch, caplog):
+    unparsed = _write_rule_file(tmp_path, "unparsed.yar", 'rule unparsed { strings: $u = "u" condition: $u }')
+    good = _write_rule_file(tmp_path, "good.yar", 'rule good { strings: $g = "g" condition: $g }')
+    scanner = _load({"ns": [unparsed, good]})
+
+    # plyara lags yara's grammar, so a file yara compiles can still fail to parse
+    parse = yara_loader._parse
+
+    def _parse(source):
+        if "unparsed" in source:
+            raise plyara.exceptions.ParseError("unknown text", 1, 1)
+        return parse(source)
+
+    monkeypatch.setattr(yara_loader, "_parse", _parse)
+
+    with caplog.at_level(logging.WARNING):
+        assert _patterns(compiled_rule_details(scanner)) == {("ns", "good"): {"$g": '"g"'}}
+
+    records = [r for r in caplog.records if r.getMessage().startswith("unable to parse the yara rules in")]
+    assert [(r.path, r.levelno) for r in records] == [(unparsed, logging.WARNING)]
+
+
+@pytest.mark.unit
+def test_rule_details_unexpected_failure_is_logged_with_traceback(tmp_path, monkeypatch, caplog):
+    path = _write_rule_file(tmp_path, "rules.yar", PATTERN_RULES)
+    scanner = _load({"ns": [path]})
+    monkeypatch.setattr(yara_loader, "_parse_rule_details", Mock(side_effect=RuntimeError("parser bug")))
+
+    with caplog.at_level(logging.ERROR):
+        assert compiled_rule_details(scanner) == {}
+
+    records = [r for r in caplog.records if r.getMessage() == f"unable to parse the yara rules in {path}"]
+    assert len(records) == 1
+    assert records[0].levelno == logging.ERROR
+    assert records[0].exc_info[0] is RuntimeError
+
+
+@pytest.mark.unit
+def test_attach_rule_details_keeps_the_matched_strings_and_the_source():
+    source = {"file": "a.yar", "start_line": 1, "text": "rule rule_a {}"}
+    details = {("ns", "rule_a"): {"patterns": {"$a": '"a"', "$b": '"b"'}, "source": source, "content_hash": "f" * 64}}
+    matches = [
+        {"namespace": "ns", "rule": "rule_a", "strings": [(0, "$a", b"a"), (5, "$a", b"a")]},
+        {"namespace": "other", "rule": "rule_a", "strings": [(0, "$a", b"a")]},
+    ]
+
+    attach_rule_details(matches, details)
+
+    assert [m["string_patterns"] for m in matches] == [{"$a": '"a"'}, {}]
+    assert [m["rule_source"] for m in matches] == [source, None]
+    assert [m["rule_content_hash"] for m in matches] == ["f" * 64, None]

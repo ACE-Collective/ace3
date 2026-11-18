@@ -6,7 +6,6 @@ alert row through the synchronous get_db() session, so it runs through run_db_in
 """
 
 import logging
-import os
 import shutil
 import uuid as uuidlib
 from datetime import datetime
@@ -24,6 +23,7 @@ from saq.constants import (
     NODE_STATUS_DRAINED,
     NODE_STATUS_DRAINING,
     QUEUE_DEFAULT,
+    EventTimeSource,
 )
 from saq.database import ALERT
 from saq.database.util.node import get_node_status
@@ -33,6 +33,9 @@ from saq.util import parse_event_time, storage_dir_from_uuid
 from saq.util.hashing import sha256_file
 
 logger = logging.getLogger(__name__)
+
+# the name an upload is stored under when the client sent it without one
+DEFAULT_UPLOAD_NAME = "upload"
 
 
 def reject_if_node_draining() -> None:
@@ -48,19 +51,23 @@ def reject_if_node_draining() -> None:
             detail=f"node {get_global_runtime_settings().saq_node} is draining; submit to another node")
 
 
-def _add_file(root: RootAnalysis, file_name: str, fp: IO[bytes], file_observable_dicts: list[dict]) -> str | None:
+def _add_file(root: RootAnalysis, file_name: str | None, fp: IO[bytes], file_observable_dicts: list[dict]) -> str | None:
     """Store an uploaded file in the root as a file observable, with what the submission said
     about it (matched on its sha256). Returns its path, or None when it was not added."""
-    full_path = root.create_file_path(file_name)
-    os.makedirs(os.path.dirname(full_path), exist_ok=True)
+    # the client chooses the name, and may place the file in a subdirectory (ace_api's
+    # relative_storage_path); the file manager cleans it so it stays inside the root's files
+    # directory, and gives a name two uploads share (every unnamed one) a suffix
+    full_path = root.create_output_file(file_name or DEFAULT_UPLOAD_NAME)
+
     with open(full_path, "wb") as out:
         shutil.copyfileobj(fp, out)
 
     file_sha256 = sha256_file(full_path)
-    observable_dict = next((d for d in file_observable_dicts if d["value"] == file_sha256),
-                           {"value": file_sha256, "file_path": file_name})
+    observable_dict = next((d for d in file_observable_dicts if d["value"] == file_sha256), {"value": file_sha256})
 
-    file_observable = root.add_file_observable(full_path, target_path=observable_dict["file_path"])
+    # stored where it was written: the observable's file_path is the client's name for the same
+    # upload, and is no more trustworthy than the upload's own
+    file_observable = root.add_file_observable(full_path)
     if not file_observable:
         return None
 
@@ -93,7 +100,7 @@ def submit(submission: dict, files: list[tuple[str, IO[bytes]]], remote_addr: st
         raise HTTPException(status_code=400, detail="missing description field in submission")
 
     # no event time (or a null one) is now
-    event_time = get_local_timezone().localize(datetime.now())
+    event_time, event_time_source = get_local_timezone().localize(datetime.now()), EventTimeSource.NOW
     if submission.get("event_time") is not None:
         try:
             event_time = parse_event_time(submission["event_time"])
@@ -101,6 +108,14 @@ def submit(submission: dict, files: list[tuple[str, IO[bytes]]], remote_addr: st
             raise HTTPException(
                 status_code=400,
                 detail=f"invalid event time format for {submission['event_time']} (use {EVENT_TIME_FORMAT_JSON_TZ} format)")
+        # a submitter that substituted a time for the event's own (ace hunt --submit-alerts) says so
+        sources = [s.value for s in EventTimeSource if s != EventTimeSource.UNSET]
+        event_time_source = submission.get("event_time_source") or EventTimeSource.EVENT
+        if event_time_source not in sources:
+            raise HTTPException(
+                status_code=400,
+                detail=f"invalid event_time_source {event_time_source} (use one of {', '.join(sources)})")
+        event_time_source = EventTimeSource(event_time_source)
 
     root_uuid = str(uuidlib.uuid4())
     root = RootAnalysis(uuid=root_uuid, storage_dir=storage_dir_from_uuid(root_uuid))
@@ -112,7 +127,7 @@ def submit(submission: dict, files: list[tuple[str, IO[bytes]]], remote_addr: st
         root.tool_instance = submission.get("tool_instance", f"api({remote_addr})")
         root.alert_type = submission.get("type", get_config().api.default_alert_type)
         root.description = submission["description"]
-        root.event_time = event_time
+        root.set_event_time(event_time, event_time_source)
         root.queue = submission.get("queue", QUEUE_DEFAULT)
         root.instructions = submission.get("instructions")
         root.extensions = submission.get("extensions")
@@ -131,6 +146,12 @@ def submit(submission: dict, files: list[tuple[str, IO[bytes]]], remote_addr: st
                     observable = create_observable_from_dict(observable_dict)
                 except (KeyError, TypeError, ValueError) as e:
                     raise HTTPException(status_code=400, detail=f"invalid observable {observable_dict!r}: {e!r}")
+                # a value its type rejects ("https:.." as a url) often comes from attacker-written content the
+                # submitter extracted; drop that one observable rather than the event, as loading a stored root does
+                if observable is None:
+                    logger.warning("skipped invalid observable type %s value %r in submission %s",
+                                   observable_dict.get("type"), observable_dict.get("value"), root.uuid)
+                    continue
                 root.add_observable(observable)
 
         file_list = []

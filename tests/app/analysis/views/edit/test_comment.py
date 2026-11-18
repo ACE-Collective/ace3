@@ -5,19 +5,20 @@ import pytest
 from saq.database.model import Alert, Comment
 from saq.database.pool import get_db
 from saq.database.util.user_management import add_user, delete_user
-from tests.saq.helpers import insert_alert
+from tests.saq.helpers import audit_actor_of, audit_record, insert_alert
 
 
 @pytest.mark.integration
-def test_add_comment_success(web_client):
+def test_add_comment_success(web_client, session_actor, caplog):
     """Test successfully adding a comment to an alert."""
+    caplog.set_level(logging.INFO)
     # Create mock alert UUID
     alert_uuid = "test-uuid-123"
     
     response = web_client.post(url_for("analysis.add_comment"), data={
         "comment": "This is a test comment",
         "uuids": alert_uuid,
-        "redirect": "index"
+        "redirect": "analysis"
     })
     
     # Should redirect to analysis.index
@@ -29,6 +30,8 @@ def test_add_comment_success(web_client):
     comment = db.query(Comment).filter(Comment.uuid == alert_uuid).first()
     assert comment is not None
     assert comment.comment == "This is a test comment"
+    audit = audit_record(caplog, "user john added comment This is a test comment")
+    assert (*audit_actor_of(audit), audit.alert_uuids) == (*session_actor, [alert_uuid])
     
     # Cleanup
     db.delete(comment)
@@ -43,7 +46,7 @@ def test_add_comment_multiple_uuids(web_client):
     response = web_client.post(url_for("analysis.add_comment"), data={
         "comment": "Multi-alert comment",
         "uuids": ",".join(alert_uuids),
-        "redirect": "index"
+        "redirect": "analysis"
     })
     
     assert response.status_code == 302
@@ -69,7 +72,7 @@ def test_add_comment_empty_comment(web_client):
     response = web_client.post(url_for("analysis.add_comment"), data={
         "comment": "   ",  # Only whitespace
         "uuids": "test-uuid",
-        "redirect": "index"
+        "redirect": "analysis"
     })
     
     assert response.status_code == 302
@@ -86,7 +89,7 @@ def test_add_comment_missing_form_fields(web_client):
     # Missing comment field
     response = web_client.post(url_for("analysis.add_comment"), data={
         "uuids": "test-uuid",
-        "redirect": "index"
+        "redirect": "analysis"
     })
     assert response.status_code == 302
     assert "analysis" in response.location
@@ -94,7 +97,7 @@ def test_add_comment_missing_form_fields(web_client):
     # Missing uuids field
     response = web_client.post(url_for("analysis.add_comment"), data={
         "comment": "test comment",
-        "redirect": "index"
+        "redirect": "analysis"
     })
     assert response.status_code == 302
     
@@ -122,35 +125,33 @@ def test_add_comment_invalid_redirect(web_client):
 
 @pytest.mark.integration
 def test_add_comment_manage_redirect(web_client):
-    """Test adding comment with manage redirect sets session."""
+    """A comment from the manage page goes back to it with the commented alerts still selected."""
     alert_uuid = "test-uuid-manage"
-    
+
     response = web_client.post(url_for("analysis.add_comment"), data={
         "comment": "manage redirect test",
         "uuids": alert_uuid,
-        "redirect": "manage"
+        "redirect": "management"
     })
-    
+
     assert response.status_code == 302
-    
-    # Cleanup the comment
-    db = get_db()
-    comment = db.query(Comment).filter(Comment.uuid == alert_uuid).first()
-    if comment:
-        db.delete(comment)
-        db.commit()
+    assert response.location.endswith(url_for("analysis.manage"))
+    with web_client.session_transaction() as sess:
+        assert sess["checked"] == [alert_uuid]
+    assert get_db().query(Comment).filter(Comment.uuid == alert_uuid).one().comment == "manage redirect test"
 
 
 @pytest.mark.integration
-def test_delete_comment_success(web_client):
+def test_delete_comment_success(web_client, session_actor, caplog):
     """Test successfully deleting a comment."""
+    caplog.set_level(logging.INFO)
     # First add a comment
     alert_uuid = "test-delete-uuid"
     
     response = web_client.post(url_for("analysis.add_comment"), data={
         "comment": "Comment to delete",
         "uuids": alert_uuid,
-        "redirect": "index"
+        "redirect": "analysis"
     })
     
     # Get the comment ID
@@ -171,6 +172,8 @@ def test_delete_comment_success(web_client):
     # Verify comment was deleted
     deleted_comment = db.query(Comment).filter(Comment.comment_id == comment_id).first()
     assert deleted_comment is None
+    audit = audit_record(caplog, "user john deleted comment Comment to delete")
+    assert (*audit_actor_of(audit), audit.alert_uuid, audit.comment_id) == (*session_actor, alert_uuid, comment_id)
 
 
 @pytest.mark.integration
@@ -192,8 +195,9 @@ def test_delete_comment_nonexistent_comment(web_client):
         "direct": "test-uuid"
     })
     
-    # should redirect with a flash message
-    assert response.status_code in [302, 404, 500]
+    # refused with a flash, back on the alert page
+    assert response.status_code == 302
+    assert response.location.endswith(url_for("analysis.index"))
 
 @pytest.fixture
 def other_user():
@@ -216,7 +220,7 @@ def test_delete_comment_wrong_user(web_client, analyst, other_user):
     response = web_client.post(url_for("analysis.add_comment"), data={
         "comment": "Another user's comment",
         "uuids": alert_uuid,
-        "redirect": "index"
+        "redirect": "analysis"
     })
     
     # Get the comment
@@ -233,8 +237,10 @@ def test_delete_comment_wrong_user(web_client, analyst, other_user):
         "direct": alert_uuid
     })
     
-    # should redirect with an error message
+    # should redirect with an error message, and leave the comment alone
     assert response.status_code == 302
+    db.expire_all()
+    assert db.query(Comment).filter(Comment.comment_id == comment_id).one().comment == "Another user's comment"
 
     db.delete(comment)  # Cleanup
     db.commit()
@@ -252,7 +258,7 @@ def test_comment_add_and_delete_rotate_alert_version(web_client):
     response = web_client.post(url_for("analysis.add_comment"), data={
         "comment": "versioned comment",
         "uuids": alert.uuid,
-        "redirect": "index"
+        "redirect": "analysis"
     })
     assert response.status_code == 302
     after_add = db_version()

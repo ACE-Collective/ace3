@@ -42,7 +42,10 @@ async def create_threat_type(
     session: Annotated[AsyncSession, Depends(get_async_session)],
     _: Annotated[ApiAuthResult, Depends(require_permission("event", "write"))],
 ) -> ThreatTypeRead:
-    threat_type = await service.create_threat_type(session, body.name)
+    try:
+        threat_type = await service.create_threat_type(session, body.name)
+    except service.ThreatTypeConflict as e:
+        raise HTTPException(status_code=409, detail=str(e)) from e
     _cache.clear()
     return ThreatTypeRead(id=threat_type.id, name=threat_type.name)
 
@@ -66,7 +69,10 @@ async def update_threat_type(
     session: Annotated[AsyncSession, Depends(get_async_session)],
     _: Annotated[ApiAuthResult, Depends(require_permission("event", "write"))],
 ) -> ThreatTypeRead:
-    threat_type = await service.update_threat_type(session, threat_type_id, name=body.name)
+    try:
+        threat_type = await service.update_threat_type(session, threat_type_id, name=body.name)
+    except service.ThreatTypeConflict as e:
+        raise HTTPException(status_code=409, detail=str(e)) from e
     if threat_type is None:
         raise HTTPException(status_code=404, detail="Threat type not found")
     _cache.clear()
@@ -79,7 +85,10 @@ async def delete_threat_type(
     session: Annotated[AsyncSession, Depends(get_async_session)],
     _: Annotated[ApiAuthResult, Depends(require_permission("event", "write"))],
 ) -> None:
-    deleted = await service.delete_threat_type(session, threat_type_id)
+    try:
+        deleted = await service.delete_threat_type(session, threat_type_id)
+    except service.ThreatTypeConflict as e:
+        raise HTTPException(status_code=409, detail=str(e)) from e
     if not deleted:
         raise HTTPException(status_code=404, detail="Threat type not found")
     _cache.clear()

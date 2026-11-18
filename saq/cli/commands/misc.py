@@ -1,4 +1,6 @@
 import logging
+import os
+import os.path
 import sys
 
 from saq.cli.cli_main import get_cli_subparsers
@@ -22,6 +24,7 @@ def close_event(args):
         event_ids = args.event_id
 
     # Set the event status to the configured closed status
+    exit_code = 0
     for event_id in event_ids:
         if not event_id:
             continue
@@ -35,13 +38,14 @@ def close_event(args):
             print("event closed")
         except Exception as e:
             logging.exception(f"unable to close event {event_id}: {e}")
+            exit_code = 1
 
     if args.dry_run:
         get_db().rollback()
     else:
         get_db().commit()
 
-    sys.exit(0)
+    sys.exit(exit_code)
 
 event_parser = get_cli_subparsers().add_parser('event')
 event_sp = event_parser.add_subparsers(dest='event_cmd')
@@ -92,3 +96,52 @@ def list_git_repos(args):
 
 git_list_parser = git_sp.add_parser("list")
 git_list_parser.set_defaults(func=list_git_repos)
+
+s3_parser = get_cli_subparsers().add_parser("s3")
+s3_sp = s3_parser.add_subparsers(dest="s3_cmd")
+
+def s3_upload_file(args) -> int:
+    """Upload a file to S3 using boto3."""
+    if not args.file:
+        logging.error("--file is required")
+        return 1
+    
+    if not args.bucket:
+        logging.error("--bucket is required")
+        return 1
+    
+    if not args.key:
+        logging.error("--key is required")
+        return 1
+    
+    if not os.path.exists(args.file):
+        logging.error(f"File does not exist: {args.file}")
+        return 1
+    
+    try:
+        # Create S3 client using EC2 instance credentials.
+        # NOTE this deliberately does not go through saq.storage.s3.get_s3_client(): that would
+        # also hand it the configured endpoint and credentials, which is a different command.
+        # It borrows only the bounded timeout/retry config, so no S3 call in ACE is unbounded.
+        import boto3
+
+        from saq.storage.s3 import build_boto_config
+
+        s3_client = boto3.client('s3', config=build_boto_config())
+        
+        # Upload the file
+        logging.info(f"Uploading {args.file} to s3://{args.bucket}/{args.key}")
+        s3_client.upload_file(args.file, args.bucket, args.key)
+        
+        logging.info(f"Successfully uploaded {args.file} to s3://{args.bucket}/{args.key}")
+        return 0
+    except Exception as e:
+        logging.exception(f"failed to upload {args.file} to s3://{args.bucket}/{args.key}: {e}")
+        return 1
+
+s3_upload_parser = s3_sp.add_parser("upload")
+s3_upload_parser.add_argument("--file", help="The file to upload.")
+s3_upload_parser.add_argument("--bucket", help="The bucket to upload the file to.")
+s3_upload_parser.add_argument("--key", help="The key to upload the file to.")
+s3_upload_parser.add_argument("--config", help="The configuration to use for the S3 client.")
+s3_upload_parser.set_defaults(func=s3_upload_file)

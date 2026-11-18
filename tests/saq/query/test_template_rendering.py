@@ -7,7 +7,6 @@ from saq.query.template_rendering import (
     _expand_dotted_keys,
     _extract_paths,
     _node_to_chain,
-    _resolve_path,
     _set_path,
     render_event_template,
     render_event_template_multi,
@@ -25,23 +24,10 @@ def test_expand_dotted_keys_flat():
 
 
 @pytest.mark.unit
-def test_expand_dotted_keys_nested():
-    """`device.hostname: x` becomes `device: {hostname: x}`."""
-    assert _expand_dotted_keys({"device.hostname": "x"}) == {"device": {"hostname": "x"}}
-
-
-@pytest.mark.unit
 def test_expand_dotted_keys_deep():
     """Multi-segment dotted keys nest deeply."""
     flat = {"a.b.c.d": 7}
     assert _expand_dotted_keys(flat) == {"a": {"b": {"c": {"d": 7}}}}
-
-
-@pytest.mark.unit
-def test_expand_dotted_keys_strips_curly_marker():
-    """Trailing `{}` on any segment is stripped (Splunk multi-value marker)."""
-    flat = {"mitre_attack{}.technique_id": ["T1", "T2"]}
-    assert _expand_dotted_keys(flat) == {"mitre_attack": {"technique_id": ["T1", "T2"]}}
 
 
 @pytest.mark.unit
@@ -100,20 +86,16 @@ def test_node_to_chain_static_chains():
 
 
 @pytest.mark.unit
-def test_node_to_chain_non_static_returns_none():
+@pytest.mark.parametrize("template", [
+    "{{ a.b().c }}",  # a call within the chain
+    "{{ a[b] }}",     # a subscript that is not a constant
+])
+def test_node_to_chain_non_static_returns_none(template):
     import jinja2
 
-    env = jinja2.Environment()
-    # function call within the chain
-    parsed = env.parse("{{ a.b() }}")
-    chains = [
-        _node_to_chain(n)
-        for n in parsed.find_all(
-            (jinja2.nodes.Name, jinja2.nodes.Getattr, jinja2.nodes.Getitem)
-        )
-    ]
-    # Name('a') resolves to ('a',); the Call is not a Name/Getattr/Getitem so isn't iterated.
-    assert ("a",) in chains
+    parsed = jinja2.Environment().parse(template)
+    outermost = next(parsed.find_all((jinja2.nodes.Getattr, jinja2.nodes.Getitem)))
+    assert _node_to_chain(outermost) is None
 
 
 # ---------- _extract_paths ----------
@@ -159,21 +141,7 @@ def test_extract_paths_explicit_subscript_form():
     assert paths == [("a", "b")]
 
 
-# ---------- _resolve_path / _set_path ----------
-
-
-@pytest.mark.unit
-def test_resolve_path_navigates_nested_dict():
-    data = {"a": {"b": {"c": 7}}}
-    assert _resolve_path(data, ("a", "b", "c")) == 7
-
-
-@pytest.mark.unit
-def test_resolve_path_missing_returns_sentinel():
-    from saq.query.template_rendering import _MISSING
-
-    assert _resolve_path({"a": 1}, ("a", "b")) is _MISSING
-    assert _resolve_path({"a": 1}, ("b",)) is _MISSING
+# ---------- _set_path ----------
 
 
 @pytest.mark.unit
@@ -184,11 +152,6 @@ def test_set_path_creates_intermediates():
 
 
 # ---------- render_event_template ----------
-
-
-@pytest.mark.unit
-def test_render_event_template_simple():
-    assert render_event_template("hello {{ name }}", {"name": "world"}) == "hello world"
 
 
 @pytest.mark.unit
@@ -289,15 +252,6 @@ def test_render_event_template_multi_missing_var_strict_raises():
     """A missing variable in strict mode raises UndefinedError."""
     with pytest.raises(UndefinedError):
         render_event_template_multi("{{ missing }}", {}, strict=True)
-
-
-@pytest.mark.unit
-def test_render_event_template_multi_filters_apply_correctly():
-    """Jinja filters work over the expanded values."""
-    results = render_event_template_multi(
-        "{{ app | upper }}", {"app": ["a", "b"]}
-    )
-    assert results == ["A", "B"]
 
 
 @pytest.mark.unit

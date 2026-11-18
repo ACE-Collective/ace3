@@ -47,15 +47,17 @@ def _namespaces(signature_dir) -> list[dict]:
     result = []
     for name in sorted(os.listdir(signature_dir)):
         directory = os.path.join(signature_dir, name)
-        result.append({"name": name, "directory": directory, "files": [
-            os.path.join(directory, file_name) for file_name in sorted(os.listdir(directory))]})
+        # the rule files directly inside it, as saq.svs.yara.layout lists them for a contained layout
+        result.append({"name": name, "directory": directory, "include_boundary": signature_dir, "files": [
+            os.path.join(directory, file_name) for file_name in sorted(os.listdir(directory))
+            if file_name.endswith((".yar", ".yara")) and os.path.isfile(os.path.join(directory, file_name))]})
     return result
 
 
 def _run(root, signature_dir, units: list[dict]) -> dict:
     """child.run() in this process, without the sandbox."""
     with open(os.path.join(root, child.JOB_FILE), "w") as fp:
-        json.dump({"version": child.PROTOCOL_VERSION, "tree_root": os.path.dirname(signature_dir), "file_timeout": 10,
+        json.dump({"version": child.PROTOCOL_VERSION, "file_timeout": 10,
                    "namespaces": _namespaces(signature_dir), "units": units}, fp)
     return child.run(str(root))
 
@@ -136,25 +138,156 @@ def test_a_ruleset_that_does_not_compile_together_would_not_load(tmp_path):
 
 
 @pytest.mark.unit
-def test_a_file_that_is_not_utf8_fails_the_whole_load(tmp_path):
+def test_a_ruleset_that_does_not_load_still_lists_each_files_rules(tmp_path):
+    # the report's "no uuid" and full_path diagnostics are read from them
+    signature_dir = _signature_dir(str(tmp_path), {"acme": {
+        "one.yar": 'include "common.inc"\nrule same { meta: uuid = "u-one" condition: helper }\n',
+        "common.inc": 'private rule helper { condition: true }\n',
+        "two.yar": 'rule same { meta: full_path = "x" condition: true }\n',
+    }})
+
+    result = _run(tmp_path, signature_dir, [])
+    assert "duplicated identifier" in result["ruleset_error"]
+    files = {os.path.basename(entry["path"]): entry for entry in result["files"]}
+    assert {rule["name"]: (rule["private"], rule["meta"]) for rule in files["one.yar"]["rules"]} == {
+        "same": (False, {"uuid": "u-one"}), "helper": (True, {})}
+    assert [(rule["name"], rule["meta"]) for rule in files["two.yar"]["rules"]] == [("same", {"full_path": "x"})]
+
+
+@pytest.mark.unit
+def test_a_namespace_without_rule_files_is_left_out(tmp_path):
+    # tree_layout makes a namespace of every directory, so one can hold only includes
+    signature_dir = _signature_dir(str(tmp_path), {
+        "acme": {"rules.yar": 'rule good { strings: $a = "evil" condition: $a }\n'},
+        "shared": {"common.inc": 'rule unused { condition: true }\n'},
+    })
+    path = _sample(str(tmp_path), 0, "x.bin")
+
+    result = _run(tmp_path, signature_dir, [{"id": 0, "path": path, "meta_tags": []}])
+    assert result["ruleset_error"] is None
+    assert list(result["namespaces"]) == ["acme"]
+    assert [(match["namespace"], match["rule"]) for match in result["units"]["0"]["matches"]] == [("acme", "good")]
+
+
+# a rule the escaping includes below would compile in if they were followed
+LEAK_RULE = 'rule leaked { meta: uuid = "u-leak" strings: $a = "evil" condition: $a }\n'
+
+
+def _include_errors(result) -> list[tuple[str, str, str]]:
+    return [(os.path.basename(w["file"]), w["include"], w["error"]) for w in result["include_warnings"]]
+
+
+def _production_include_errors(signature_dir) -> list[tuple[str, str, str]]:
+    return [(os.path.basename(compiled.path), included.name, included.error)
+            for compiled in _production(signature_dir).compiled_sources
+            for included in compiled.includes if included.error is not None]
+
+
+@pytest.mark.unit
+def test_an_include_of_the_rule_set_next_to_it_compiles_as_in_the_yara_service(tmp_path):
+    signature_dir = _signature_dir(str(tmp_path), {
+        "common": {"shared.yar": 'rule shared { meta: uuid = "u-shared" condition: false }\n'},
+        "acme": {"r.yar": 'include "../common/shared.yar"\n'
+                          'rule uses_shared { meta: uuid = "u-uses" strings: $a = "evil" condition: $a and not shared }\n'},
+    })
+    path = _sample(str(tmp_path), 0, "x.bin")
+
+    result = _run(tmp_path, signature_dir, [{"id": 0, "path": path, "meta_tags": []}])
+    assert result["include_warnings"] == []
+    assert "uses_shared" in {match["rule"] for match in result["units"]["0"]["matches"]}
+
+    production = _production(signature_dir)
+    production.scan(path)
+    assert "uses_shared" in {match["rule"] for match in production.scan_results}
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("include", ["absolute", "escape", "symlink"])
+def test_an_include_the_yara_service_refuses_is_refused_and_reported(tmp_path, include):
+    outside = os.path.join(str(tmp_path), "tree", "secret.yar")   # in the repository, not in signature_dir
+    _write(outside, LEAK_RULE)
+    name = {"absolute": outside, "escape": "../../secret.yar", "symlink": "link.yar"}[include]
+    signature_dir = _signature_dir(str(tmp_path), {"acme": {
+        "r.yar": f'include "{name}"\nrule own {{ meta: uuid = "u-own" strings: $a = "evil" condition: $a }}\n',
+    }})
+    if include == "symlink":
+        os.symlink(outside, os.path.join(signature_dir, "acme", "link.yar"))
+    path = _sample(str(tmp_path), 0, "x.bin")
+
+    result = _run(tmp_path, signature_dir, [{"id": 0, "path": path, "meta_tags": []}])
+    assert result["ruleset_error"] is None
+    # the include compiled as empty: the file's own rule loads and the outside one never does
+    assert [match["rule"] for match in result["units"]["0"]["matches"]] == ["own"]
+    errors = _include_errors(result)
+    assert [(file, included) for file, included, _ in errors] == [("r.yar", name)]
+    assert errors[0][2].startswith("include refused:")
+    # word for word what the yara service records for it
+    assert errors == _production_include_errors(signature_dir)
+
+
+@pytest.mark.unit
+def test_a_unit_that_cannot_be_scanned_is_reported_and_the_rest_are_scanned(tmp_path):
+    signature_dir = _signature_dir(str(tmp_path), {"acme": {
+        "rules.yar": 'rule good { strings: $a = "evil" condition: $a }\n',
+    }})
+    path = _sample(str(tmp_path), 0, "x.bin")
+    missing = os.path.join(str(tmp_path), "u", "1", "files", "gone.bin")
+
+    # a scan that raises leaves the scanner's results of the unit before it, which must not be
+    # credited to the unit that failed
+    result = _run(tmp_path, signature_dir, [{"id": 0, "path": path, "meta_tags": []},
+                                            {"id": 1, "path": missing, "meta_tags": []}])
+    assert [match["rule"] for match in result["units"]["0"]["matches"]] == ["good"]
+    (error,) = result["units"]["1"]["errors"]
+    assert (error["namespace"], error["type"]) == ("acme", "error")
+    assert result["units"]["1"]["matches"] == []
+
+
+@pytest.mark.unit
+def test_a_file_that_is_not_utf8_drops_only_its_rules(tmp_path):
     signature_dir = _signature_dir(str(tmp_path), {"acme": {
         "good.yar": 'rule good { strings: $a = "evil" condition: $a }\n',
         "latin1.yar": 'rule caf\xe9 { condition: false }\n'.encode("latin-1"),
     }})
-    result = _run(tmp_path, signature_dir, [])
-    assert "not UTF-8" in result["ruleset_error"]
+    path = _sample(str(tmp_path), 0, "x.bin")
 
-    with pytest.raises(UnicodeDecodeError):
-        _production(signature_dir)
+    result = _run(tmp_path, signature_dir, [{"id": 0, "path": path, "meta_tags": []}])
+    files = {os.path.basename(entry["path"]): entry for entry in result["files"]}
+    assert "can't decode" in files["latin1.yar"]["error"]
+    assert result["ruleset_error"] is None
+    assert [match["rule"] for match in result["units"]["0"]["matches"]] == ["good"]
+
+    production = _production(signature_dir)
+    production.scan(path)
+    assert [match["rule"] for match in production.scan_results] == ["good"]
+
+
+@pytest.mark.unit
+def test_a_nested_include_resolves_as_the_yara_service_resolves_it(tmp_path):
+    signature_dir = _signature_dir(str(tmp_path), {"acme": {
+        "main.yar": 'include "inc/outer.inc"\nrule main_rule { condition: outer_rule }\n',
+        "inc/outer.inc": 'include "inner.inc"\nrule outer_rule { condition: inner_rule }\n',
+        "inc/inner.inc": 'rule inner_rule { strings: $a = "evil" condition: $a }\n',
+    }})
+    path = _sample(str(tmp_path), 0, "x.bin")
+
+    result = _run(tmp_path, signature_dir, [{"id": 0, "path": path, "meta_tags": []}])
+    assert result["include_warnings"] == []
+    (entry,) = result["files"]
+    assert entry["error"] is None
+    assert sorted(rule["name"] for rule in entry["rules"]) == ["inner_rule", "main_rule", "outer_rule"]
+
+    production = _production(signature_dir)
+    production.scan(path)
+    assert sorted(match["rule"] for match in result["units"]["0"]["matches"]) == \
+        sorted(match["rule"] for match in production.scan_results) == ["inner_rule", "main_rule", "outer_rule"]
 
 
 @pytest.mark.unit
 def test_a_missing_include_compiles_and_is_reported(tmp_path):
     signature_dir = _signature_dir(str(tmp_path), {"acme": {
         "inc.yar": 'include "common.yar"\nrule uses { strings: $a = "evil" condition: $a }\n',
-        "local.yar": 'include "../../shared/strings.yar"\nrule shared { condition: false }\n',
     }})
-    _write(os.path.join(signature_dir, "..", "shared", "strings.yar"), "")
 
     result = _run(tmp_path, signature_dir, [])
     assert result["ruleset_error"] is None
@@ -181,18 +314,26 @@ def test_compiler_warnings_and_rules_are_reported(tmp_path):
 def test_the_sandboxed_scan_cannot_read_saq_home(tmp_path):
     workdir = tmp_path / "work"
     tree = workdir / "base" / "tree"
-    secret = os.path.join(get_base_dir(), "etc", "saq.default.yaml")
     namespace_dir = str(tree / "yara" / "acme")
-    _write(os.path.join(namespace_dir, "steal.yar"), f'include "{secret}"\nrule x {{ strings: $a = "evil" condition: $a }}\n')
+    _write(os.path.join(namespace_dir, "own.yar"), 'rule x { strings: $a = "evil" condition: $a }\n')
     corpus = Corpus(units=[Unit(0, "0" * 64, "x.bin", (), path=_sample(str(workdir), 0, "x.bin"))])
     with open(os.path.join(workdir, "child.py"), "w") as fp, open(child.__file__) as source:
         fp.write(source.read())
 
-    layout = TreeLayout(namespaces=[TreeNamespace("acme", namespace_dir, [os.path.join(namespace_dir, "steal.yar")])])
-    result = _run_child(str(workdir), str(workdir / "base"), str(tree), layout, corpus, SandboxConfig())
+    # yara_scanner refuses an include that leaves the tree before it reads it, so the sandbox is
+    # tested on a read the library allows: a namespace whose own directory is in SAQ_HOME
+    secret_dir = os.path.join(get_base_dir(), "etc")
+    layout = TreeLayout(namespaces=[
+        TreeNamespace("acme", namespace_dir, namespace_dir, [os.path.join(namespace_dir, "own.yar")]),
+        TreeNamespace("steal", secret_dir, secret_dir, [os.path.join(secret_dir, "saq.default.yaml")]),
+    ])
+    # TCP is left unrestricted so this runs without TCP port rules (Landlock ABI 4, Linux 6.7)
+    result = _run_child(str(workdir), str(workdir / "base"), str(tree), layout, corpus,
+                        SandboxConfig(allowed_tcp_ports=None))
 
-    errors = [warning["error"] for warning in result["include_warnings"]]
-    assert any("PermissionError" in error for error in errors), errors
+    files = {entry["namespace"]: entry for entry in result["files"]}
+    assert "Permission denied" in files["steal"]["error"], files["steal"]
+    assert files["steal"]["rules"] == []
     assert [match["rule"] for match in result["units"]["0"]["matches"]] == ["x"]
 
 
@@ -207,7 +348,7 @@ def test_two_namespaces_of_one_directory_stay_apart(tmp_path):
     namespace = _namespaces(signature_dir)[0]
     namespace["files"] = [file for file in namespace["files"] if file.endswith("rules.yar")]
     with open(os.path.join(tmp_path, child.JOB_FILE), "w") as fp:
-        json.dump({"version": child.PROTOCOL_VERSION, "tree_root": os.path.dirname(signature_dir), "file_timeout": 10,
+        json.dump({"version": child.PROTOCOL_VERSION, "file_timeout": 10,
                    "namespaces": [namespace, {**namespace, "name": "alias"}],
                    "units": [{"id": 0, "path": path, "meta_tags": []}]}, fp)
 

@@ -18,20 +18,7 @@ from saq.modules.config import AnalysisModuleConfig
 from saq.modules.file_analysis.is_file_type import is_image
 from saq.modules.tool_version import probe_binary_version
 from saq.observables.file import FileObservable
-from saq.ocr import (
-    add_border,
-    denoise_image,
-    get_image_text,
-    get_scale_factor,
-    invert_image_color,
-    is_dark,
-    read_image,
-    remove_line_wrapping,
-    scale_image,
-    sharpen_image,
-)
 
-KEY_ERROR = "error"
 KEY_OCR = "ocr"
 
 # yara meta tag applied to the extracted text file. Consumers use this to tell that the
@@ -44,7 +31,6 @@ class OCRAnalysis(Analysis):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.details = {
-            KEY_ERROR: None,
             KEY_OCR: False,
         }
 
@@ -52,14 +38,6 @@ class OCRAnalysis(Analysis):
     @property
     def display_name(self):
         return "OCR Analysis"
-
-    @property
-    def error(self):
-        return self.details[KEY_ERROR]
-
-    @error.setter
-    def error(self, value: str):
-        self.details[KEY_ERROR] = value
 
     @property
     def ocr(self) -> bool:
@@ -152,6 +130,21 @@ class OCRAnalyzer(AnalysisModule):
         # Check if file is an image
         if not is_image(local_file_path):
             return AnalysisExecutionResult.COMPLETED
+
+        # imported here: saq.ocr loads cv2 and pytesseract (~18 MB), and the search indexer and the GUI import this
+        # module only to read OCRAnalysis
+        from saq.ocr import (
+            add_border,
+            denoise_image,
+            get_image_text,
+            get_scale_factor,
+            invert_image_color,
+            is_dark,
+            read_image,
+            remove_line_wrapping,
+            scale_image,
+            sharpen_image,
+        )
 
         logging.info(f"processing {local_file_path} with OCR")
 

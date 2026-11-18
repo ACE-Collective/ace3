@@ -9,7 +9,9 @@ from uuid import uuid4
 
 import pytest
 import zstandard
+from sqlalchemy import text
 
+import saq.analysis.cache as cache_module
 from saq.analysis.blob_store import LocalHardlinkBlobStore, LocalHardlinkBlobStoreConfig
 from saq.analysis.cache import (
     generate_cache_key,
@@ -24,7 +26,7 @@ from saq.analysis.module_execution_delta import (
 )
 from saq.configuration.config import get_config
 from saq.constants import DB_ANALYSIS_RESULT_CACHE, F_FILE
-from saq.database.pool import get_db_connection
+from saq.database.pool import get_db, get_db_connection
 
 
 @pytest.fixture
@@ -80,17 +82,6 @@ def _delete_cache_row(cache_key):
         db.commit()
 
 
-def _set_expires_at(cache_key, sql_expr):
-    """Force expires_at to a specific SQL expression for testing TTL paths."""
-    with get_db_connection(DB_ANALYSIS_RESULT_CACHE) as db:
-        cursor = db.cursor()
-        cursor.execute(
-            f"UPDATE analysis_result_cache SET expires_at = {sql_expr} WHERE cache_key = %s",
-            (cache_key,),
-        )
-        db.commit()
-
-
 def _write_raw_row(cache_key, module, delta_dict, has_blob_refs=False,
                    expires_sql="DATE_ADD(NOW(), INTERVAL 1 HOUR)"):
     """Insert a raw row bypassing put_cached_delta — for testing legacy
@@ -119,6 +110,38 @@ def _write_raw_row(cache_key, module, delta_dict, has_blob_refs=False,
         db.commit()
 
 
+def _write_raw_bytes(cache_key, module, delta_zstd):
+    """Insert a row whose delta_zstd is exactly ``delta_zstd`` -- for corrupt rows."""
+    with get_db_connection(DB_ANALYSIS_RESULT_CACHE) as db:
+        cursor = db.cursor()
+        cursor.execute(
+            "INSERT INTO analysis_result_cache "
+            "(cache_key, module_name, module_version, observable_type, observable_value, "
+            " delta_zstd, delta_uncompressed_size, has_blob_refs, expires_at) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, DATE_ADD(NOW(), INTERVAL 1 HOUR))",
+            (cache_key, module.config.name, module.version, "url", "https://example.com/",
+             delta_zstd, len(delta_zstd), False),
+        )
+        db.commit()
+
+
+def _kill_cache_session_connection():
+    """Kill the MySQL connection the analysis cache session holds, the way a server-side
+    wait_timeout or a database failover does."""
+    connection_id = get_db(DB_ANALYSIS_RESULT_CACHE).execute(text("SELECT CONNECTION_ID()")).scalar()
+    with get_db_connection(DB_ANALYSIS_RESULT_CACHE) as db:
+        cursor = db.cursor()
+        cursor.execute(f"KILL {int(connection_id)}")
+
+
+_ANALYSIS = {
+    "module_path": "saq.modules.test:Dummy",
+    "details": {"foo": "bar"},
+    "completed": True,
+    "delayed": False,
+}
+
+
 class TestGetCachedDelta:
 
     @pytest.mark.integration
@@ -145,15 +168,14 @@ class TestGetCachedDelta:
     def test_hit_round_trips(self, blob_store):
         module = _make_module()
         obs = _make_observable()
-        delta = _make_delta(
-            module,
-            analysis={
-                "module_path": "saq.modules.test:Dummy",
-                "details": {"foo": "bar"},
-                "completed": True,
-                "delayed": False,
-            },
-        )
+        analysis = {
+            "module_path": "saq.modules.test:Dummy",
+            "details": {"foo": "bar"},
+            "tags": ["analysis-tag"],
+            "completed": True,
+            "delayed": False,
+        }
+        delta = _make_delta(module, analysis=dict(analysis))
         try:
             assert put_cached_delta(delta, module, blob_store) is not None
             result = get_cached_delta(obs, module, blob_store)
@@ -161,35 +183,38 @@ class TestGetCachedDelta:
             assert result.miss_reason is None
             assert result.delta.observable_value == "https://example.com/"
             assert result.delta.target_observable_diff.added_tags == ["t1"]
-            assert result.delta.analysis["details"] == {"foo": "bar"}
+            assert result.delta.analysis == analysis
         finally:
             _delete_cache_row(delta.cache_key)
 
     @pytest.mark.integration
-    def test_hit_components_decompose_lookup_ms(self, blob_store):
-        """lookup_ms is decomposed into db_ms/decode_ms/blob_ms (the timed
-        region) plus the separately-measured key_ms. The three in-region
-        buckets must never exceed lookup_ms (no double counting; each is a
-        floored sub-interval, and the region also holds untimed work), and
-        key_ms is measured for every lookup."""
+    def test_hit_components_decompose_lookup_ms(self, tmp_path, monkeypatch):
+        """lookup_ms is the timed region, and db_ms/decode_ms/blob_ms are
+        sub-intervals of it: they never sum past it. A file blob whose
+        existence check takes 20 ms (the S3 cost) shows up in blob_ms, once.
+        The cache module's clock only moves inside that check."""
+        clock = {"ns": 0}
+
+        class _SlowExistsBlobStore(LocalHardlinkBlobStore):
+            def exists(self, sha256):
+                clock["ns"] += 20_000_000
+                return super().exists(sha256)
+
+        blob_store = _SlowExistsBlobStore(
+            LocalHardlinkBlobStoreConfig(root_dir=str(tmp_path / "blob_store"))
+        )
         module = _make_module()
         obs = _make_observable()
-        delta = _make_delta(
-            module,
-            analysis={
-                "module_path": "saq.modules.test:Dummy",
-                "details": {"foo": "bar"},
-                "completed": True,
-                "delayed": False,
-            },
-        )
+        delta = _make_delta(module, analysis=_ANALYSIS)
+        delta.new_observables = [ObservableSpec(
+            uuid=str(uuid4()), type=F_FILE, value=blob_store.put(b"timed file"), file_path="output.txt",
+        )]
         try:
-            assert put_cached_delta(delta, module, blob_store) is not None
+            _write_raw_row(delta.cache_key, module, delta.to_dict())
+            monkeypatch.setattr(cache_module, "time", SimpleNamespace(monotonic_ns=lambda: clock["ns"]))
             result = get_cached_delta(obs, module, blob_store)
             assert result.delta is not None
-            for component in (result.key_ms, result.db_ms, result.decode_ms, result.blob_ms):
-                assert component >= 0
-            assert result.db_ms + result.decode_ms + result.blob_ms <= result.lookup_ms
+            assert (result.db_ms, result.decode_ms, result.blob_ms, result.lookup_ms) == (0, 0, 20, 20)
         finally:
             _delete_cache_row(delta.cache_key)
 
@@ -214,43 +239,6 @@ class TestGetCachedDelta:
         result = get_cached_delta(_make_observable(), _SlowExtendedVersionModule(), blob_store)
         assert result.miss_reason == "not_found"
         assert result.key_ms >= 1
-
-    @pytest.mark.integration
-    def test_analysis_tags_round_trip(self, blob_store):
-        """Tags on the captured analysis dict must survive put → get."""
-        module = _make_module()
-        obs = _make_observable()
-        delta = _make_delta(
-            module,
-            analysis={
-                "module_path": "saq.modules.test:Dummy",
-                "details": {"foo": "bar"},
-                "tags": ["analysis-tag"],
-                "completed": True,
-                "delayed": False,
-            },
-        )
-        try:
-            assert put_cached_delta(delta, module, blob_store) is not None
-            result = get_cached_delta(obs, module, blob_store)
-            assert result.delta is not None
-            assert result.delta.analysis["tags"] == ["analysis-tag"]
-        finally:
-            _delete_cache_row(delta.cache_key)
-
-    @pytest.mark.integration
-    def test_expired_row_excluded(self, blob_store):
-        module = _make_module()
-        obs = _make_observable()
-        delta = _make_delta(module, analysis={"module_path": "x", "details": {}})
-        try:
-            put_cached_delta(delta, module, blob_store)
-            _set_expires_at(delta.cache_key, "DATE_SUB(NOW(), INTERVAL 1 HOUR)")
-            result = get_cached_delta(obs, module, blob_store)
-            assert result.delta is None
-            assert result.miss_reason == "not_found"
-        finally:
-            _delete_cache_row(delta.cache_key)
 
     @pytest.mark.integration
     def test_legacy_shape_returns_miss(self, blob_store):
@@ -404,7 +392,8 @@ class TestGetCachedDelta:
     @pytest.mark.integration
     def test_expired_duplicate_ignored_returns_live_row(self, blob_store):
         """An expired row sharing a cache_key with a live row is filtered out
-        by the expires_at>NOW() predicate; the lookup returns the live row."""
+        by the expires_at>NOW() predicate; the lookup returns the live row.
+        The expired row is the newer one, so ordering alone would pick it."""
         module = _make_module()
         obs = _make_observable()
         cache_key = generate_cache_key(obs, module)
@@ -417,10 +406,10 @@ class TestGetCachedDelta:
             analysis={"module_path": "x", "details": {"v": "live"}, "completed": True},
         )
         try:
-            _write_raw_row(cache_key, module, expired.to_dict(),
-                           expires_sql="DATE_SUB(NOW(), INTERVAL 1 HOUR)")
             _write_raw_row(cache_key, module, live.to_dict(),
                            expires_sql="DATE_ADD(NOW(), INTERVAL 1 HOUR)")
+            _write_raw_row(cache_key, module, expired.to_dict(),
+                           expires_sql="DATE_SUB(NOW(), INTERVAL 1 HOUR)")
             result = get_cached_delta(obs, module, blob_store)
             assert result.delta is not None
             assert result.delta.analysis["details"]["v"] == "live"
@@ -489,5 +478,69 @@ class TestGetCachedDeltaFileObservables:
             result = get_cached_delta(obs, module, blob_store)
             assert result.delta is None
             assert result.miss_reason == "decode_error"
+        finally:
+            _delete_cache_row(delta.cache_key)
+
+
+class TestGetCachedDeltaFailures:
+    """A lookup that fails is a miss: the executor runs the module live."""
+
+    @pytest.mark.integration
+    def test_corrupt_row_returns_decode_error(self, blob_store, caplog):
+        module = _make_module()
+        obs = _make_observable()
+        cache_key = generate_cache_key(obs, module)
+        try:
+            _write_raw_bytes(cache_key, module, b"not zstd at all")
+            with caplog.at_level(logging.WARNING):
+                result = get_cached_delta(obs, module, blob_store)
+
+            assert result.delta is None
+            assert result.miss_reason == "decode_error"
+            records = [r for r in caplog.records if r.getMessage() == "failed to decode cached delta"]
+            assert len(records) == 1
+            assert records[0].module_name == module.config.name
+            assert records[0].exc_info is not None
+        finally:
+            _delete_cache_row(cache_key)
+
+    @pytest.mark.integration
+    def test_undeserializable_delta_returns_decode_error(self, blob_store, caplog):
+        module = _make_module()
+        obs = _make_observable()
+        delta = _make_delta(module, analysis=_ANALYSIS)
+        delta_dict = delta.to_dict()
+        delta_dict["new_observables"] = [{"not": "a spec"}]
+        try:
+            _write_raw_row(delta.cache_key, module, delta_dict)
+            with caplog.at_level(logging.WARNING):
+                result = get_cached_delta(obs, module, blob_store)
+
+            assert result.delta is None
+            assert result.miss_reason == "decode_error"
+            assert any(r.getMessage() == "failed to deserialize cached delta" for r in caplog.records)
+        finally:
+            _delete_cache_row(delta.cache_key)
+
+    @pytest.mark.integration
+    def test_lost_connection_costs_one_miss(self, blob_store, caplog):
+        """A lookup on a connection the server dropped fails. The session is rolled back,
+        so the lookup after it reconnects instead of failing the same way."""
+        module = _make_module()
+        obs = _make_observable()
+        delta = _make_delta(module, analysis=_ANALYSIS)
+        try:
+            assert put_cached_delta(delta, module, blob_store) is not None
+            _kill_cache_session_connection()
+
+            with caplog.at_level(logging.WARNING):
+                first = get_cached_delta(obs, module, blob_store)
+            assert first.delta is None
+            assert first.miss_reason == "decode_error"
+            assert any(r.getMessage() == "cache lookup failed" for r in caplog.records)
+
+            second = get_cached_delta(obs, module, blob_store)
+            assert second.delta is not None
+            assert second.delta.analysis["details"] == {"foo": "bar"}
         finally:
             _delete_cache_row(delta.cache_key)

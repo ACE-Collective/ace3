@@ -87,9 +87,11 @@ def test_both_save_paths_send_the_on_screen_filter():
     js = (APP / "static" / "js" / "manage_alerts.js").read_text()
     component = (APP / "static" / "js" / "saved_filters.js").read_text()
 
-    assert re.search(r"function save_current_filter\b[\s\S]*?compute_filter_settings\(", js), \
+    # [^}]* keeps each match inside the function's own body (neither has a nested block): a lazy
+    # [\s\S]*? would run on into a later function that calls compute_filter_settings()
+    assert re.search(r"function save_current_filter\b[^}]*compute_filter_settings\(", js), \
         "save_current_filter() must serialize the editor"
-    assert re.search(r"function prepare_save\b[\s\S]*?compute_filter_settings\(", js), \
+    assert re.search(r"function prepare_save\b[^}]*compute_filter_settings\(", js), \
         "prepare_save('editor') must snapshot the editor before the modal handoff"
     assert re.search(r"function saveAs\b[\s\S]*?filters: pending_filters", component), \
         "SavedFilters.saveAs() must send the snapshotted filter list"

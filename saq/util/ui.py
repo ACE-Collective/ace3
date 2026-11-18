@@ -1,3 +1,6 @@
+from collections.abc import Iterable, Iterator
+from html import escape
+
 from saq.configuration.config import get_config
 
 
@@ -87,3 +90,64 @@ def get_tag_score(tag_name: str) -> int:
         return 10
     else:
         return 0
+
+
+def _hexdump_line(offset: int, chunk: bytes) -> str:
+    hex_bytes = [f"{byte:02x} " for byte in chunk]
+    hex_area = "".join(hex_bytes[:8]) + " " + "".join(hex_bytes[8:])
+    printable = "".join(chr(byte) if 0x20 <= byte < 0x7f else "." for byte in chunk)
+    return f"{offset:08x}  {hex_area:<49} |{printable}|\n"
+
+
+def hexdump_line_html(offset: int, chunk: bytes, marked: range) -> str:
+    """_hexdump_line as HTML: the text is escaped and the bytes whose offsets are in marked are
+    wrapped in <mark>, in both the hex and the text columns."""
+    hex_cells, text_cells = [], []
+    for index in range(16):
+        separator = "  " if index == 8 else (" " if index else "")
+        if index >= len(chunk):
+            hex_cells.append((separator + "  ", False))
+            continue
+
+        is_marked = offset + index in marked
+        hex_cells.append((separator, is_marked and offset + index - 1 in marked))
+        hex_cells.append((f"{chunk[index]:02x}", is_marked))
+        text_cells.append((chr(chunk[index]) if 0x20 <= chunk[index] < 0x7f else ".", is_marked))
+
+    def render(cells: list[tuple[str, bool]]) -> str:
+        result = []
+        for text, is_marked in cells:
+            text = escape(text)
+            result.append(f"<mark>{text}</mark>" if is_marked else text)
+
+        # a run of marked cells is one mark
+        return "".join(result).replace("</mark><mark>", "")
+
+    return f"{offset:08x}  {render(hex_cells)}  |{render(text_cells)}|"
+
+
+def hexdump_lines(chunks: Iterable[bytes]) -> Iterator[str]:
+    """The lines `hexdump -C` prints for data given as 16 byte chunks (the last one may be shorter):
+    16 bytes a line as the offset, the bytes in hex and the printable ones as text, a run of lines
+    repeating the one before it as a single "*", and the length last."""
+    offset = 0
+    previous = None
+    squeezing = False
+    for chunk in chunks:
+        if chunk == previous:
+            if not squeezing:
+                yield "*\n"
+                squeezing = True
+        else:
+            yield _hexdump_line(offset, chunk)
+            squeezing = False
+        previous = chunk
+        offset += len(chunk)
+
+    if offset:
+        yield f"{offset:08x}\n"
+
+
+def hexdump(data: bytes) -> str:
+    """data as `hexdump -C` prints it."""
+    return "".join(hexdump_lines(data[i:i + 16] for i in range(0, len(data), 16)))

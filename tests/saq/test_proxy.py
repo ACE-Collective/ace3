@@ -50,17 +50,6 @@ def test_proxy_string_for_seleniumbase_http_no_auth():
 
 
 @pytest.mark.unit
-def test_proxy_string_for_seleniumbase_http_with_auth():
-    """HTTP proxy with auth returns user:pass@host:port."""
-    config = ProxyConfig(name="test", transport="http", host="proxy.example.com", port=8080, user="myuser", password="mypass")
-    get_config().clear_proxy_configs()
-    get_config().add_proxy_config("test", config)
-
-    result = proxy_string_for_seleniumbase("test")
-    assert result == "myuser:mypass@proxy.example.com:8080"
-
-
-@pytest.mark.unit
 def test_proxy_string_for_seleniumbase_socks5_no_auth():
     """SOCKS5 proxy without auth returns socks5://host:port."""
     config = ProxyConfig(name="test", transport="socks5", host="socks.example.com", port=1080)

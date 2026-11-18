@@ -17,6 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from aceapi_v2.auth import (
     API_AUTH_TYPE_CONFIG,
     API_AUTH_TYPE_USER,
+    API_CREDENTIAL_SESSION,
     API_HEADER_NAME,
     ApiAuthResult,
     verify_api_key,
@@ -24,6 +25,7 @@ from aceapi_v2.auth import (
 )
 from aceapi_v2.database import get_async_session
 from saq.gui.filter_screens import ALERTS_SCREEN, FILTER_SCREENS
+from saq.permissions.catalog import SESSION_ONLY_PAIRS
 from saq.permissions.logic import key_scope_allows, user_has_permission_async
 
 # Security scheme - appears in the Swagger UI "Authorize" dialog
@@ -155,25 +157,61 @@ def require_permission(major: str, minor: str, auth_dependency: Callable | None 
 
 async def check_permission(session: AsyncSession, auth: ApiAuthResult, major: str, minor: str) -> None:
     """Raise 403 unless the caller holds the permission. require_permission() for a route whose
-    permission is only known once the request is read (a saved filter's screen, for instance)."""
+    permission is only known once the request is read (a saved filter's screen, for instance).
+
+    The 403 says which half refused, the account's grants or the key's scope, so its reader knows
+    whether they can fix it themselves or need an administrator (_refusal_detail)."""
+
+    if (major, minor) in SESSION_ONLY_PAIRS and auth.credential != API_CREDENTIAL_SESSION:
+        logging.warning(
+            f"api key '{auth.auth_name}' ({auth.auth_type}, key {auth.key_id}) can never hold "
+            f"{major}.{minor}; only a GUI session can"
+        )
+        raise HTTPException(
+            status_code=403, detail=f"{major}:{minor} is only available in the GUI, never to an API key")
 
     # Effective permission is the intersection of the user's permissions and the key's scope.
     # user_has_permission_async is unchanged, so group/user DENY is fully preserved; the key
     # scope is a pure AND-narrowing on top. Config keys have no user to intersect with, so
-    # their scope decides alone (a None scope is the deprecated legacy bypass).
-    if auth.auth_type == API_AUTH_TYPE_USER:
-        if not await user_has_permission_async(session, auth.auth_user_id, major, minor):
-            logging.warning(
-                f"user {auth.auth_user_id} does not have permission {major}.{minor}"
-            )
-            raise HTTPException(status_code=403, detail="Permission denied")
+    # their scope decides alone (a None scope is the deprecated legacy bypass). Both halves are
+    # evaluated so that the refusal can name each one that fails.
+    account_allows = (
+        auth.auth_type != API_AUTH_TYPE_USER
+        or await user_has_permission_async(session, auth.auth_user_id, major, minor)
+    )
+    scope_allows = auth.key_scope is None or key_scope_allows(auth.key_scope, major, minor)
+    if account_allows and scope_allows:
+        return
 
-    if auth.auth_type in (API_AUTH_TYPE_USER, API_AUTH_TYPE_CONFIG):
-        if auth.key_scope is not None and not key_scope_allows(auth.key_scope, major, minor):
-            logging.warning(
-                f"api key '{auth.auth_name}' ({auth.auth_type}) scope does not permit {major}.{minor}"
-            )
-            raise HTTPException(status_code=403, detail="Permission denied")
+    reasons = []
+    if not account_allows:
+        reasons.append(f"user {auth.auth_user_id} does not have permission {major}.{minor}")
+    if not scope_allows:
+        reasons.append(f"api key '{auth.auth_name}' ({auth.auth_type}) scope does not permit {major}.{minor}")
+    logging.warning("; ".join(reasons))
+    raise HTTPException(
+        status_code=403, detail=await _refusal_detail(session, auth, f"{major}:{minor}", account_allows, scope_allows))
+
+
+async def _refusal_detail(
+    session: AsyncSession, auth: ApiAuthResult, permission: str, account_allows: bool, scope_allows: bool
+) -> str:
+    """A 403's detail: which half of the check refused, and who can change it."""
+    if auth.auth_type == API_AUTH_TYPE_CONFIG:
+        return (f"this API key's scope does not include {permission}; the key is defined in ACE's "
+                "configuration, so an administrator has to change it")
+    if not account_allows and scope_allows:
+        return f"your account does not have {permission}; an administrator has to grant it"
+    if not account_allows:
+        return (f"your account does not have {permission}, and this API key's scope does not include it; "
+                "an administrator has to grant it, and then it has to be added to the key")
+
+    # only the key's scope is missing it; whether its owner can add it is user:self
+    if await user_has_permission_async(session, auth.auth_user_id, "user", "self"):
+        return (f"this API key's scope does not include {permission}, which your account has; "
+                "you can add it to the key on the Preferences page")
+    return (f"this API key's scope does not include {permission}, which your account has; "
+            "an administrator has to add it to the key")
 
 
 async def _holds(session: AsyncSession, auth: ApiAuthResult, major: str, minor: str) -> bool:
@@ -227,7 +265,7 @@ async def screen_from_path(screen: str) -> Optional[str]:
     return screen
 
 
-def require_self_service(auth_dependency: Callable | None = None) -> Callable:
+def require_self_service(auth_dependency: Callable | None = None, session_only: bool = False) -> Callable:
     """Factory for the gate on routes that act ONLY on the caller's own account or GUI state.
 
     Self-service routes are authorized by *being* the user (docs/USER_PREFERENCES.md): the user id
@@ -245,6 +283,10 @@ def require_self_service(auth_dependency: Callable | None = None) -> Callable:
     Without this gate a self-service route is reachable by every authenticated credential whatever
     its scope, which is the hole the route-coverage test in tests/saq/test_permission_catalog.py
     exists to close.
+
+    `session_only` also refuses the inheriting key, leaving only a logged-in GUI session. The
+    routes that create or change the user's own API keys use it: were a key allowed to mint keys,
+    a leaked one could leave behind new credentials that outlive its own revocation.
     """
     if auth_dependency is None:
         auth_dependency = get_current_auth
@@ -256,13 +298,21 @@ def require_self_service(auth_dependency: Callable | None = None) -> Callable:
             logging.warning(
                 f"'{auth.auth_name}' ({auth.auth_type}) is not a user; self-service route denied"
             )
-            raise HTTPException(status_code=403, detail="Permission denied")
+            raise HTTPException(
+                status_code=403, detail="this route acts on your own account, and this API key belongs to no user")
 
         if auth.key_scope is not None:
             logging.warning(
                 f"api key '{auth.auth_name}' is scoped; self-service routes are outside any scope"
             )
-            raise HTTPException(status_code=403, detail="Permission denied")
+            raise HTTPException(
+                status_code=403, detail="this route acts on your own account, which no API key with a scope can do")
+
+        if session_only and auth.credential != API_CREDENTIAL_SESSION:
+            logging.warning(
+                f"api key {auth.key_id} of '{auth.auth_name}' refused; this route needs a GUI session"
+            )
+            raise HTTPException(status_code=403, detail="this route is only available in the GUI, never to an API key")
 
         return auth
 

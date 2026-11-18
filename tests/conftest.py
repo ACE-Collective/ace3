@@ -9,34 +9,42 @@ import shutil
 import socket
 import sys
 import tempfile
+from types import SimpleNamespace
 from typing import Optional
 import uuid
 
+import bcrypt
 import requests
 
 from saq.analysis.root import RootAnalysis
 from saq.configuration.config import get_config, set_config
+from saq.configuration.schema import IntegrationConfig
 from saq.constants import ANALYSIS_MODE_ANALYSIS, INSTANCE_TYPE_UNITTEST, SERVICE_ENGINE
 from saq.crypto import set_encryption_password
 from saq.database.admin import superuser_connection
 from saq.database.pool import get_db_connection, remove_all_sessions
 from saq.database.util.user_management import add_user
-from saq.email_archive import initialize_email_archive
 from saq.engine.tracking import clear_all_tracking
 from saq.cas import reset_cas
 from saq.signatures.yara_inventory import reset_yara_inventory
+from saq.shutdown import reset_shutdown_coordinator
 from saq.storage.factory import reset_storage_system
 from saq.svs import attribution as svs_attribution, windows as svs_windows
-from saq.environment import get_data_dir, get_global_runtime_settings, get_temp_dir, initialize_environment, set_global_runtime_settings, set_node, initialize_data_dir
+from saq.environment import get_data_dir, get_global_runtime_settings, get_temp_dir, initialize_base_dir, initialize_environment, set_global_runtime_settings, set_node, initialize_data_dir
 
 
 import pytest
 from saq.integration.integration_loader import load_integration_component_src
 from saq.integration.integration_util import get_valid_integration_dirs
+from saq.error.reporting import ErrorReportHandler
+from saq.modules import base_module
+from saq.sandbox import runner as sandbox_runner
 from saq.modules.context import AnalysisModuleContext
 from saq.monitor import reset_emitter
 from saq.permissions.user import add_user_permission
 from saq.remediation.target import reset_observable_remediation_interface_registry
+import saq
+import saq.observables.generator as observable_generator
 from saq.util.uuid import storage_dir_from_uuid
 from tests.saq.helpers import (
     initialize_unittest_logging,
@@ -44,10 +52,17 @@ from tests.saq.helpers import (
     restore_integration_configurations,
     snapshot_integration_configurations,
     start_api_server,
+    stop_adopting,
     stop_api_server,
 )
 from tests.saq.test_util import create_test_context
 from tests import session_lock, unittest_database, unittest_session
+
+# The suite creates and logs in users thousands of times, and bcrypt's default cost (12 rounds,
+# about 180 ms per hash and again per check) is the point in production and only overhead here.
+# 4 rounds is bcrypt's minimum; the hash keeps its $2b$ format, and checkpw reads the cost from it.
+_bcrypt_gensalt = bcrypt.gensalt
+bcrypt.gensalt = lambda rounds=4, prefix=b"2b": _bcrypt_gensalt(rounds, prefix)
 
 def needs_full_reset(request: pytest.FixtureRequest) -> bool:
     """Returns True if the given test request is an integration or system test, False otherwise."""
@@ -95,7 +110,6 @@ def global_setup(request):
 @dataclass
 class DatabaseResetInformation:
     existing_nodes: Optional[list] = None
-    existing_email_archive_server: Optional[list] = None
     existing_unit_test_user: Optional[tuple] = None
     existing_db_config: Optional[list] = None
 
@@ -115,15 +129,8 @@ def record_database_reset_information():
         cursor.execute("SELECT `key`, `value` FROM `config`")
         existing_db_config = cursor.fetchall()
 
-    # record email archive server configuration
-    with get_db_connection("email_archive") as db:
-        cursor = db.cursor()
-        cursor.execute("SELECT server_id, hostname FROM archive_server")
-        existing_email_archive_server = cursor.fetchall()
-
     DATABASE_RESET_INFORMATION = DatabaseResetInformation(
         existing_nodes=existing_nodes,
-        existing_email_archive_server=existing_email_archive_server,
         existing_unit_test_user=existing_unit_test_user,
         existing_db_config=existing_db_config)
 
@@ -162,6 +169,7 @@ def execute_global_db_setup(database_reset_information: Optional[DatabaseResetIn
         cursor.execute("DELETE FROM malware")
         cursor.execute("DELETE FROM threat_type")
         cursor.execute("DELETE FROM `config`")
+        cursor.execute("DELETE FROM encrypted_passwords")
         cursor.execute("DELETE FROM incoming_workload")
         cursor.execute("DELETE FROM incoming_workload_type")
         cursor.execute("DELETE FROM work_distribution")
@@ -204,6 +212,8 @@ def execute_global_db_setup(database_reset_information: Optional[DatabaseResetIn
         cursor.execute("DELETE FROM svs_run_targets")
         cursor.execute("DELETE FROM svs_runs")
         cursor.execute("DELETE FROM svs_registration_refusals")
+        cursor.execute("DELETE FROM svs_maintenance_alerts")
+        cursor.execute("DELETE FROM svs_maintenance_windows")
         cursor.execute("DELETE FROM svs_test_hosts")
         cursor.execute("DELETE FROM svs_catalog_tests")
         cursor.execute("DELETE FROM svs_catalog_repositories")
@@ -234,14 +244,16 @@ def execute_global_db_setup(database_reset_information: Optional[DatabaseResetIn
 
     with get_db_connection('email_archive') as db:
         cursor = db.cursor()
+        cursor.execute("DELETE FROM archived_messages")
+        # the legacy tables `ace email-archive migrate` reads
         cursor.execute("DELETE FROM archive")
         cursor.execute("DELETE FROM archive_index")
         cursor.execute("DELETE FROM archive_server")
-        cursor.execute("DELETE FROM email_history")
-
-        if database_reset_information is not None:
-            for row in database_reset_information.existing_email_archive_server:
-                cursor.execute("INSERT INTO archive_server (server_id, hostname) VALUES (%s, %s)", row)
+        # the CAS index of the pools indexed here (the email_archive pool, test_ttl)
+        cursor.execute("DELETE FROM cas_holds")
+        cursor.execute("DELETE FROM cas_purges")
+        cursor.execute("DELETE FROM cas_objects")
+        cursor.execute("DELETE FROM cas_touches")
 
         db.commit()
 
@@ -261,17 +273,9 @@ def execute_global_setup():
     # XXX get rid of this
     get_global_runtime_settings().unit_testing = True
 
-    # every pytest process (each pytest-xdist worker is one) gets its own data directory
-    # under data_unittest/, named after its slot -- see tests/unittest_session.py
-    data_dir_root = unittest_session.get_data_dir_root()
-    os.makedirs(data_dir_root, exist_ok=True)
-
-    # anything in there that is not a slot directory is left over from before the layout
-    # had slots (the data directory used to be data_unittest/ itself)
-    for entry in os.listdir(data_dir_root):
-        if not unittest_session.is_slot_name(entry):
-            entry_path = os.path.join(data_dir_root, entry)
-            shutil.rmtree(entry_path) if os.path.isdir(entry_path) else os.remove(entry_path)
+    # every pytest process (each pytest-xdist worker is one) gets its own data directory,
+    # named after its slot, outside the checkout -- see tests/unittest_session.py
+    os.makedirs(unittest_session.get_data_dir_root(), exist_ok=True)
 
     data_dir = unittest_session.get_session_data_dir()
     if os.path.exists(data_dir):
@@ -287,15 +291,12 @@ def execute_global_setup():
         temp_dir=temp_dir,
         config_paths=[], 
         # a copy of etc/logging_configs/unittest_logging.yaml that logs to this slot's own file
-        logging_config_path=unittest_session.write_logging_config(temp_dir),
-        relative_dir=None)
+        logging_config_path=unittest_session.write_logging_config(temp_dir))
 
     execute_global_db_setup()
 
     # clear the tracking
     clear_all_tracking()
-
-    initialize_email_archive()
 
     # set a fake encryption password
     set_encryption_password("test")
@@ -396,10 +397,26 @@ def global_function_setup(request):
     reset_storage_system()
     reset_cas()
     reset_yara_inventory()
+    # a test that reaches get_shutdown_coordinator() in this process (supervise_shutdown(),
+    # the engine controller loop) leaves the coordinator behind, and every engine a later
+    # test forks inherits it
+    reset_shutdown_coordinator()
     # the svs attribution gate and the hunt windows are cached per process, and tests now
     # reach them through the real executor and real hunt files
     svs_attribution.clear_caches()
     svs_windows.clear_cache()
+    # the threat type list is cached in the router module for five minutes; only a test that
+    # loaded the API has one, and importing it here would load the API into every test
+    threat_types_router = sys.modules.get("aceapi_v2.threat_types.router")
+    if threat_types_router is not None:
+        threat_types_router._cache.clear()
+    # each work root is swept once per process
+    base_module._SWEPT_WORK_ROOTS.clear()
+    # a cause is reported once per window, and a test expects its own report
+    for handler in logging.getLogger().handlers:
+        if isinstance(handler, ErrorReportHandler):
+            handler._causes.clear()
+    sandbox_runner._LANDLOCK_AVAILABLE = None
 
     # XXX we're initializing AND THEN we're resetting the database
 
@@ -420,6 +437,9 @@ def global_function_setup(request):
 
     # reset the observable remediation interface registry
     reset_observable_remediation_interface_registry()
+
+    # the observable classes loaded so far (saq.observables.generator)
+    observable_generator._LOADED_CLASSES.clear()
 
     existing_nodes = None
 
@@ -477,6 +497,10 @@ def global_function_setup(request):
     # output pytest never gets to print.
     reap_stray_child_processes(request.node.name, preexisting_child_processes)
 
+    # a test that calls WorkerManager.start_workers() and never shuts the manager down leaves this process adopting
+    # every later test's orphans
+    stop_adopting(request.node.name)
+
     # SQLAlchemy session management
     #
     # (09/24/2025) there's something weird going on here with SSL enabled
@@ -506,6 +530,32 @@ def root_analysis(tmpdir) -> RootAnalysis:
     return root
 
 @pytest.fixture
+def unlogged():
+    """Drops every log record during the test, for a test whose records name a file that is not
+    UTF-8: pytest-xdist cannot send the controller a report whose captured log holds one."""
+    logging.disable(logging.CRITICAL)
+    try:
+        yield
+    finally:
+        logging.disable(logging.NOTSET)
+
+@pytest.fixture
+def declare_integration(monkeypatch):
+    """Replaces the integrations apply_integration_hooks() reads with the ones declared here, so a test
+    does not see the integrations installed in this checkout. Takes the integration's name and its
+    integration_<name>: hooks (api_router=, gui_blueprint=)."""
+    declared: list[IntegrationConfig] = []
+    monkeypatch.setattr("saq.integration.integration_loader.get_config",
+                        lambda: SimpleNamespace(integrations=declared))
+
+    def _declare(name: str, enabled: bool = True, **hooks: str | None):
+        declared.append(IntegrationConfig(name=name, description=name, enabled=enabled,
+                                          python_module=f"{name}_package", **hooks))
+
+    return _declare
+
+
+@pytest.fixture
 def api_server():
     api_server_process = start_api_server()
     yield
@@ -526,15 +576,15 @@ def mock_api_call(monkeypatch):
     attached to a different loop" against the cached engine.
     """
     # local: ace_api and the v2 app pull in the whole API layer, which most tests never load
+    from tests.aceapi_v2.conftest import v2_app
     import ace_api
     from fastapi import FastAPI
     from httpx import ASGITransport, AsyncClient
-    from aceapi_v2.application import app as fastapi_app
     from aceapi_v2.sync import run_async
 
     # the API server (tests/saq/helpers.py::execute_api_server) mounts the v2 app the same way
     server = FastAPI()
-    server.mount("/api/v2", fastapi_app)
+    server.mount("/api/v2", v2_app())
 
     def mock_execute_api_call(command,
                         method=ace_api.METHOD_GET,
@@ -606,19 +656,25 @@ def mock_api_call(monkeypatch):
 #
 
 def pytest_sessionstart(session):
+    # the integrations are found under SAQ_HOME, which nothing has applied yet: without this they come from the
+    # default /opt/ace, which a worktree's run would import ahead of its own
+    initialize_base_dir()
     for dir_path in get_valid_integration_dirs():
         load_integration_component_src(dir_path)
 
 #
-# one *run* of the test suite at a time per checkout: a run may spread over pytest-xdist
-# workers (each one its own databases, data directory, ports and log file, keyed by its
-# slot -- see tests/unittest_session.py), but two runs would collide on all of those, and
-# the stale-database sweep below is only safe when nothing else is provisioning. a marker
-# file makes that constraint mechanical instead of a rule people remember; see
-# tests/session_lock.py. under xdist the controller takes it and the workers ride on it.
+# one *run* of the test suite at a time per container and per checkout: a run may spread over
+# pytest-xdist workers (each one its own databases, data directory, ports and log file, keyed
+# by its slot -- see tests/unittest_session.py), but two runs in one container run it out of
+# memory and take the same ports, two runs of one checkout would collide on the slot's data
+# directory and Qdrant collections, and the stale-database sweep below is only safe when
+# nothing else is provisioning. a lock that a second run in the container waits for, and a
+# marker file that refuses a second run of the checkout from another container, make that
+# constraint mechanical instead of a rule people remember; see tests/session_lock.py. under
+# xdist the controller takes both and the workers ride on them.
 #
 
-# True only if *this* process created the marker file. pytest_unconfigure runs even when
+# True only if *this* process holds the run lock and the marker. pytest_unconfigure runs even when
 # pytest_configure raised, so without this a blocked session would delete the live session's marker.
 SESSION_LOCK_HELD = False
 
@@ -629,11 +685,16 @@ def pytest_configure(config):
         # the controller holds the lock for the whole run and has already swept
         return
 
+    # before the lock, which is taken in SAQ_HOME
+    mismatch = unittest_session.get_checkout_mismatch(os.path.dirname(saq.__file__))
+    if mismatch:
+        raise pytest.UsageError(mismatch)
+
     try:
-        session_lock.acquire()
+        session_lock.acquire_run()
     except session_lock.SessionLockError as e:
         # UsageError exits before collection, before any database access and before the
-        # data_unittest/ wipe, and prints the message without a traceback
+        # data directory wipe, and prints the message without a traceback
         raise pytest.UsageError(str(e))
 
     SESSION_LOCK_HELD = True
@@ -672,6 +733,6 @@ def pytest_unconfigure(config):
         unittest_database.drop_current()
     finally:
         if SESSION_LOCK_HELD:
-            session_lock.release()
+            session_lock.release_run()
             SESSION_LOCK_HELD = False
 

@@ -5,6 +5,7 @@ These are integration tests because authentication is database backed.
 
 import io
 import json
+import logging
 import os
 import uuid
 import zipfile
@@ -22,13 +23,16 @@ from saq.crash_report import (
 )
 from saq.database.model import AnalysisModuleCrash
 from saq.environment import get_data_dir, get_global_runtime_settings
+from tests.saq.helpers import audit_actor_of, audit_record
 
 pytestmark = pytest.mark.integration
 
 MALWARE_BYTES = "definitely not a real macro"
+# a file name that is not UTF-8, as ACE decodes it (surrogateescape)
+UNDECODABLE_NAME = b"\xe9\xe9.doc".decode("utf-8", "surrogateescape")
 
 
-def _write_report(crash_id: str, *, node: str, with_file: bool = True) -> str:
+def _write_report(crash_id: str, *, node: str, with_file: bool = True, file_name: str = "malware.doc") -> str:
     """Write a real crash report directory on disk and return its path."""
     crash_dir = get_crash_report_dir(crash_id)
     os.makedirs(os.path.join(crash_dir, FILE_DIR), exist_ok=True)
@@ -48,7 +52,7 @@ def _write_report(crash_id: str, *, node: str, with_file: bool = True) -> str:
         "observable_value": "a" * 64,
         "exception_type": "RuntimeError",
         "exception_message": "testing failure case",
-        "file_name": "malware.doc" if with_file else None,
+        "file_name": file_name if with_file else None,
         "omitted": [],
     }
 
@@ -59,7 +63,7 @@ def _write_report(crash_id: str, *, node: str, with_file: bool = True) -> str:
         fp.write("EXCEPTION\ntesting failure case\n")
 
     if with_file:
-        with open(os.path.join(crash_dir, FILE_DIR, "malware.doc"), "w") as fp:
+        with open(os.path.join(crash_dir, FILE_DIR, file_name), "w") as fp:
             fp.write(MALWARE_BYTES)
 
     return crash_dir
@@ -94,22 +98,16 @@ def local_node() -> str:
 class TestAuth:
     @pytest.mark.asyncio
     async def test_list_requires_auth(self, unauth_client: AsyncClient):
+        # the router-level dependency authenticates every route the same way, so one route
+        # stands for all three
         assert (await unauth_client.get("/crashes/")).status_code == 401
-
-    @pytest.mark.asyncio
-    async def test_get_requires_auth(self, unauth_client: AsyncClient):
-        response = await unauth_client.get(f"/crashes/{uuid.uuid4()}")
-        assert response.status_code == 401
-
-    @pytest.mark.asyncio
-    async def test_download_requires_auth(self, unauth_client: AsyncClient):
-        response = await unauth_client.get(f"/crashes/{uuid.uuid4()}/download")
-        assert response.status_code == 401
 
     @pytest.mark.asyncio
     async def test_requires_crash_read(self, noperm_client: AsyncClient):
         """A crash report archive is live malware; it is behind its own permission."""
+        # each route declares the permission itself, so each one is checked
         assert (await noperm_client.get("/crashes/")).status_code == 403
+        assert (await noperm_client.get(f"/crashes/{uuid.uuid4()}")).status_code == 403
         response = await noperm_client.get(f"/crashes/{uuid.uuid4()}/download")
         assert response.status_code == 403
 
@@ -118,17 +116,13 @@ class TestCrashIdValidation:
     """The crash id becomes a filesystem path and then an archive handed to an analyst."""
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("bad_id", ["not-a-crash-id", "..", "%2e%2e", "0" * 40])
-    async def test_malformed_id_rejected(self, client: AsyncClient, bad_id: str):
-        response = await client.get(f"/crashes/{bad_id}")
-        assert response.status_code in (400, 404)
-        if response.status_code == 400:
-            assert response.json()["detail"] == "invalid crash id"
-
-    @pytest.mark.asyncio
-    async def test_traversal_rejected(self, client: AsyncClient):
-        response = await client.get("/crashes/..%2F..%2F..%2Fetc%2Fpasswd/download")
-        assert response.status_code in (400, 404)
+    @pytest.mark.parametrize("route", ["", "/download"])
+    async def test_malformed_id_rejected(self, client: AsyncClient, route: str):
+        # the server decodes %2e%2e to "..", which reaches the route as the crash id. a 404 here
+        # would come from find_crash_report_dir's own check, not from the one at the boundary
+        response = await client.get(f"/crashes/%2e%2e{route}")
+        assert response.status_code == 400
+        assert response.json()["detail"] == "invalid crash id"
 
     @pytest.mark.asyncio
     async def test_unknown_id_is_404(self, client: AsyncClient):
@@ -163,6 +157,18 @@ class TestGetCrashReport:
         assert os.path.join(FILE_DIR, "malware.doc") in listed
 
     @pytest.mark.asyncio
+    async def test_detail_with_an_undecodable_file_name(self, client: AsyncClient, local_node: str):
+        crash_id = str(uuid.uuid4())
+        _write_report(crash_id, node=local_node, file_name=UNDECODABLE_NAME)
+
+        response = await client.get(f"/crashes/{crash_id}")
+        assert response.status_code == 200
+
+        body = response.json()
+        assert body["file_name"] == "\\udce9\\udce9.doc"
+        assert os.path.join(FILE_DIR, "\\udce9\\udce9.doc") in {f["path"] for f in body["files"]}
+
+    @pytest.mark.asyncio
     async def test_detail_without_index_row(self, client: AsyncClient, local_node: str):
         """A report whose index insert failed is still fetchable by id."""
         crash_id = str(uuid.uuid4())
@@ -193,8 +199,10 @@ class TestGetCrashReport:
 class TestDownloadCrashReport:
     @pytest.mark.asyncio
     async def test_download_happy_path(
-        self, client: AsyncClient, session: AsyncSession, local_node: str, tmp_path
+        self, client: AsyncClient, client_actor, session: AsyncSession, local_node: str, tmp_path,
+        caplog: pytest.LogCaptureFixture,
     ):
+        caplog.set_level(logging.INFO)
         crash_id = str(uuid.uuid4())
         crash_dir = _write_report(crash_id, node=local_node)
         await _index(session, crash_id, crash_dir, local_node)
@@ -203,6 +211,8 @@ class TestDownloadCrashReport:
         assert response.status_code == 200
         assert response.headers["content-type"] == "application/zip"
         assert f"crash-{crash_id}.zip" in response.headers["content-disposition"]
+        audit = audit_record(caplog, f"user unittest downloading crash report {crash_id}")
+        assert (*audit_actor_of(audit), audit.crash_id) == (*client_actor, crash_id)
 
         with zipfile.ZipFile(io.BytesIO(response.content)) as archive:
             names = archive.namelist()
@@ -215,6 +225,19 @@ class TestDownloadCrashReport:
 
         extracted = tmp_path / crash_id / FILE_DIR / "malware.doc"
         assert extracted.read_text() == MALWARE_BYTES
+
+    @pytest.mark.asyncio
+    async def test_download_with_an_undecodable_file_name(self, client: AsyncClient, local_node: str, tmp_path):
+        crash_id = str(uuid.uuid4())
+        _write_report(crash_id, node=local_node, file_name=UNDECODABLE_NAME)
+
+        response = await client.get(f"/crashes/{crash_id}/download")
+        assert response.status_code == 200
+
+        # zip stores the name's own bytes, without the UTF-8 flag, so zipfile reads it as cp437
+        with zipfile.ZipFile(io.BytesIO(response.content)) as archive:
+            names = [name.encode("cp437") for name in archive.namelist()]
+        assert f"{crash_id}/{FILE_DIR}/".encode() + b"\xe9\xe9.doc" in names
 
     @pytest.mark.asyncio
     async def test_download_is_encrypted(
@@ -268,6 +291,9 @@ class TestListCrashReports:
         await _index(session, crash_id, _write_report(crash_id, node=local_node), local_node,
                      module_name="unique_test_module",
                      module_path="saq.modules.test:UniqueTestAnalysis")
+        # a crash of another module, which neither filter may return
+        other = str(uuid.uuid4())
+        await _index(session, other, _write_report(other, node=local_node), local_node)
 
         by_name = await client.get("/crashes/", params={"module": "unique_test_module"})
         assert [r["crash_id"] for r in by_name.json()["data"]] == [crash_id]
@@ -423,23 +449,6 @@ class TestCrossNodeViaSharedStorage:
         assert (await client.get(f"/crashes/{crash_id}/download")).status_code == 409
 
     @pytest.mark.asyncio
-    async def test_listing_marks_remote_reports_non_local(
-        self, client: AsyncClient, session: AsyncSession, shared_storage
-    ):
-        """With replication on, `local` still means 'on this node's disk'. The listing cannot
-        know whether the shared copy exists without a round trip per row, so it does not claim it."""
-        root_uuid = str(uuid.uuid4())
-        crash_id = str(uuid.uuid4())
-        crash_dir = _write_report(crash_id, node="other-node")
-        await _index(session, crash_id, crash_dir, "other-node", root_uuid=root_uuid)
-
-        response = await client.get("/crashes/", params={"root_uuid": root_uuid})
-        rows = response.json()["data"]
-        assert len(rows) == 1
-        assert rows[0]["node"] == "other-node"
-        assert rows[0]["local"] is False
-
-    @pytest.mark.asyncio
     async def test_local_report_with_replication_on(
         self, client: AsyncClient, session: AsyncSession, shared_storage, local_node: str
     ):
@@ -493,31 +502,3 @@ class TestWrongNodeWithoutReplication:
         await _index(session, crash_id, crash_dir, "some-other-node")
 
         assert (await client.get(f"/crashes/{crash_id}/download")).status_code == 409
-
-    @pytest.mark.asyncio
-    async def test_listing_marks_remote_reports_unreachable(
-        self, client: AsyncClient, session: AsyncSession
-    ):
-        root_uuid = str(uuid.uuid4())
-        crash_id = str(uuid.uuid4())
-        await _index(session, crash_id, _write_report(crash_id, node="other-node"), "other-node",
-                     root_uuid=root_uuid)
-
-        response = await client.get("/crashes/", params={"root_uuid": root_uuid})
-        rows = response.json()["data"]
-        assert rows[0]["local"] is False
-
-    @pytest.mark.asyncio
-    async def test_listing_local_only_for_this_node(
-        self, client: AsyncClient, session: AsyncSession, local_node: str
-    ):
-        root_uuid = str(uuid.uuid4())
-        mine = str(uuid.uuid4())
-        theirs = str(uuid.uuid4())
-        await _index(session, mine, _write_report(mine, node=local_node), local_node,
-                     root_uuid=root_uuid)
-        await _index(session, theirs, _write_report(theirs, node="other-node"), "other-node",
-                     root_uuid=root_uuid)
-
-        rows = (await client.get("/crashes/", params={"root_uuid": root_uuid})).json()["data"]
-        assert {r["crash_id"]: r["local"] for r in rows} == {mine: True, theirs: False}

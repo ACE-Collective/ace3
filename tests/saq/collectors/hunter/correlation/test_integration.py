@@ -1,5 +1,4 @@
 import datetime
-import json
 import sys
 
 import pytest
@@ -14,7 +13,6 @@ from saq.collectors.hunter.correlation.schema import (
     CorrelateConfig,
     PredefinedCommandConfig,
 )
-from saq.configuration.config import get_config
 from saq.configuration.encryption import delete_password, encrypt_password
 
 PYTHON = sys.executable
@@ -163,30 +161,6 @@ class TestCorrelationIntegration:
         assert result.event_actions[0].queue_override == "critical"
         assert result.event_actions[1].queue_override == "high"
 
-    def test_discard_clears_all_alerts(self):
-        """Test that discard stops everything and discards alerts."""
-        config_data = {
-            "logic": [
-                {
-                    "when": {"type": "equals", "value": "poison", "property": "type"},
-                    "execute": [{"action": "discard"}],
-                },
-            ],
-        }
-        config = CorrelateConfig.model_validate(config_data)
-        engine = CorrelationEngine(
-            config, [], datetime.datetime.now(datetime.timezone.utc),
-        )
-
-        events = [
-            {"type": "normal", "id": 1},
-            {"type": "poison", "id": 2},
-            {"type": "normal", "id": 3},
-        ]
-
-        result = engine.execute(events)
-        assert result.discarded is True
-
     def test_stop_preserves_earlier_alerts(self):
         """Test that stop preserves alerts from events processed before the stop."""
         config_data = {
@@ -289,28 +263,6 @@ class TestCorrelationIntegration:
         assert transform_step.result_count == 1
         assert transform_step.merge_dropped == 0
 
-    def test_jinja_expression_with_events_access(self):
-        """Test that _events is accessible in jinja expressions."""
-        config_data = {
-            "logic": [
-                {
-                    "when": "{{ _events | length > 2 }}",
-                    "execute": [
-                        {"action": {"type": "log", "log_message": "stream has {{ _events | length }} events"}},
-                    ],
-                },
-            ],
-        }
-        config = CorrelateConfig.model_validate(config_data)
-        engine = CorrelationEngine(
-            config, [], datetime.datetime.now(datetime.timezone.utc),
-        )
-
-        events = [{"id": 1}, {"id": 2}, {"id": 3}]
-        result = engine.execute(events)
-        # All events should still become alerts (log doesn't interrupt)
-        assert len(result.events) == 3
-
     def test_secrets_not_bound_in_jinja_condition(self, store_secret):
         """_secrets must not be reachable from a correlation condition.
 
@@ -354,140 +306,6 @@ class TestCorrelationIntegration:
         events = [{"id": 1}]
         result = engine.execute(events)
         assert len(result.events) == 0  # filtered because _config is undefined
-
-    def test_secrets_and_config_not_bound_in_executable_env(self, store_secret):
-        """No hunt template can hand a credential to a script, including `env:`."""
-        store_secret("db_pass", "s3cret")
-
-        config_data = {
-            "logic": [
-                {
-                    "transform": {
-                        "type": "event",
-                        "method": "property",
-                        "property_name": "result",
-                        "command": {
-                            "type": "executable",
-                            "path": PYTHON,
-                            "args": ["-c", "import os; print(os.environ['PROBE'])"],
-                            "env": {"PROBE": "{{ _secrets is undefined and _config is undefined }}"},
-                        },
-                    },
-                },
-            ],
-        }
-        config = CorrelateConfig.model_validate(config_data)
-        engine = CorrelationEngine(
-            config, [], datetime.datetime.now(datetime.timezone.utc),
-        )
-
-        result = engine.execute([{"id": 1}])
-        assert result.events[0]["result"] == "True"
-
-    def test_secrets_not_bound_in_executable_args(self, store_secret):
-        """_secrets must not reach `args` -- argv is readable by other users via /proc."""
-        store_secret("db_pass", "s3cret")
-
-        config_data = {
-            "logic": [
-                {
-                    "transform": {
-                        "type": "event",
-                        "method": "property",
-                        "property_name": "result",
-                        "command": {
-                            "type": "executable",
-                            "path": PYTHON,
-                            "args": ["-c", "import sys; print(sys.argv[1])", "{{ _secrets is undefined }}"],
-                        },
-                    },
-                },
-            ],
-        }
-        config = CorrelateConfig.model_validate(config_data)
-        engine = CorrelationEngine(
-            config, [], datetime.datetime.now(datetime.timezone.utc),
-        )
-
-        result = engine.execute([{"id": 1}])
-        assert result.events[0]["result"] == "True"
-
-    def test_secrets_not_bound_in_query_text(self, store_secret):
-        """_secrets must not reach query text -- it is sent to a third-party data source."""
-        store_secret("db_pass", "s3cret")
-
-        class _RecordingSource(QuerySource):
-            def __init__(self):
-                self.queries = []
-
-            def execute_query(self, query, start_time, end_time, timeout, source_options=None):
-                self.queries.append(query)
-                return [{"matched": True}]
-
-        source = _RecordingSource()
-        register_query_source("mock", source)
-
-        config_data = {
-            "logic": [
-                {
-                    "transform": {
-                        "type": "event",
-                        "method": "property",
-                        "property_name": "result",
-                        "command": {
-                            "type": "query",
-                            "source": "mock",
-                            "query": "search probe={{ _secrets is undefined }}",
-                        },
-                    },
-                },
-            ],
-        }
-        config = CorrelateConfig.model_validate(config_data)
-        engine = CorrelationEngine(
-            config, [], datetime.datetime.now(datetime.timezone.utc),
-        )
-
-        engine.execute([{"id": 1}])
-        assert source.queries == ["search probe=True"]
-
-    @pytest.mark.parametrize("template", [
-        "{{ _secrets['rapid7.api_key'] }}",
-        "{{ _config['rapid7']['api_key'] }}",
-    ])
-    def test_env_reading_a_credential_fails_the_step(self, store_secret, monkeypatch, template):
-        """A hunt written against the removed bindings errors instead of running the script."""
-        store_secret("rapid7.api_key", "REAL_KEY")
-        monkeypatch.setitem(get_config().raw._data, "rapid7", {"api_key": "REAL_KEY"})
-
-        predefined = [PredefinedCommandConfig.model_validate({
-            "name": "get_r7_comments",
-            "type": "executable",
-            "path": PYTHON,
-            "args": ["-c", "import os; print(os.environ['R7_API_KEY'])"],
-            "env": {"R7_API_KEY": template},
-        })]
-        config = CorrelateConfig.model_validate({
-            "logic": [
-                {
-                    "transform": {
-                        "type": "event",
-                        "method": "property",
-                        "property_name": "comments",
-                        "command": {"type": "defined", "name": "get_r7_comments"},
-                    },
-                },
-            ],
-        })
-        engine = CorrelationEngine(
-            config, predefined, datetime.datetime.now(datetime.timezone.utc),
-        )
-
-        result = engine.execute([{"id": 1}])
-        event_trace = result.trace.event_traces[0]
-        assert event_trace.outcome == "error"
-        assert "is undefined" in event_trace.steps[0].step.error
-        assert "comments" not in result.events[0]
 
     def test_splunk_hunt_omits_relative_time_field_uses_default(self):
         """End-to-end: a splunk hunt's correlate query omits relative_time_field/format

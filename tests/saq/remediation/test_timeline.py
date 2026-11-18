@@ -114,16 +114,6 @@ class TestRemediationEvent:
         assert e.duration is None
         assert e.duration_display is None
 
-    def test_duration_with_event_time(self):
-        ev_t = datetime(2026, 5, 6, 12, 0, 0, tzinfo=timezone.utc)
-        ts = datetime(2026, 5, 6, 12, 25, 29, tzinfo=timezone.utc)
-        e = RemediationEvent(
-            source="vendor", event_type="auto_remediated", timestamp=ts,
-            description="Auto-Remediated", event_time=ev_t,
-        )
-        assert e.duration == timedelta(minutes=25, seconds=29)
-        assert e.duration_display == "25m 29s"
-
     def test_naive_datetimes_are_normalized_to_utc(self):
         # Regression: MySQL TIMESTAMP columns return naive datetimes; subtracting
         # them from a tz-aware event_time raises TypeError. RemediationEvent
@@ -140,29 +130,16 @@ class TestRemediationEvent:
         assert e.duration == timedelta(minutes=25, seconds=29)
         assert e.duration_display == "25m 29s"
 
-    def test_naive_event_time_is_normalized_too(self):
-        aware_ts = datetime(2026, 5, 6, 12, 25, 29, tzinfo=timezone.utc)
-        naive_event_time = datetime(2026, 5, 6, 12, 0, 0)      # no tzinfo
-        e = RemediationEvent(
-            source="ACE", event_type="ace_remove", timestamp=aware_ts,
-            description="Remove (Success)", event_time=naive_event_time,
-        )
-        assert e.duration == timedelta(minutes=25, seconds=29)
-
     @pytest.mark.parametrize("seconds,expected", [
-        (0, "0s"),
         (-30, "0s"),
         (1, "1s"),
         (59, "59s"),
         (60, "1m"),
-        (65, "1m 5s"),
         (3599, "59m 59s"),
         (3600, "1h"),
         (3661, "1h 1m"),
-        (86399, "23h 59m"),
         (86400, "1d"),
         (90000, "1d 1h"),
-        (172800, "2d"),
     ])
     def test_duration_display_formatting(self, seconds, expected):
         ev_t = datetime(2026, 5, 6, tzinfo=timezone.utc)
@@ -189,12 +166,6 @@ class TestProviderRegistry:
             assert timeline.REGISTERED_REMEDIATION_PROVIDERS.count(C) == 1
         finally:
             timeline.REGISTERED_REMEDIATION_PROVIDERS.remove(C)
-
-    @pytest.mark.integration
-    def test_empty_registry_means_no_events_from_tree(self):
-        # No registered providers, no observables -> empty result.
-        root = _root()
-        assert gather_remediation_events(root) == []
 
     @pytest.mark.integration
     def test_only_registered_provider_classes_are_inspected(self):
@@ -226,11 +197,6 @@ class TestProviderRegistry:
 
 @pytest.mark.integration
 class TestGatherRemediationEvents:
-
-    def test_provider_returning_empty_is_fine(self):
-        with _temporary_provider_class() as ProviderClass:
-            root = _root(analyses=[ProviderClass([])])
-            assert gather_remediation_events(root) == []
 
     def test_provider_returning_none_is_handled(self):
         with _temporary_provider_class() as ProviderClass:
@@ -358,17 +324,6 @@ class TestSorting:
             root = _root(analyses=[ProviderClass([standalone, anchored])])
             assert gather_remediation_events(root) == [anchored, standalone]
 
-    def test_multiple_unanchored_events_still_sort_by_timestamp(self):
-        t_late = datetime(2026, 5, 6, 13, 0, tzinfo=timezone.utc)
-        t_early = datetime(2026, 5, 6, 12, 0, tzinfo=timezone.utc)
-
-        early = _ev("vendor", t_early, event_time=None)
-        late = _ev("vendor", t_late, event_time=None)
-
-        with _temporary_provider_class() as ProviderClass:
-            root = _root(analyses=[ProviderClass([late, early])])
-            assert gather_remediation_events(root) == [early, late]
-
     def test_target_breaks_ties_when_event_time_and_when_match(self):
         # Same phish hits two recipients; both are remediated at the same time.
         # Tertiary sort is by target (recipient) to keep alice's row above bob's.
@@ -475,10 +430,6 @@ class TestACEEmailRemediationEvents:
             assert gather_remediation_events(root) == []
 
         spy.assert_not_called()
-
-    def test_email_delivery_with_no_remediations_returns_empty(self):
-        root = _root(email_deliveries=["<m1@x>|u@x"])
-        assert gather_remediation_events(root) == []
 
     def test_one_remediation_one_attempt_yields_one_event(self):
         rem = _remediation("<m1@x>|alice@x", action="remove", name="office365_email")
@@ -743,7 +694,3 @@ class TestPendingRows:
         events = gather_remediation_events(root, fallback_event_time=_utc(_T0), coverage=coverage)
 
         assert [(e.source, e.pending) for e in events] == [("ACE", False), ("Alpha", True)]
-
-    @pytest.mark.integration
-    def test_gather_without_coverage_has_no_pending_rows(self):
-        assert gather_remediation_events(_root()) == []

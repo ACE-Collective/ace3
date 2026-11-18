@@ -356,7 +356,9 @@ class TrackingReader:
         try:
             self._promote(record)
         except Exception as e:
-            logging.error("unable to record pending failure for %s: %s", worker_name, e)
+            # the worker file is left in place: recover_pending_failures() promotes it at startup
+            logging.exception("unable to record pending failure for %s: %s", worker_name, e,
+                              extra={"worker_name": worker_name, "root_uuid": record.root_uuid})
             return None
 
         self._discard_worker_file(worker_name)
@@ -380,7 +382,8 @@ class TrackingReader:
                 try:
                     self._promote(record)
                 except Exception as e:
-                    logging.error("unable to recover pending failure from %s: %s", path, e)
+                    logging.exception("unable to recover pending failure from %s: %s", path, e,
+                                      extra={"path": path, "root_uuid": record.root_uuid})
                     continue
 
             try:

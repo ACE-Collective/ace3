@@ -1,8 +1,11 @@
 import json
+import logging
 from datetime import datetime, timedelta, timezone
+from threading import Event
 
 import pytest
 
+from saq.database.model import ExternalRemediationCheck
 from saq.database.pool import get_db
 from saq.remediation.external.types import (
     CheckResult,
@@ -241,13 +244,15 @@ def test_worker_not_superseded_by_other_targets_or_own_probe(make_check):
     worker = ExternalRemediationCheckWorker(probe)
 
     value = "<not-superseded-1@example.com>|alice@example.com"
+    # both confirmed longer ago than the grace window, so only the target and probe filters exclude them
+    confirmed_at = datetime.now(timezone.utc) - timedelta(hours=2)
     # a sibling confirmation for a DIFFERENT target
     make_check(probe_name="other_probe",
                observable_value="<different@example.com>|bob@example.com",
-               status="COMPLETED", result=CheckResult.CONFIRMED.value)
+               status="COMPLETED", result=CheckResult.CONFIRMED.value, update_time=confirmed_at)
     # this probe's own confirmation for the same target (excluded by design)
     make_check(probe_name="fake_probe", observable_value=value,
-               status="COMPLETED", result=CheckResult.CONFIRMED.value)
+               status="COMPLETED", result=CheckResult.CONFIRMED.value, update_time=confirmed_at)
     check = make_check(observable_value=value)
 
     worker.process(_work_item_from(check))
@@ -334,3 +339,44 @@ def test_worker_grace_zero_supersedes_immediately(make_check):
     assert check.status == CheckStatus.COMPLETED.value
     assert check.result == CheckResult.SUPERSEDED.value
     assert probe.calls == []
+
+
+@pytest.mark.integration
+def test_worker_loop_recovers_after_failed_commit(make_check, caplog):
+    """A check whose outcome fails to commit must not poison the thread's session for the
+    checks after it."""
+    first = _work_item_from(make_check())
+    second = _work_item_from(make_check())
+
+    def outcome(target):
+        if target.observable_value == first.observable_value:
+            # leaves a row in the session without its NOT NULL max_retries, which fails when the
+            # worker commits this check's outcome
+            get_db().add(ExternalRemediationCheck(
+                probe_name="fake_probe",
+                observable_type="email_delivery",
+                observable_value="invalid",
+                alert_uuid=target.alert_uuid,
+                status="NEW",
+                deadline=datetime.now(timezone.utc) + timedelta(hours=1),
+            ))
+        return ProbeOutcome(not_found=True)
+
+    worker = ExternalRemediationCheckWorker(FakeProbe(outcome_factory=outcome))
+    worker.queue_wait_timeout = 0.1
+    worker.handle_request(first)
+    worker.handle_request(second)
+
+    # with the shutdown event set, each pass of the loop takes one item and returns
+    worker.stop()
+    worker.worker_loop(Event())
+    worker.worker_loop(Event())
+
+    check = get_db().query(ExternalRemediationCheck).filter(ExternalRemediationCheck.id == second.id).one()
+    assert check.status == CheckStatus.COMPLETED.value
+    assert check.result == CheckResult.NOT_FOUND.value
+
+    errors = [r for r in caplog.records if r.levelno == logging.ERROR and r.exc_info]
+    assert any(f"external remediation check {first.id} " in r.getMessage() and r.alert_uuid == first.alert_uuid for r in errors)
+
+

@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from saq.constants import F_EMAIL_DELIVERY, create_email_delivery
+from saq.constants import F_EMAIL_DELIVERY, F_TEST, create_email_delivery
 from saq.database.database_observable import upsert_observable
 from saq.database.model import ExternalRemediationCheck, ObservableRemediationMapping, Remediation
 from saq.database.pool import get_db
@@ -295,6 +295,8 @@ def test_get_remediation_coverage_reads_all_three_sources():
     root.initialize_storage()
     root.add_observable_by_spec(F_EMAIL_DELIVERY, ALICE)
     root.add_observable_by_spec(F_EMAIL_DELIVERY, BOB)
+    # not an email target, so it adds nothing to the counts
+    root.add_observable_by_spec(F_TEST, "not an email")
     root.save()
     alert = ALERT(root)
 

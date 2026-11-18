@@ -1,6 +1,5 @@
 import logging
 import os
-from subprocess import PIPE, Popen
 from typing import Type, override
 from pydantic import Field
 from saq.analysis.analysis import Analysis
@@ -10,6 +9,7 @@ from saq.modules import AnalysisModule
 from saq.modules.config import AnalysisModuleConfig
 from saq.modules.file_analysis.is_file_type import is_rtf_file
 from saq.observables.file import FileObservable
+from saq.sandbox.runner import tool_failure_reason
 from saq.util.strings import format_item_list_for_summary
 
 KEY_STDOUT = 'stdout'
@@ -131,12 +131,23 @@ class RTFOLEObjectAnalyzer(AnalysisModule):
         analysis = self.create_analysis(_file)
 
         try:
-            p = Popen(['python', self.rtfobj_path, '-d', output_dir, '-s', 'all', local_file_path], 
-                      stdout=PIPE, stderr=PIPE, universal_newlines=True)
-            analysis.stderr, analysis.stdout = p.communicate()
+            p = self.run_tool(['python', self.rtfobj_path, '-d', output_dir, '-s', 'all', local_file_path],
+                              local_file_path, capture_output=True, universal_newlines=True)
+            if p is None:
+                # what it extracted before it was stopped may be cut short
+                analysis.error = "rtfobj did not finish"
+                return AnalysisExecutionResult.COMPLETED
+
+            analysis.stdout, analysis.stderr = p.stdout, p.stderr
             analysis.return_code = p.returncode
+            # rtfobj exits 0 whatever it found, so anything else is a crash; what it extracted is still added
+            if p.returncode != 0:
+                analysis.error = tool_failure_reason("rtfobj", p.returncode, p.stderr)
+                logging.info("%s failed on %s: %s", self, local_file_path, analysis.error,
+                             extra={"module_name": self.name, "path": local_file_path, "root_uuid": self.get_root().uuid})
         except Exception as e:
             logging.exception("execution of {} failed: {}".format(self.rtfobj_path, e))
+            analysis.error = f"unable to run rtfobj: {str(e) or type(e).__name__}"
             return AnalysisExecutionResult.COMPLETED
 
         # walk the output directory and add all discovered files as observables
@@ -145,7 +156,7 @@ class RTFOLEObjectAnalyzer(AnalysisModule):
             for root, dirs, files in os.walk(output_dir):
                 logging.debug("looping {} {} {}".format(root, dirs, files))
                 for file_name in files:
-                    extracted_file = os.path.join(output_dir, file_name)
+                    extracted_file = os.path.join(root, file_name)
                     logging.debug("extracted_file = {}".format(extracted_file))
                     analysis.extracted_files.append(extracted_file)
                     f = analysis.add_file_observable(extracted_file, volatile=True)
@@ -265,9 +276,6 @@ class NoWhiteSpaceAnalyzer(AnalysisModule):
         return F_FILE
 
     def execute_analysis(self, _file: FileObservable):
-
-        from functools import partial
-
         local_file_path = _file.full_path
         if not os.path.exists(local_file_path):
             logging.error("cannot find local file path for {}".format(_file))
@@ -290,14 +298,12 @@ class NoWhiteSpaceAnalyzer(AnalysisModule):
         output_file = '{}.nowhitespace'.format(local_file_path)
         count = 0
 
-        # this is probably not very efficient...
         with open(local_file_path, 'rb') as fp_in:
             with open(output_file, 'wb') as fp_out:
-                for b in iter(partial(fp_in.read, 1), b''):
-                    if b not in b' \t\r\n\f\v':
-                        fp_out.write(b)
-                    else:
-                        count += 1
+                while chunk := fp_in.read(1024 * 1024):
+                    stripped = chunk.translate(None, delete=b' \t\r\n\f\v')
+                    count += len(chunk) - len(stripped)
+                    fp_out.write(stripped)
 
         analysis.count = count
         output_file = analysis.add_file_observable(output_file, volatile=True)

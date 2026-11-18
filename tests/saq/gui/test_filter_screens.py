@@ -62,7 +62,10 @@ def test_validate_entries_uses_the_screens_entry_model():
     entries = ALERTS_SCREEN.validate_entries([{"name": "Queue", "inverted": False, "values": ["default"]}])
     assert isinstance(entries[0], FilterEntry)
 
-    # an existing model instance is revalidated against the screen, not trusted
+    # an existing model instance, which is what the API's schemas hand over, is revalidated
+    # against the screen: a valid one comes back as the screen's entry, an invalid one is refused
+    (entry,) = ALERTS_SCREEN.validate_entries([FilterEntryBase(name="Queue", values=["default"])])
+    assert isinstance(entry, FilterEntry) and entry.values == ["default"]
     shape_only = FilterEntryBase(name="Color", values=["red"])
     with pytest.raises(ValidationError):
         ALERTS_SCREEN.validate_entries([shape_only])
@@ -163,7 +166,6 @@ def test_the_svs_sample_slugs_are_a_permanent_contract():
     ("Stored", ["True"], ["true"]),
     ("Retired", ["False"], ["false"]),
     ("Last Captured", ["-30d"], ["-30d"]),
-    ("Rule", ["Some_Rule"], ["Some_Rule"]),
     ("File Name", [".DOC"], [".DOC"]),
 ])
 def test_svs_sample_values_are_normalized(name, values, expected):

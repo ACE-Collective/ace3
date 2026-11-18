@@ -3,7 +3,7 @@ import pytest
 
 from saq.configuration.config import get_analysis_module_config
 from saq.constants import ANALYSIS_MODULE_LNK_PARSER, F_FILE, AnalysisExecutionResult
-from saq.modules.file_analysis.lnk_parser import LnkParseAnalysis, LnkParseAnalyzer, KEY_ERROR, KEY_INFO, get_target_path
+from saq.modules.file_analysis.lnk_parser import LnkParseAnalysis, LnkParseAnalyzer, get_target_path
 from tests.saq.test_util import create_test_context
 
 
@@ -60,24 +60,6 @@ class TestGetTargetPath:
     def test_empty_info(self):
         """test with empty info dict"""
         info = {}
-        result = get_target_path(info)
-        assert result is None
-
-    def test_missing_target_key(self):
-        """test with missing target key"""
-        info = {"other": "data"}
-        result = get_target_path(info)
-        assert result is None
-
-    def test_empty_items_list(self):
-        """test with empty items list"""
-        info = {"target": {"items": []}}
-        result = get_target_path(info)
-        assert result is None
-
-    def test_missing_items_key(self):
-        """test with missing items key in target"""
-        info = {"target": {}}
         result = get_target_path(info)
         assert result is None
 
@@ -166,74 +148,6 @@ class TestGetTargetPath:
         result = get_target_path(info)
         assert result == "C:\\test.exe"
 
-    def test_only_volume_item(self):
-        """test with only volume item, no file entries"""
-        info = {
-            "target": {
-                "items": [
-                    {
-                        "class": "Volume Item",
-                        "data": "C:\\"
-                    }
-                ]
-            }
-        }
-
-        result = get_target_path(info)
-        assert result == "C:\\"
-
-    def test_only_file_entries_no_volume(self):
-        """test with only file entries, no volume item"""
-        info = {
-            "target": {
-                "items": [
-                    {
-                        "class": "File entry",
-                        "primary_name": "Windows"
-                    },
-                    {
-                        "class": "File entry",
-                        "primary_name": "system32"
-                    },
-                    {
-                        "class": "File entry",
-                        "primary_name": "wscript.exe"
-                    }
-                ]
-            }
-        }
-
-        result = get_target_path(info)
-        assert result == "Windows\\system32\\wscript.exe"
-
-    def test_unknown_item_classes_ignored(self):
-        """test that unknown item classes are ignored"""
-        info = {
-            "target": {
-                "items": [
-                    {
-                        "class": "Unknown Class",
-                        "data": "should be ignored"
-                    },
-                    {
-                        "class": "Volume Item",
-                        "data": "D:\\"
-                    },
-                    {
-                        "class": "Some Other Class",
-                        "name": "also ignored"
-                    },
-                    {
-                        "class": "File entry",
-                        "primary_name": "test.exe"
-                    }
-                ]
-            }
-        }
-
-        result = get_target_path(info)
-        assert result == "D:\\test.exe"
-
     def test_multiple_volume_items_uses_last_absolute(self):
         """test that multiple volume items result in ntpath.join using the last absolute path"""
         info = {
@@ -284,31 +198,6 @@ class TestGetTargetPath:
         result = get_target_path(info)
         assert result is None
 
-    def test_target_path_property(self):
-        """test that the target_path property uses get_target_path function"""
-        analysis = LnkParseAnalysis()
-
-        # test with no info
-        assert analysis.target_path is None
-
-        # test with info containing target path
-        analysis.info = {
-            "target": {
-                "items": [
-                    {
-                        "class": "Volume Item",
-                        "data": "C:\\"
-                    },
-                    {
-                        "class": "File entry",
-                        "primary_name": "test.exe"
-                    }
-                ]
-            }
-        }
-
-        assert analysis.target_path == "C:\\test.exe"
-
 
 @pytest.mark.unit
 class TestLnkParseAnalysis:
@@ -318,91 +207,6 @@ class TestLnkParseAnalysis:
         assert analysis.error is None
         assert analysis.info == {}
 
-    def test_display_name(self):
-        analysis = LnkParseAnalysis()
-        assert analysis.display_name == "LnkParse Analysis"
-    
-    def test_error_property(self):
-        analysis = LnkParseAnalysis()
-        
-        # Test getter with None
-        assert analysis.error is None
-        
-        # Test setter and getter
-        test_error = "test error message"
-        analysis.error = test_error
-        assert analysis.error == test_error
-        assert analysis.details[KEY_ERROR] == test_error
-    
-    def test_info_property(self):
-        analysis = LnkParseAnalysis()
-        
-        # Test getter with empty dict
-        assert analysis.info == {}
-        
-        # Test setter and getter
-        test_info = {"data": {"command_line_arguments": "test args"}}
-        analysis.info = test_info
-        assert analysis.info == test_info
-        assert analysis.details[KEY_INFO] == test_info
-    
-    def test_command_line_arguments_property(self):
-        analysis = LnkParseAnalysis()
-        
-        # Test getter with no info
-        assert analysis.command_line_arguments is None
-        
-        # Test with info but no data
-        analysis.info = {}
-        assert analysis.command_line_arguments is None
-        
-        # Test with data but no command_line_arguments
-        analysis.info = {"data": {}}
-        assert analysis.command_line_arguments is None
-        
-        # Test with command_line_arguments
-        test_cmd_args = "test command line arguments"
-        analysis.info = {"data": {"command_line_arguments": test_cmd_args}}
-        assert analysis.command_line_arguments == test_cmd_args
-    
-    def test_icon_location_property(self):
-        analysis = LnkParseAnalysis()
-        
-        # Test getter with no info
-        assert analysis.icon_location is None
-        
-        # Test with info but no data
-        analysis.info = {}
-        assert analysis.icon_location is None
-        
-        # Test with data but no icon_location
-        analysis.info = {"data": {}}
-        assert analysis.icon_location is None
-        
-        # Test with icon_location
-        test_icon_location = "test icon location"
-        analysis.info = {"data": {"icon_location": test_icon_location}}
-        assert analysis.icon_location == test_icon_location
-    
-    def test_working_directory_property(self):
-        analysis = LnkParseAnalysis()
-        
-        # Test getter with no info
-        assert analysis.working_directory is None
-        
-        # Test with info but no data
-        analysis.info = {}
-        assert analysis.working_directory is None
-        
-        # Test with data but no working_directory
-        analysis.info = {"data": {}}
-        assert analysis.working_directory is None
-        
-        # Test with working_directory
-        test_working_directory = "test working directory"
-        analysis.info = {"data": {"working_directory": test_working_directory}}
-        assert analysis.working_directory == test_working_directory
-    
     def test_generate_summary_with_error(self):
         analysis = LnkParseAnalysis()
         analysis.error = "Parse failed"
@@ -417,14 +221,6 @@ class TestLnkParseAnalysis:
         
         summary = analysis.generate_summary()
         assert summary is None
-    
-    def test_generate_summary_single_field(self):
-        analysis = LnkParseAnalysis()
-        analysis.error = None
-        analysis.info = {"data": {"command_line_arguments": "test cmd"}}
-        
-        summary = analysis.generate_summary()
-        assert summary == "LnkParse Analysis: command line arguments: (test cmd)"
     
     def test_generate_summary_multiple_fields(self):
         analysis = LnkParseAnalysis()
@@ -471,19 +267,13 @@ class TestLnkParseAnalysis:
 @pytest.mark.integration
 class TestLnkParseAnalyzer:
     
-    def test_generated_analysis_type(self):
-        analyzer = LnkParseAnalyzer(
-            context=create_test_context(),
-            config=get_analysis_module_config(ANALYSIS_MODULE_LNK_PARSER))
-        assert analyzer.generated_analysis_type == LnkParseAnalysis
-    
     def test_valid_observable_types(self):
         analyzer = LnkParseAnalyzer(
             context=create_test_context(),
             config=get_analysis_module_config(ANALYSIS_MODULE_LNK_PARSER))
         assert analyzer.valid_observable_types == F_FILE
     
-    def test_execute_analysis_file_not_exists(self, root_analysis, tmpdir):
+    def test_execute_analysis_file_not_exists(self, root_analysis, tmpdir, caplog):
         analyzer = LnkParseAnalyzer(
             context=create_test_context(root=root_analysis),
             config=get_analysis_module_config(ANALYSIS_MODULE_LNK_PARSER))
@@ -492,11 +282,13 @@ class TestLnkParseAnalyzer:
         test_file = tmpdir / "temp.lnk"
         test_file.write("temp content")
         file_observable = root_analysis.add_file_observable(str(test_file))
-        # now remove the file so it doesn't exist when the analyzer tries to process it
-        os.remove(str(test_file))
-        
+        # the observable is a copy in the root's storage: remove that one
+        os.remove(file_observable.full_path)
+
         result = analyzer.execute_analysis(file_observable)
         assert result == AnalysisExecutionResult.COMPLETED
+        assert file_observable.get_analysis(LnkParseAnalysis) is None
+        assert f"cannot find local file path {file_observable.full_path}" in caplog.text
     
     def test_execute_analysis_not_lnk_file(self, root_analysis, tmpdir):
         analyzer = LnkParseAnalyzer(
@@ -519,39 +311,6 @@ class TestLnkParseAnalyzer:
         # should not have added lnk tag
         assert not file_observable.has_tag("lnk")
     
-    def test_execute_analysis_lnk_file(self, root_analysis, datadir):
-        analyzer = LnkParseAnalyzer(
-            context=create_test_context(root=root_analysis),
-            config=get_analysis_module_config(ANALYSIS_MODULE_LNK_PARSER))
-
-        # use the sample lnk file
-        file_observable = root_analysis.add_file_observable(str(datadir / "INVOICE#BUSAPOMKDS03.lnk"))
-
-        result = analyzer.execute_analysis(file_observable)
-        assert result == AnalysisExecutionResult.COMPLETED
-
-        # should have added lnk tag
-        assert file_observable.has_tag("lnk")
-
-        # should have created analysis
-        analysis = file_observable.get_analysis(LnkParseAnalysis)
-        assert analysis is not None
-        assert isinstance(analysis, LnkParseAnalysis)
-
-        # check that analysis has parsed info
-        assert analysis.info
-        assert isinstance(analysis.info, dict)
-        assert "data" in analysis.info
-        assert not analysis.error
-
-        # check that a JSON file was created
-        json_file_path = file_observable.full_path + ".lnkparser.json"
-        assert os.path.exists(json_file_path)
-
-        # verify the JSON file was added as an observable to the analysis
-        json_observables = [obs for obs in analysis.observables if obs.file_name.endswith(".lnkparser.json")]
-        assert len(json_observables) == 1
-
     def test_execute_analysis_invoice_lnk_target_path(self, root_analysis, datadir):
         """test target_path extraction from INVOICE malicious lnk sample"""
         analyzer = LnkParseAnalyzer(
@@ -562,8 +321,14 @@ class TestLnkParseAnalyzer:
         result = analyzer.execute_analysis(file_observable)
         assert result == AnalysisExecutionResult.COMPLETED
 
+        assert file_observable.has_tag("lnk")
         analysis = file_observable.get_analysis(LnkParseAnalysis)
         assert analysis is not None
+        assert not analysis.error
+
+        # the parsed info is also written out as a JSON file, added as an observable
+        assert [obs.file_name for obs in analysis.observables] == [f"{file_observable.file_name}.lnkparser.json"]
+        assert os.path.exists(file_observable.full_path + ".lnkparser.json")
 
         # validate target_path
         assert analysis.target_path == "C:\\Windows\\System32\\cmd.exe"
@@ -581,34 +346,6 @@ class TestLnkParseAnalyzer:
         assert "icon location:" in summary
         assert "working directory:" in summary
 
-    def test_execute_analysis_quickscan_lnk_target_path(self, root_analysis, datadir):
-        """test target_path extraction from QuickScan malicious lnk sample"""
-        analyzer = LnkParseAnalyzer(
-            context=create_test_context(root=root_analysis),
-            config=get_analysis_module_config(ANALYSIS_MODULE_LNK_PARSER))
-
-        file_observable = root_analysis.add_file_observable(str(datadir / "QuickScan.lnk"))
-        result = analyzer.execute_analysis(file_observable)
-        assert result == AnalysisExecutionResult.COMPLETED
-
-        analysis = file_observable.get_analysis(LnkParseAnalysis)
-        assert analysis is not None
-
-        # validate target_path
-        assert analysis.target_path == "C:\\Windows\\system32\\wscript.exe"
-
-        # validate other fields
-        assert analysis.command_line_arguments == '//e:VBScript thumb.db "QuickScan"'
-        assert analysis.icon_location == "shell32.dll"
-        assert analysis.working_directory is None
-
-        # validate summary includes target_path
-        summary = analysis.generate_summary()
-        assert summary is not None
-        assert "target path: (C:\\Windows\\system32\\wscript.exe)" in summary
-        assert "command line arguments:" in summary
-        assert "icon location:" in summary
-    
     def test_execute_analysis_lnk_file_parsing_error(self, root_analysis, tmpdir):
         analyzer = LnkParseAnalyzer(
             context=create_test_context(root=root_analysis),

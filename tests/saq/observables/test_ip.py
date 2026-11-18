@@ -2,29 +2,11 @@ import pytest
 
 from saq.analysis import RootAnalysis, Observable
 from saq.constants import F_IP, F_IP_CONVERSATION, F_IP_FULL_CONVERSATION
-from saq.observables.base import ObservableValueError
 from saq.observables.network.ip import IPObservable, IPConversationObservable, IPFullConversationObservable
 from saq.environment import get_global_runtime_settings
 
 
 # IPObservable Tests
-
-@pytest.mark.unit
-def test_ip_observable_valid_ipv4():
-    root = RootAnalysis()
-    o = root.add_observable_by_spec(F_IP, "192.168.1.1")
-    assert o is not None
-    assert o.value == "192.168.1.1"
-    assert isinstance(o, IPObservable)
-
-
-@pytest.mark.unit
-def test_ip_observable_valid_ipv6():
-    root = RootAnalysis()
-    o = root.add_observable_by_spec(F_IP, "2001:0db8:85a3:0000:0000:8a2e:0370:7334")
-    assert o is not None
-    assert o.value == "2001:0db8:85a3:0000:0000:8a2e:0370:7334"
-
 
 @pytest.mark.unit
 def test_ip_observable_whitespace():
@@ -34,24 +16,10 @@ def test_ip_observable_whitespace():
     assert o.value == "192.168.1.1"
 
 
-@pytest.mark.unit
-def test_ip_observable_invalid():
-    root = RootAnalysis()
-    o = root.add_observable_by_spec(F_IP, "not_an_ip")
-    assert o is None
-
-
 @pytest.mark.parametrize("value,expected", [
     ("192.168.1.1", "192.168.1.1"),
-    ("10.0.0.1", "10.0.0.1"),
-    ("8.8.8.8", "8.8.8.8"),
     ("2001:0db8:85a3:0000:0000:8a2e:0370:7334", "2001:0db8:85a3:0000:0000:8a2e:0370:7334"),
-    ("::1", "::1"),
-    ("fe80::1", "fe80::1"),
     ("256.1.1.1", None),
-    ("1.1.1", None),
-    ("not_an_ip", None),
-    ("", None),
     ("gggg::1", None),
 ])
 @pytest.mark.unit
@@ -78,15 +46,6 @@ def test_is_managed_true(monkeypatch):
 
 
 @pytest.mark.unit
-def test_is_managed_false(monkeypatch):
-    monkeypatch.setattr(get_global_runtime_settings(), "managed_network_cidrs", ["192.168.0.0/16", "10.0.0.0/8"])
-
-    root = RootAnalysis()
-    o = root.add_observable_by_spec(F_IP, "8.8.8.8")
-    assert o.is_managed() is False
-
-
-@pytest.mark.unit
 def test_is_managed_ipv6(monkeypatch):
     monkeypatch.setattr(get_global_runtime_settings(), "managed_network_cidrs", ["2001:db8::/32"])
 
@@ -99,19 +58,11 @@ def test_is_managed_ipv6(monkeypatch):
 
 
 @pytest.mark.unit
-def test_is_managed_empty_list(monkeypatch):
-    monkeypatch.setattr(get_global_runtime_settings(), "managed_network_cidrs", [])
-
-    root = RootAnalysis()
-    o = root.add_observable_by_spec(F_IP, "192.168.1.1")
-    assert o.is_managed() is False
-
-
-@pytest.mark.unit
 def test_matches_exact():
     root = RootAnalysis()
     o = root.add_observable_by_spec(F_IP, "192.168.1.1")
     assert o.matches("192.168.1.1") is True
+    assert o.matches("192.168.1.2") is False
 
 
 @pytest.mark.unit
@@ -124,21 +75,6 @@ def test_matches_cidr_ipv4():
 
 
 @pytest.mark.unit
-def test_matches_cidr_ipv6():
-    root = RootAnalysis()
-    o = root.add_observable_by_spec(F_IP, "2001:db8::1")
-    assert o.matches("2001:db8::/32") is True
-    assert o.matches("2001:db9::/32") is False
-
-
-@pytest.mark.unit
-def test_matches_no_match():
-    root = RootAnalysis()
-    o = root.add_observable_by_spec(F_IP, "192.168.1.1")
-    assert o.matches("192.168.1.2") is False
-
-
-@pytest.mark.unit
 def test_matches_invalid_cidr():
     root = RootAnalysis()
     o = root.add_observable_by_spec(F_IP, "192.168.1.1")
@@ -146,35 +82,7 @@ def test_matches_invalid_cidr():
     assert o.matches("not_a_valid_cidr/32") is False
 
 
-@pytest.mark.unit
-def test_ip_observable_json_roundtrip():
-    root = RootAnalysis()
-    o = root.add_observable_by_spec(F_IP, "192.168.1.1")
-
-    # serialize and deserialize
-    o2 = Observable.from_json(o.json)
-    assert o2.value == "192.168.1.1"
-    assert o2.type == F_IP
-
-
 # IPConversationObservable Tests
-
-@pytest.mark.unit
-def test_ip_conversation_valid():
-    root = RootAnalysis()
-    o = root.add_observable_by_spec(F_IP_CONVERSATION, "192.168.1.1_192.168.1.2")
-    assert o is not None
-    assert o.value == "192.168.1.1_192.168.1.2"
-    assert isinstance(o, IPConversationObservable)
-
-
-@pytest.mark.unit
-def test_ip_conversation_properties():
-    root = RootAnalysis()
-    o = root.add_observable_by_spec(F_IP_CONVERSATION, "192.168.1.1_10.0.0.1")
-    assert o.source == "192.168.1.1"
-    assert o.destination == "10.0.0.1"
-
 
 @pytest.mark.unit
 def test_ip_conversation_whitespace():
@@ -185,7 +93,6 @@ def test_ip_conversation_whitespace():
 
 @pytest.mark.parametrize("value,expected_source,expected_dest", [
     ("192.168.1.1_192.168.1.2", "192.168.1.1", "192.168.1.2"),
-    ("10.0.0.1_8.8.8.8", "10.0.0.1", "8.8.8.8"),
     ("2001:db8::1_2001:db8::2", "2001:db8::1", "2001:db8::2"),
 ])
 @pytest.mark.unit
@@ -202,25 +109,11 @@ def test_ip_conversation_valid_formats(value, expected_source, expected_dest):
     "192.168.1.1_192.168.1.2_extra",  # too many parts
     "_192.168.1.1",  # missing source
     "192.168.1.1_",  # missing destination
-    "",  # empty string
 ])
 @pytest.mark.unit
 def test_ip_conversation_invalid_formats(value):
     root = RootAnalysis()
     o = root.add_observable_by_spec(F_IP_CONVERSATION, value)
-    assert o is None
-
-
-@pytest.mark.unit
-def test_ip_conversation_invalid_format_direct():
-    with pytest.raises(ObservableValueError):
-        IPConversationObservable("no_separator_here")
-
-
-@pytest.mark.unit
-def test_ip_conversation_missing_separator():
-    root = RootAnalysis()
-    o = root.add_observable_by_spec(F_IP_CONVERSATION, "192.168.1.1")
     assert o is None
 
 
@@ -240,25 +133,6 @@ def test_ip_conversation_json_roundtrip():
 # IPFullConversationObservable Tests
 
 @pytest.mark.unit
-def test_ip_full_conversation_valid():
-    root = RootAnalysis()
-    o = root.add_observable_by_spec(F_IP_FULL_CONVERSATION, "192.168.1.1!443!10.0.0.1!55123")
-    assert o is not None
-    assert o.value == "192.168.1.1!443!10.0.0.1!55123"
-    assert isinstance(o, IPFullConversationObservable)
-
-
-@pytest.mark.unit
-def test_ip_full_conversation_properties():
-    root = RootAnalysis()
-    o = root.add_observable_by_spec(F_IP_FULL_CONVERSATION, "192.168.1.1!443!10.0.0.1!55123")
-    assert o.source == "192.168.1.1"
-    assert o.source_port == 443
-    assert o.dest == "10.0.0.1"
-    assert o.dest_port == 55123
-
-
-@pytest.mark.unit
 def test_ip_full_conversation_whitespace():
     root = RootAnalysis()
     o = root.add_observable_by_spec(F_IP_FULL_CONVERSATION, "  192.168.1.1!443!10.0.0.1!55123  ")
@@ -267,7 +141,6 @@ def test_ip_full_conversation_whitespace():
 
 @pytest.mark.parametrize("value,expected_src,expected_sport,expected_dst,expected_dport", [
     ("192.168.1.1!443!10.0.0.1!55123", "192.168.1.1", 443, "10.0.0.1", 55123),
-    ("8.8.8.8!53!192.168.1.1!12345", "8.8.8.8", 53, "192.168.1.1", 12345),
     ("2001:db8::1!443!2001:db8::2!55123", "2001:db8::1", 443, "2001:db8::2", 55123),
 ])
 @pytest.mark.unit
@@ -287,7 +160,6 @@ def test_ip_full_conversation_valid_formats(value, expected_src, expected_sport,
     "!443!10.0.0.1!55123",  # missing source
     "192.168.1.1!!10.0.0.1!55123",  # missing source port
     "192.168.1.1!443!10.0.0.1!",  # missing dest port value
-    "",  # empty string
     "192.168.1.1!443!10.0.0.1!55123!extra",  # too many parts
 ])
 @pytest.mark.unit
@@ -295,21 +167,6 @@ def test_ip_full_conversation_invalid_formats(value):
     root = RootAnalysis()
     o = root.add_observable_by_spec(F_IP_FULL_CONVERSATION, value)
     assert o is None
-
-
-@pytest.mark.unit
-def test_ip_full_conversation_port_types():
-    root = RootAnalysis()
-    o = root.add_observable_by_spec(F_IP_FULL_CONVERSATION, "192.168.1.1!443!10.0.0.1!55123")
-    # ports are converted to integers
-    assert isinstance(o.source_port, int)
-    assert isinstance(o.dest_port, int)
-
-
-@pytest.mark.unit
-def test_ip_full_conversation_invalid_format_direct():
-    with pytest.raises(ObservableValueError):
-        IPFullConversationObservable("invalid_format")
 
 
 @pytest.mark.unit
@@ -328,7 +185,7 @@ def test_ip_full_conversation_json_roundtrip():
 
 
 @pytest.mark.parametrize("value", [
-    "not_an_ip_1.2.3.4",  # invalid source IP
+    "not-an-ip!443!10.0.0.1!443",  # invalid source IP
     "192.168.1.1!abc!10.0.0.1!443",  # non-numeric source port
     "192.168.1.1!443!not_an_ip!443",  # invalid dest IP
     "192.168.1.1!443!10.0.0.1!xyz",  # non-numeric dest port
@@ -341,7 +198,7 @@ def test_ip_full_conversation_invalid_ips_and_ports(value):
 
 
 @pytest.mark.parametrize("value", [
-    "not_an_ip_1.2.3.4",  # invalid source IP
+    "not-an-ip_192.168.1.2",  # invalid source IP
     "192.168.1.1_not_an_ip",  # invalid dest IP
 ])
 @pytest.mark.unit

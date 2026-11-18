@@ -1,11 +1,11 @@
 from saq.analysis.analysis import Analysis
 from saq.constants import ANALYSIS_TYPE_MAILBOX, DIRECTIVE_ORIGINAL_EMAIL, DIRECTIVE_TRACKED, F_FILE, F_MESSAGE_ID, AnalysisExecutionResult
 from saq.modules import AnalysisModule
+from saq.modules.email.rfc822 import EmailAnalysis
 from saq.observables.file import FileObservable
 
 MAILBOX_ALERT_PREFIX = 'ACE Mailbox Scanner Detection -'
 
-KEY_ERROR = "error"
 KEY_RESULTS = "results"
 
 class MailboxEmailAnalysis(Analysis):
@@ -28,16 +28,9 @@ class MailboxEmailAnalyzer(AnalysisModule):
     # TODO I think this maybe should be a post analysis thing?
     def execute_analysis(self, _file) -> AnalysisExecutionResult:
         assert isinstance(_file, FileObservable)
-        from saq.modules.email.rfc822 import EmailAnalysis
 
         # this is ONLY for analysis of type "mailbox"
         if self.get_root().alert_type != ANALYSIS_TYPE_MAILBOX:
-            return AnalysisExecutionResult.COMPLETED
-
-        # did we end up whitelisting the email?
-        # this actually shouldn't even fire because if the email is whitelisted then the work queue is ignored
-        # for this analysis
-        if self.get_root().whitelisted:
             return AnalysisExecutionResult.COMPLETED
 
         email_analysis = _file.get_and_load_analysis(EmailAnalysis)

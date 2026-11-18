@@ -12,12 +12,12 @@ from saq.analysis.serialize.observable_serializer import ObservableSerializer
 from saq.configuration.config import get_config
 from saq.constants import EVENT_ANALYSIS_ADDED, EVENT_DIRECTIVE_ADDED, EVENT_RELATIONSHIP_ADDED, EVENT_TIME_FORMAT_TZ, F_TEST, VALID_RELATIONSHIP_TYPES
 from saq.environment import get_local_timezone
+from saq.observables.type_hierarchy import get_type_hierarchy
 from saq.util import create_timedelta, parse_event_time
 
 if TYPE_CHECKING:
     from saq.analysis.analysis import Analysis
     from saq.modules.base_module import AnalysisModule
-    from saq.remediation.target import RemediationTarget
 
 class Observable(BaseNode):
     """Represents a piece of information discovered in an analysis that can itself be analyzed."""
@@ -60,7 +60,6 @@ class Observable(BaseNode):
         self._ignored = False
 
         self._cache_id = None
-        self._faqueue_hits = None
         self._faqueue_search_url = None
         self._matching_events_by_status = None
 
@@ -84,14 +83,6 @@ class Observable(BaseNode):
     def disposition_history(self):
         from saq.database.database_observable import get_observable_disposition_history
         return get_observable_disposition_history(self)
-
-    @property
-    def faqueue_hits(self):
-        return self._faqueue_hits
-
-    @faqueue_hits.setter
-    def faqueue_hits(self, value):
-        self._faqueue_hits = value
 
     @property
     def faqueue_search_url(self):
@@ -132,16 +123,6 @@ class Observable(BaseNode):
 
     # observable properties and methods
     # ------------------------------------------------------------------------
-
-    @property
-    def whitelisted(self) -> bool:
-        """Returns True if this observable has been whitelisted."""
-        return self.has_tag('whitelisted') or self.has_directive('whitelisted')
-
-    def whitelist(self):
-        """Utility function to mark this Observable as whitelisted by adding the tag 'whitelisted'."""
-        self.add_tag('whitelisted')
-        self.add_directive('whitelisted')
 
     def matches(self, value: str) -> bool:
         """Returns True if the given value matches this value of this observable.
@@ -267,11 +248,6 @@ class Observable(BaseNode):
     def directives(self, value):
         assert isinstance(value, list)
         self._directives = value
-
-    @property
-    def remediation_targets(self) -> list["RemediationTarget"]:
-        """Returns a list of remediation targets for the observable, by default this is an empty list."""
-        return []
 
     def add_directive(self, directive):
         """Adds a directive that analysis modules might use to change their behavior."""
@@ -832,8 +808,14 @@ class Observable(BaseNode):
         return str(self).__hash__() # XXX this isn't right, is it?
 
 def get_observable_type_expiration_time(observable_type: str) -> Union[datetime, None]:
-    """Calculates the observable expiration datetime based on now + the configured time delta for this observable type."""
-    delta = get_config().observable_expiration_mappings.get(observable_type)
+    """Calculates a new detection's expiration from the nearest of the type and its ancestors that has
+    a mapping (so email_from inherits email_address's), else the global lifetime."""
+    config = get_config()
+    delta = config.observable_expiration_default
+    for t in (observable_type, *get_type_hierarchy().ancestors(observable_type)):
+        if t in config.observable_expiration_mappings:
+            delta = config.observable_expiration_mappings[t]
+            break
 
     if delta:
         return datetime.now(UTC) + create_timedelta(delta)

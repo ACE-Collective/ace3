@@ -12,7 +12,7 @@ from aceapi_v2.user_preferences.schemas import PREFERENCE_KEY_ALERT_SECTIONS
 from app.user_preferences import get_alert_sections_preference
 from saq.configuration.config import get_config
 from saq.constants import F_EMAIL_DELIVERY, F_URL
-from saq.database.model import Alert, Remediation, RemediationHistory
+from saq.database.model import Remediation, RemediationHistory
 from saq.database.pool import get_db
 from saq.database.util.alert import ALERT
 from saq.database.util.user_management import add_user, delete_user
@@ -128,10 +128,6 @@ def test_preference_is_read_once_per_page(web_client, root_analysis, analyst, mo
 
 def test_every_card_is_a_section(web_client, root_analysis, analyst, monkeypatch):
     """The cards that need data a plain alert does not have, rendered from stand-ins."""
-    # a dict key, as an Event is
-    event = type("Event", (), {"id": 1, "name": "Campaign X", "malware_names": [], "sorted_tags": []})()
-    # the real property currently always returns {} (saq/database/model.py), so this only tests the template
-    monkeypatch.setattr(Alert, "observable_open_event_counts", property(lambda self: {event: 1}))
     # an email ACE removed, which the remediation timeline reads from remediation_history
     delivery = root_analysis.add_observable_by_spec(F_EMAIL_DELIVERY, "<message-id@example.com>|user@example.com")
     remediation = Remediation(name="email", type=F_EMAIL_DELIVERY, key=delivery.value,
@@ -146,12 +142,11 @@ def test_every_card_is_a_section(web_client, root_analysis, analyst, monkeypatch
     monkeypatch.setattr("app.analysis.views.index.gather_clicker_results",
                         lambda root: SimpleNamespace(events=[], ran=True, errors=[]))
     root_analysis.details = {"correlation_trace": {"event_traces": []}}
-    choices = {"matching_open_events": False, "remediation_timeline": False, "url_clicks": False, "correlation_trace": False}
+    choices = {"remediation_timeline": False, "url_clicks": False, "correlation_trace": False}
     _choose(analyst, choices)
 
     html = _alert_page(web_client, root_analysis)
 
-    assert "1 event(s) | 1/" in _section(html, "matching_open_events")
     assert "(1 event)" in _section(html, "remediation_timeline")
     assert "(no clicks found)" in _section(html, "url_clicks")
     # the trace's own buttons stay in its header, where its script looks for them

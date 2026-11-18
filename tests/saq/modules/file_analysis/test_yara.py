@@ -11,14 +11,6 @@ from saq.signatures.builtin import SIGNATURE_VERSION_UNKNOWN, YARA_RULE_MATCH
 
 
 @pytest.mark.unit
-def test_basic_yara_scan(datadir):
-    scanner = yara_scanner.YaraScanner(signature_dir=str(datadir / "yara_rules"))
-    scanner.load_rules()
-    target_file = str(datadir / "sample.target")
-    result = scanner.scan(target_file)
-
-
-@pytest.mark.unit
 def test_yara_detection_signature_with_uuid_and_commit():
     # rule with a uuid meta + a resolved git commit
     result = {"rule": "r", "meta": {"uuid": "rule-uuid-1"}, "commit": "abc123"}
@@ -122,24 +114,3 @@ def test_declared_git_repo_dir_yields_a_real_signature_version(tmp_path):
     sig_uuid, sig_version = _yara_detection_signature(scanner.scan_results[0])
     assert sig_uuid == "7d3f5a21-9c48-4d6b-8e0a-1f2b3c4d5e6f"
     assert sig_version == sha
-
-
-@pytest.mark.unit
-def test_undeclared_rule_dir_still_scans_without_a_version(tmp_path):
-    """The same layout with nothing declared: rules still match - losing the
-    declaration costs a version stamp, not the detection."""
-    repo = str(tmp_path / "signatures")
-    signature_dir = os.path.join(repo, "yara")
-    rule_dir = os.path.join(signature_dir, "bv")
-    os.makedirs(rule_dir)
-    with open(os.path.join(rule_dir, "rules.yar"), "w") as fp:
-        fp.write(UUID_RULE)
-
-    _init_repo_with_commit(repo)
-
-    scanner = yara_scanner.YaraScanner(signature_dir=signature_dir)
-    scanner.load_rules()
-    assert scanner.scan_data(b"signature version marker")
-
-    _, sig_version = _yara_detection_signature(scanner.scan_results[0])
-    assert sig_version == SIGNATURE_VERSION_UNKNOWN

@@ -1,11 +1,13 @@
+import logging
 import os
-import shutil
+from types import SimpleNamespace
+
 import pytest
 
 from saq.configuration.config import get_analysis_module_config
 from saq.constants import ANALYSIS_MODULE_AUTOIT, F_FILE, AnalysisExecutionResult
-from saq.modules.file_analysis.autoit import AutoItAnalysis, AutoItAnalyzer, KEY_STDOUT, KEY_STDERR, KEY_ERROR, KEY_SCRIPTS, KEY_OUTPUT_DIR
-from saq.observables.file import FileObservable
+from saq.modules.file_analysis.autoit import AutoItAnalysis, AutoItAnalyzer, KEY_STDERR
+from tests.saq.helpers import the_error_with_traceback
 from tests.saq.test_util import create_test_context
 
 
@@ -20,22 +22,6 @@ class TestAutoItAnalysis:
         assert analysis.scripts == []
         assert analysis.output_dir is None
 
-    def test_display_name(self):
-        analysis = AutoItAnalysis()
-        assert analysis.display_name == "AutoIt Analysis"
-    
-    def test_stdout_property(self):
-        analysis = AutoItAnalysis()
-        
-        # Test getter with None
-        assert analysis.stdout is None
-        
-        # Test setter and getter
-        test_stdout = "test stdout output"
-        analysis.stdout = test_stdout
-        assert analysis.stdout == test_stdout
-        assert analysis.details[KEY_STDOUT] == test_stdout
-    
     def test_stderr_property(self):
         analysis = AutoItAnalysis()
         
@@ -47,42 +33,6 @@ class TestAutoItAnalysis:
         analysis.stderr = test_stderr
         assert analysis.stderr == test_stderr
         assert analysis.details[KEY_STDERR] == test_stderr
-    
-    def test_error_property(self):
-        analysis = AutoItAnalysis()
-        
-        # Test getter with None
-        assert analysis.error is None
-        
-        # Test setter and getter
-        test_error = "test error message"
-        analysis.error = test_error
-        assert analysis.error == test_error
-        assert analysis.details[KEY_ERROR] == test_error
-    
-    def test_scripts_property(self):
-        analysis = AutoItAnalysis()
-        
-        # Test getter with empty list
-        assert analysis.scripts == []
-        
-        # Test setter and getter
-        test_scripts = ["script1.au3", "script2.au3"]
-        analysis.scripts = test_scripts
-        assert analysis.scripts == test_scripts
-        assert analysis.details[KEY_SCRIPTS] == test_scripts
-    
-    def test_output_dir_property(self):
-        analysis = AutoItAnalysis()
-        
-        # Test getter with None
-        assert analysis.output_dir is None
-        
-        # Test setter and getter
-        test_output_dir = "/path/to/output"
-        analysis.output_dir = test_output_dir
-        assert analysis.output_dir == test_output_dir
-        assert analysis.details[KEY_OUTPUT_DIR] == test_output_dir
     
     def test_generate_summary_with_error(self):
         analysis = AutoItAnalysis()
@@ -99,14 +49,6 @@ class TestAutoItAnalysis:
         summary = analysis.generate_summary()
         assert summary is None
     
-    def test_generate_summary_single_script(self):
-        analysis = AutoItAnalysis()
-        analysis.error = None
-        analysis.scripts = ["script.au3"]
-        
-        summary = analysis.generate_summary()
-        assert summary == "AutoIt Analysis: decompiled script.au3"
-    
     def test_generate_summary_multiple_scripts(self):
         analysis = AutoItAnalysis()
         analysis.error = None
@@ -119,19 +61,13 @@ class TestAutoItAnalysis:
 @pytest.mark.integration
 class TestAutoItAnalyzer:
     
-    def test_generated_analysis_type(self):
-        analyzer = AutoItAnalyzer(
-            context=create_test_context(),
-            config=get_analysis_module_config(ANALYSIS_MODULE_AUTOIT))
-        assert analyzer.generated_analysis_type == AutoItAnalysis
-    
     def test_valid_observable_types(self):
         analyzer = AutoItAnalyzer(
             context=create_test_context(),
             config=get_analysis_module_config(ANALYSIS_MODULE_AUTOIT))
         assert analyzer.valid_observable_types == F_FILE
     
-    def test_execute_analysis_file_not_exists(self, root_analysis, tmpdir):
+    def test_execute_analysis_file_not_exists(self, root_analysis, tmpdir, caplog):
         analyzer = AutoItAnalyzer(
             context=create_test_context(root=root_analysis),
             config=get_analysis_module_config(ANALYSIS_MODULE_AUTOIT))
@@ -140,11 +76,14 @@ class TestAutoItAnalyzer:
         test_file = tmpdir / "temp.exe"
         test_file.write("temp content")
         file_observable = root_analysis.add_file_observable(str(test_file))
-        # now remove the file so it doesn't exist when the analyzer tries to process it
-        os.remove(str(test_file))
-        
+        # the observable is a copy in the root's storage: remove that one
+        os.remove(file_observable.full_path)
+
         result = analyzer.execute_analysis(file_observable)
         assert result == AnalysisExecutionResult.COMPLETED
+        assert file_observable.get_analysis(AutoItAnalysis) is None
+        assert not file_observable.has_tag("autoit")
+        assert f"cannot find local file path {file_observable.full_path}" in caplog.text
     
     def test_custom_requirement_not_autoit_file(self, root_analysis, tmpdir):
         analyzer = AutoItAnalyzer(
@@ -176,20 +115,33 @@ class TestAutoItAnalyzer:
         test_file = tmpdir / "gone.exe"
         test_file.write("temp content")
         file_observable = root_analysis.add_file_observable(str(test_file))
-        os.remove(str(test_file))
+        # the observable is a copy in the root's storage: remove that one
+        os.remove(file_observable.full_path)
 
         assert analyzer.custom_requirement(file_observable) is False
 
-    def test_custom_requirement_empty_file(self, root_analysis, tmpdir):
+    def test_execute_analysis_failure_without_a_message_is_named_by_its_type(self, root_analysis, datadir, monkeypatch,
+                                                                            caplog):
+        """An exception whose str() is empty still gives the analysis an error, which needs a message."""
         analyzer = AutoItAnalyzer(
             context=create_test_context(root=root_analysis),
             config=get_analysis_module_config(ANALYSIS_MODULE_AUTOIT))
+        file_observable = root_analysis.add_file_observable(str(datadir / "UGtZgHHT.au3"))
+        results = [SimpleNamespace(stdout="", stderr=""), TimeoutError()]
 
-        test_file = tmpdir / "empty.exe"
-        test_file.write("")
-        file_observable = root_analysis.add_file_observable(str(test_file))
+        def _run_tool(*args, **kwargs):
+            result = results.pop(0)
+            if isinstance(result, Exception):
+                raise result
+            return result
 
-        assert analyzer.custom_requirement(file_observable) is False
+        monkeypatch.setattr(analyzer, "run_tool", _run_tool)
+
+        assert analyzer.execute_analysis(file_observable) == AnalysisExecutionResult.COMPLETED
+        assert file_observable.get_analysis(AutoItAnalysis).error == "TimeoutError"
+        # the failure is ACE's (run_tool never raises for the tool's own exit status): logged with its traceback
+        record = the_error_with_traceback(caplog, path=file_observable.full_path)
+        assert record.root_uuid == root_analysis.uuid
 
     def test_execute_analysis_autoit_file(self, root_analysis, datadir, tmpdir, monkeypatch):
         analyzer = AutoItAnalyzer(

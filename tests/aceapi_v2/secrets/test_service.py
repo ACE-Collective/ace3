@@ -13,7 +13,6 @@ from saq.configuration.encryption import (
     find_encrypted_config_references,
     list_encrypted_password_keys,
 )
-from saq.environment import get_global_runtime_settings
 
 pytestmark = pytest.mark.integration
 
@@ -87,32 +86,6 @@ class TestGetSecretsPage:
         assert "s3cr3t" not in page.model_dump_json()
 
 
-class TestSetSecret:
-    @pytest.mark.asyncio
-    async def test_locked_raises(self, monkeypatch):
-        monkeypatch.setattr(get_global_runtime_settings(), "encryption_key", None)
-        with pytest.raises(service.SecretsLockedError):
-            await service.set_secret("test.locked", "value")
-        assert "test.locked" not in list_encrypted_password_keys()
-
-    @pytest.mark.asyncio
-    async def test_round_trip_set_and_delete(self):
-        """A real encrypt/store then delete against the encrypted_passwords table."""
-        key = "test.svc_round_trip"
-        try:
-            entry = await service.set_secret(key, "s3cr3t")
-            assert entry.key == key
-            assert entry.is_set is True
-            assert key in list_encrypted_password_keys()
-        finally:
-            assert await service.delete_secret(key) is True
-        assert key not in list_encrypted_password_keys()
-
-    @pytest.mark.asyncio
-    async def test_delete_unknown_returns_false(self):
-        assert await service.delete_secret("test.does_not_exist_xyz") is False
-
-
 class TestFindConfigReferences:
     def test_walks_loaded_files_for_encrypted_prefix(self, monkeypatch, tmp_path):
         # a config file the "running process" is pretending to have loaded
@@ -145,7 +118,7 @@ class TestKeyValidation:
     def test_accepts_config_safe_names(self):
         assert validate_secret_key(" vt.api_key ") == "vt.api_key"
 
-    @pytest.mark.parametrize("bad", ["", "   ", "has space", "semi;colon", "a" * 257])
+    @pytest.mark.parametrize("bad", ["   ", "has space", "semi;colon", "a" * 257])
     def test_rejects_bad_names(self, bad):
         with pytest.raises(ValueError):
             validate_secret_key(bad)

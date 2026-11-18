@@ -21,7 +21,8 @@ from saq.svs import runs
 from tests.saq.helpers import create_root_analysis
 from tests.saq.svs.conftest import add_catalog_test, add_test_host, started_run
 
-pytestmark = pytest.mark.integration
+# several runs on one test host are fixtures here; the host's claim is tested in test_runs.py
+pytestmark = [pytest.mark.integration, pytest.mark.usefixtures("overlapping_runs")]
 
 GUID = "aaaaaaaa-1111-4111-8111-111111111111"
 OTHER_GUID = "bbbbbbbb-2222-4222-8222-222222222222"
@@ -104,6 +105,10 @@ class TestAlerts:
     @pytest.fixture
     def alerts(self, client: AsyncClient):
         run = started_run(GUID, now=datetime.now() - timedelta(minutes=5))
+        # another run's alert, on a host of its own so the context alert below stays this run's
+        add_test_host("win10-02")
+        _alert(marker=started_run(OTHER_GUID, "win10-02", now=datetime.now() - timedelta(minutes=5)).marker,
+               host="win10-02")
         return run, {
             "marked": _alert(marker=run.marker, description="marked hit"),
             "context": _alert(),

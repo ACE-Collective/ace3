@@ -1,23 +1,70 @@
-from saq.observables.base import ObservableValueError, DefaultObservable, CaselessObservable
-from saq.observables.generator import register_observable_type, create_observable
+from saq.lazy_exports import lazy_getattr
 
-from saq.observables.asset import HostnameObservable, AssetObservable
-from saq.observables.email import MessageIDObservable, EmailAddressObservable, EmailBodyObservable, EmailConversationObservable, EmailDeliveryObservable, EmailHeaderObservable, EmailSubjectObservable, EmailXMailerObservable
-from saq.observables.file import FileObservable, FileNameObservable, FileLocationObservable, FilePathObservable
-from saq.observables.ids import SnortSignatureObservable, IDSStreetnameObservable, AVStreetnameObservable
-from saq.observables.intel import IndicatorObservable
-from saq.observables.string import StringEPSObservable, StringHTMLObservable, StringJavaObservable, StringJSObservable, StringOfficeObservable, StringPDFObservable, StringPEObservable, StringRTFObservable, StringSWFObservable, StringUnixShellObservable, StringVBSObservable, StringWindowsShellObservable
-from saq.observables.testing import TestObservable
-from saq.observables.user import UserObservable
-from saq.observables.windows import MutexObservable, WindowsRegistryObservable, WindowsServiceObservable
-from saq.observables.yara import YaraRuleObservable, YaraStringObservable
+# saq.observables imports nothing itself: every module of the package runs this init, and each
+# observable type's module is imported when create_observable() first needs it
+# (observable_types.classes). These names stay importable from saq.observables, each loaded the
+# first time it is asked for (PEP 562).
+_EXPORTS = {
+    "ObservableValueError": "saq.observables.base",
+    "DefaultObservable": "saq.observables.base",
+    "CaselessObservable": "saq.observables.base",
+    "create_observable": "saq.observables.generator",
+    "HostnameObservable": "saq.observables.asset",
+    "AssetObservable": "saq.observables.asset",
+    "MessageIDObservable": "saq.observables.email",
+    "EmailAddressObservable": "saq.observables.email",
+    "EmailBodyObservable": "saq.observables.email",
+    "EmailConversationObservable": "saq.observables.email",
+    "EmailDeliveryObservable": "saq.observables.email",
+    "EmailHeaderObservable": "saq.observables.email",
+    "EmailSubjectObservable": "saq.observables.email",
+    "EmailXMailerObservable": "saq.observables.email",
+    "FileObservable": "saq.observables.file",
+    "FileNameObservable": "saq.observables.file",
+    "FileLocationObservable": "saq.observables.file",
+    "FilePathObservable": "saq.observables.file",
+    "SnortSignatureObservable": "saq.observables.ids",
+    "IDSStreetnameObservable": "saq.observables.ids",
+    "AVStreetnameObservable": "saq.observables.ids",
+    "IndicatorObservable": "saq.observables.intel",
+    "StringEPSObservable": "saq.observables.string",
+    "StringHTMLObservable": "saq.observables.string",
+    "StringJavaObservable": "saq.observables.string",
+    "StringJSObservable": "saq.observables.string",
+    "StringOfficeObservable": "saq.observables.string",
+    "StringPDFObservable": "saq.observables.string",
+    "StringPEObservable": "saq.observables.string",
+    "StringRTFObservable": "saq.observables.string",
+    "StringSWFObservable": "saq.observables.string",
+    "StringUnixShellObservable": "saq.observables.string",
+    "StringVBSObservable": "saq.observables.string",
+    "StringWindowsShellObservable": "saq.observables.string",
+    "TestObservable": "saq.observables.testing",
+    "UserObservable": "saq.observables.user",
+    "MutexObservable": "saq.observables.windows",
+    "WindowsRegistryObservable": "saq.observables.windows",
+    "WindowsServiceObservable": "saq.observables.windows",
+    "YaraRuleObservable": "saq.observables.yara",
+    "YaraStringObservable": "saq.observables.yara",
+    "FQDNObservable": "saq.observables.network.dns",
+    "UserAgentObservable": "saq.observables.network.http",
+    "URIPathObservable": "saq.observables.network.http",
+    "URLObservable": "saq.observables.network.http",
+    "IPObservable": "saq.observables.network.ip",
+    "IPConversationObservable": "saq.observables.network.ip",
+    "IPFullConversationObservable": "saq.observables.network.ip",
+    "IPv4Observable": "saq.observables.network.ipv4",
+    "IPv4ConversationObservable": "saq.observables.network.ipv4",
+    "IPv4FullConversationObservable": "saq.observables.network.ipv4",
+    "MacAddressObservable": "saq.observables.network.layer2",
+    "AWSAccessKeyIdObservable": "saq.observables.cloud.aws",
+    "AWSAccountObservable": "saq.observables.cloud.aws",
+    "AWSInstanceID": "saq.observables.cloud.aws",
+    "AWSPrincipalIdObservable": "saq.observables.cloud.aws",
+    "AWSPrivateDNSName": "saq.observables.cloud.aws",
+    "AWSSecurityGroupID": "saq.observables.cloud.aws",
+    "AWSUsername": "saq.observables.cloud.aws",
+    "get_all_valid_types": "saq.observables.type_hierarchy",
+}
 
-from saq.observables.network.dns import FQDNObservable
-from saq.observables.network.http import UserAgentObservable, URIPathObservable, URLObservable
-from saq.observables.network.ip import IPObservable, IPConversationObservable, IPFullConversationObservable
-from saq.observables.network.ipv4 import IPv4Observable, IPv4ConversationObservable, IPv4FullConversationObservable
-from saq.observables.network.layer2 import MacAddressObservable
-
-from saq.observables.cloud.aws import AWSAccessKeyIdObservable, AWSAccountObservable, AWSInstanceID, AWSPrincipalIdObservable, AWSPrivateDNSName, AWSSecurityGroupID, AWSUsername
-
-from saq.observables.type_hierarchy import get_all_valid_types  # noqa: F401
+__getattr__ = lazy_getattr(__name__, _EXPORTS)

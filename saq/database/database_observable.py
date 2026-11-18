@@ -1,7 +1,6 @@
-from typing import Optional
 
 from pymysql import IntegrityError
-from sqlalchemy import func
+from sqlalchemy import func, select
 
 from saq.analysis.disposition_history import DispositionHistory
 from saq.analysis.observable import Observable
@@ -44,11 +43,15 @@ def observable_is_set_for_detection(observable: Observable) -> bool:
             (observable.type, observable.sha256_bytes))
         return cursor.fetchone() is not None
 
-def get_observable_disposition_history(observable: Observable) -> Optional[DispositionHistory]:
-    """Returns a DispositionHistory object if self.obj is an Observable, None otherwise."""
-    if observable.whitelisted:
-        return None
+def observable_is_interesting(observable: Observable) -> bool:
+    """Returns True if the observable is marked as interesting in the database."""
+    is_interesting = get_db().execute(
+        select(DBObservable.is_interesting).where(
+            DBObservable.type == observable.type,
+            DBObservable.sha256 == observable.sha256_bytes)).scalar_one_or_none()
+    return bool(is_interesting)
 
+def get_observable_disposition_history(observable: Observable) -> DispositionHistory:
     result = DispositionHistory(observable)
 
     with get_db_connection() as db:
@@ -83,21 +86,19 @@ def get_observable_disposition_histories(observables: list[Observable]) -> dict[
     history twice per rendered observable node, so on a large alert the per-observable
     form issued hundreds of 3-table aggregate joins for one page.
 
-    Observables that are whitelisted, or that appear in no dispositioned alert in the
-    default queue, are absent from the result -- matching the per-observable function,
-    which returns None for the first and an empty (falsy) DispositionHistory for the
-    second.
+    Observables that appear in no dispositioned alert in the default queue are absent
+    from the result, where the per-observable function returns an empty (falsy)
+    DispositionHistory.
     """
     histories: dict[str, DispositionHistory] = {}
-    candidates = [observable for observable in observables if not observable.whitelisted]
-    if not candidates:
+    if not observables:
         return histories
 
     # Query by hash alone (one indexed IN), then match on type as well -- the same shape as
     # get_observable_detections(), since a hash can be shared across types. sha256_bytes is
     # what the observables.sha256 column holds (see FileObservable.sha256_bytes), so this
     # matches the same rows as the per-observable form's `o.sha256 = UNHEX(sha256_hash)`.
-    hashes = {observable.sha256_bytes for observable in candidates}
+    hashes = {observable.sha256_bytes for observable in observables}
     rows = get_db().query(
         DBObservable.type,
         DBObservable.sha256,
@@ -123,7 +124,7 @@ def get_observable_disposition_histories(observables: list[Observable]) -> dict[
     for observable_type, sha256, disposition, count in rows:
         counts_by_identity.setdefault((observable_type, sha256), {})[disposition] = count
 
-    for observable in candidates:
+    for observable in observables:
         counts = counts_by_identity.get((observable.type, observable.sha256_bytes))
         if not counts:
             continue

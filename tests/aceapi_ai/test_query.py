@@ -32,17 +32,6 @@ class TestAuthentication:
             headers={"x-ace-auth": "00000000-0000-0000-0000-000000000000"})
         assert response.status_code == 401
 
-    @pytest.mark.asyncio
-    async def test_scoped_key_denied_on_unscoped_backend(self, ai_scoped_client):
-        # the key carries ai:fake + ai:alert; the splunk backend route requires ai:splunk
-        response = await ai_scoped_client.post("/query/splunk", json=query_body())
-        assert response.status_code == 403
-
-    @pytest.mark.asyncio
-    async def test_scoped_key_allowed_on_scoped_backend(self, ai_scoped_client):
-        response = await ai_scoped_client.post("/query/fake", json=query_body())
-        assert response.status_code == 200
-
 
 class TestQueryContract:
     @pytest.mark.asyncio

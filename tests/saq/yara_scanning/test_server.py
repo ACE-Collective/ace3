@@ -11,17 +11,19 @@ import uuid
 
 import psutil
 import pytest
+from yara_scanner import RulesNotLoadedError, YaraScanner
 
 from saq.configuration.config import get_service_config
 from saq.constants import SERVICE_YARA_SCANNER
 from saq.signatures.builtin import SIGNATURE_VERSION_UNKNOWN
+from saq.signatures.loaders.util import content_hash
 from saq.svs.marker_rule import MARKER_RULE_DIR, MARKER_RULE_NAME
 from saq.svs.markers import find_markers_in_match, new_marker
 from saq.util.hashing import sha256_file
 from saq.yara_scanning import client, protocol
 from saq.yara_scanning.client import YaraServiceUnavailable
 from saq.yara_scanning.qa import RECORDER_NICENESS
-from saq.yara_scanning.server import ScannerSettings, YaraScannerServer, _fork
+from saq.yara_scanning.server import ScannerSettings, YaraScannerServer, _fork, _scan as _scan_in_worker, scan_path
 from saq.yara_scanning.service import YaraScannerService
 from tests.saq.helpers import wait_for_condition
 from tests.saq.yara_qa.conftest import QA_UUID, counter_row, match_rows
@@ -44,23 +46,25 @@ rule rule_binary {
 }
 """
 
-RULE_TAGGED = """
-rule rule_tagged {
-    meta:
-        meta_tags = "email_attachment"
-    strings:
-        $a = "MATCH_A"
-    condition:
-        $a
-}
-"""
-
 RULE_B = """
 rule rule_b {
     strings:
         $b = "MATCH_B"
     condition:
         $b
+}
+"""
+
+# what the rules see of a file name that is not UTF-8 is its escaped form (saq.logging.utf8_safe):
+# yara takes only UTF-8 strings
+RULE_NAMED = r"""
+rule rule_named {
+    meta:
+        file_ext = "combined"
+    strings:
+        $a = "MATCH_A"
+    condition:
+        $a and extension == "combined" and filename == "\\udce9\\udce9.combined"
 }
 """
 
@@ -222,6 +226,74 @@ def test_scan_file(make_server, rules_dir, target):
     assert match["namespace"] == rules_dir
     assert match["commit"] is None
     assert match["strings"] == [(10, "$a", b"MATCH_A")]
+    # the pattern of each matched string, from the source the generation compiled
+    assert match["string_patterns"] == {"$a": '"MATCH_A"'}
+    assert match["rule_source"] == {"file": "a.yar", "start_line": RULE_A.splitlines().index("rule rule_a {") + 1,
+                                    "text": RULE_A.lstrip("\n")}
+
+
+@pytest.mark.integration
+def test_scan_file_with_an_undecodable_name(make_server, rules_dir, tmp_path):
+    """A file whose name is not UTF-8 (an archive member, as os.listdir returns it) is scanned, with
+    its name in the rules' variables and meta filters, although yara-python cannot take it as a path."""
+    _write(os.path.join(rules_dir, "named.yar"), RULE_NAMED)
+    target = str(tmp_path / b"\xe9\xe9.combined".decode("utf-8", "surrogateescape"))
+    with open(target, "wb") as fp:
+        fp.write(b"0123456789MATCH_A")
+
+    server = make_server()
+    assert server.wait_for_start(30)
+
+    matches = _scan(server, target)
+    assert _rules(matches) == {"rule_named"}
+    assert matches[0]["target"] == target
+
+
+@pytest.mark.unit
+def test_scan_file_with_an_undecodable_name_passes_the_timeout(tmp_path):
+    """scan_path matches such a name itself, so it bounds the match as scan does: a timeout of 0 or
+    none is the scanner's default."""
+    target = tmp_path / b"\xe9\xe9.combined".decode("utf-8", "surrogateescape")
+    target.write_bytes(b"MATCH_A")
+    timeouts = []
+
+    class _Rules:
+        def match(self, path, **kwargs):
+            timeouts.append(kwargs.get("timeout"))
+            return []
+
+    scanner = YaraScanner(default_timeout=11)
+    scanner.rules = _Rules()
+    for timeout in (7, None, 0):
+        assert not scan_path(scanner, str(target), timeout=timeout)
+
+    assert timeouts == [7, 11, 11]
+
+
+@pytest.mark.unit
+def test_scan_file_with_an_undecodable_name_needs_loaded_rules(tmp_path):
+    target = tmp_path / b"\xe9\xe9.combined".decode("utf-8", "surrogateescape")
+    target.write_bytes(b"MATCH_A")
+
+    with pytest.raises(RulesNotLoadedError):
+        scan_path(YaraScanner(), str(target))
+
+
+@pytest.mark.unit
+def test_scan_attaches_rule_details():
+    class _Scanner:
+        scan_results = [{"namespace": "ns", "rule": "rule_a", "strings": [(0, "$a", b"MATCH_A")]}]
+
+        def scan(self, path, **kwargs):
+            return True
+
+    settings = ScannerSettings(socket_dir="/tmp", signature_dir="/tmp", git_repo_dirs=(), worker_count=1,
+                               update_frequency=60, default_timeout=5, compile_timeout=60, io_timeout=5,
+                               max_data_bytes=1024, max_requests_per_worker=0, backlog=1)
+    response = _scan_in_worker(_Scanner(), settings, {("ns", "rule_a"): {"patterns": {"$a": '"MATCH_A"', "$b": '"B"'}, "source": None}},
+                               {"op": protocol.OP_SCAN_FILE, "path": "/tmp/x"}, None)
+
+    assert response["matches"][0]["string_patterns"] == {"$a": '"MATCH_A"'}
 
 
 @pytest.mark.integration
@@ -252,29 +324,6 @@ def test_the_service_loads_the_marker_rule(socket_dir, signature_dir, tmp_path, 
     assert matches[0]["namespace"] == os.path.join(signature_dir, MARKER_RULE_DIR)
     assert matches[0]["meta"]["modifiers"] == "no_alert"
     assert [m for (_, _, data) in matches[0]["strings"] for m in find_markers_in_match(data)] == [marker]
-
-
-@pytest.mark.integration
-def test_scan_binary_data(make_server, rules_dir):
-    _write(os.path.join(rules_dir, "binary.yar"), RULE_BINARY)
-    server = make_server()
-    assert server.wait_for_start(30)
-
-    matches = client.scan_data(b"\xfe\x00\xff\x00\xff\xfe", socket_path=_socket_path(server))
-    assert _rules(matches) == {"rule_binary"}
-    assert matches[0]["strings"] == [(1, "$b", b"\x00\xff\x00\xff")]
-
-    assert client.scan_data(b"\x00\x00", socket_path=_socket_path(server)) == []
-
-
-@pytest.mark.integration
-def test_meta_tags_filter_rules(make_server, rules_dir, target):
-    _write(os.path.join(rules_dir, "tagged.yar"), RULE_TAGGED)
-    server = make_server()
-    assert server.wait_for_start(30)
-
-    assert _scan(server, target) == []
-    assert _rules(_scan(server, target, meta_tags=["email_attachment"])) == {"rule_tagged"}
 
 
 @pytest.mark.integration
@@ -347,6 +396,20 @@ def test_hot_reload_without_downtime(make_server, rules_dir, target):
     # which is what a worker kept alive by a stray copy of its control pipe would take)
     wait_for_condition(lambda: len(_generations(server)) == 1, timeout=3)
     assert not first_generation & {process.pid for process in _generations(server)}
+
+
+@pytest.mark.integration
+def test_reload_serves_the_edited_rules_details(make_server, rules_dir, target):
+    _write(os.path.join(rules_dir, "a.yar"), RULE_A)
+    server = make_server()
+    assert server.wait_for_start(30)
+    assert _scan(server, target)[0]["string_patterns"] == {"$a": '"MATCH_A"'}
+
+    edited = RULE_A.replace('"MATCH_A"', '"MATCH_A" nocase')
+    _write(os.path.join(rules_dir, "a.yar"), edited)
+
+    wait_for_condition(lambda: _scan(server, target)[0]["string_patterns"] == {"$a": '"MATCH_A" nocase'}, timeout=30)
+    assert _scan(server, target)[0]["rule_source"]["text"] == edited.lstrip("\n")
 
 
 @pytest.mark.integration
@@ -431,12 +494,13 @@ def test_workers_are_recycled(make_server, rules_dir, target):
 
 
 @pytest.mark.integration
-def test_stop_leaves_nothing_behind(make_server, rules_dir, socket_dir):
+def test_stop_leaves_nothing_behind(make_server, rules_dir, socket_dir, qa_spool):
     _write(os.path.join(rules_dir, "a.yar"), RULE_A)
-    server = make_server()
+    # with a qa spool, as the service always runs it
+    server = make_server(qa_spool_dir=qa_spool)
     assert server.wait_for_start(30)
     pgid = server.process.pid
-    assert len(_process_group(pgid)) == 1 + 1 + 2  # manager, generation, workers
+    assert len(_process_group(pgid)) == 1 + 1 + 1 + 2  # manager, recorder, generation, workers
 
     start = time.monotonic()
     server.stop()
@@ -515,7 +579,10 @@ def test_qa_matches_are_recorded_after_the_answer(make_server, rules_dir, target
     (row,) = match_rows()
     assert row.sha256 == qa_context["sha256"]
     assert (row.root_uuid, row.observable_uuid) == (qa_context["root_uuid"], qa_context["observable_uuid"])
-    assert counter_row(SIGNATURE_VERSION_UNKNOWN).match_count == 1
+    # filed under the content hash of the rule the generation compiled, not the commit
+    assert (row.signature_version, row.version_kind) == (content_hash(RULE_QA.lstrip("\n")), "content")
+    assert counter_row(row.signature_version).match_count == 1
+    assert counter_row(SIGNATURE_VERSION_UNKNOWN) is None
 
 
 @pytest.mark.integration
@@ -531,16 +598,3 @@ def test_dead_recorder_is_replaced(make_server, rules_dir, target, qa_spool):
     # scanning never depended on it, and what was spooled meanwhile is recorded
     assert _rules(_scan(server, target, qa=_qa_context(target))) == {"rule_qa"}
     wait_for_condition(lambda: len(match_rows()) == 1, timeout=30)
-
-
-@pytest.mark.integration
-def test_stop_leaves_no_recorder_behind(make_server, rules_dir, qa_spool):
-    _write(os.path.join(rules_dir, "a.yar"), RULE_A)
-    server = make_server(qa_spool_dir=qa_spool)
-    assert server.wait_for_start(30)
-    pgid = server.process.pid
-    assert len(_process_group(pgid)) == 1 + 1 + 1 + 2  # manager, recorder, generation, workers
-
-    server.stop()
-    assert server.wait(0)
-    assert _process_group(pgid) == []

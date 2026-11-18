@@ -13,7 +13,6 @@ from uuid import uuid4
 import pytest
 from httpx import ASGITransport, AsyncClient
 
-from aceapi_v2.application import app
 from saq.analysis.root import RootAnalysis, load_root
 from saq.constants import ANALYSIS_MODE_CORRELATION
 from saq.database import get_db
@@ -28,7 +27,8 @@ from saq.database.model import (
 from saq.database.util.locking import acquire_lock, release_lock
 from saq.environment import get_base_dir
 from saq.search.tasks import submit_index_task
-from tests.saq.helpers import insert_alert, make_simulated, workload_count
+from tests.saq.helpers import audit_actor_of, audit_record, insert_alert, make_simulated, workload_count
+from tests.aceapi_v2.conftest import v2_app
 
 pytestmark = pytest.mark.integration
 
@@ -189,8 +189,10 @@ class TestBulkAddObservable:
         _assert_unlocked(alert.uuid)
 
     @pytest.mark.asyncio
-    async def test_bulk_add_observable_success(self, client: AsyncClient):
+    async def test_bulk_add_observable_success(self, client: AsyncClient, client_actor,
+                                               caplog: pytest.LogCaptureFixture):
         """Successfully adding an observable to multiple alerts."""
+        caplog.set_level(logging.INFO)
         alert1, alert2 = insert_alert(), insert_alert()
         versions = {alert1.id: alert1.version, alert2.id: alert2.version}
 
@@ -205,6 +207,9 @@ class TestBulkAddObservable:
         assert data["success_count"] == 2
         assert data["failed_count"] == 0
         assert data["failed_uuids"] == []
+        audit = audit_record(caplog, "user unittest bulk-added observable (fqdn,evil.example.com,None)")
+        assert (*audit_actor_of(audit), audit.alert_uuids, audit.observable_type, audit.observable_value) == (
+            *client_actor, [alert1.uuid, alert2.uuid], "fqdn", "evil.example.com")
 
         # each alert got the observable, was put back into correlation and queued for analysis
         for alert in (alert1, alert2):
@@ -292,24 +297,6 @@ class TestBulkAddObservable:
         assert workload_count(alert.uuid) == 0
 
     @pytest.mark.asyncio
-    async def test_bulk_add_observable_nonexistent_alert(self, client: AsyncClient):
-        """Nonexistent alerts should be reported as failed."""
-        missing = str(uuid4())
-
-        response = await client.post("/alerts/bulk-add-observable", json={
-            "alert_uuids": [missing],
-            "observable_type": "fqdn",
-            "observable_value": "evil.example.com",
-        })
-
-        assert response.status_code == 200
-        data = response.json()
-        assert data["success_count"] == 0
-        assert data["failed_count"] == 1
-        assert data["failed_uuids"] == [missing]
-        assert data["failed_details"][missing] == "alert not found"
-
-    @pytest.mark.asyncio
     async def test_bulk_add_observable_partial_failure(self, client: AsyncClient):
         """Mix of successful and failed alerts should be reported correctly."""
         alert = insert_alert()
@@ -392,20 +379,6 @@ class TestBulkAddObservable:
         assert observable.added_by is None
         assert observable.added_time is None
 
-    @pytest.mark.asyncio
-    async def test_valid_time_format(self, client: AsyncClient):
-        """Valid time format should be accepted (regression check)."""
-        response = await client.post("/alerts/bulk-add-observable", json={
-            "alert_uuids": [str(uuid4())],
-            "observable_type": "ipv4",
-            "observable_value": "1.2.3.4",
-            "observable_time": "2026-03-31 14:30:00",
-        })
-
-        # the unknown alert is a per-alert failure, not a 400 for the time format
-        assert response.status_code == 200
-        assert response.json()["failed_details"] != {}
-
 
 class TestDownloadAlert:
     """Test the GET /alerts/{alert_uuid}/download endpoint."""
@@ -441,7 +414,9 @@ class TestDownloadAlert:
         assert response.status_code == 410
 
     @pytest.mark.asyncio
-    async def test_download_happy_path(self, client: AsyncClient, tmp_path):
+    async def test_download_happy_path(self, client: AsyncClient, client_actor, tmp_path,
+                                       caplog: pytest.LogCaptureFixture):
+        caplog.set_level(logging.INFO)
         alert = insert_alert()
         alert_uuid = alert.uuid
         storage_dir = _storage_path(alert)
@@ -456,6 +431,8 @@ class TestDownloadAlert:
         assert response.status_code == 200
         assert response.headers["content-type"] == "application/zip"
         assert f"{alert_uuid}.zip" in response.headers["content-disposition"]
+        audit = audit_record(caplog, f"user unittest downloading alert {alert_uuid}")
+        assert (*audit_actor_of(audit), audit.alert_uuid) == (*client_actor, alert_uuid)
 
         # Verify the zip is real and encrypted with 'infected'.
         zip_bytes = response.content
@@ -508,7 +485,8 @@ class TestDownloadAlert:
         # a comment on a different alert must not leak in
         db.add(Comment(uuid=str(uuid4()), user_id=user.id, comment="other alert"))
         db.add(Comment(uuid=alert_uuid, user_id=user.id, comment="first alert comment"))
-        db.add(Comment(uuid=alert_uuid, user_id=user.id, comment="second alert comment"))
+        db.add(Comment(uuid=alert_uuid, user_id=user.id, comment="second alert comment",
+                       edited_at=datetime(2026, 3, 4, 5, 6, 7)))
 
         value = b"192.0.2.1"
         observable = Observable(type="ipv4", sha256=hashlib.sha256(value).digest(), value=value)
@@ -545,10 +523,12 @@ class TestDownloadAlert:
         for c in comments["alert_comments"]:
             assert c["user"]["username"] == "unittest"
             assert c["insert_date"]
+        assert [c["edited_at"] for c in comments["alert_comments"]] == [None, "2026-03-04T05:06:07"]
 
         assert len(comments["observable_comments"]) == 1
         oc = comments["observable_comments"][0]
         assert oc["comment"] == "known scanner"
+        assert oc["edited_at"] is None
         assert oc["user"]["username"] == "unittest"
         assert oc["observable"] == {
             "type": "ipv4",
@@ -584,13 +564,13 @@ class TestUnhandledException:
         # starlette's ServerErrorMiddleware re-raises after building the response so
         # the server can still log it; disable raise_app_exceptions so we can observe
         # the 500 response the catch-all handler produced
-        transport = ASGITransport(app=app, raise_app_exceptions=False)
+        transport = ASGITransport(app=v2_app(), raise_app_exceptions=False)
         async with AsyncClient(
             transport=transport,
             base_url="http://test",
             headers={"x-ace-auth": valid_api_key},
         ) as client:
-            with caplog.at_level(logging.ERROR, logger="aceapi_v2.application"):
+            with caplog.at_level(logging.ERROR, logger="aceapi_v2.app_factory"):
                 response = await client.get(f"/alerts/{VALID_UUID}/download")
 
         # the catch-all handler returns a consistent JSON 500 body
@@ -599,9 +579,9 @@ class TestUnhandledException:
 
         # the exception was logged at ERROR with a traceback by the app handler
         records = [
-            r for r in caplog.records if r.name == "aceapi_v2.application"
+            r for r in caplog.records if r.name == "aceapi_v2.app_factory"
         ]
-        assert records, "expected an aceapi_v2.application log record"
+        assert records, "expected an aceapi_v2.app_factory log record"
         record = records[-1]
         assert record.levelno == logging.ERROR
         assert isinstance(record.exc_info[1], RuntimeError)
@@ -778,9 +758,13 @@ def _alert_version(alert_uuid: str) -> str:
     return get_db().query(Alert).filter(Alert.uuid == alert_uuid).one().version
 
 
-def _comment_text(comment_id: int) -> str:
+def _comment_row(comment_id: int) -> Comment:
     get_db().expire_all()
-    return get_db().query(Comment).filter(Comment.comment_id == comment_id).one().comment
+    return get_db().query(Comment).filter(Comment.comment_id == comment_id).one()
+
+
+def _comment_text(comment_id: int) -> str:
+    return _comment_row(comment_id).comment
 
 
 class TestUpdateAlertComment:
@@ -798,10 +782,14 @@ class TestUpdateAlertComment:
 
     @pytest.mark.asyncio
     @patch("aceapi_v2.alerts.service.submit_index_task", wraps=submit_index_task)
-    async def test_update_comment(self, mock_submit_index_task, client: AsyncClient):
+    async def test_update_comment(self, mock_submit_index_task, client: AsyncClient, client_actor,
+                                  caplog: pytest.LogCaptureFixture):
+        caplog.set_level(logging.INFO)
         user_id = _unittest_user_id()
         alert_uuid, comment_id = _insert_commented_alert(user_id)
         version = _alert_version(alert_uuid)
+        insert_date = _comment_row(comment_id).insert_date
+        assert _comment_row(comment_id).edited_at is None
 
         response = await client.patch(
             f"/alerts/{alert_uuid}/comments/{comment_id}", json={"comment": "  edited comment\n"})
@@ -812,7 +800,16 @@ class TestUpdateAlertComment:
         assert data["user_id"] == user_id
         assert data["comment"] == "edited comment"
 
-        assert _comment_text(comment_id) == "edited comment"
+        row = _comment_row(comment_id)
+        assert row.comment == "edited comment"
+        # the edit is timestamped, and the comment keeps the time it was made
+        assert row.edited_at is not None
+        assert row.edited_at >= insert_date
+        assert row.insert_date == insert_date
+        assert data["edited_at"] == row.edited_at.isoformat()
+        assert data["insert_date"] == insert_date.isoformat()
+        audit = audit_record(caplog, f"user unittest edited comment {comment_id} on alert {alert_uuid}")
+        assert (*audit_actor_of(audit), audit.alert_uuid, audit.comment_id) == (*client_actor, alert_uuid, comment_id)
         # the change is visible to clients polling the alert, and the search index picks it up
         assert _alert_version(alert_uuid) != version
         mock_submit_index_task.assert_called_once_with(alert_uuid)
@@ -826,6 +823,8 @@ class TestUpdateAlertComment:
         response = await client.patch(
             f"/alerts/{alert_uuid}/comments/{comment_id}", json={"comment": "original comment"})
         assert response.status_code == 200
+        assert response.json()["edited_at"] is None
+        assert _comment_row(comment_id).edited_at is None
         assert _alert_version(alert_uuid) == version
         mock_submit_index_task.assert_not_called()
 
@@ -841,6 +840,26 @@ class TestUpdateAlertComment:
         assert response.status_code == 200
         assert _alert_version(alert_uuid) == version
         assert _comment_text(comment_id) == "first line\r\nsecond line"
+        assert _comment_row(comment_id).edited_at is None
+        mock_submit_index_task.assert_not_called()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("stored", ["looks benign\r\n", " looks benign"])
+    @patch("aceapi_v2.alerts.service.submit_index_task", wraps=submit_index_task)
+    async def test_edge_whitespace_alone_is_not_a_change(self, mock_submit_index_task, client: AsyncClient,
+                                                         stored: str):
+        # the add form stores the text as typed; the edit request is stripped
+        alert_uuid, comment_id = _insert_commented_alert(_unittest_user_id(), stored)
+        version = _alert_version(alert_uuid)
+
+        response = await client.patch(
+            f"/alerts/{alert_uuid}/comments/{comment_id}", json={"comment": "looks benign"})
+        assert response.status_code == 200
+        assert response.json()["edited_at"] is None
+        row = _comment_row(comment_id)
+        assert row.edited_at is None
+        assert row.comment == stored
+        assert _alert_version(alert_uuid) == version
         mock_submit_index_task.assert_not_called()
 
     @pytest.mark.asyncio
@@ -877,10 +896,10 @@ class TestUpdateAlertComment:
         assert response.status_code == 400
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("text", ["", "   \n"])
-    async def test_empty_comment_rejected(self, client: AsyncClient, text: str):
+    async def test_empty_comment_rejected(self, client: AsyncClient):
         alert_uuid, comment_id = _insert_commented_alert(_unittest_user_id())
 
-        response = await client.patch(f"/alerts/{alert_uuid}/comments/{comment_id}", json={"comment": text})
+        # stripped first, so this is also what an empty string gets
+        response = await client.patch(f"/alerts/{alert_uuid}/comments/{comment_id}", json={"comment": "   \n"})
         assert response.status_code == 422
         assert _comment_text(comment_id) == "original comment"

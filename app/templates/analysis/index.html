@@ -125,6 +125,13 @@
                         </div>
                         <div class="card-body">
                             <div class="card-text"></div>
+                                {% if analysis.error is not none %}
+                                <div class="alert alert-danger" role="alert">
+                                    <i class="bi bi-exclamation-triangle-fill"></i>
+                                    <b>{{ analysis.display_name }} failed:</b>
+                                    <span style="white-space: pre-wrap;">{{ analysis.error }}</span>
+                                </div>
+                                {% endif %}
                                 <!-- main content area for the details of the analysis-based object -->
                                 {% include analysis_presenter.template_path %}
                             </div>
@@ -203,7 +210,8 @@
                 <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
             </div>
             <div class="modal-body">
-                <label class="form-label" for="detection_expiration_current">Current expiration (UTC)</label>
+                <p id="detection_expiration_observable" class="text-break"></p>
+                <label class="form-label" id="detection_expiration_current_label" for="detection_expiration_current">Current expiration (UTC)</label>
                 <input type="text" class="form-control mb-3" id="detection_expiration_current" readonly/>
                 <label class="form-label" for="detection_expiration_new">New expiration (UTC)</label>
                 <input type="text" class="form-control mb-3" id="detection_expiration_new" name="observable_expiration_time" placeholder="YYYY-MM-DD HH:MM:SS"/>
@@ -277,40 +285,6 @@
 {% with add_observable_action=url_for('analysis.add_observable') %}
     {% include "analysis/_add_observable_modal.html" %}
 {% endwith %}
-
-<div class="modal fade" id="email_modal" tabindex="-1" role="dialog" aria-labelledby="disposition_modal_label" aria-hidden="true">
-    <div class="modal-dialog">
-        <form id="email-form" class="form-horizontal" role="form" method="POST" action="{{url_for('analysis.email_file')}}">
-            <div class="modal-content">
-                <div class="modal-header">
-                    <button type="button" class="close" data-dismiss="modal"><span aria-hidden="true">&times;</span><span class="sr-only">Close</span></button>
-                    <h4 class="modal-title" id="comment_modal_label">Email File</h4>
-                </div>
-                <div class="modal-body">
-                    Send File To<br/>
-                    <select class="form-control" id="emaillist" name="emaillist">
-                        <option value="Select to add">Select to add</option>
-                        {% for user in db.query(User).all() %}
-                            <option value="{{user.email}}">{{user.email}}</option>
-                        {% endfor %}
-                    </select>
-                    <br/>(use semicolon ";" to separate email addresses)<br/>
-                    <input class="form-control" type="text" id="toemail" name="toemail"/>
-                    <br/>Subject<br/>
-                    <input class="form-control" type="text" id="subject" name="subject" value="{{alert.description}}"/>
-                    <br/>Message<br/>
-                    <textarea class="form-control" rows="3" id="emailmessage" name="emailmessage"></textarea>
-                    <label><input class="form-control" type="checkbox" id="compress" name="compress" checked/>&nbsp;Compress</label>
-                    <label><input class="form-control" type="checkbox" id="encrypt" name="encrypt" checked/>&nbsp;Encrypt</label>
-                </div>
-                <div class="modal-footer">
-                    <button type="button" class="btn btn-default" data-dismiss="modal">Meh</button>
-                    <button type="button" class="btn btn-primary" id="btn-submit-email">Send</button>
-                </div>
-            </div>
-        </form>
-    </div>
-</div>
 
 <div class="modal fade" id="file_modal" tabindex="-1" role="dialog" aria-labelledby="file_modal_label" aria-hidden="true">
     <div class="modal-dialog">

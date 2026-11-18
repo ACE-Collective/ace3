@@ -1,6 +1,5 @@
 import logging
 import os
-from subprocess import PIPE, Popen
 from typing import override
 from saq.analysis.analysis import Analysis
 from saq.analysis.observable import Observable
@@ -13,7 +12,6 @@ from saq.util.strings import format_item_list_for_summary
 
 KEY_STDOUT = "stdout"
 KEY_STDERR = "stderr"
-KEY_ERROR = "error"
 KEY_SCRIPTS = "scripts"
 KEY_OUTPUT_DIR = "output_dir"
 
@@ -24,7 +22,6 @@ class AutoItAnalysis(Analysis):
         self.details = {
             KEY_STDOUT: None,
             KEY_STDERR: None,
-            KEY_ERROR: None,
             KEY_SCRIPTS: [],
             KEY_OUTPUT_DIR: None,
         }
@@ -49,14 +46,6 @@ class AutoItAnalysis(Analysis):
     @stderr.setter
     def stderr(self, value):
         self.details[KEY_STDERR] = value
-
-    @property
-    def error(self):
-        return self.details[KEY_ERROR]
-
-    @error.setter
-    def error(self, value):
-        self.details[KEY_ERROR] = value
 
     @property
     def scripts(self) -> list[str]:
@@ -117,17 +106,26 @@ class AutoItAnalyzer(AnalysisModule):
         analysis.output_dir = output_path
         try:
             # Store the "unautoit list" in the analysis details
-            analysis.stdout, analysis.stderr = Popen(['unautoit', 'list', local_file_path], stdout=PIPE, stderr=PIPE).communicate()
+            result = self.run_tool(['unautoit', 'list', local_file_path], local_file_path, capture_output=True)
+            if result is None:
+                analysis.error = "unautoit list timed out"
+                return AnalysisExecutionResult.COMPLETED
+
+            analysis.stdout, analysis.stderr = result.stdout, result.stderr
 
             # Decompile the executable.
-            # To avoid incorrect directory permissions, manually create the output dir first. The unautoit utility
-            # seems to create directories without the executable permission, which causes it to error out and not
-            # store the decompiled scripts in the directory.
+            # unautoit only creates the output dir once it has parsed the file, and the listing below needs it to
+            # exist even when parsing fails.
             os.makedirs(output_path)
-            _, _ = Popen(['unautoit', 'extract-all', '--output-dir', output_path, local_file_path], stdout=PIPE, stderr=PIPE).communicate()
+            if self.run_tool(['unautoit', 'extract-all', '--output-dir', output_path, local_file_path], local_file_path,
+                             capture_output=True) is None:
+                # what it extracted before it was stopped may be cut short
+                analysis.error = "unautoit extract-all timed out"
+                return AnalysisExecutionResult.COMPLETED
         except Exception as e:
-            analysis.error = str(e)
-            logging.info(f'AutoIt decompilation failed for {local_file_path}')
+            analysis.error = str(e) or type(e).__name__
+            logging.exception(f"AutoIt decompilation failed for {local_file_path}",
+                              extra={"path": local_file_path, "root_uuid": self.get_root().uuid})
 
         # Add any decompiled .au3 scripts as file observables
         for f in os.listdir(output_path):

@@ -65,3 +65,4 @@ class RemediationWorkItem(BaseModel):
     type: str = Field(..., description="The type of the remediation.") # observable type
     key: str = Field(..., description="The key of the remediation.") # observable value
     restore_key: Optional[str] = Field(default=None, description="The restore key of the remediation.")
+    lock: Optional[str] = Field(default=None, description="The lock uuid the collector placed on the database record when it handed out this work item.")

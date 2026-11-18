@@ -1,7 +1,8 @@
 import logging
 from mmap import PROT_READ, mmap
 import os
-from subprocess import Popen
+import signal
+from subprocess import Popen, TimeoutExpired
 from typing import Type, override
 from pydantic import Field
 from saq.analysis.analysis import Analysis
@@ -13,6 +14,13 @@ from saq.modules.config import AnalysisModuleConfig
 from saq.modules.file_analysis.is_file_type import is_office_file
 from saq.observables.file import FileObservable
 
+
+# how long pcodedmp gets on one file (in seconds), enforced by bin/pcodedmp_wrapper
+PCODEDMP_TIMEOUT = 30
+# how much longer than that the module waits for the wrapper before giving up on it
+PCODEDMP_WAIT_MARGIN = 5
+# what bin/pcodedmp_wrapper exits with when pcodedmp was killed
+PCODEDMP_KILLED = 137
 
 KEY_TOTAL_HEX_STRINGS = "total_hex_strings"
 KEY_LARGEST_HEX_STRING = "largest_hex_string"
@@ -115,9 +123,9 @@ class VBScriptAnalyzer(AnalysisModule):
         total_count = 0
         hex_string_lengths = []
 
-        with open(local_file_path, 'rb') as fp:
-            mm = mmap(fp.fileno(), 0, prot=PROT_READ)
-            for line in mm:
+        with open(local_file_path, 'rb') as fp, mmap(fp.fileno(), 0, prot=PROT_READ) as mm:
+            # iterating a mmap yields single bytes; readline yields lines
+            for line in iter(mm.readline, b''):
                 # ignore comments
                 if line.lstrip().startswith(b"'") or line.lstrip().startswith(b'REM'):
                     continue
@@ -135,6 +143,10 @@ class VBScriptAnalyzer(AnalysisModule):
                         if consec_count >= 5:
                             hex_string_lengths.append(consec_count)
                         consec_count = 0
+
+        # a hex string can run to the end of the file
+        if consec_count >= 5:
+            hex_string_lengths.append(consec_count)
 
         if not hex_string_lengths:
             return AnalysisExecutionResult.COMPLETED
@@ -239,10 +251,27 @@ class PCodeAnalyzer(AnalysisModule):
 
         with open(stderr_path, 'wb') as stderr_fp:
             with open(stdout_path, 'wb') as stdout_fp:
-                # we use a wrapper program to filter out only the .bas lines
-                p = Popen([os.path.join(get_base_dir(), 'bin', 'pcodedmp_wrapper'), 
+                # we use a wrapper program to filter out only the .bas lines. it also stops pcodedmp
+                # at PCODEDMP_TIMEOUT, so the pipeline stays in the worker's process group and is
+                # bounded even when the worker is killed while it waits here
+                p = Popen([os.path.join(get_base_dir(), 'bin', 'pcodedmp_wrapper'), str(PCODEDMP_TIMEOUT),
                            self.pcodedmp_path, local_file_path], stdout=stdout_fp, stderr=stderr_fp)
-                p.wait(timeout=30)
+                try:
+                    p.wait(timeout=PCODEDMP_TIMEOUT + PCODEDMP_WAIT_MARGIN)
+                except TimeoutExpired:
+                    # a backstop that keeps the module from waiting forever. only bash can be killed
+                    # here (the rest of the pipeline shares the worker's group); pcodedmp still ends at
+                    # its own deadline, and sed and egrep with it
+                    logging.exception(f"pcodedmp_wrapper did not exit on {local_file_path}, killing it")
+                    p.kill()
+                    p.wait()
+
+        if p.returncode in (PCODEDMP_KILLED, -signal.SIGKILL):
+            logging.warning(f"pcodedmp timed out after {PCODEDMP_TIMEOUT} seconds on {local_file_path}")
+            # whatever it wrote is incomplete
+            os.remove(stdout_path)
+            os.remove(stderr_path)
+            return AnalysisExecutionResult.COMPLETED
 
         if p.returncode != 0:
             logging.debug("pcodedmp returned error code {} for {}".format(p.returncode, _file))

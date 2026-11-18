@@ -24,7 +24,7 @@ class ExampleTagRouter(AlertRouter):
         self.tag = tag
         self.queue = queue
 
-    def route(self, root, stage: RouteStage) -> Optional[RouteDecision]:
+    def route(self, root, stage: RouteStage, final: bool) -> Optional[RouteDecision]:
         if stage != RouteStage.PRE_INSERT:
             return None
 

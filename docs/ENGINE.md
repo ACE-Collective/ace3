@@ -205,8 +205,9 @@ flag (consume-once) and proceeds.
 
 `Engine.main_controller_loop()` runs in the parent process:
 
-1. installs the SIGHUP handler (it only sets a flag); SIGTERM and SIGINT belong to
-   the process-wide `ShutdownCoordinator` (`saq/shutdown.py`, `docs/SHUTDOWN.md`);
+1. installs the `ShutdownCoordinator`'s SIGTERM/SIGINT handlers if the service
+   runner has not already (`saq/shutdown.py`, `docs/SHUTDOWN.md`); the engine
+   handles no signal of its own;
 2. `worker_manager.initialize_workers()` then `start_workers(execution_mode)`,
    which forks every worker and blocks until each sets its startup event;
 3. sets state `RUNNING`, node status `running`, `started_event`;
@@ -217,9 +218,7 @@ flag (consume-once) and proceeds.
      in-flight analysis is cancelled and requeued, workers are supervised against one
      shared deadline, this node's locks are released and the node is marked `stopped`;
    - `node_manager.update_node_status_and_execute_primary_routines()` (§14);
-   - `worker_manager.check_workers()` (§4.4);
-   - `SIGHUP` → `worker_manager.restart_workers()`. Config reload is stubbed out
-     (commented) — HUP recycles worker processes only.
+   - `worker_manager.check_workers()` (§4.4).
 5. on exit sets state `STOPPED` and node status `stopped`.
 
 ### 4.3 Worker pools
@@ -245,25 +244,69 @@ available (§5.2).
 
 - `worker.process` is `None` or has an exit code (process died / auto-refreshed);
 - `worker.analysis_has_timed_out(record)` — the tracking record the manager just
-  read off disk for this worker (§12.5) says a module started more than its
+  read off disk for this worker (§12.6) says a module started more than its
   `maximum_analysis_time` ago. The deadline is on `CLOCK_MONOTONIC`, which is
   system-wide, so the manager compares it against its own reading. It `SIGKILL`s
-  the whole process tree;
+  the worker's process group;
 - RSS exceeds `global_settings.memory_limit_kill` (MB → bytes in
-  `EngineConfiguration`). `SIGKILL`. A warning is logged above
-  `memory_limit_warning`.
+  `EngineConfiguration`). `SIGKILL`s the worker's process group. A warning is
+  logged above `memory_limit_warning`.
+
+Every forked worker leads a process group of its own: `Worker.start()` and the
+worker itself (`Worker._forked_worker_loop`) both call `os.setpgid`, never in
+single-threaded mode, where `worker_loop` runs in the caller's process. Every
+process its analysis modules start is in that group, and `Worker.kill()` is one
+`os.killpg(SIGKILL)` of it. It is how the manager stops a worker on a timeout or
+memory limit, one that does not start (`wait_for_start`) and one that outlived the
+shutdown budget (`docs/SHUTDOWN.md`). It is also what `check()` does to a worker that died on its own
+(the monitor's `os._exit(1)` (§8), a crash, the OOM killer), and what the end of
+`supervise_shutdown` does to every worker that exited while it waited: what that worker
+left running kept its group, and a group outlives its leader while it has members.
+When `kill()` finds such processes it logs one warning naming
+them (pid and process name). A leftover named like the engine itself (`python3`) is
+a copy of the worker that never reached its exec, which is what a child that runs
+Python before its exec in a threaded process does when it deadlocks on a lock another
+thread held at the fork (see `saq/database/pool.py`'s `reset_database_after_fork`).
+
+Process groups do not nest, so a process that starts a session or group of its own
+(`start_new_session`, `process_group`) has left the worker's group and `kill()` does
+not reach it. The engine controller is a child subreaper for that:
+`WorkerManager.start_workers()` calls `become_subreaper()` (`PR_SET_CHILD_SUBREAPER`)
+before it forks the first worker, so every orphan of a worker's descendants is
+reparented to the controller instead of to the container's init, which reaps it but
+never kills it. `check_workers()` reaps the adopted processes that have exited every
+second, and after any worker has died it calls `kill_adopted()`, which stops, kills and
+reaps every adopted process and everything those started, and logs one warning naming
+them. That includes what a live worker's processes orphaned, which nothing waits for
+either. `supervise_shutdown` sweeps once more at its end and then stops adopting, since
+the engine can run in a process that outlives it (a test). The sweep
+waits by pid, never `waitpid(-1)`, so multiprocessing still reaps the workers itself,
+and it leaves alone the children the process already had when it became a subreaper. A
+controller that cannot become a subreaper logs an error and runs on with the process
+groups alone. A tool that can stay in the group should, and bound itself anyway:
+`bin/pcodedmp_wrapper` runs `pcodedmp` under `timeout --foreground`, so it stops at its
+deadline even when its worker is killed while it waits, and dies with the worker's
+group otherwise.
+
+`Worker.start()` calls `gc.freeze()` right before the fork and `gc.unfreeze()` right after
+it, in a `finally`. The worker keeps every object it inherited in the collector's permanent
+generation, which its collections never walk, so they don't copy the pages it shares with
+the engine process. The engine process gets them back at once and still collects its own
+garbage. The saving, about 27 MB per worker, shows only once a busy worker's incremental
+collector would have reached the inherited objects (`docs/IMPORTS.md`).
 
 `restart_worker()` promotes the dead worker's tracking record to a pending failure,
 removes the worker, creates a replacement with the same name/priority/idle
 timeout, starts it **in the execution mode the pool was started in** (§19.11)
-*and with that pending record* (§12.5), and then does an awkward dance to close
+*and with that pending record* (§12.6), and then does an awkward dance to close
 the dead `multiprocessing.Process` (falling back to poking `_popen.finalizer()`),
 with an `XXX` acknowledging it does not handle signal-killed processes cleanly.
 
 ### 4.5 The worker loop
 
-`Worker.worker_loop(execution_mode)` (`saq/engine/worker.py`) is the child
-process entry point:
+`Worker.worker_loop(execution_mode)` (`saq/engine/worker.py`) is what a forked
+worker runs, once `_forked_worker_loop` has made it the leader of its own process
+group (§4.4), and what single-threaded mode runs in-process:
 
 1. fresh logging transaction id (forked children inherit the parent's);
 2. **`configuration_manager.load_modules()`** — this is where analysis modules
@@ -274,7 +317,7 @@ process entry point:
 5. `UNTIL_COMPLETE` → set the controlled-shutdown flag up front;
 6. `_handle_failed_analysis(pending_failure)` — record the failure of a previous
    incarnation that died mid-module, from the record the manager forked us with
-   (§12.5);
+   (§12.6);
 7. loop:
    - immediate-shutdown flag set → break;
    - past auto-refresh time → break (the manager forks a fresh worker, which
@@ -481,11 +524,13 @@ otherwise-pointless alert re-sync in `_sync_alert_to_database`.
 
 ### 6.4 `_execute_analysis`
 
-Times the executor call, then `root.save()`, then emits per-module metrics if
-`metrics_logging.enabled`.
+Times the executor call, then `root.save()`, then emits the per-root and per-module metrics
+with `outcome` `completed`, or `cancelled` when the context's cancel flag is set (a shutdown, a
+lost lock or a disposition stop, which all return normally from the executor).
 
-On any exception it saves whatever it has, sets `analysis_aborted = True`, clears
-every outstanding `delayed_analysis` row for the root, and re-raises.
+On any exception it saves whatever it has, emits the same metrics with `outcome` `timed_out`
+(an `AnalysisTimeoutError`) or `failed`, sets `analysis_aborted = True`, clears every
+outstanding `delayed_analysis` row for the root, and re-raises.
 `analysis_aborted` matters because abandoning the delayed rows leaves
 `root.delayed` stale — without forcing an index rebuild, the alert's observables
 would never reach `observable_mapping` and the alert would be unsearchable by
@@ -609,8 +654,6 @@ the waiting source observable (§9).
 
 `_process_observable_exclusions` drops a work item when the observable is:
 
-- `whitelisted` (any observable tagged `whitelisted` also makes the whole root
-  whitelisted — `RootAnalysis.whitelisted`);
 - matched by `self.config.observable_exclusions[type]`, the globally excluded
   observables from the `observable_exclusions:` config section (§16.5).
   Comparison is `Observable.matches()` — exact for most types, CIDR membership
@@ -646,9 +689,7 @@ Then the caller sorts by `AnalysisModuleConfig.priority` (lower runs first).
 
 Then the tail of `_execute_module_analysis`:
 
-- if the observable is now `whitelisted` → clear the buffer and cancel the entire
-  analysis;
-- otherwise `_drain_work_stack_buffer`: the buffer is deliberately mixed, so every
+- `_drain_work_stack_buffer`: the buffer is deliberately mixed, so every
   `Analysis` in it is flushed (`analysis_tree_manager.flush_analysis_details` —
   writes `details` to its own file and drops it from memory) and *not* queued,
   while every `Observable` moves onto the work stack. A non-empty buffer of any
@@ -667,7 +708,8 @@ execution order — this ordering is the contract:
 | 1 | alert disposition re-check (throttled) | `_check_for_alert_disposition` | cancels the whole analysis |
 | 2 | cumulative analysis time | `_check_for_analysis_timeout` | warns, then raises `AnalysisTimeoutError` |
 | 3 | module generates no analysis type | `generated_analysis_type is None` | return (pre/post-only modules) |
-| 4 | `module.accepts(observable)` | `base_module.py::accepts` | return; fails any dependency |
+| 4 | a failed analysis the module would retry, but this work item does not (already retried here, or final analysis mode; §12) | `_check_module_acceptance` (`_retry_used_up`) | return; fails any dependency |
+| 4a | `module.accepts(observable)` | `base_module.py::accepts` | return; fails any dependency |
 | 5 | this module's analysis is already delayed | `_check_module_acceptance` | return |
 | 6 | declared dependencies unmet | `_seed_declared_dependencies` | seed dependency edges, defer |
 | 7 | `module.custom_requirement(observable)` | inline | return **without** a no-analysis sentinel, so the module is reconsidered later |
@@ -676,7 +718,7 @@ execution order — this ordering is the contract:
 | 10 | — | `NetworkSemaphore(semaphore_name)` | blocks until a slot is free |
 | 11 | **`module.analyze(observable, final_analysis, delayed_analysis)`** | | |
 
-`accepts()` (gate 4) is itself a long list, worth knowing because it is where
+`accepts()` (gate 4a) is itself a long list, worth knowing because it is where
 most "why didn't my module run?" answers live:
 
 `requires_detection_path` → `valid_observable_types`
@@ -684,8 +726,9 @@ most "why didn't my module run?" answers live:
 → `valid_queues` / `invalid_queues` → `invalid_alert_types` → `DIRECTIVE_EXCLUDE_ALL`
 → module-level `observable_exclusions` → observable-level exclusions →
 `required_directives` → `required_tags` → already-analyzed check (including the
-`False` sentinel, and the `allow_reanalysis_on_failure` retry path that *deletes* a
-failed analysis) → `file_size_limit` → cooldown bookkeeping → `automation_limit`
+`False` sentinel, and the `allow_reanalysis_on_failure` retry path that accepts a
+failed analysis without touching it; gate 4 has already turned away one this work item
+does not retry, see §12) → `file_size_limit` → cooldown bookkeeping → `automation_limit`
 (bypassed by `DIRECTIVE_IGNORE_AUTOMATION_LIMITS`) → `should_analyze()`.
 
 `custom_requirement` is deliberately **not** in `accepts()`. It runs at gate 7
@@ -723,7 +766,8 @@ implement.
 `AnalysisModuleMonitor` is a daemon thread that waits
 `min(mode maximum_analysis_time, module maximum_analysis_time)` and then warns
 every 5 seconds; once elapsed time passes the *module's* limit it calls
-`os._exit(1)`, killing the worker process outright. Recovery is §12.5.
+`os._exit(1)`, killing the worker process outright. The manager then kills what the
+worker left running (§4.4). Recovery is §12.6.
 
 ---
 
@@ -826,10 +870,9 @@ Back in `AnalysisModule.delay_analysis`:
 - returned `True` → `analysis.completed = False`, `analysis.delayed = True`,
   return `INCOMPLETE`;
 - returned `False` (deadline expired, or the request could not be recorded) →
-  set the transient `analysis.delay_analysis_timed_out = True`,
-  `analysis.completed = True`, `analysis.delayed = False`, return `COMPLETED`.
-  The analysis is closed out empty and the executor's cache-write gate refuses
-  to cache it.
+  the analysis is closed out failed (`analysis.error` "timed out waiting for
+  delayed analysis to complete", `completed = True`, `delayed = False`), return
+  `COMPLETED`. Like any failed analysis it is never cached (§12.4).
 
 `root.delayed` is *computed*: true if any analysis anywhere in the tree has
 `delayed` set. Its setter is a deliberate no-op (the serialized value is
@@ -882,7 +925,7 @@ Replay failures deliberately fall through to the live run without re-raising, so
 the outer handler does not treat a cache problem as a module failure.
 
 **Write.** `_maybe_write_cache_delta` after a successful run, gated on
-`analysis_result == COMPLETED` and `not delay_analysis_timed_out`. When the run
+`analysis_result == COMPLETED` and no `analysis.error` (§12.4). When the run
 is the final cycle of a delayed module, earlier cycles' deltas for the same
 `(module_path, observable_uuid)` are merged in first so a replay reproduces the
 whole contribution.
@@ -899,11 +942,11 @@ Everything else — key derivation, storage, refusal rules, blob spilling — is
 | Layer | Limit | Enforced by | Effect |
 |---|---|---|---|
 | One module invocation | mode `maximum_analysis_time`, else `global_settings.maximum_analysis_time` (warning threshold) and module `maximum_analysis_time` (kill threshold) | `AnalysisModuleMonitor` thread | warns every 5s, then `os._exit(1)` on the worker process |
-| One module invocation (external view) | module `maximum_analysis_time` | `WorkerManager.check` against the worker's tracking file | `SIGKILL` the worker process tree |
+| One module invocation (external view) | module `maximum_analysis_time` | `WorkerManager.check` against the worker's tracking file | `SIGKILL` the worker's process group |
 | Whole run, warning | mode `maximum_cumulative_analysis_warning_time`, else global | `_check_for_analysis_timeout` | warning, rate-limited to one per 10s |
 | Whole run, fail | mode `maximum_cumulative_analysis_fail_time`, else global | `_check_for_analysis_timeout` | `AnalysisTimeoutError`; modes in `analysis_modes_ignore_cumulative_timeout` are exempt |
 | Delayed analysis | `timeout_hours/minutes/seconds` passed to `delay_analysis` | `Worker.is_delayed_analysis_timed_out` | refuses further delay; analysis closed out empty |
-| Worker memory | `global_settings.memory_limit_kill` | `WorkerManager.check` | `SIGKILL` |
+| Worker memory | `global_settings.memory_limit_kill` | `WorkerManager.check` | `SIGKILL` the worker's process group |
 | Worker lifetime | `auto_refresh_frequency` | `Worker.worker_loop` | clean exit; manager forks a replacement |
 
 The two cumulative limits measure `root.state["total_analysis_time_seconds"]`:
@@ -912,15 +955,26 @@ this pass plus every earlier pass of the same logical analysis run — the initi
 new root work item (mode transition, disposition pass, analyst-requested
 analysis) starts the budget over. See §19.6.
 
+A module that runs a long, bounded step (a subprocess with a timeout) asks how
+much of this budget its current call has left with `self.time_left()`: the
+executor sets a deadline on the module's context just before the monitor starts,
+the sooner of the module's `maximum_analysis_time` and what is left of the
+cumulative fail time (not counted in an ignored mode), and clears it when the
+call returns. Outside of an engine call it returns `maximum_analysis_time`.
+`self.run_tool(args, target, **kwargs)` runs an external tool that way: as `subprocess.run()`, killed
+`TOOL_TIMEOUT_MARGIN_SECONDS` before the call runs out of time (and logged), returning `None`, so
+that the module can still return before the watchdog kills the worker.
+`self.run_sandboxed_tool(args, target, ...)` does the same for a tool that parses a file from the
+alert, in the Landlock sandbox (`docs/TOOL_SANDBOX.md`).
+
 ### 12.2 Cancellation
 
 `EngineExecutionContext.cancel_analysis()` sets a flag the main loop tests at the
-top of each iteration and between modules. Four things set it:
+top of each iteration and between modules. Three things set it:
 
 - an analyst dispositioned the alert mid-analysis (`_check_for_alert_disposition`);
 - the module itself called `cancel_analysis()` (checked via
   `module.is_canceled_analysis()` right after the call);
-- an observable came back `whitelisted`;
 - the lock was lost (`Worker._handle_lock_lost` → `context.cancel_analysis()`).
 
 Because the context is created by the worker when it claims the item rather than
@@ -933,13 +987,18 @@ round trip is honored: `AnalysisExecutor.execute` opens with
 mid-loop.
 
 Cancellation is cooperative — a module already inside `execute_analysis` runs to
-completion.
+completion unless it polls `self.should_stop()` (true on an immediate shutdown or
+a cancel). `sleep()` does, and a module passes it as the `cancel` of a blocking
+call such as `run_sandboxed`, so a lost lock stops the command rather than
+letting it run to its timeout on a work item the worker has given up.
 
 `AnalysisModuleContext.cancel_analysis_flag` (`saq/modules/context.py`) is a
 *different*, deliberately separate flag: it is per module instance, reset with
-every fresh `AnalysisModuleContext`, set by `AnalysisModule.cancel_analysis()`
-and also read by `AnalysisModule.sleep()`. `_execute_module_analysis` promotes it
-into the run-level flag above right after the call returns.
+every fresh `AnalysisModuleContext`, and set only by
+`AnalysisModule.cancel_analysis()`. `_execute_module_analysis` promotes it into
+the run-level flag above right after the call returns. The executor also hands
+each module context the run-level flag (`engine_canceled`), and
+`AnalysisModule.is_canceled_analysis()` is true when either is set.
 
 ### 12.3 Module exceptions
 
@@ -950,12 +1009,83 @@ Caught per-module in `_execute_module_analysis`:
 | `WaitForAnalysisException` | create the dependency edge and move on (§9.1) |
 | `ExcessiveFileDataSizeError` | re-raised — aborts the whole work item |
 | `AnalysisFailedException` | logged as a warning (expected on retry after a kill), fails any dependency |
-| anything else | logged as a **warning** (with `exc_info`), so it writes no error report; the dependency (if any) is failed; and an analysis module **crash report** is written — the traceback, the tree and the file the module died on, keyed by a logged `crash_id` (`docs/CRASH_REPORTS.md`) |
+| anything else | logged as a **warning** (with `exc_info`), so it writes no error report; the dependency (if any) is failed; an analysis module **crash report** is written — the traceback, the tree and the file the module died on, keyed by a logged `crash_id` (`docs/CRASH_REPORTS.md`); and the failure is recorded for the analyst (§12.4) |
 
 Note that a module blowing up does not fail the work item — the loop continues
 with the next module.
 
-### 12.4 `AnalysisTimeoutError` unwinding
+`AnalysisError` is not in this table: `AnalysisModule.analyze()` catches it
+before the executor sees it (§12.4).
+
+### 12.4 Analysis errors
+
+`Analysis.error` is the message saying why the module that generated an analysis
+failed, or `None`. It is kept in the tree (`root.json`), not in the details, so
+it is read without loading them. A module says it failed in one of two ways:
+
+```python
+# from anywhere under execute_analysis()/continue_analysis()/execute_final_analysis()
+raise AnalysisError(f"whois lookup of {domain} failed: {e}") from e
+
+# or, holding the analysis, and returning normally
+analysis.error = f"exiftool exited {result.returncode}: {result.stderr[-200:]}"
+return AnalysisExecutionResult.COMPLETED
+```
+
+The message is required: `AnalysisError("")` and `analysis.error = ""` raise
+`ValueError`. `analysis.error = None` clears it. `analyze()` turns an
+`AnalysisError` into an error on the module's analysis of the observable,
+creating that analysis if the module had not yet, closes it out completed
+(`close_with_error()`), logs it at INFO with the root and observable, and
+returns `COMPLETED`, with the traceback of the exception the `AnalysisError`
+was raised from, if any. It writes no crash report: it is a failure the module
+expected. An exception the module did not expect is left to raise, so the engine
+writes a crash report for it (§12.3), rather than wrapped in an `AnalysisError`. Whatever the analysis already holds (observables, details, a summary)
+is kept and shown as a partial result.
+
+What an error does:
+
+- **GUI.** The alert tree shows an `error` badge on the analysis, with the
+  message beside it when there is no summary, and renders a failed analysis
+  that has neither summary nor observables, which would otherwise be hidden.
+  The analysis page shows the message above the details.
+- **Cache.** `_maybe_write_cache_delta` never caches a failed analysis
+  (`skip_reason` `analysis_error`): the next root to see the observable runs
+  the module again.
+- **Retry.** A module whose `allow_reanalysis_on_failure` is true runs again on
+  an observable whose analysis failed (`AnalysisModule.will_retry()`). The engine
+  deletes the failed analysis with `Observable.delete_analysis()`, which takes the
+  observables it added with it, right before the module runs again, never in
+  `accepts()`, which declared-dependency checks also call. Until the retry has run,
+  the failed analysis does not satisfy a declared dependency on the module. A work
+  item retries a failed analysis once (`EngineExecutionContext.retried_analysis`):
+  each retry adds an analysis, which queues the observable again, so without the
+  limit a failure that persists reruns the module on every pass until
+  `maximum_cumulative_analysis_fail_time` fails the root. A retry that fails is
+  final until the next work item on the root (analyst requested analysis, a mode
+  change), which retries it once more. Final analysis mode never retries, since the
+  module cannot run `execute_analysis()` there, so a delayed analysis request's work
+  item, which reaches the other observables only in final analysis mode, leaves the
+  failed analysis in place.
+  Otherwise a failed analysis is final for that root, like any completed one.
+- **Delta.** The attribution log (`root.module_executions`) records the error
+  with the analysis.
+
+The engine records the failures a module cannot report itself: an uncaught
+exception (§12.3) and a killed worker (§12.6). If the module had created its
+analysis, that analysis gets the error, keeping a message the module already
+set, with the `crash_id` appended. If it had not, the engine does **not** create
+one, because code that reads an analysis takes one that exists as the module's
+result (`EmailArchiver` indexes URLs under every `EmailArchiveResults` it
+finds). The failure goes in `root.analysis_failures` instead, which also stops
+the module from running on that observable again in the root, and the alert
+tree shows it under the observable. An analyst asking for analysis (Analyze
+Alert, an observable action, `request_analyst_analysis()`) or `ace alert reset`
+clears `analysis_failures`, so a module that failed, transiently or before a
+fix was deployed, runs again. Code that reads another module's analysis
+checks `analysis.error` before trusting it.
+
+### 12.5 `AnalysisTimeoutError` unwinding
 
 `AnalysisExecutor.execute` catches it, still runs `_execute_post_analysis`, and
 re-raises. `AnalysisOrchestrator._execute_analysis` saves the partial tree, sets
@@ -963,7 +1093,7 @@ re-raises. `AnalysisOrchestrator._execute_analysis` saves the partial tree, sets
 `orchestrate_analysis` catches it, logs a warning, returns `False` — and the
 `finally` still runs the full post-analysis path.
 
-### 12.5 Worker death recovery
+### 12.6 Worker death recovery
 
 Two independent mechanisms:
 
@@ -1002,7 +1132,9 @@ reconstructed from the tracking record since the process that died wrote nothing
 (`docs/CRASH_REPORTS.md`) — calls
 `root.set_analysis_failed(module_path, obs_type, obs_value, "process died
 unexpectedly (crash_id ...)")` — the crash id rides along so an analyst reading the
-alert can reach the report without finding the log line first — saves,
+alert can reach the report without finding the log line first — puts the same
+message on the module's analysis of the observable if the module had created one
+(§12.4), saves,
 force-releases the lock *scoped to the lock_uuid it actually observes* so it can
 never delete a live worker's lock, and finally
 **deletes the pending file** — deleting it is the acknowledgement, so a replacement
@@ -1071,11 +1203,10 @@ is passed to all three (§19.8). Two things follow from that:
 
 ### 13.2 Detection → alert
 
-`_handle_detection_points` runs only when there is no outstanding work, and skips:
-
-- roots whose mode is in `non_detectable_modes` (default `correlation`,
-  `dispositioned`, `event` — this is what stops an alert from re-alerting);
-- whitelisted roots (unless `forced_alerts`).
+`_handle_detection_points` runs only when there is no outstanding work, and skips
+roots whose mode is in `non_detectable_modes` (default `correlation`,
+`dispositioned`, `event` — this is what stops an alert from re-alerting). Nothing
+else stops a detection from alerting: a `whitelisted` tag is an ordinary tag.
 
 If `root.has_detections()` (or `forced_alerts`) and `alerting_enabled`, the mode
 is set to `correlation`, and `_convert_to_alert` creates the alert through
@@ -1287,7 +1418,7 @@ than per-process.
 | `analysis_modes_ignore_cumulative_timeout` | modes exempt from the cumulative fail timeout. |
 | `log_analysis_timeout_as_warning` | declared in the schema; not read by the engine code. |
 | `alerting_enabled` | master switch for detection → alert. |
-| `metrics_logging` | fluent-bit destination for per-module metrics. |
+| `metrics_logging` | fluent-bit destination for the per-root and per-module metrics. |
 
 ### 16.2 `analysis_mode_<name>:` (`AnalysisModeConfig`)
 
@@ -1380,6 +1511,21 @@ These are MODULE_PATHs of the generated *Analysis* class
 `analysis_module_<name>` config section names. A deprecated module has had its config
 section deleted along with its code, so there is no section left to key off of.
 
+A site config overlay may still set keys on the deleted section (`enabled: false`, or a
+module-specific setting). What is left of the section then has no `name`,
+`python_module` or `python_class`, and `load_analysis_module_configs` skips it with a
+WARNING naming the key instead of failing configuration validation in every process.
+A section that has any of those three keys is still validated, so a half-written module
+definition fails loudly as before.
+
+An overlay may also still name the module in an analysis mode's `enabled_modules` or
+`disabled_modules`, or in a `module_group_*` list (lists append when overlays merge, so
+re-listing `module_group_common` counts). `ModuleLoader` skips each such name and logs an
+ERROR naming the mode, the module and the group, instead of failing to load modules
+and stopping every engine worker. It logs at ERROR rather than WARNING because it
+cannot tell a removed module from a misspelled name, and a misspelled module silently
+not running is something the operator has to fix.
+
 Alerts saved before the module was removed still carry its serialized Analysis. When
 `Observable._load_analysis()` (or the cache replay path in `saq/analysis/cache.py`)
 cannot import the class it substitutes a read-only `UnknownAnalysis`, so the rest of
@@ -1406,7 +1552,8 @@ modules that are already gone.
 | Per-root log | `<storage_dir>/saq.log`, attached for the duration of the work item |
 | Log correlation | every line during a work item carries `transaction_id = root uuid` (`Worker.execute`) |
 | What a worker is doing right now | `data/var/tracking/<node>/worker-<name>.json`, written by the worker itself |
-| Per-`(root, module)` metrics | fluent-bit event per module with `analysis_time_seconds`, `percentage`, `exec_count`, `cache_hit_count`, `cache_miss_count`, `cache_write_count_insert`, lookup/write latency sums and maxima, compressed/uncompressed byte sums, `alert_type`, `is_alert`, `queue` (`EngineExecutionContext.record_execution_statistics`) |
+| Per-root metrics | one fluent-bit event per analyzed work item with `event_type` `root`, including one that was cancelled, timed out or failed: `root_uuid`, `outcome` (`completed`; `cancelled` for a shutdown, a lost lock or a disposition stop; `timed_out`; `failed`; absent on events from before the field existed, so `(outcome=completed OR NOT outcome=*)` selects finished work items across both), `total_analysis_time_seconds`, `total_time_seconds`, `alert_type`, `is_alert`, `queue`, `observable_count` and `observable_type_counts` (type → count) (`EngineExecutionContext.record_execution_statistics`). None is sent for a worker killed for a module timeout or its memory limit, a work item that fails before analysis starts, or an alert whose disposition skips analysis |
+| Per-`(root, module)` metrics | one fluent-bit event per module that did anything in the work item, with `event_type` `module`: `root_uuid`, `module`, `analysis_time_seconds`, `percentage`, `exec_count`, `cache_hit_count`, `cache_miss_count`, `cache_write_count_insert`, lookup/write latency sums and maxima, compressed/uncompressed byte sums. It shares `root_uuid` and `timestamp` with its root event, and carries none of the root event's other fields |
 | Module attribution | `root._module_executions` — one `ModuleExecutionDelta` per non-empty module run plus one per cache hit, persisted in `data.json` with `details` stripped |
 | Node health | `nodes.last_update`, `nodes.status` |
 
@@ -1486,7 +1633,7 @@ comments throughout the tests and source.
 | [19.13](ENGINE_DESIGN_NOTES.md#1913-workstack-could-not-actually-hold-analysis--fixed) | `WorkStack` could not actually hold `Analysis` | fixed |
 | [19.14](ENGINE_DESIGN_NOTES.md#1914-order-by-rand--limit-128-on-the-workload-query) | `ORDER BY RAND() ... LIMIT 128` on the workload query | **open** |
 | [19.15](ENGINE_DESIGN_NOTES.md#1915-two-context-objects-for-one-execution--fixed) | Two context objects for one execution | fixed |
-| [19.16](ENGINE_DESIGN_NOTES.md#1916-config-reload-on-sighup-is-not-implemented) | Config reload on SIGHUP is not implemented | **open** |
+| [19.16](ENGINE_DESIGN_NOTES.md#1916-config-reload-on-sighup-is-not-implemented--removed) | Config reload on SIGHUP is not implemented | removed |
 | [19.17](ENGINE_DESIGN_NOTES.md#1917-the-post-analysis-completed-skip-never-fired--fixed) | The post-analysis COMPLETED skip never fired | fixed |
 
 ---

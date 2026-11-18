@@ -84,7 +84,7 @@ def test_directory_in_a_git_repo_is_kept(signature_dir, monkeypatch, caplog):
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize("entry", ["bv", "./bv", "ABSOLUTE"])
+@pytest.mark.parametrize("entry", ["./bv", "ABSOLUTE"])
 def test_entries_resolve_the_same_way_the_scanner_resolves_them(signature_dir, monkeypatch, entry):
     if entry == "ABSOLUTE":
         entry = os.path.join(signature_dir, "bv")

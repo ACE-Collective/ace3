@@ -9,10 +9,11 @@ from unittest.mock import patch
 from urllib.parse import parse_qs, urlparse
 
 import pytest
-from httpx import AsyncClient
+from httpx import ASGITransport, AsyncClient
+from pydantic import ValidationError
 
 from saq.analysis.root import load_root
-from saq.configuration.config import get_analysis_module_config, get_splunk_config
+from saq.configuration.config import get_analysis_module_config, get_config, get_splunk_config
 from saq.constants import (
     ANALYSIS_MODE_CORRELATION,
     DIRECTIVE_CLICKER_DETECTION,
@@ -30,7 +31,8 @@ from saq.database.pool import get_db
 from saq.database.util.alert import ALERT
 from saq.database.util.locking import acquire_lock, release_lock
 from saq.modules.test import CustomReqFalseAnalysis, DeclaredNoProduceAnalysis
-from tests.saq.helpers import create_root_analysis
+from tests.saq.helpers import audit_actor_of, audit_record, create_root_analysis
+from tests.aceapi_v2.conftest import v2_app
 
 pytestmark = pytest.mark.integration
 
@@ -94,12 +96,13 @@ class TestRequests:
         ("check-for-clickers", "url", DIRECTIVE_CLICKER_DETECTION, "a clicker check"),
         ("check-for-clickers", "fqdn", DIRECTIVE_CLICKER_DETECTION, "a clicker check"),
     ])
-    async def test_adds_the_directive_and_queues_the_alert(self, client: AsyncClient, alert, action, observable,
-                                                           directive, audited, caplog: pytest.LogCaptureFixture):
+    async def test_adds_the_directive_and_queues_the_alert(self, client: AsyncClient, client_actor, alert, action,
+                                                           observable, directive, audited,
+                                                           caplog: pytest.LogCaptureFixture):
         """Even on a dispositioned alert: the requested analysis runs in correlation mode and gets
         past the stop on dispositioned alerts (Collect File used to queue it in dispositioned
         mode, where no module runs)."""
-        caplog.set_level(logging.INFO, logger="aceapi_v2.alerts.router")
+        caplog.set_level(logging.INFO)
         target = getattr(alert.observables, observable)
 
         response = await client.post(_path(alert.uuid, target.uuid, action))
@@ -110,8 +113,10 @@ class TestRequests:
         assert root.analysis_mode == ANALYSIS_MODE_CORRELATION
         assert root.state.get(STATE_ANALYST_REQUESTED_ANALYSIS) is True
         assert _queued(alert)
-        assert any(message.startswith(f"AUDIT: user unittest requested {audited} for observable")
-                   and message.endswith(f"in alert {alert.uuid}") for message in caplog.messages)
+        audit = audit_record(caplog, f"user unittest requested {audited} for observable")
+        assert audit.getMessage().endswith(f"in alert {alert.uuid}")
+        assert (*audit_actor_of(audit), audit.alert_uuid, audit.observable_uuid) == (
+            *client_actor, alert.uuid, target.uuid)
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("action, observable", [
@@ -127,11 +132,11 @@ class TestRequests:
         assert not _queued(alert)
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("action", WRITES)
-    async def test_unknown_alert_or_observable(self, client: AsyncClient, alert, action):
-        assert (await client.post(_path("not-a-uuid", alert.observables.url.uuid, action))).status_code == 400
-        assert (await client.post(_path(str(uuid.uuid4()), alert.observables.url.uuid, action))).status_code == 404
-        assert (await client.post(_path(alert.uuid, str(uuid.uuid4()), action))).status_code == 404
+    async def test_unknown_alert_or_observable(self, client: AsyncClient, alert):
+        # every action checks these in request_observable_analysis
+        assert (await client.post(_path("not-a-uuid", alert.observables.url.uuid, "crawl"))).status_code == 400
+        assert (await client.post(_path(str(uuid.uuid4()), alert.observables.url.uuid, "crawl"))).status_code == 404
+        assert (await client.post(_path(alert.uuid, str(uuid.uuid4()), "crawl"))).status_code == 404
 
     @pytest.mark.asyncio
     async def test_a_locked_alert_is_a_conflict(self, client: AsyncClient, alert):
@@ -149,25 +154,19 @@ class TestRequests:
         assert not _queued(alert)
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("action, observable, directive", [
-        ("collect-file", "file_location", DIRECTIVE_COLLECT_FILE),
-        ("render", "file", DIRECTIVE_RENDER),
-        ("crawl", "url", DIRECTIVE_CRAWL),
-        ("check-for-clickers", "url", DIRECTIVE_CLICKER_DETECTION),
-    ])
-    async def test_a_simulated_alert_is_never_reanalyzed(self, client: AsyncClient, alert, action, observable,
-                                                         directive):
-        """A SIMULATED (test-run) alert's tree stays as its run review froze it (docs/SVS_RUNS.md)."""
+    async def test_a_simulated_alert_is_never_reanalyzed(self, client: AsyncClient, alert):
+        """A SIMULATED (test-run) alert's tree stays as its run review froze it (docs/SVS_RUNS.md).
+        Every action checks this in request_observable_analysis."""
         db = get_db()
         db.query(Alert).filter(Alert.uuid == alert.uuid).update({"disposition": DISPOSITION_SIMULATED})
         db.commit()
-        target = getattr(alert.observables, observable)
+        target = alert.observables.url
 
-        response = await client.post(_path(alert.uuid, target.uuid, action))
+        response = await client.post(_path(alert.uuid, target.uuid, "crawl"))
 
         assert response.status_code == 409
         assert response.json()["detail"].startswith(f"alert {alert.uuid} is SIMULATED")
-        assert not load_root(alert.storage_dir).get_observable(target.uuid).has_directive(directive)
+        assert not load_root(alert.storage_dir).get_observable(target.uuid).has_directive(DIRECTIVE_CRAWL)
         assert not _queued(alert)
 
     @pytest.mark.asyncio
@@ -197,7 +196,9 @@ class TestRequests:
 
 class TestClickerSearches:
     @pytest.mark.asyncio
-    async def test_the_searches_for_the_observable(self, client: AsyncClient, alert, tmp_path, monkeypatch):
+    async def test_the_searches_for_the_observable(self, client: AsyncClient, client_actor, alert, tmp_path,
+                                                   monkeypatch, caplog: pytest.LogCaptureFixture):
+        caplog.set_level(logging.INFO)
         clicker_config = tmp_path / "clicker_detection.yaml"
         clicker_config.write_text(
             "splunk:\n"
@@ -221,14 +222,37 @@ class TestClickerSearches:
         assert url.scheme == "https"
         assert url.hostname == get_splunk_config("default").host
         assert '"https://evil.example/login"' in parse_qs(url.query)["q"][0]
+        audit = audit_record(caplog, "user unittest opened 1 Splunk clicker searches")
+        assert (*audit_actor_of(audit), audit.alert_uuid, audit.observable_uuid) == (
+            *client_actor, alert.uuid, alert.observables.url.uuid)
 
     @pytest.mark.asyncio
     async def test_none_when_the_splunk_module_is_not_configured(self, client: AsyncClient, alert):
-        with patch("aceapi_v2.alerts.service.get_analysis_module_config", side_effect=ValueError("not configured")):
-            response = await client.get(_path(alert.uuid, alert.observables.url.uuid, "clicker-searches"))
+        del get_config().raw._data["analysis_module_clicker_detection_splunk"]
+        get_config().load_analysis_module_configs()
+
+        response = await client.get(_path(alert.uuid, alert.observables.url.uuid, "clicker-searches"))
 
         assert response.status_code == 200
         assert response.json()["data"] == []
+
+    @pytest.mark.asyncio
+    async def test_an_invalid_splunk_module_config_is_an_error(self, _override_db_session, valid_api_key: str,
+                                                               alert, caplog):
+        get_config().raw._data["analysis_module_clicker_detection_splunk"]["api_name"] = ["not", "a", "name"]
+        get_config().load_analysis_module_configs()
+
+        # starlette re-raises after the catch-all handler has built the 500
+        transport = ASGITransport(app=v2_app(), raise_app_exceptions=False)
+        async with AsyncClient(transport=transport, base_url="http://test",
+                               headers={"x-ace-auth": valid_api_key}) as client:
+            with caplog.at_level(logging.ERROR):
+                response = await client.get(_path(alert.uuid, alert.observables.url.uuid, "clicker-searches"))
+
+        # not an empty list, which reads as "no searches for this observable"
+        assert response.status_code == 500
+        (record,) = [record for record in caplog.records if record.levelno == logging.ERROR]
+        assert isinstance(record.exc_info[1], ValidationError)
 
     @pytest.mark.asyncio
     async def test_unknown_observable(self, client: AsyncClient, alert):

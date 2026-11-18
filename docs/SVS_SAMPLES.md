@@ -270,10 +270,12 @@ linked.
 The default pool uses the `local` backend, so the bytes are only on the node that stored them, and
 capture runs on whichever node owns the alert. That is right for a single node.
 
-A multi-node site does one of two things before relying on samples:
-- redefines the `svs_samples` pool in its own configuration, with a backend every node can reach and
-  `shared: true`, as it does for `yara_qa` (`docs/YARA_QA.md`, *Nodes*); or
-- disables capture with `analysis_module_svs_yara_sample_capture.enabled: false` until it has one.
+A multi-node site redefines the `svs_samples` pool in its own configuration, with a backend every
+node can reach and `shared: true`, as it does for `yara_qa` (`docs/YARA_QA.md`, *Nodes*). A
+node-local backend means a single-node install (`docs/CAS.md`, "Sharing between nodes"), whether or
+not anything is captured: disabling `analysis_module_svs_yara_sample_capture` does not make a local
+pool right for a cluster, and the `cas.pool` monitor logs an ERROR for it while more than one node
+is live.
 
 With a node-local pool, a node that captures bytes it still has writes them to its own pool
 directory, even when another node stored the same bytes first. A node whose copy of the file is
@@ -282,7 +284,7 @@ as the one that has the bytes.
 
 That is also why a multi-node site must not keep the default pool: the API serves bytes only from
 the node that has them (409 `wrong_node` elsewhere), and it takes a capture's match record to be on
-the capture's `node`. In the one case above it is not: the capture whose file was gone wrote its
+the capture's `node`. In the case above it is not: the capture whose file was gone wrote its
 match record on its own node, while its `node` names the node with the file.
 
 ## Configuration

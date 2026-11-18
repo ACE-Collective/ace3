@@ -16,17 +16,24 @@ import pytz
 from pydantic import Field, model_validator
 
 from saq.analysis.observable import Observable
-from saq.analysis.root import KEY_PLAYBOOK_URL, KEY_TRANSACTION_ID, RootAnalysis, Submission
+from saq.analysis.root import (
+    KEY_ALERT_TEMPLATE,
+    KEY_PLAYBOOK_URL,
+    KEY_TRANSACTION_ID,
+    RootAnalysis,
+    Submission,
+)
 from saq.collectors.hunter import Hunt, read_persistence_data, write_persistence_data
 from saq.collectors.hunter.base_hunter import HuntConfig
 from saq.collectors.hunter.loader import load_from_yaml
 from saq.configuration.config import get_config
-from saq.constants import ANALYSIS_MODE_CORRELATION, F_SIGNATURE_ID, SUMMARY_DETAIL_FORMAT_JINJA, TIMESPEC_TOKEN
+from saq.constants import ANALYSIS_MODE_CORRELATION, F_SIGNATURE_ID, SUMMARY_DETAIL_FORMAT_JINJA, TIMESPEC_TOKEN, EventTimeSource
 from saq.collectors.submission_file_manager import get_staging_tmp_dir
-from saq.gui.alert import KEY_ALERT_TEMPLATE, KEY_ICON_CONFIGURATION
+from saq.gui.icon import KEY_ICON_CONFIGURATION
 from saq.logging import DEFAULT_TRANSACTION_ID, get_transaction_id
 from saq.observables.generator import create_observable
 from saq.signatures.model import SignatureType
+from saq.svs.attribution import MaintenanceSnapshot, record_suppressed_matches, suppression_key, suppression_owners
 from saq.observables.mapping import (
     ObservableMapping,
     RelationshipMapping,
@@ -95,6 +102,13 @@ def collect_correlate_steps(logic_steps: list[StepConfig]) -> list[tuple[Optiona
 
     _walk(logic_steps)
     return collected
+
+def dedup_key_hunt_uuid(key: Optional[str]) -> Optional[str]:
+    """The uuid of the hunt whose dedup_key made a submission key, which QueryHunt prefixes with it;
+    None for a key without the prefix."""
+    hunt_uuid, separator, _ = (key or "").partition(":")
+    return hunt_uuid if separator and hunt_uuid else None
+
 
 T = TypeVar("T")
 
@@ -821,6 +835,31 @@ class QueryHunt(Hunt):
             summary = summary[: _EVENT_SUMMARY_MAX_LEN - 1] + "…"
         return summary
 
+    def key_suppression(self, submissions: list[Submission]):
+        """Sets each grouped submission's suppression_key, which the suppression check and the
+        manager's last alert times use: its group_value, or during an svs run or maintenance window
+        on a test host it involves, the group_value keyed by that run or window (docs/SVS_RUNS.md,
+        *Hunt suppression during runs*), so a test is never hidden by an earlier alert and neither a
+        test nor a host's staging hides a later one. A failure to look them up falls back to the
+        group_value."""
+        try:
+            owners = suppression_owners([submission.root for submission in submissions])
+        except Exception as e:
+            logging.exception("unable to key the suppression of hunt %s (uuid=%s, type=%s) by svs run: %s",
+                              self.name, self.uuid, self.type, e)
+            owners = [None] * len(submissions)
+
+        for submission, owner in zip(submissions, owners):
+            group_value = getattr(submission, "group_value", None)
+            if group_value is None or owner is None:
+                submission.suppression_key = group_value
+                continue
+            submission.suppression_key = suppression_key(owner, group_value)
+            kind = "maintenance window" if isinstance(owner, MaintenanceSnapshot) else "run"
+            logging.info("hunt %s (uuid=%s, type=%s) group_value %s: suppression keyed by svs %s %s",
+                         self.name, self.uuid, self.type, group_value, kind, owner.uuid,
+                         extra={**owner.log_fields(), "hunt_uuid": self.uuid, "group_value": group_value})
+
     def process_query_results(self, query_results, **kwargs) -> Optional[list[Submission]]:
         if query_results is None:
             return None
@@ -915,6 +954,7 @@ class QueryHunt(Hunt):
                 return None
             if not value:
                 return None
+            # prefixed so hunts never share keys, and so dedup_key_hunt_uuid can tell the hunt
             return f"{self.uuid}:{value}"
 
         event_grouping = {} # key = self.group_by field value, value = Submission
@@ -959,7 +999,10 @@ class QueryHunt(Hunt):
 
         # map results to observables
         for event_index, event in enumerate(query_results):
-            event_time = self.extract_event_timestamp(event) or local_time()
+            event_time = self.extract_event_timestamp(event)
+            event_time_source = EventTimeSource.EVENT
+            if event_time is None:
+                event_time, event_time_source = local_time(), EventTimeSource.QUERY_TIME
             event = self.wrap_event(event)
 
             # use shared extraction pipeline
@@ -1010,7 +1053,7 @@ class QueryHunt(Hunt):
             if self.group_by != "ALL" and (self.group_by is None or self.group_by not in event):
                 submission = _create_submission(event)
                 submission.key = _compute_dedup_key(event)
-                submission.root.event_time = event_time
+                submission.root.set_event_time(event_time, event_time_source)
 
                 # Apply correlation overrides
                 if event_index in event_action_overrides:
@@ -1043,7 +1086,7 @@ class QueryHunt(Hunt):
                             file_obs.add_tag(tag)
                         if file_content.display_type is not None:
                             file_obs.display_type = file_content.display_type
-                    # note: display_value is not set for FileObservable as it's read-only
+                    # note: display_value is not set here, the mapping rejects it for file observables (validate_display_value_for_file_type)
 
                 submission.root.details[QUERY_DETAILS_EVENTS].append(event)
                 submissions.append(submission)
@@ -1091,17 +1134,17 @@ class QueryHunt(Hunt):
                                 file_obs.add_tag(tag)
                             if file_content.display_type is not None:
                                 file_obs.display_type = file_content.display_type
-                        # note: display_value is not set for FileObservable as it's read-only
+                        # note: display_value is not set here, the mapping rejects it for file observables (validate_display_value_for_file_type)
 
                     event_grouping[grouping_target].root.details[QUERY_DETAILS_EVENTS].append(event)
                     event_submission_map.setdefault(event_index, []).append(event_grouping[grouping_target])
 
                     # for grouped events, the overall event time is the earliest event time in the group
                     # this won't really matter if the observables are temporal
-                    if event_grouping[grouping_target].root.event_time is None:
-                        event_grouping[grouping_target].root.event_time = event_time
-                    elif event_time < event_grouping[grouping_target].root.event_time:
-                        event_grouping[grouping_target].root.event_time = event_time
+                    group_root = event_grouping[grouping_target].root
+                    if group_root.event_time is None or event_time < group_root.event_time:
+                        # and so is where it came from
+                        group_root.set_event_time(event_time, event_time_source)
 
             # apply relationships to the observables
             for submission in submissions:
@@ -1296,16 +1339,31 @@ class QueryHunt(Hunt):
                 self.name, self.uuid, self.type,
             )
         elif self.group_by is not None and self.suppression is not None:
+            self.key_suppression(submissions)
             kept = []
+            suppressed = []
             for submission in submissions:
-                group_value = getattr(submission, "group_value", None)
-                if group_value is not None and self.is_group_suppressed(group_value):
+                key = getattr(submission, "suppression_key", None)
+                if key is not None and self.is_group_suppressed(key):
                     logging.info(
-                        "suppressed alert for hunt %s (uuid=%s, type=%s) group_by=%s group_value=%s",
-                        self.name, self.uuid, self.type, self.group_by, group_value,
+                        "suppressed alert for hunt %s (uuid=%s, type=%s) group_by=%s group_value=%s key=%s",
+                        self.name, self.uuid, self.type, self.group_by, submission.group_value, key,
                     )
+                    suppressed.append((submission.root, submission.group_value))
                     continue
                 kept.append(submission)
             submissions = kept
+            self.record_suppressed(suppressed)
 
         return submissions
+
+    def record_suppressed(self, suppressed: list[tuple[RootAnalysis, str]]):
+        """Records the suppressed matches that fall in an svs run on one of its test hosts, so the
+        run's result can tell this hunt was suppressed rather than missing (docs/SVS_RUNS.md,
+        *Results*). A failure loses only that record, never the suppression."""
+        try:
+            record_suppressed_matches(self.uuid, suppressed)
+        except Exception as e:
+            logging.exception("unable to record the suppressed matches of hunt %s (uuid=%s, type=%s) for svs: %s",
+                              self.name, self.uuid, self.type, e,
+                              extra={"hunt_uuid": self.uuid, "group_values": [value for _, value in suppressed]})

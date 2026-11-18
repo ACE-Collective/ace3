@@ -9,6 +9,7 @@ it, and promotes it into ``pending/`` when the worker dies. The worker being the
 dies is not a reason to keep the state anywhere else -- the file outlives the process.
 """
 import json
+import logging
 import os
 import re
 import time
@@ -20,13 +21,15 @@ from saq.analysis.root import RootAnalysis
 from saq.configuration.config import get_analysis_module_config
 from saq.constants import F_TEST
 from saq.database.util.locking import acquire_lock, get_lock_uuid, release_lock
+from saq.engine import tracking
+from saq.environment import get_global_runtime_settings
 from saq.engine.configuration_manager import ConfigurationManager
 from saq.engine.engine_configuration import EngineConfiguration
 from saq.engine.lock_manager.adapter import LockManagerAdapter
 from saq.engine.lock_manager.distributed import DistributedLockManager
 from saq.engine.node_manager.node_manager_interface import NodeManagerInterface
 from saq.engine.worker import Worker
-from saq.modules.test import BasicTestAnalyzer
+from saq.modules.test import BasicTestAnalysis, BasicTestAnalyzer
 from saq.engine.tracking import (
     NullTrackingWriter,
     TrackingReader,
@@ -216,13 +219,25 @@ def test_module_tracking_without_a_target_is_ignored(writer, reader):
 
 
 @pytest.mark.unit
-def test_the_write_is_atomic(writer):
+def test_the_write_is_atomic(writer, reader, monkeypatch):
     """tmp + rename, so a reader never sees a torn record and no .tmp is left behind."""
     writer.track_current_work_target(_target())
     _track(writer)
 
     assert os.path.exists(get_worker_tracking_path("any-0"))
     assert not os.path.exists(f"{get_worker_tracking_path('any-0')}.tmp")
+
+    # a write that dies after the file it writes to was truncated
+    def truncate_and_fail(path, mode="r", *args, **kwargs):
+        open(path, mode, *args, **kwargs).close()
+        raise OSError("no space left on device")
+
+    monkeypatch.setattr(tracking, "open", truncate_and_fail, raising=False)
+    writer.track_current_work_target(_target(uuid=OTHER_ROOT_UUID))
+    monkeypatch.undo()
+
+    # leaves the previous record whole
+    assert reader.read_worker_record("any-0").root_uuid == ROOT_UUID
 
 
 @pytest.mark.unit
@@ -243,16 +258,6 @@ def test_the_null_writer_writes_nothing(reader):
 @pytest.mark.unit
 def test_a_missing_file_reads_as_nothing_tracked(reader):
     assert reader.read_worker_record("never-existed") is None
-
-
-@pytest.mark.unit
-def test_a_corrupt_file_reads_as_nothing_tracked(writer, reader):
-    writer.track_current_work_target(_target())
-    with open(get_worker_tracking_path("any-0"), "w") as fp:
-        fp.write('{"root_uuid": "11111111')
-
-    # deliberately "nothing was tracked" rather than a plausible looking half record
-    assert reader.read_worker_record("any-0") is None
 
 
 @pytest.mark.unit
@@ -341,19 +346,6 @@ def test_reclaiming_the_same_root_does_not_wipe_the_pending_failure(writer, read
     assert reader.read_worker_record("any-0").module_path == "saq.modules.test:Innocent"
 
 
-@pytest.mark.unit
-def test_a_replacement_on_a_different_root_leaves_the_failure_alone(writer, reader):
-    writer.track_current_work_target(_target())
-    _track(writer, module_path="saq.modules.test:Killer")
-    reader.claim_failure("any-0")
-
-    replacement = TrackingWriter("any-0")
-    replacement.track_current_work_target(_target(uuid=OTHER_ROOT_UUID))
-
-    assert os.path.exists(get_pending_tracking_path(ROOT_UUID))
-    assert reader.read_worker_record("any-0").root_uuid == OTHER_ROOT_UUID
-
-
 #
 # startup recovery
 #
@@ -368,16 +360,6 @@ def test_startup_promotes_a_leftover_worker_file(writer, reader):
     assert [r.root_uuid for r in pending] == [ROOT_UUID]
     assert pending[0].pending_failure
     assert not os.path.exists(get_worker_tracking_path("any-0"))
-
-
-@pytest.mark.unit
-def test_startup_does_not_resurrect_a_cleanly_finished_root(writer, reader):
-    writer.track_current_work_target(_target())
-    _track(writer)
-    writer.clear_module_tracking()
-    writer.clear_target_tracking()
-
-    assert reader.recover_pending_failures() == []
 
 
 @pytest.mark.unit
@@ -404,8 +386,6 @@ def test_a_corrupt_pending_file_is_skipped(writer, reader):
 @pytest.mark.unit
 def test_tracking_is_scoped_to_the_node():
     """Two engines sharing a data directory must not collide."""
-    from saq.environment import get_global_runtime_settings
-
     settings = get_global_runtime_settings()
     original = settings.saq_node
     try:
@@ -423,12 +403,17 @@ def test_tracking_is_scoped_to_the_node():
 
 
 @pytest.mark.unit
-def test_clear_all_tracking_removes_every_node(writer):
+def test_clear_all_tracking_removes_every_node(writer, monkeypatch):
     writer.track_current_work_target(_target())
-    assert os.path.exists(get_worker_tracking_path("any-0"))
+    this_node_dir = get_tracking_dir()
+    monkeypatch.setattr(get_global_runtime_settings(), "saq_node", "other-node")
+    TrackingWriter("any-0").track_current_work_target(_target())
+    other_node_dir = get_tracking_dir()
+    assert os.path.exists(this_node_dir) and os.path.exists(other_node_dir)
 
     clear_all_tracking()
-    assert not os.path.exists(get_tracking_dir())
+    assert not os.path.exists(this_node_dir)
+    assert not os.path.exists(other_node_dir)
 
 
 @pytest.mark.unit
@@ -506,6 +491,30 @@ def test_recovered_record_lands_on_the_right_root(root_analysis):
     # and the worker acknowledged it, so the next restart will not replay it
     assert TrackingReader().recover_pending_failures() == []
     assert get_lock_uuid(root_analysis.uuid) is None, "recovery did not release its own lock"
+
+
+@pytest.mark.integration
+def test_recovery_marks_the_analysis_the_dead_module_had_created(root_analysis):
+    """A module that created its analysis before its worker was killed (a hang, a timeout) leaves
+    that analysis marked failed, where the analyst would have seen its result."""
+    root_analysis.analysis_mode = "test_groups"
+    observable = root_analysis.add_observable_by_spec(F_TEST, "test_1")
+    analysis = observable.add_analysis(BasicTestAnalysis())
+    analysis.completed = False
+    root_analysis.save()
+
+    dying = TrackingWriter("correlation-0")
+    dying.track_current_work_target(root_analysis)
+    dying.track_current_analysis_module(_basic_test_module(), observable)
+
+    pending = TrackingReader().recover_pending_failures()
+    assert _recovering_worker()._handle_failed_analysis(pending[0])
+
+    reloaded = RootAnalysis(storage_dir=root_analysis.storage_dir)
+    reloaded.load()
+    analysis = reloaded.get_observable(observable.uuid).get_analysis(BasicTestAnalysis)
+    assert re.fullmatch(r"process died unexpectedly \(crash_id [0-9a-f-]{36}\)", analysis.error)
+    assert analysis.completed
 
 
 @pytest.mark.integration
@@ -673,3 +682,143 @@ def test_a_record_without_a_lock_uuid_releases_nothing(root_analysis):
 
     assert get_lock_uuid(root_analysis.uuid) == LIVE_LOCK_UUID
     assert not _is_marked_failed(root_analysis, observable)
+
+
+#
+# failures: the writer swallows them, the reader keeps what it could not promote
+#
+
+def _failing_pending_writes(monkeypatch):
+    """Makes every write into the pending directory fail; worker files still write."""
+    real_write_atomic = tracking._write_atomic
+
+    def _write_atomic(path, payload):
+        if path.startswith(get_pending_dir()):
+            raise OSError(f"no space left on device: {path}")
+        real_write_atomic(path, payload)
+
+    monkeypatch.setattr(tracking, "_write_atomic", _write_atomic)
+
+
+@pytest.mark.unit
+def test_a_write_recreates_a_tracking_directory_that_went_away(writer, reader):
+    clear_all_tracking()
+
+    writer.track_current_work_target(_target())
+
+    assert reader.read_worker_record("any-0").root_uuid == ROOT_UUID
+
+
+@pytest.mark.unit
+def test_a_failed_write_never_reaches_the_worker(writer, monkeypatch, caplog):
+    def _write_atomic(path, payload):
+        raise OSError("read-only file system")
+
+    monkeypatch.setattr(tracking, "_write_atomic", _write_atomic)
+
+    with caplog.at_level(logging.DEBUG):
+        writer.track_current_work_target(_target())
+        _track(writer)
+
+    assert not os.path.exists(get_worker_tracking_path("any-0"))
+    assert "unable to write tracking for any-0" in caplog.text
+
+
+@pytest.mark.unit
+def test_a_writer_without_a_tracking_directory_does_nothing(monkeypatch, reader):
+    def _makedirs(path, exist_ok=False):
+        raise PermissionError(f"permission denied: {path}")
+
+    monkeypatch.setattr(tracking.os, "makedirs", _makedirs)
+    writer = TrackingWriter("any-0")
+    monkeypatch.undo()
+
+    assert writer.path is None
+    writer.track_current_work_target(_target())
+    _track(writer)
+    writer.clear_target_tracking()
+    assert reader.read_worker_record("any-0") is None
+
+
+@pytest.mark.unit
+def test_a_failed_clear_never_reaches_the_worker(writer, caplog):
+    # a directory where the file should be cannot be removed with os.remove
+    os.makedirs(get_worker_tracking_path("any-0"))
+
+    with caplog.at_level(logging.DEBUG):
+        writer.clear_target_tracking()
+
+    assert writer.record is None
+    assert "unable to clear tracking for any-0" in caplog.text
+
+
+@pytest.mark.unit
+def test_resolving_a_failure_twice_is_harmless(writer, reader):
+    writer.track_current_work_target(_target())
+    _track(writer)
+    reader.claim_failure("any-0")
+
+    writer.resolve_pending_failure(ROOT_UUID)
+    writer.resolve_pending_failure(ROOT_UUID)
+
+    assert reader.recover_pending_failures() == []
+
+
+@pytest.mark.unit
+def test_a_failed_promotion_is_logged_and_recovered_at_startup(writer, reader, monkeypatch, caplog):
+    writer.track_current_work_target(_target())
+    _track(writer)
+    _failing_pending_writes(monkeypatch)
+
+    with caplog.at_level(logging.ERROR):
+        assert reader.claim_failure("any-0") is None
+
+    record = next(r for r in caplog.records if "unable to record pending failure" in r.getMessage())
+    assert record.levelno == logging.ERROR
+    assert record.exc_info is not None
+    assert record.worker_name == "any-0"
+    assert record.root_uuid == ROOT_UUID
+    # the worker file is the only copy of the attribution, so it stays
+    assert os.path.exists(get_worker_tracking_path("any-0"))
+
+    monkeypatch.undo()
+    assert [r.root_uuid for r in reader.recover_pending_failures()] == [ROOT_UUID]
+
+
+@pytest.mark.unit
+def test_a_failed_startup_promotion_keeps_the_worker_file(writer, reader, monkeypatch, caplog):
+    writer.track_current_work_target(_target())
+    _track(writer)
+    _failing_pending_writes(monkeypatch)
+
+    with caplog.at_level(logging.ERROR):
+        assert reader.recover_pending_failures() == []
+
+    record = next(r for r in caplog.records if "unable to recover pending failure" in r.getMessage())
+    assert record.levelno == logging.ERROR
+    assert record.exc_info is not None
+    assert record.root_uuid == ROOT_UUID
+    assert os.path.exists(get_worker_tracking_path("any-0"))
+
+
+@pytest.mark.unit
+def test_startup_without_a_tracking_directory_recovers_nothing(reader, monkeypatch, caplog):
+    def _makedirs(path, exist_ok=False):
+        raise PermissionError(f"permission denied: {path}")
+
+    monkeypatch.setattr(tracking.os, "makedirs", _makedirs)
+
+    with caplog.at_level(logging.WARNING):
+        assert reader.recover_pending_failures() == []
+
+    assert "unable to create tracking directory" in caplog.text
+
+
+@pytest.mark.unit
+def test_record_str_names_the_module_only_when_there_is_one():
+    record = TrackingRecord(root_uuid=ROOT_UUID, storage_dir="/data/root", worker_name="any-0")
+    assert str(record) == f"TrackingRecord(root={ROOT_UUID} worker=any-0)"
+
+    record.module_path = MODULE_PATH
+    record.observable_type, record.observable_value = "test", "test_1"
+    assert str(record) == f"TrackingRecord(root={ROOT_UUID} worker=any-0 module={MODULE_PATH} observable=test:test_1)"

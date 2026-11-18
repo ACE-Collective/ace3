@@ -1,3 +1,4 @@
+import logging
 import pytest
 from flask import url_for
 
@@ -16,14 +17,15 @@ from saq.database.pool import get_db
 from saq.database.util.alert import set_dispositions
 from saq.database.util.user_management import add_user, delete_user
 from saq.permissions.user import add_user_permission
-from tests.saq.helpers import insert_alert, make_simulated
+from tests.saq.helpers import audit_actor_of, audit_actors, audit_record, insert_alert, make_simulated, person
 
 
 @pytest.mark.integration
-def test_review_disposition_correct_single_alert(web_client):
+def test_review_disposition_correct_single_alert(web_client, session_actor, caplog):
     """Test recording a 'correct' review for a single alert from the analysis page."""
+    caplog.set_level(logging.INFO)
     alert = insert_alert()
-    set_dispositions([alert.uuid], DISPOSITION_FALSE_POSITIVE, 1)
+    set_dispositions([alert.uuid], DISPOSITION_FALSE_POSITIVE, person(1))
 
     response = web_client.post(url_for("analysis.review_disposition"), data={
         "review_result": DISPOSITION_REVIEW_CORRECT,
@@ -47,13 +49,17 @@ def test_review_disposition_correct_single_alert(web_client):
     comment = db.query(Comment).filter(Comment.uuid == alert.uuid).first()
     assert comment is not None
     assert comment.comment == f"{REVIEW_COMMENT_PREFIX}confirmed"
+    audit = audit_record(caplog, "user john reviewed disposition of alerts")
+    assert (*audit_actor_of(audit), audit.alert_uuids, audit.review_result, audit.corrected_disposition) == (
+        *session_actor, [alert.uuid], DISPOSITION_REVIEW_CORRECT, None)
+    assert audit_actors(caplog, "alert disposition reviewed") == [session_actor]
 
 
 @pytest.mark.integration
 def test_review_disposition_incorrect_single_alert(web_client):
     """Test correcting a disposition from the analysis page preserves the original."""
     alert = insert_alert()
-    set_dispositions([alert.uuid], DISPOSITION_FALSE_POSITIVE, 1)
+    set_dispositions([alert.uuid], DISPOSITION_FALSE_POSITIVE, person(1))
 
     response = web_client.post(url_for("analysis.review_disposition"), data={
         "review_result": DISPOSITION_REVIEW_INCORRECT,
@@ -77,7 +83,7 @@ def test_review_disposition_incorrect_single_alert(web_client):
 def test_review_disposition_incorrect_requires_comment(web_client):
     """Test that marking a disposition incorrect without a comment is rejected."""
     alert = insert_alert()
-    set_dispositions([alert.uuid], DISPOSITION_FALSE_POSITIVE, 1)
+    set_dispositions([alert.uuid], DISPOSITION_FALSE_POSITIVE, person(1))
 
     response = web_client.post(url_for("analysis.review_disposition"), data={
         "review_result": DISPOSITION_REVIEW_INCORRECT,
@@ -100,7 +106,7 @@ def test_review_disposition_incorrect_requires_comment(web_client):
 def test_review_disposition_incorrect_requires_corrected_disposition(web_client):
     """Test that marking a disposition incorrect without a valid corrected disposition is rejected."""
     alert = insert_alert()
-    set_dispositions([alert.uuid], DISPOSITION_FALSE_POSITIVE, 1)
+    set_dispositions([alert.uuid], DISPOSITION_FALSE_POSITIVE, person(1))
 
     response = web_client.post(url_for("analysis.review_disposition"), data={
         "review_result": DISPOSITION_REVIEW_INCORRECT,
@@ -121,7 +127,7 @@ def test_review_disposition_incorrect_requires_corrected_disposition(web_client)
 def test_review_disposition_invalid_result(web_client):
     """Test that an invalid review result is rejected."""
     alert = insert_alert()
-    set_dispositions([alert.uuid], DISPOSITION_FALSE_POSITIVE, 1)
+    set_dispositions([alert.uuid], DISPOSITION_FALSE_POSITIVE, person(1))
 
     response = web_client.post(url_for("analysis.review_disposition"), data={
         "review_result": "MAYBE",
@@ -140,7 +146,7 @@ def test_review_disposition_multiple_alerts_clears_session(web_client):
     """Test batch review from the manage page and that the checked session is cleared."""
     alert1 = insert_alert()
     alert2 = insert_alert()
-    set_dispositions([alert1.uuid, alert2.uuid], DISPOSITION_FALSE_POSITIVE, 1)
+    set_dispositions([alert1.uuid, alert2.uuid], DISPOSITION_FALSE_POSITIVE, person(1))
 
     with web_client.session_transaction() as sess:
         sess["checked"] = [alert1.uuid, alert2.uuid]
@@ -171,7 +177,7 @@ def test_review_disposition_permission_denied(app):
 
     try:
         alert = insert_alert()
-        set_dispositions([alert.uuid], DISPOSITION_FALSE_POSITIVE, 1)
+        set_dispositions([alert.uuid], DISPOSITION_FALSE_POSITIVE, person(1))
 
         with app.test_client() as client:
             client.post(url_for("auth.login"), data={
@@ -200,7 +206,7 @@ def test_review_disposition_rejects_a_correction_analysts_may_not_set(web_client
     monkeypatch.setitem(get_config().dispositions, "WEAPONIZATION",
                         DispositionConfig(rank=90, css="danger", analyst_selectable=False))
     alert = insert_alert()
-    set_dispositions([alert.uuid], DISPOSITION_FALSE_POSITIVE, 1)
+    set_dispositions([alert.uuid], DISPOSITION_FALSE_POSITIVE, person(1))
 
     response = web_client.post(url_for("analysis.review_disposition"), data={
         "review_result": DISPOSITION_REVIEW_INCORRECT,

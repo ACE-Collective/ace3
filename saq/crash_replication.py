@@ -11,20 +11,21 @@ by crash id, and any node can serve any report. The report then survives the own
 
 This lives outside ``saq/crash_report.py`` on purpose. That module is imported by the engine's
 crash paths and by the API, and it deliberately keeps heavy dependencies out of its import graph
-(see its lazy ``saq.database`` import), so it imports this module, and with it ``saq.storage``,
-only when it has a report to replicate.
+(see its lazy ``saq.database`` import). ``saq.storage`` pulls in boto3, which is not even a core
+dependency, so the same discipline applies: it is imported lazily, from inside functions, behind
+the config check.
 
 **Nothing here may raise or block the crash path.** Two rules follow:
 
 *Never raise* -- every public function swallows and logs, the same contract ``record_module_crash``
 holds itself to.
 
-*Never block* -- uploads happen on a daemon thread that is **never joined**. A network backend
-bounds its own requests (``saq/storage/interface.py``), but bounded is not instant: a report is
-several objects, each possibly several requests, and the caller here is an engine worker holding
-a work item lock. Seconds of object store round trip still have no business on the crash path.
-The local report is already durable before any of this starts, so replication is pure best-effort
-and ``ace crash sync`` is the catch-up.
+*Never block* -- uploads happen on a daemon thread that is **never joined**. S3 requests are
+bounded (``saq/storage/s3.py`` sets connect/read timeouts and caps retries), but bounded is not
+instant: a report is several objects, each a multipart transfer of several requests, and the
+caller here is an engine worker holding a work item lock. Seconds of object store round trip still
+have no business on the crash path. The local report is already durable before any of this starts,
+so replication is pure best-effort and ``ace crash sync`` is the catch-up.
 
 The upload order matters: **``metadata.json`` is uploaded last**, mirroring the local convention
 where it is written last. A ``<crash_id>/metadata.json`` key therefore means the remote copy is
@@ -37,9 +38,8 @@ import os
 import threading
 from typing import Optional
 
-from saq.configuration.config import get_config
 from saq.crash_report import METADATA_FILE, is_valid_crash_id
-from saq.storage import get_storage_system
+from saq.logging import utf8_safe
 
 # How many replication threads may be in flight per process. Acquired non-blocking: if the budget
 # is gone we skip and let `ace crash sync` catch up, rather than queueing work onto the crash path.
@@ -58,6 +58,8 @@ def replication_enabled() -> bool:
     replication in exactly that case with no signal to the operator.
     """
     try:
+        from saq.configuration.config import get_config
+
         config = get_config().crash_reporting
         return bool(config.enabled and config.replicate)
     except Exception as e:
@@ -66,17 +68,34 @@ def replication_enabled() -> bool:
 
 
 def _bucket() -> str:
+    from saq.configuration.config import get_config
+
     return get_config().crash_reporting.storage_bucket
 
 
 def _storage():
+    # imported here rather than at module level: saq.storage pulls in boto3, which is not a core
+    # dependency, and this module is imported from the engine's crash path
+    from saq.storage import get_storage_system
+
     return get_storage_system()
 
 
 def object_key(crash_id: str, relative_path: str) -> str:
     """The object key for one file of one report. Derivable from the crash id, which is why this
-    feature needs no database column and no migration."""
-    return f"{crash_id}/{relative_path.replace(os.sep, '/')}"
+    feature needs no database column and no migration.
+
+    The report keeps the crashed file under the observable's own name, which need not be UTF-8
+    (ACE decodes it with ``surrogateescape``), and an S3 key must be: botocore refuses to send it.
+    Such a name is escaped (``utf8_safe``), so a fetched report has that file under the escaped
+    name. Only for keys being written: a file listed in storage is read and deleted by
+    ``_listed_key``, because a report replicated before keys were escaped holds the raw name."""
+    return utf8_safe(f"{crash_id}/{relative_path.replace(os.sep, '/')}")
+
+
+def _listed_key(crash_id: str, relative_path: str) -> str:
+    """The key of a file ``list_remote_files`` returned, exactly as storage holds it."""
+    return f"{crash_id}/{relative_path}"
 
 
 def _iter_report_files(crash_dir: str) -> list[str]:
@@ -95,11 +114,13 @@ def _iter_report_files(crash_dir: str) -> list[str]:
 #
 
 def replicate_report(crash_dir: str, crash_id: str) -> bool:
-    """Upload one crash report to shared storage. Returns True if the report is now complete there.
+    """Upload one crash report to shared storage. Returns True if every file of the report is now
+    there.
 
     Synchronous, and the seam tests drive. ``metadata.json`` goes last so the remote copy has the
     same completeness sentinel as the local one; if anything fails partway, what landed is still
-    useful and still identifiably incomplete.
+    useful and still identifiably incomplete. A report without ``metadata.json`` (its worker was
+    killed while writing it) is uploaded as it is, and is incomplete remotely as well.
     """
     try:
         if not is_valid_crash_id(crash_id):
@@ -130,9 +151,10 @@ def replicate_report(crash_dir: str, crash_id: str) -> bool:
 
         logging.info(
             "replicated crash report to shared storage",
-            extra={"crash_id": crash_id, "files": len(relative_paths), "bucket": bucket},
+            extra={"crash_id": crash_id, "files": len(relative_paths), "bucket": bucket,
+                   "complete": has_metadata},
         )
-        return has_metadata
+        return True
 
     except Exception as e:
         # a failed replication costs cross-node availability, never the report itself
@@ -163,7 +185,13 @@ def replicate_async(crash_dir: str, crash_id: str) -> bool:
             finally:
                 _upload_slots.release()
 
-        threading.Thread(target=_run, name=f"crash-replication-{crash_id[:8]}", daemon=True).start()
+        try:
+            threading.Thread(target=_run, name=f"crash-replication-{crash_id[:8]}", daemon=True).start()
+        except Exception:
+            # _run never ran, so its finally will not give the slot back
+            _upload_slots.release()
+            raise
+
         return True
 
     except Exception as e:
@@ -225,7 +253,7 @@ def fetch_report(crash_id: str, dest_parent: str) -> Optional[str]:
         for relative_path in relative_paths:
             local_path = os.path.join(crash_dir, relative_path)
             os.makedirs(os.path.dirname(local_path), exist_ok=True)
-            storage.download_file(bucket, object_key(crash_id, relative_path), local_path)
+            storage.download_file(bucket, _listed_key(crash_id, relative_path), local_path)
 
         return crash_dir
 
@@ -267,7 +295,7 @@ def remote_file_sizes(crash_id: str) -> dict[str, int]:
         storage = _storage()
         bucket = _bucket()
         for relative_path in list_remote_files(crash_id):
-            info = storage.get_object_info(bucket, object_key(crash_id, relative_path))
+            info = storage.get_object_info(bucket, _listed_key(crash_id, relative_path))
             if info and info.get("size") is not None:
                 sizes[relative_path] = int(info["size"])
     except Exception as e:
@@ -280,35 +308,48 @@ def remote_file_sizes(crash_id: str) -> dict[str, int]:
 # maintenance
 #
 
-def list_replicated_ids() -> set[str]:
-    """The crash ids that have a *complete* copy in the bucket, from one listing.
+def list_replicated_files() -> dict[str, set[str]]:
+    """The relative paths each crash id has in the bucket, from one listing.
 
     This is what makes the sweeper stateless: no marker file to write into the report directory
     (which would leak into the API's file inventory, into the analyst's archive, and -- worst --
     would refresh the directory mtime that `ace crash prune` ages reports by).
 
-    Ids are derived from ``<id>/metadata.json`` keys rather than from a delimiter listing of
-    prefixes. A prefix listing looks cheaper, but the local backend maps objects to real
-    directories and leaves an empty one behind after a delete, so a deleted report would keep
-    showing up as replicated forever. Keying off the completeness marker answers the question the
-    sweeper actually asks -- "is there a finished copy up there" -- and is correct on every backend.
+    Built from object keys rather than from a delimiter listing of prefixes. A prefix listing looks
+    cheaper, but the local backend maps objects to real directories and leaves an empty one behind
+    after a delete, so a deleted report would keep showing up as replicated forever.
     """
     try:
         keys = _storage().list_objects(_bucket(), prefix="", recursive=True) or []
-        results = set()
-        suffix = f"/{METADATA_FILE}"
+        results: dict[str, set[str]] = {}
         for key in keys:
             key = getattr(key, "object_name", key)
-            if not isinstance(key, str) or not key.endswith(suffix):
+            if not isinstance(key, str):
                 continue
-            candidate = key[: -len(suffix)]
-            if is_valid_crash_id(candidate):
-                results.add(candidate)
+            crash_id, _, relative_path = key.partition("/")
+            if relative_path and is_valid_crash_id(crash_id):
+                results.setdefault(crash_id, set()).add(relative_path)
 
         return results
     except Exception as e:
         logging.warning("unable to list replicated crash reports: %s", e)
-        return set()
+        return {}
+
+
+def is_replicated(crash_dir: str, crash_id: str, remote_files: set[str]) -> bool:
+    """True if the report in ``crash_dir`` needs nothing uploaded, given the relative paths it has
+    in the bucket (``list_replicated_files``).
+
+    ``metadata.json`` is uploaded last, so a remote one means the whole report is there. A local
+    report without one is never finished, since the worker writing it was killed, so it is there
+    once every file it has is, under the key ``object_key`` gave it; one that gains a file, such as
+    a watchdog report still being written when sync ran, is uploaded again.
+    """
+    if METADATA_FILE in remote_files:
+        return True
+
+    local_files = {object_key(crash_id, p).partition("/")[2] for p in _iter_report_files(crash_dir)}
+    return local_files <= remote_files
 
 
 def delete_report(crash_id: str) -> bool:
@@ -329,7 +370,7 @@ def delete_report(crash_id: str) -> bool:
         ordered += [p for p in relative_paths if p != METADATA_FILE]
 
         for relative_path in ordered:
-            storage.delete_object(bucket, object_key(crash_id, relative_path))
+            storage.delete_object(bucket, _listed_key(crash_id, relative_path))
 
         return True
 

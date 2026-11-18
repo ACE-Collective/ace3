@@ -14,10 +14,12 @@ from saq.constants import (
     R_EXTRACTED_FROM,
     AnalysisExecutionResult,
 )
+from saq.error.reporting import log_peer_unavailable
 from saq.js_deobfuscator import deobfuscate_file
 from saq.modules import AnalysisModule
 from saq.modules.config import AnalysisModuleConfig
 from saq.observables.file import FileObservable
+from saq.sandbox.runner import tool_failure_reason
 from saq.util.filesystem import create_temporary_directory
 from saq.util.strings import format_item_list_for_summary
 
@@ -32,7 +34,6 @@ class JavaScriptDeobfuscationAnalysis(Analysis):
     KEY_EXIT_CODE = "exit_code"
     KEY_EVENT_COUNT = "event_count"
     KEY_SECONDARY_SCRIPT_COUNT = "secondary_script_count"
-    KEY_ERROR = "error"
     # "compile" (the source never parsed, so it is not JavaScript), "runtime"
     # (it parsed and failed mid-execution, so it IS JavaScript), or None.
     KEY_ERROR_TYPE = "error_type"
@@ -56,7 +57,6 @@ class JavaScriptDeobfuscationAnalysis(Analysis):
             JavaScriptDeobfuscationAnalysis.KEY_EXIT_CODE: None,
             JavaScriptDeobfuscationAnalysis.KEY_EVENT_COUNT: 0,
             JavaScriptDeobfuscationAnalysis.KEY_SECONDARY_SCRIPT_COUNT: 0,
-            JavaScriptDeobfuscationAnalysis.KEY_ERROR: None,
             JavaScriptDeobfuscationAnalysis.KEY_ERROR_TYPE: None,
             JavaScriptDeobfuscationAnalysis.KEY_WEBCRACK_STATUS: None,
             JavaScriptDeobfuscationAnalysis.KEY_WEBCRACK_ERROR: None,
@@ -109,14 +109,6 @@ class JavaScriptDeobfuscationAnalysis(Analysis):
     @secondary_script_count.setter
     def secondary_script_count(self, value):
         self.details[JavaScriptDeobfuscationAnalysis.KEY_SECONDARY_SCRIPT_COUNT] = value
-
-    @property
-    def error(self):
-        return None if self.details is None else self.details.get(JavaScriptDeobfuscationAnalysis.KEY_ERROR)
-
-    @error.setter
-    def error(self, value):
-        self.details[JavaScriptDeobfuscationAnalysis.KEY_ERROR] = value
 
     @property
     def error_type(self):
@@ -247,6 +239,32 @@ class JavaScriptDeobfuscationAnalyzer(AnalysisModule):
 
         return None, None
 
+    def _log_extra(self, _file: FileObservable) -> dict:
+        return {"path": _file.full_path, "root_uuid": self.get_root().uuid, "observable_uuid": _file.uuid}
+
+    def _log_call_failure(self, e: Exception, _file: FileObservable):
+        """Logs a failed deobfuscate_file() call by what failed: the broker or result backend could not be reached,
+        no result came back in time, or the task or the copy of its results failed."""
+        # imported here like the client's own celery imports, since only a failed call needs them
+        import redis.exceptions  # local, see above
+        from celery.exceptions import TimeoutError as ResultTimeoutError  # local, see above
+        from kombu.exceptions import OperationalError  # local, see above
+
+        extra = self._log_extra(_file)
+        if isinstance(e, ResultTimeoutError):
+            # celery's timeout does not say why no result came back: the manager is down, none reads the broker this
+            # client sends to, or it is up and its queue is backed up
+            logging.exception(f"no result from the js deobfuscator for {_file.full_path} in "
+                              f"{self.config.celery_timeout} seconds (manager down, not reading this broker, "
+                              "or backlogged)", extra=extra)
+            return
+
+        if log_peer_unavailable(e, f"js deobfuscator for {_file.full_path}",
+                                unreachable=(OperationalError, redis.exceptions.ConnectionError), extra=extra):
+            return
+
+        logging.exception(f"js deobfuscator failed for {_file.full_path}", extra=extra)
+
     def execute_analysis(self, _file: FileObservable) -> AnalysisExecutionResult:
         local_file_path = _file.full_path
 
@@ -286,14 +304,13 @@ class JavaScriptDeobfuscationAnalyzer(AnalysisModule):
             result_files = deobfuscate_file(
                 local_file_path,
                 scratch_dir,
-                is_async=False,
                 timeout=self.config.celery_timeout,
                 scanner_timeout=self.config.scanner_timeout,
                 dom_snapshot_path=dom_snapshot_path,
             )
         except Exception as e:
-            analysis.error = f"js deobfuscator call failed: {e}"
-            logging.warning(f"js deobfuscator failed for {local_file_path}: {e}")
+            analysis.error = f"js deobfuscator call failed: {str(e) or type(e).__name__}"
+            self._log_call_failure(e, _file)
             return AnalysisExecutionResult.COMPLETED
 
         # parse std.out / std.err / exit.code / report.json and pick out
@@ -322,7 +339,7 @@ class JavaScriptDeobfuscationAnalyzer(AnalysisModule):
                     analysis.event_count = int(report.get("event_count", 0) or 0)
                     analysis.secondary_script_count = int(report.get("secondary_script_count", 0) or 0)
                     if report.get("error"):
-                        analysis.error = report["error"]
+                        analysis.error = str(report["error"])
                     analysis.error_type = report.get("error_type")
                     analysis.webcrack_status = report.get("webcrack_status")
                     analysis.webcrack_error = report.get("webcrack_error")
@@ -336,8 +353,11 @@ class JavaScriptDeobfuscationAnalyzer(AnalysisModule):
                         b for b in (report.get("blob_files") or [])
                         if isinstance(b, str)
                     ]
-                except (OSError, json.JSONDecodeError) as e:
-                    logging.debug(f"failed to read report.json from deobfuscator: {e}")
+                except (OSError, json.JSONDecodeError):
+                    # the manager always writes it with json.dump, so a report that cannot be read is a fault, and
+                    # without it the webcrack result and the blob files are lost
+                    logging.exception(f"unable to read the js deobfuscator's report.json for {local_file_path}",
+                                      extra={**self._log_extra(_file), "report_path": result_file})
             elif basename == "deobfuscated.js":
                 deobfuscated_src = result_file
 
@@ -359,6 +379,9 @@ class JavaScriptDeobfuscationAnalyzer(AnalysisModule):
             logging.warning(
                 f"js deobfuscator exit {analysis.exit_code} for {local_file_path}; stderr={analysis.stderr!r}"
             )
+            # a scanner that timed out or crashed reports no error of its own
+            if not analysis.error:
+                analysis.error = tool_failure_reason("js deobfuscator", analysis.exit_code, analysis.stderr)
             return AnalysisExecutionResult.COMPLETED
 
         if not deobfuscated_src or not os.path.exists(deobfuscated_src):

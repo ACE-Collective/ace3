@@ -393,12 +393,29 @@ def decrypt_stream(src: BinaryIO, dst: BinaryIO, *, password=None) -> DecryptRes
 def encrypt(source_path, target_path, password=None, *, format_version: int=FORMAT_V0) -> EncryptResult:
     """Encrypts the file at source_path with the given password and saves the result at target_path.
        Uses AES-GCM for authenticated encryption. If password is None then the system key is used.
-       Writes the v0 layout unless format_version says otherwise (see the module docstring for why)."""
+       Writes the v0 layout unless format_version says otherwise (see the module docstring for why).
+       Nothing is written at target_path unless encryption succeeds, the same way decrypt() works:
+       the email archive takes an existing target to mean the email is already archived."""
 
-    with open(source_path, 'rb') as fp_in:
-        with open(target_path, 'wb') as fp_out:
-            return encrypt_stream(fp_in, fp_out, size=os.path.getsize(source_path), password=password,
-                                  format_version=format_version)
+    target_dir = os.path.dirname(os.path.abspath(target_path))
+    fd, temp_path = tempfile.mkstemp(dir=target_dir, prefix='.enc-')
+    try:
+        # the temp file first, so that it is closed even when the source cannot be opened
+        with os.fdopen(fd, 'wb') as fp_out:
+            with open(source_path, 'rb') as fp_in:
+                result = encrypt_stream(fp_in, fp_out, size=os.path.getsize(source_path), password=password,
+                                        format_version=format_version)
+
+        os.replace(temp_path, target_path)
+        return result
+    except BaseException:
+        try:
+            os.unlink(temp_path)
+        except FileNotFoundError:
+            # mkstemp created it, so only something outside this call removed it
+            pass
+
+        raise
 
 def encrypt_chunk(chunk, password=None):
     """Encrypts the given chunk of data and returns the encrypted chunk.
@@ -431,8 +448,9 @@ def decrypt(source_path, target_path=None, password=None) -> DecryptResult:
     target_dir = os.path.dirname(os.path.abspath(target_path))
     fd, temp_path = tempfile.mkstemp(dir=target_dir, prefix='.dec-')
     try:
-        with open(source_path, 'rb') as fp_in:
-            with os.fdopen(fd, 'wb') as fp_out:
+        # the temp file first, so that it is closed even when the source cannot be opened
+        with os.fdopen(fd, 'wb') as fp_out:
+            with open(source_path, 'rb') as fp_in:
                 result = decrypt_stream(fp_in, fp_out, password=password)
 
         os.replace(temp_path, target_path)

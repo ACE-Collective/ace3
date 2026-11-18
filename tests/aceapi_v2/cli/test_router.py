@@ -5,6 +5,7 @@ from datetime import datetime
 import pytest
 from sqlalchemy import select, text
 
+from aceapi_v2.auth.schemas import ApiAuthResult
 from aceapi_v2.cli import service
 from saq.configuration.config import get_config
 from saq.configuration.schema import ConfigApiKey
@@ -15,6 +16,10 @@ from saq.util import sha256_str
 from tests.aceapi_v2.conftest import api_key_client
 
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio]
+
+
+def _auth(user) -> ApiAuthResult:
+    return ApiAuthResult(auth_type="user", auth_name=user.username, auth_user_id=user.id)
 
 
 def _add_node(name: str, *, is_primary: bool = False) -> int:
@@ -88,9 +93,7 @@ async def test_a_node_that_cannot_be_reached_is_failed_in_the_answer(client, mon
 
 
 @pytest.mark.parametrize("body", [
-    {"command": "-u admin node list"},
     {"command": "user add bob --password hunter2"},
-    {"command": "ace"},
     {"command": ""},
     {"command": "node list", "timeout_seconds": 0},
     {"command": "node list", "timeout_seconds": 3601},
@@ -138,7 +141,7 @@ async def test_cli_needs_cli_execute(noperm_client):
 
 
 async def test_engine_route_runs_the_command_on_this_node(client, test_user):
-    (execution_id,) = service.create_executions(test_user.id, test_user.username, ["--help"], [_local_node()], 60)
+    (execution_id,) = service.create_executions(_auth(test_user), ["--help"], [_local_node()], 60)
 
     response = await client.post(f"/engine/cli/{execution_id}")
 
@@ -156,7 +159,7 @@ async def test_engine_route_runs_the_command_on_this_node(client, test_user):
 
 async def test_engine_route_reports_a_failing_command(client, test_user):
     (execution_id,) = service.create_executions(
-        test_user.id, test_user.username, ["no-such-command"], [_local_node()], 60)
+        _auth(test_user), ["no-such-command"], [_local_node()], 60)
 
     assert (await client.post(f"/engine/cli/{execution_id}")).status_code == 202
 
@@ -167,11 +170,12 @@ async def test_engine_route_reports_a_failing_command(client, test_user):
 
 
 async def test_engine_route_refuses_another_nodes_execution(client, test_user):
-    (execution_id,) = service.create_executions(test_user.id, test_user.username, ["--help"], [_add_node("node-a")], 60)
+    (execution_id,) = service.create_executions(_auth(test_user), ["--help"], [_add_node("node-a")], 60)
 
     response = await client.post(f"/engine/cli/{execution_id}")
 
     assert response.status_code == 409
+    assert "node-a" in response.json()["detail"]
     session = get_db()
     session.expire_all()
     assert session.get(CliExecution, execution_id).status == "pending"

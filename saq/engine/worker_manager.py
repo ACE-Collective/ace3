@@ -1,7 +1,8 @@
 import logging
+import os
+import signal
 import time
 from multiprocessing import cpu_count
-import signal
 from typing import Optional
 
 import psutil
@@ -11,9 +12,21 @@ from saq.engine.node_manager.node_manager_interface import NodeManagerInterface
 from saq.engine.tracking import TrackingReader
 from saq.engine.worker import Worker
 from saq.error.reporting import log_loop_exception
-from saq.shutdown import get_shutdown_coordinator
-from saq.util.process import kill_process_tree
+from saq.sandbox.launcher import set_child_subreaper
+from saq.shutdown import get_shutdown_coordinator, is_shutting_down
 
+# how long kill_adopted() keeps at it: only a process stuck in the kernel outlives SIGKILL for long
+ADOPTED_KILL_SECONDS = 5
+
+
+def _reap(pid: int) -> bool:
+    """Reap pid if it has exited. True when it is gone."""
+    try:
+        reaped, _ = os.waitpid(pid, os.WNOHANG)
+    except ChildProcessError:
+        return True  # it is not a child of this process any more
+
+    return reaped == pid
 
 
 class WorkerManager:
@@ -37,6 +50,12 @@ class WorkerManager:
         # the execution mode the workers were started in
         # replacement workers are started in the same mode (see restart_worker)
         self.execution_mode = EngineExecutionMode.NORMAL
+
+        # set while this process adopts the orphans of the workers' descendants (see become_subreaper)
+        self.subreaper = False
+        # this process's children when it became a subreaper, which it did not adopt: a test runs the engine in a
+        # process that may have started some of its own
+        self.own_children: set[int] = set()
 
     def set_state(self, state: WorkerManagerState):
         """Sets the state of the worker manager."""
@@ -122,6 +141,8 @@ class WorkerManager:
                 "recovered %d unresolved analysis failure(s) from the previous engine", len(pending)
             )
 
+        self.become_subreaper()
+
         # start the workers, handing each one a leftover failure to resolve. dispatch is
         # deliberately not matched on worker name: a pool that shrank since the last run
         # would strand every record whose worker no longer exists, and the record is fully
@@ -140,9 +161,17 @@ class WorkerManager:
                 "%d analysis failure(s) could not be dispatched to a worker at startup", len(pending)
             )
 
-        # wait for all workers to start
-        for worker in self.workers:
-            worker.wait_for_start()
+        # wait for all workers to start. a worker that cannot start (its modules failed to
+        # load, say) would fail the same way if restarted, so the engine fails to start
+        # rather than waiting on it or running without it
+        failed = [worker.name for worker in self.workers if not worker.wait_for_start()]
+        if failed:
+            if is_shutting_down():
+                logging.info("shutdown requested while the workers were starting")
+                return
+
+            self.immediate_shutdown()
+            raise RuntimeError(f"workers did not start: {', '.join(failed)}")
 
         logging.info("workers initialized")
 
@@ -153,6 +182,13 @@ class WorkerManager:
             status = self.check(worker)
             if status == WorkerStatus.DEAD:
                 dead_workers.append(worker)
+
+        if self.subreaper:
+            if dead_workers:
+                # what they left running outside their process groups
+                self.kill_adopted()
+            else:
+                self.reap_adopted()
 
         for worker in dead_workers:
             self.restart_worker(worker)
@@ -172,6 +208,9 @@ class WorkerManager:
                 logging.debug(
                     f"worker {worker} process {worker.process.pid} exitcode = {worker.process.exitcode}"
                 )
+                # a worker that died on its own (the analysis module monitor's os._exit, a crash, the OOM
+                # killer) leaves whatever its modules started still running, in its process group
+                worker.kill()
                 return WorkerStatus.DEAD
 
         # what is this worker doing? read once and use it for both the timeout check and
@@ -182,11 +221,7 @@ class WorkerManager:
         # is it taking too long to analyze something?
         if worker.analysis_has_timed_out(record):
             logging.warning(f"worker {worker} analysis has timed out")
-            try:
-                kill_process_tree(worker.process.pid, signal.SIGKILL)
-            except Exception as e:
-                logging.warning(f"unable to kill process {worker.process}: {e}")
-
+            worker.kill()
             return WorkerStatus.DEAD
 
         # is it using too much memory?
@@ -198,7 +233,7 @@ class WorkerManager:
                     f"worker {worker} used too much memory "
                     f"on {record if record else 'unknown work'}: {memory} KILLING"
                 )
-                kill_process_tree(worker.process.pid, signal.SIGKILL)
+                worker.kill()
                 return WorkerStatus.DEAD
 
             elif memory.rss > self.config.memory_limit_warning:
@@ -248,46 +283,14 @@ class WorkerManager:
         # start the worker in the same mode the rest of the pool is running in
         new_worker.start(execution_mode=self.execution_mode, pending_failure=pending_failure)
 
-        #
-        # this is a bit hairy
-        #
-
-        try:
-            #
-            # XXX this does not seem to be able to handle the case
-            # when a process is killed by a signal
-            #
-
-            if dead_worker.process is not None:
-                dead_worker.process.close()
-
-        except Exception as e:
-            logging.info(f"unable to close process {dead_worker.process}: {e}")
-
+        # release the dead process's pipes. it has been reaped unless a kill did not take
+        # effect within Worker.kill()'s join, which leaves a process stuck in the kernel
+        if dead_worker.process is not None:
             try:
-                # you have to do this to close *both* pipes opened
-                if dead_worker.process is not None:
-                    logging.debug(f"finalizing {dead_worker.process}")
-                    dead_worker.process._popen.finalizer() # pyright: ignore
-                    logging.debug(f"finished finalizing {dead_worker.process}")
-            except Exception as e:
-                logging.error(f"unable to finalize process: {e}")
-
-    def restart_workers(self):
-        """Restart all workers."""
-        logging.info("restarting all workers")
-        
-        # stop all workers
-        for worker in self.workers:
-            worker.controlled_shutdown()
-
-        # start all workers
-        for worker in self.workers:
-            worker.start(execution_mode=self.execution_mode)
-
-        # wait for all workers to start
-        for worker in self.workers:
-            worker.wait_for_start()
+                dead_worker.process.close()
+            except ValueError as e:
+                logging.warning("unable to close process %s of worker %s: %s", dead_worker.process.pid,
+                                dead_worker.name, e, extra={"worker_name": dead_worker.name})
 
     def immediate_shutdown(self):
         """Shutdown all workers immediately, abandoning in-flight analysis."""
@@ -339,8 +342,7 @@ class WorkerManager:
         while time.monotonic() < deadline:
             alive = [w for w in self.workers if w.is_alive()]
             if not alive:
-                logging.info("all workers shut down")
-                return
+                break
 
             # keep enforcing analysis timeouts and memory limits while we wait
             for worker in alive:
@@ -351,11 +353,123 @@ class WorkerManager:
 
             time.sleep(poll_interval)
 
-        # anything still running has ignored the shutdown event past the budget
         for worker in self.workers:
             if worker.is_alive():
+                # it has ignored the shutdown event past the budget
                 logging.warning("worker %s did not exit in time - killing", worker.name)
-                worker.kill()
+
+            # also for one that exited: is_alive() reaped it, so check() never killed what it left in its group
+            worker.kill()
+
+        if self.subreaper:
+            self.kill_adopted()
+            self.stop_adopting()
 
         logging.info("all workers shut down")
+
+    def become_subreaper(self):
+        """Have the orphans of every process the workers start reparented to this process, wherever in the process
+        tree they moved to, instead of to the container's init, which reaps them but never kills them.
+
+        A worker leads a process group, and Worker.kill() kills that group. Groups do not nest, so a process an
+        analysis module starts in a session or group of its own has left it; once its worker has died it is adopted
+        here, and kill_adopted() kills it."""
+        try:
+            self.own_children = {child.pid for child in psutil.Process().children()}
+            set_child_subreaper(True)
+        except Exception:
+            # the workers' process groups still contain what stays in them
+            logging.exception("unable to make the engine controller (pid %s) a child subreaper", os.getpid(),
+                              extra={"pid": os.getpid()})
+            return
+
+        self.subreaper = True
+        logging.info("the engine controller (pid %s) adopts what the workers' processes orphan", os.getpid())
+
+    def stop_adopting(self):
+        """Have orphans reparented to init again. The engine can run in a process that outlives it (a test run)."""
+        try:
+            set_child_subreaper(False)
+        except Exception:
+            logging.exception("unable to stop the engine controller (pid %s) being a child subreaper", os.getpid(),
+                              extra={"pid": os.getpid()})
+
+        self.subreaper = False
+
+    def _adopted_children(self) -> list[psutil.Process]:
+        """This process's children that are neither workers nor children it had before it became a subreaper."""
+        known = self.own_children | {worker.process.pid for worker in self.workers
+                                     if worker.process is not None and worker.process.pid is not None}
+        return [child for child in psutil.Process().children() if child.pid not in known]
+
+    def reap_adopted(self):
+        """Reap the adopted processes that have exited, which nothing else waits for. Every controller second, by
+        pid, which leaves reaping the workers to multiprocessing. Never raises."""
+        try:
+            for child in self._adopted_children():
+                if _reap(child.pid):
+                    logging.debug("reaped adopted process %s", child.pid)
+        except Exception as e:
+            log_loop_exception(e, "unable to reap the processes the engine controller adopted")
+
+    def kill_adopted(self):
+        """Kill and reap every process this process adopted, and everything those started. After a worker has died
+        and at shutdown: what a dead worker left running outside its process group has nothing else to stop it.
+        What a live worker's processes orphaned is adopted too, and is killed with it. Never raises: it runs on the
+        supervision and shutdown paths."""
+        try:
+            killed = self._kill_adopted()
+        except Exception:
+            # not log_loop_exception: this is no loop failing on peers that are stopping, and at shutdown
+            # supervise_shutdown sweeps only once
+            logging.exception("unable to kill the processes the engine controller adopted")
+            return
+
+        if killed:
+            # not their command lines: a module can pass a secret on one (an archive password to 7z)
+            logging.warning("killed %d processes the engine controller adopted: %s", len(killed),
+                            ", ".join(killed.values()), extra={"killed_pids": sorted(killed)})
+
+    def _kill_adopted(self) -> dict[int, str]:
+        """Returns what it killed, as pid -> "pid name"."""
+        killed: dict[int, str] = {}
+        give_up = time.monotonic() + ADOPTED_KILL_SECONDS
+        while True:
+            # a killed process's children are adopted when it dies, so this goes on until no adopted process is left
+            live = [child for child in self._adopted_children() if not _reap(child.pid)]
+            if not live:
+                return killed
+
+            if time.monotonic() > give_up:
+                logging.error("%d processes the engine controller adopted survived being killed: %s", len(live),
+                              ", ".join(str(child.pid) for child in live),
+                              extra={"pids": [child.pid for child in live]})
+                return killed
+
+            processes = []
+            for child in live:
+                processes.append(child)
+                try:
+                    processes.extend(child.children(recursive=True))
+                except psutil.NoSuchProcess:
+                    pass  # it exited after the listing
+
+            # stopped first, so that none of them can fork while the rest are being killed. Named before they are
+            # killed, because afterwards nothing is left to say what they were
+            names = {}
+            for process in processes:
+                try:
+                    names[process.pid] = f"{process.pid} {process.name()}"
+                    process.send_signal(signal.SIGSTOP)
+                except (psutil.NoSuchProcess, psutil.AccessDenied):
+                    pass  # it exited, or it is left to the survivors' error above
+
+            for process in processes:
+                try:
+                    process.kill()
+                    killed.setdefault(process.pid, names.get(process.pid, str(process.pid)))
+                except (psutil.NoSuchProcess, psutil.AccessDenied):
+                    pass  # as above
+
+            time.sleep(0.01)
 

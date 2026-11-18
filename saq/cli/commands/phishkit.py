@@ -42,7 +42,7 @@ def cli_scan(args) -> int:
             return os.EX_OK
     else:
         # if we're not using async, then we just run the scan and return the results
-        scan_results = target_function(args.target, args.output_dir, proxy=proxy)
+        scan_results = target_function(args.target, args.output_dir, timeout=args.timeout, proxy=proxy)
 
     # if we get this far then we have the results
     for file_path in scan_results:

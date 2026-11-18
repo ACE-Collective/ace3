@@ -72,23 +72,29 @@ def is_relative_time(value: str) -> bool:
     return value.lower() == "now" or match.group("magnitude") is not None or match.group("snap") is not None
 
 
-def _snap(value: datetime, unit: str) -> datetime:
+def _snap(value: datetime, unit: str, tz: tzinfo) -> datetime:
     """Floor `value` to the start of `unit`, toward the past (Splunk's direction)."""
     unit = unit.lower()
-    result = value.replace(**_SNAP_FIELDS[unit])
+    result = value.replace(tzinfo=None, **_SNAP_FIELDS[unit])
     if unit == "w":
         # Splunk's @w is the preceding Sunday. weekday() is Mon=0..Sun=6.
         result -= timedelta(days=(result.weekday() + 1) % 7)
 
-    return result
+    # The snapped wall clock can be on the other side of a DST change from `value` (midnight
+    # on the day the clocks change), so it takes the offset in effect at that wall clock, not
+    # the one `value` had. Where that wall clock occurs twice, keep the occurrence `value` is in.
+    if hasattr(tz, "localize"):
+        return tz.localize(result, is_dst=bool(value.dst()))
+
+    return result.replace(tzinfo=tz)  # the naive result kept value.fold
 
 
 def parse_relative_time(value: str, *, now: datetime, tz: tzinfo) -> datetime:
     """Resolve a relative-time token to an aware UTC datetime.
 
     `now` must be tz-aware. The offset is applied first and then the snap, in `tz` -- the
-    analyst's timezone -- so "-1d@d" is local midnight rather than UTC midnight. Arithmetic
-    is done on the localized wall clock so a window spanning a DST boundary stays correct.
+    analyst's timezone -- so "-1d@d" is local midnight rather than UTC midnight. An offset
+    is real time: across a DST change "-1d" is 24 hours back, an hour off the wall clock.
     """
     if not isinstance(value, str):
         raise RelativeTimeError(f"invalid relative time: {value!r}")
@@ -109,7 +115,7 @@ def parse_relative_time(value: str, *, now: datetime, tz: tzinfo) -> datetime:
 
     snap = match.group("snap")
     if snap is not None:
-        result = _renormalize(_snap(result, snap), tz)
+        result = _snap(result, snap, tz)
 
     return result.astimezone(pytz.utc)
 

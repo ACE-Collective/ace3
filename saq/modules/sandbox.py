@@ -8,7 +8,7 @@ import logging
 import re
 
 from collections import UserList
-from typing import List, Type, Union
+from typing import List, Optional, Type, Union
 from pydantic import Field, field_validator
 from urlfinderlib import find_urls, is_url
 
@@ -223,13 +223,13 @@ class ContactedHost:
             port: str = '',
             protocol: str = '',
             location: str = '',
-            associated_domains: List[str] = []
+            associated_domains: Optional[List[str]] = None
     ):
         self.ip = ip
         self.port = port
         self.protocol = protocol
         self.location = location
-        self.associated_domains = associated_domains
+        self.associated_domains = associated_domains if associated_domains is not None else []
 
     def __eq__(self, other):
         return type(other) is ContactedHost and (self.ip == other.ip) and (self.port == other.port)
@@ -557,20 +557,33 @@ class Process:
                 if '\x00' in decoded_chunk:
                     decoded_chunk = base64.b64decode(chunk).decode('utf-16')
                 decoded_command = decoded_command.replace(chunk, decoded_chunk)
-            except:
+            except ValueError:
+                # most chunks are not base64 (binascii.Error, UnicodeDecodeError, or non-ASCII text)
                 pass
 
         # Remove [charXX] Powershell obfuscation.
         if 'powershell' in decoded_command.lower():
             char_pattern = re.compile(r'(\[char\]([0-9]{2,3}))', re.IGNORECASE)
             for match in char_pattern.findall(decoded_command):
-                full_match = match[0]
-                char = match[1]
-                try:
-                    decoded_char = chr(int(char))
-                    decoded_command = decoded_command.replace(full_match, decoded_char)
-                except:
-                    pass
+                decoded_command = decoded_command.replace(match[0], chr(int(match[1])))
+
+        # Remove Powershell string formatter obfuscation. This runs before the steps below, which remove the quotes
+        # it matches on.
+        formatter_pattern = re.compile(r'(\([\'\"](({(\d+)})+)[\'\"]\s*\-f\s*(([\'\"][^\'\"]+[\'\"],*)+)\))',
+                                       re.IGNORECASE)
+        for match in formatter_pattern.findall(decoded_command):
+            """ ('("{0}{1}"-f\'JDxA\',\'QDc\')', '{0}{1}', '{1}', '1', "'JDxA','QDc'", "'QDc'") """
+            full_match = match[0]
+            order = match[1][1:-1]  # 0}{1
+            items = match[4]  # "'JDxA','QDc'"
+
+            order_ints = [int(x) for x in order.split('}{')]
+            # an item may contain a comma, so take the quoted strings rather than splitting on commas
+            items_list = re.findall(r'[\'\"]([^\'\"]+)[\'\"]', items)
+
+            if all(i < len(items_list) for i in order_ints):
+                deobfuscated_string = ''.join(items_list[i] for i in order_ints)
+                decoded_command = decoded_command.replace(full_match, deobfuscated_string)
 
         # Remove ` backtick Powershell obfuscation.
         if 'powershell' in decoded_command.lower():
@@ -589,63 +602,29 @@ class Process:
             decoded_command = decoded_command.replace('"', '')
             decoded_command = decoded_command.replace("'", '')
 
-        # Remove Powershell string formatter obfuscation.
-        formatter_pattern = re.compile(r'(\([\'\"](({(\d+)})+)[\'\"]\s*\-f\s*(([\'\"][^\'\"]+[\'\"],*)+)\))',
-                                       re.IGNORECASE)
-        for match in formatter_pattern.findall(decoded_command):
-            """ ('("{0}{1}"-f\'JDxA\',\'QDc\')', '{0}{1}', '{1}', '1', "'JDxA','QDc'", "'QDc'") """
-            full_match = match[0]
-            order = match[1][1:-1]  # 0}{1
-            items = match[4]  # "'JDxA','QDc'"
-
-            order_ints = [int(x) for x in order.split('}{')]
-            items_list = [i.replace('\'', '').replace('"', '') for i in items.split(',')]
-
-            if len(order_ints) == len(items_list):
-                deobfuscated_string = ''
-                for i in order_ints:
-                    deobfuscated_string += items_list[i]
-                decoded_command = decoded_command.replace(full_match, deobfuscated_string)
-
         # Try to decode string .split() obfuscation.
         if 'split' in decoded_command.lower():
-            try:
-                split_char_pattern = re.compile(r'\.[\'\"]*split[\'\"]*\([\'\"\s]*(.*?)[\'\"\s]*\)', re.IGNORECASE)
-
-                try:
-                    split_char = str(split_char_pattern.search(decoded_command).group(1))
-                except:
-                    split_char = None
-
-                if split_char:
-                    decoded_command = ' '.join(decoded_command.split(split_char))
-                    decoded_command = decoded_command.replace("'+'", '')
-                    decoded_command = decoded_command.replace('"+"', '')
-                    decoded_command = decoded_command.replace('\'', ' ')
-                    decoded_command = decoded_command.replace('\"', ' ')
-                    decoded_command = decoded_command.replace('. ', ' ')
-            except:
-                logging.error('Could not decode string .split() obfuscation')
+            split_char_pattern = re.compile(r'\.[\'\"]*split[\'\"]*\([\'\"\s]*(.*?)[\'\"\s]*\)', re.IGNORECASE)
+            match = split_char_pattern.search(decoded_command)
+            if match and match.group(1):
+                decoded_command = ' '.join(decoded_command.split(match.group(1)))
+                decoded_command = decoded_command.replace("'+'", '')
+                decoded_command = decoded_command.replace('"+"', '')
+                decoded_command = decoded_command.replace('\'', ' ')
+                decoded_command = decoded_command.replace('\"', ' ')
+                decoded_command = decoded_command.replace('. ', ' ')
 
         # Try to decode string .invoke() obfuscation.
         if 'invoke' in decoded_command.lower():
-            try:
-                invoke_char_pattern = re.compile(r'\.[\'\"]*invoke[\'\"]*\([\'\"\s]*(.*?)[\'\"\s]*\)', re.IGNORECASE)
-
-                try:
-                    invoke_char = str(invoke_char_pattern.search(decoded_command).group(1))
-                except:
-                    invoke_char = None
-
-                if invoke_char:
-                    decoded_command = ' '.join(decoded_command.split(invoke_char))
-                    decoded_command = decoded_command.replace("'+'", '')
-                    decoded_command = decoded_command.replace('"+"', '')
-                    decoded_command = decoded_command.replace('\'', ' ')
-                    decoded_command = decoded_command.replace('\"', ' ')
-                    decoded_command = decoded_command.replace('. ', ' ')
-            except:
-                logging.error('Could not decode string .invoke() obfuscation')
+            invoke_char_pattern = re.compile(r'\.[\'\"]*invoke[\'\"]*\([\'\"\s]*(.*?)[\'\"\s]*\)', re.IGNORECASE)
+            match = invoke_char_pattern.search(decoded_command)
+            if match and match.group(1):
+                decoded_command = ' '.join(decoded_command.split(match.group(1)))
+                decoded_command = decoded_command.replace("'+'", '')
+                decoded_command = decoded_command.replace('"+"', '')
+                decoded_command = decoded_command.replace('\'', ' ')
+                decoded_command = decoded_command.replace('\"', ' ')
+                decoded_command = decoded_command.replace('. ', ' ')
 
         return decoded_command
 
@@ -744,17 +723,16 @@ class GenericSandboxReport:
 
         return sorted(list(process_tree_urls))
 
-    def make_process_tree(self, process_tree=None, text='', depth=0, decoded=False) -> str:
+    def make_process_tree(self, process_tree=None, text='', depth=0, decoded=False, ancestors=()) -> str:
         if process_tree is None:
             process_tree = list(self.processes)[:]
 
             pids = [proc.pid for proc in process_tree]
-            root_pids = [proc.pid for proc in process_tree if not proc.parent_pid in pids]
 
             for process in process_tree:
                 process.children = [proc for proc in process_tree if proc.parent_pid == process.pid]
 
-            process_tree = [proc for proc in process_tree if proc.pid in root_pids]
+            process_tree = [proc for proc in process_tree if proc.parent_pid not in pids]
 
         for process in process_tree:
             if decoded:
@@ -762,8 +740,10 @@ class GenericSandboxReport:
             else:
                 text += f'{"    " * depth}{process.command}\n'
 
-            if process.children:
-                text = self.make_process_tree(process.children, text, depth + 1, decoded)
+            # a sandbox reports a reused pid as a separate process, which can make a process its own descendant
+            children = [child for child in process.children if child not in ancestors and child != process]
+            if children:
+                text = self.make_process_tree(children, text, depth + 1, decoded, ancestors + (process,))
 
         return text
 

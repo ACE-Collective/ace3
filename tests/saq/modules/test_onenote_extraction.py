@@ -1,17 +1,16 @@
-import os, os.path
 import base64
 
 import pytest
 
 from saq.configuration.config import get_analysis_module_config
-from saq.constants import ANALYSIS_MODULE_ONENOTE_EXTRACTION, F_FILE, AnalysisExecutionResult
+from saq.constants import ANALYSIS_MODULE_ONENOTE_EXTRACTION, AnalysisExecutionResult
 
 from saq.modules.file_analysis import OneNoteFileAnalyzer, OneNoteFileAnalysis
 from saq.modules.adapter import AnalysisModuleAdapter
 from tests.saq.helpers import create_root_analysis
 
 @pytest.mark.unit
-def test_html_data_url_extraction(datadir, test_context):
+def test_onenote_embedded_files_are_extracted(datadir, test_context):
     root = create_root_analysis(analysis_mode='test_single')
     root.initialize_storage()
 

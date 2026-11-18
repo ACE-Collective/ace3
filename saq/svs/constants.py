@@ -4,6 +4,7 @@ and the API can use them."""
 
 from enum import StrEnum
 
+from saq.auth import ApiAuthResult
 from saq.detection_verdicts.constants import VERDICT_FP, VERDICT_TP
 from saq.signatures.builtin import SVS_MARKER_MISMATCH, SVS_REGISTRATION_REFUSED
 
@@ -96,6 +97,7 @@ class ResultStatus(StrEnum):
     CANDIDATE = "candidate"                      # it fired, and nobody has decided about it yet
     REJECTED = "rejected"                        # it fired, and it was rejected for the test
     IGNORED = "ignored"                          # it fired, and it is ignored (globally or for the test)
+    CLEANUP = "cleanup"                          # it fired only during the test's cleanup, and isn't expected
 
 
 class ObservationSource(StrEnum):
@@ -109,6 +111,19 @@ class AttributionConfidence(StrEnum):
     """How an alert's detection was attributed to a run (svs_attributions.confidence)."""
     MARKER = "marker"        # a marker that agrees with the run: its run, its target, its window
     CONTEXT = "context"      # no marker at all: the run's target and window alone
+
+
+class AttributionTimeSource(StrEnum):
+    """Where the event time an alert was judged by came from (svs_attributions.event_time_source):
+    the root's saq.constants.EventTimeSource, or its insert time when the root has none."""
+    EVENT = "event"            # the event's own
+    QUERY_TIME = "query_time"  # a hunt couldn't extract the event's timestamp and used its query's time
+    NOW = "now"                # nothing gave the alert a time: when its producer created it
+    INSERT_TIME = "insert_time"  # the alert has no event time: when it was inserted
+
+
+FALLBACK_EVENT_TIME_SOURCES = (AttributionTimeSource.QUERY_TIME.value, AttributionTimeSource.NOW.value,
+                               AttributionTimeSource.INSERT_TIME.value)
 
 
 class AttributionSource(StrEnum):
@@ -148,9 +163,11 @@ SIGHTINGS_EXTENSION = "svs_sightings"
 # the tags the svs_alert_tagger module puts on the root
 TAG_SVS_TEST = "svs_test"
 TAG_MARKER_MISMATCH = "svs:marker_mismatch"
+# an alert of a test host's maintenance window (docs/SVS_RUNS.md, *Maintenance windows*)
+TAG_MAINTENANCE = "svs:maintenance"
 
 # the actor of what the marker router writes
-ROUTER_ACTOR = "svs"
+ROUTER_ACTOR = ApiAuthResult.system("svs")
 
 # the router name (alert_queue_changes.router) of every queue move a person makes through SVS:
 # associating an alert, or disassociating it. The marker router never moves an alert whose latest

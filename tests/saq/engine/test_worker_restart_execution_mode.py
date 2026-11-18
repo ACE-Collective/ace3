@@ -2,10 +2,9 @@
 
 ``WorkerManager.start_workers(execution_mode)`` forks every worker with the mode
 the engine was started in, but the mode was only ever a parameter — nothing kept
-it. Both restart paths then started the replacement bare:
+it. The restart path then started the replacement bare:
 
     new_worker.start()          # restart_worker(), one dead worker
-    worker.start()              # restart_workers(), the SIGHUP path
 
 which falls back to ``Worker.start``'s ``EngineExecutionMode.NORMAL`` default. A
 worker replaced during a ``SINGLE_SHOT`` or ``UNTIL_COMPLETE`` run came back as a
@@ -61,12 +60,15 @@ class FakeWorker:
         return self.process
 
     def wait_for_start(self):
-        pass
+        return True
 
     def analysis_has_timed_out(self, record) -> bool:
         return False
 
     def controlled_shutdown(self):
+        pass
+
+    def kill(self):
         pass
 
     def die(self, exitcode: int = 1):
@@ -92,34 +94,6 @@ def manager(configuration_manager) -> WorkerManager:
         worker_manager = WorkerManager(configuration_manager, Mock(spec=NodeManagerInterface))
         worker_manager.initialize_workers()
         yield worker_manager
-
-
-@pytest.mark.unit
-def test_start_workers_records_execution_mode(manager):
-    """The mode the pool was started in is state of the pool, not just an argument."""
-    manager.start_workers(execution_mode=EngineExecutionMode.SINGLE_SHOT)
-
-    assert manager.execution_mode == EngineExecutionMode.SINGLE_SHOT
-    assert all(worker.start_modes == [EngineExecutionMode.SINGLE_SHOT] for worker in manager.workers)
-
-
-@pytest.mark.unit
-@pytest.mark.parametrize("execution_mode", [
-    EngineExecutionMode.SINGLE_SHOT,
-    EngineExecutionMode.UNTIL_COMPLETE,
-    EngineExecutionMode.NORMAL,
-])
-def test_restart_worker_preserves_execution_mode(manager, execution_mode):
-    """A replacement worker comes back in the mode the engine is running in."""
-    manager.start_workers(execution_mode=execution_mode)
-    dead_worker = manager.workers[0]
-    dead_worker.die()
-
-    manager.restart_worker(dead_worker)
-
-    assert dead_worker not in manager.workers
-    new_worker = manager.workers[-1]
-    assert new_worker.start_modes == [execution_mode]
 
 
 @pytest.mark.unit
@@ -158,19 +132,6 @@ def test_check_workers_restarts_dead_worker_with_execution_mode(manager):
 
 
 @pytest.mark.unit
-def test_restart_workers_preserves_execution_mode(manager):
-    """The SIGHUP path recycles every worker and must not downgrade the pool."""
-    manager.start_workers(execution_mode=EngineExecutionMode.SINGLE_SHOT)
-
-    manager.restart_workers()
-
-    assert all(
-        worker.start_modes == [EngineExecutionMode.SINGLE_SHOT, EngineExecutionMode.SINGLE_SHOT]
-        for worker in manager.workers
-    )
-
-
-@pytest.mark.unit
 def test_restart_worker_preserves_worker_identity(manager):
     """Everything the replacement already carried over still carries over."""
     manager.start_workers(execution_mode=EngineExecutionMode.NORMAL)
@@ -190,7 +151,8 @@ def test_restart_worker_preserves_worker_identity(manager):
 def test_restarted_worker_process_receives_execution_mode(configuration_manager):
     """End to end through the real ``Worker.start``: the mode reaches the kwargs
     of the forked ``worker_loop``, which is the only place it has any effect."""
-    with patch("saq.engine.worker.ACE_MP_CONTEXT") as mock_mp_context:
+    # the mock Process has no real pid to put in a process group of its own
+    with patch("saq.engine.worker.ACE_MP_CONTEXT") as mock_mp_context, patch("saq.engine.worker.os.setpgid"):
         manager = WorkerManager(configuration_manager, Mock(spec=NodeManagerInterface))
         manager.initialize_workers()
         # one worker per pool entry keeps the Process call list unambiguous

@@ -16,6 +16,9 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
+from aceapi_v2.auth.schemas import ApiAuthResult
+from saq.logging import audit_actor
+
 audit_logger = logging.getLogger("ace.hunt_audit")
 
 
@@ -30,18 +33,18 @@ class ValidationOutcome:
     started: float = field(default_factory=time.monotonic)
 
 
-def write_audit_record(event: str, *, user: Optional[str], user_id: Optional[int], key_id: Optional[int],
-                       key_name: Optional[str], src_ip: Optional[str], **fields: Any) -> None:
+def write_audit_record(event: str, auth: ApiAuthResult, src_ip: Optional[str], **fields: Any) -> None:
+    # the JSON keeps the AI_AUDIT identity fields; extra={} carries the ones log_audit() records have
     record = {
         "event": event,
-        "user": user,
-        "user_id": user_id,
-        "key_id": key_id,
-        "key_name": key_name,
+        "user": auth.auth_name,
+        "user_id": auth.auth_user_id,
+        "key_id": auth.key_id,
+        "key_name": auth.key_name,
         "src_ip": src_ip,
     }
     record.update(fields)
-    audit_logger.info("HUNT_AUDIT %s", json.dumps(record, default=str))
+    audit_logger.info("HUNT_AUDIT %s", json.dumps(record, default=str), extra=audit_actor(auth))
 
 
 def audit_fields(outcome: ValidationOutcome) -> tuple[str, dict[str, Any]]:

@@ -55,6 +55,7 @@ def cli_index(args):
         print(f"submitted {submitted} of {len(uuids)} alerts to the search indexer")
         if submitted < len(uuids):
             print("is service_search_indexer enabled?")
+            return 1
 
     return 0
 

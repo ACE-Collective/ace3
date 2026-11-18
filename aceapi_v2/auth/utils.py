@@ -19,6 +19,10 @@ API_AUTH_TYPE_CONFIG = "config"
 API_AUTH_TYPE_USER = "user"
 API_HEADER_NAME = "x-ace-auth"
 
+API_CREDENTIAL_SESSION = "session"
+API_CREDENTIAL_USER_KEY = "user_key"
+API_CREDENTIAL_CONFIG_KEY = "config_key"
+
 
 # =============================================================================
 # API Key Authentication
@@ -33,7 +37,13 @@ def _get_config_api_key_match(auth_sha256: str) -> ApiAuthResult:
 
     name, scope = match
     logging.info(f"valid config API key for {name}")
-    return ApiAuthResult(auth_type=API_AUTH_TYPE_CONFIG, auth_name=name, key_scope=scope, key_name=name)
+    return ApiAuthResult(
+        auth_type=API_AUTH_TYPE_CONFIG,
+        auth_name=name,
+        key_scope=scope,
+        key_name=name,
+        credential=API_CREDENTIAL_CONFIG_KEY,
+    )
 
 
 async def _get_user_api_key_match(
@@ -66,6 +76,7 @@ async def _get_user_api_key_match(
         key_scope=scope,
         key_id=api_key.id,
         key_name=api_key.name,
+        credential=API_CREDENTIAL_USER_KEY,
     )
 
 
@@ -83,6 +94,17 @@ async def verify_api_key(auth: str, session: AsyncSession) -> ApiAuthResult:
 # =============================================================================
 # Flask Session Cookie Authentication
 # =============================================================================
+
+
+def session_auth(user_id: int, username: str) -> ApiAuthResult:
+    """The caller a GUI session is: its user, with no key. The Flask views use it too, so their
+    AUDIT records name a session user the way the API's do."""
+    return ApiAuthResult(
+        auth_type=API_AUTH_TYPE_USER,
+        auth_name=username,
+        auth_user_id=user_id,
+        credential=API_CREDENTIAL_SESSION,
+    )
 
 
 async def verify_flask_session(
@@ -117,8 +139,4 @@ async def verify_flask_session(
     if not row:
         return None
 
-    return ApiAuthResult(
-        auth_type=API_AUTH_TYPE_USER,
-        auth_name=row.username,
-        auth_user_id=row.id,
-    )
+    return session_auth(row.id, row.username)

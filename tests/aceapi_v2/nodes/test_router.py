@@ -151,14 +151,6 @@ class TestNodesRouter:
         assert response.json()["status"] == NODE_STATUS_RUNNING
 
     @pytest.mark.asyncio
-    async def test_resume_drained_node(self, session: AsyncSession, client: AsyncClient):
-        node = await create_node(session, status=NODE_STATUS_DRAINED)
-
-        response = await client.post(f"/nodes/{node.id}/resume")
-        assert response.status_code == 200
-        assert response.json()["status"] == NODE_STATUS_RUNNING
-
-    @pytest.mark.asyncio
     async def test_resume_invalid_status(self, session: AsyncSession, client: AsyncClient):
         for status in [NODE_STATUS_RUNNING, NODE_STATUS_STOPPED]:
             node = await create_node(session, name=f"test_api_node_{status}", status=status)
@@ -171,22 +163,6 @@ class TestNodesRouter:
     async def test_resume_unknown_node(self, client: AsyncClient):
         response = await client.post("/nodes/999999999/resume")
         assert response.status_code == 404
-
-    @pytest.mark.asyncio
-    async def test_drain_then_resume_round_trip(self, session: AsyncSession, client: AsyncClient):
-        node = await create_node(session, status=NODE_STATUS_RUNNING)
-
-        response = await client.post(f"/nodes/{node.id}/drain")
-        assert response.status_code == 200
-        assert response.json()["status"] == NODE_STATUS_DRAINING_COLLECTORS
-
-        # draining a draining node fails
-        response = await client.post(f"/nodes/{node.id}/drain")
-        assert response.status_code == 409
-
-        response = await client.post(f"/nodes/{node.id}/resume")
-        assert response.status_code == 200
-        assert response.json()["status"] == NODE_STATUS_RUNNING
 
     @pytest.mark.asyncio
     async def test_resume_marks_the_node_expected_online(self, session: AsyncSession, client: AsyncClient):

@@ -27,10 +27,11 @@ you don't see is usually a permission you don't hold.
 | Permission | Lets you |
 |---|---|
 | `svs:run_read` | Open the SVS area: Runs, Tests, Coverage and Worklist, every run page and test page |
-| `svs:run_manage` | Take ownership of runs, cancel, close and review them; decide candidates; keep or mark not-a-test on alerts; associate alerts by hand; comment; set a test's expectations, ignores and observation window; resolve worklist rows |
+| `svs:run_manage` | Take ownership of runs, end them early, cancel, close and review them; decide candidates; keep or mark not-a-test on alerts; associate alerts by hand; comment; set a test's expectations, ignores and observation window; resolve worklist rows |
 | `svs:admin` | Manage test hosts; ignore a signature for every test; retire and delete samples |
 | `signature:read` | Open the Signatures area: Samples, Validations and Yara QA Results |
 | `signature:download` | Download sample files (as zips protected with the password `infected`) |
+| `signature:qa_purge` | Purge files stored for YARA rules in QA mode |
 | `alert:write` | From an alert's page, *Disassociate from run* and *Not a test*; on a sample, *Relabel*, *Reset* and *Confirm* |
 | `svs:run_register` | The launcher's own calls. People rarely hold it: it belongs to the launcher's API key |
 
@@ -50,6 +51,7 @@ Every call uses the launcher's API key in the `x-ace-auth` header. The key needs
 
 | Step | Call | What it does |
 |---|---|---|
+| — | `POST /api/v2/svs/runs/validate` | Optional. Takes the register body and answers what registering would decide, without creating a run or raising a refusal alert. For a launcher's dry run |
 | 1. Register | `POST /api/v2/svs/runs/` | Creates a run for one catalog test against one or more test hosts. Answers 201 with the `run_id` and the run's **marker** |
 | 2. Mark | (on the test host) | The launcher puts the marker where the test's process telemetry shows it |
 | 3. Start | `POST /api/v2/svs/runs/{run_id}/start` | The test is about to fire. The run's windows start now |
@@ -147,6 +149,10 @@ Invoke-RestMethod -Method Post -Uri "$Ace/api/v2/svs/runs/$($run.run_id)/execute
 | 403 | A target isn't a test host, or the user isn't one the host allows | Nothing is registered, and ACE raises a *registration refused* alert in the normal queue, because a test tool pointed at a production machine is something an analyst should see |
 | 422 | The test isn't in the catalog, its platforms don't include the host's, the targets are on different platforms, or a field is missing | Nothing is registered and nothing is alerted |
 | 409 | The call doesn't fit the run's state (starting it twice, `executed` before `start`) | The answer says the run's current state |
+| 409 | Another run holds a target's test host: it hasn't started yet, or its observation window hasn't ended | Nothing is registered or started, and nothing is alerted. The answer's `holders` names each run and `until`, when its hold ends (null while it hasn't started) |
+
+A test host takes one run at a time, so a launcher that runs several tests on one host registers
+the next only after the previous run's observation window ends.
 
 A run that is registered but never started goes to *error* after `svs.runs.start_timeout_minutes`
 (30 minutes by default) and is closed. Every call, accepted or not, is in the run's event log with
@@ -159,7 +165,8 @@ ends. For a test with expectations it is the latency of the slowest expected sig
 floor and a ceiling; for a test nobody has reviewed yet it is the slowest hunt's latency, because
 the first run is the one that discovers what fires. The **attribution window** is longer: an alert
 that arrives after the run ended but inside it still counts, as *late*. Both are fixed when the run
-is registered.
+is registered. If you know nothing more will fire, you can end the run early instead of waiting
+(see [Ending a run early](#ending-a-run-early)).
 
 ## Following runs
 
@@ -203,8 +210,8 @@ many need attention. It is the quickest way to see how last night's batch went.
 
 ![The Batches view](images/runs-batches.png)
 
-Select runs with their check boxes to act on several at once: *Take ownership*, *Cancel* or
-*Close*. Review is never a bulk action, because each run's result has to be looked at.
+Select runs with their check boxes to act on several at once: *Take ownership*, *End now*,
+*Cancel* or *Close*. Review is never a bulk action, because each run's result has to be looked at.
 
 ![The Actions menu with one run selected](images/runs-actions.png)
 
@@ -218,7 +225,7 @@ left of a one-hour window, with one alert attributed so far.
 From top to bottom:
 
 1. **The header**: the test, its technique and the run's state, and the actions you may take
-   (*Take ownership*, *Cancel*, *Close*, *Mark reviewed*).
+   (*Take ownership*, *End now*, *Cancel*, *Close*, *Mark reviewed*).
 2. **The timeline**: registered, started, observation ends, ended, attribution ends. The bar fills
    as time passes, and a started run shows its time left.
 3. **The facts**: the test and the catalog commit it was registered at, the marker (with a copy
@@ -272,7 +279,7 @@ what was decided about it, and how it did in the test's earlier runs.
 |---|---|
 | `hit` | Expected, and it fired |
 | `missing` | Expected, and it didn't fire |
-| `possibly suppressed` | Missing, but it is a hunt that alerted within its suppression period just before, so it may have been suppressed rather than blind |
+| `possibly suppressed` | Missing, but it is a hunt that alerted within its suppression period just before, so it may have been suppressed rather than blind. For a hunt that groups or deduplicates its alerts, the hunter recorded that it dropped a match on the run's host |
 | `candidate` | It fired, and nobody has decided about it |
 | `rejected` | It fired, and it was rejected for this test |
 | `ignored` | It fired, and it is ignored for this test or for every test |
@@ -359,13 +366,32 @@ and reviewed it; the dot under *Earlier runs* is Alice's first run, a hit.
 - **Comments.** Leave a comment whenever a result needs explaining: a missing signature you are
   chasing, a host problem, a decision you weren't sure about.
 
+## Ending a run early
+
+A run waits out its whole observation window, and a first run waits for the slowest hunt, which can
+be a day or more. When you know nothing more is going to fire (the test plainly failed, or every
+expected signature already has), click **End now…** on a started run, or select several runs and
+use *End now* from the Actions menu. Say why: the reason is kept with the run and shown as *Ended
+early* on its page.
+
+The run becomes *ended* right away and is reviewed like any other run:
+
+- Its result is computed now. An expected signature that hadn't had time to fire is *missing*, and
+  reviewing the run signs that off, so end a run only when you are sure.
+- Its test host is free for the next run, unless the test holds its host.
+- An alert the test causes anyway is still attributed to the run, as *late*, until its attribution
+  window ends. If you already reviewed the run, it shows up as *changed since review*.
+
+Ending a run is not canceling it: nothing is learned from a canceled run.
+
 ## Closing and canceling runs
 
 Not every run deserves a review.
 
 | Action | When | What it does |
 |---|---|---|
-| **Cancel** | The run is created or started and you want to stop it | The run is canceled. It keeps attributing until its attribution window passes, because the test may have fired anyway. A run that never started is closed at once |
+| **End now** | The run is started and nothing more will fire | The run ends now and waits for review. See [Ending a run early](#ending-a-run-early) |
+| **Cancel** | The run is created or started and you want to stop it, and learn nothing from it | The run is canceled. It keeps attributing until its attribution window passes, because the test may have fired anyway. A run that never started is closed at once |
 | **Close** | The run ended, was canceled or failed, and nothing should be learned from it | Its fully attributed open alerts become `SIMULATED`, and the run is final. Nothing is learned: no expectations, no samples, no verdicts |
 | **Review** | The run ended and its result is worth keeping | See [Reviewing a run](#reviewing-a-run) |
 
@@ -438,6 +464,10 @@ the decisions about it:
 - **Observation window**: set minutes here to override the computed window for runs registered from
   now on (`svs:run_manage`); *Use the computed window* clears it. Use it when you know a test's
   signatures fire within a minute or two, so its runs end sooner.
+- **The test leaves something behind**: check it (`svs:run_manage`) when what the test leaves can
+  fire later, such as persistence, a scheduled task or a service. Its runs registered from then on
+  hold their test hosts until their attribution window ends rather than their observation window,
+  so the next run on the host can't take the leftover's alerts.
 - **Expectations**: per platform, each signature decided expected or rejected, by whom, why, and
   from which run. *Remove* undoes a decision; the signature becomes a candidate again the next
   time it fires.
@@ -464,7 +494,8 @@ Work through it in this order:
    section links straight to it.
 3. **Did the signature have a chance?** For a hunt, search for its completion record over the run's
    window: if the hunt didn't run across that time, it couldn't fire. A `possibly suppressed` status
-   points at the alert that probably suppressed it.
+   points at the alert that probably suppressed it, except where the hunter recorded the dropped
+   match itself (a hunt that groups or deduplicates its alerts).
 4. **Did it run and not match?** For a YARA rule, the run page links (with `signature:read`) to the
    files captured from the run's alerts; scan them against the rule.
 
@@ -634,6 +665,12 @@ alerts, and ACE keeps the files it matches for review. Use it to see how noisy a
 before it can wake anyone up. [Signatures → Yara QA Results](/ace/signatures/yara-qa) lists the
 rules in QA mode with how often they matched; click a rule to see its files. When the matches look
 right, remove the `qa` modifier in a pull request.
+
+Files are kept per version of the rule, and a version changes only when the rule itself is edited,
+so the version marked *current* shows what the rule as it runs now matched. When a rule has kept
+as many files as it may, the files of versions that stopped matching make room for the current
+one's. With `signature:qa_purge` you can also purge files by hand: the ones you select, the version
+you picked, or every version but the current one.
 
 ![The Yara QA Results page](images/yara-qa.png)
 

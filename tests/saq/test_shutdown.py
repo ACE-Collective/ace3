@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+import saq.shutdown
 from saq.shutdown import (
     ShutdownCoordinator,
     get_shutdown_coordinator,
@@ -57,15 +58,6 @@ def test_starts_not_shutting_down(make_coordinator):
 
 
 @pytest.mark.unit
-def test_request_shutdown_sets_state(make_coordinator):
-    coordinator = make_coordinator(deadline_seconds=5)
-    coordinator.request_shutdown("because")
-
-    assert coordinator.is_shutting_down
-    assert coordinator.reason == "because"
-
-
-@pytest.mark.unit
 def test_request_shutdown_is_idempotent(make_coordinator):
     """A second signal must not restart the clock -- an impatient operator sending
     SIGTERM twice should not extend the deadline they are waiting on."""
@@ -99,8 +91,9 @@ def test_sleep_returns_early_on_shutdown(make_coordinator):
 
     threading.Thread(target=_request, daemon=True).start()
 
+    # under deadline + WATCHDOG_GRACE, or a sleep that ignores the request ends in the watchdog's os._exit(0)
     started = time.monotonic()
-    assert coordinator.sleep(30) is True
+    assert coordinator.sleep(8) is True
     assert time.monotonic() - started < 5
 
 
@@ -220,6 +213,45 @@ def test_flag_is_visible_across_a_fork(make_coordinator):
 
 
 @pytest.mark.unit
+def test_shutdown_requested_in_a_forked_child_does_not_reach_the_parent(make_coordinator):
+    """The mirror flows down only. A child that requested shutdown on the coordinator it
+    inherited used to set the mirror it shares with its parent, so the parent, and every
+    process it forked afterwards, was shutting down too. That is how an engine started
+    with start_nonblocking() and stopped with SIGINT made the next engine forked from the
+    test process stop on arrival. The child's own later forks must still see it."""
+    coordinator = make_coordinator(deadline_seconds=5)
+
+    read_fd, write_fd = os.pipe()
+    pid = os.fork()
+    if pid == 0:
+        # child
+        try:
+            os.close(read_fd)
+            coordinator.request_shutdown("child")
+            grandchild = os.fork()
+            if grandchild == 0:
+                os._exit(0 if coordinator.is_shutting_down else 1)
+
+            _, status = os.waitpid(grandchild, 0)
+            seen_below = os.waitstatus_to_exitcode(status) == 0
+            os.write(write_fd, b"1" if coordinator.is_shutting_down and seen_below else b"0")
+            os.close(write_fd)
+        finally:
+            os._exit(0)
+
+    os.close(write_fd)
+    try:
+        result = os.read(read_fd, 1)
+        os.waitpid(pid, 0)
+        assert result == b"1", "the child or its own fork did not see the child's shutdown"
+    finally:
+        os.close(read_fd)
+
+    assert not coordinator.is_shutting_down
+    assert not coordinator._mp_flag.value
+
+
+@pytest.mark.unit
 def test_get_shutdown_coordinator_is_a_singleton():
     first = get_shutdown_coordinator(deadline_seconds=7)
     second = get_shutdown_coordinator()
@@ -272,22 +304,23 @@ def test_run_bounded_swallows_exceptions():
 
 
 @pytest.mark.unit
-def test_watchdog_stands_down_when_shutdown_completes(make_coordinator):
+def test_watchdog_stands_down_when_shutdown_completes(make_coordinator, monkeypatch):
     """The watchdog is a deadline for *completing* shutdown, not a timer that always
     fires. A coordinator whose shutdown finished must not force-exit the process
     afterwards -- an armed watchdog left over from a finished shutdown will happily take
-    down a process that had every right to still be running.
+    down a process that had every right to still be running."""
+    # the exit is recorded rather than taken, and the grace removed so it would come at once
+    exits = []
+    monkeypatch.setattr(saq.shutdown.os, "_exit", exits.append)
+    monkeypatch.setattr(saq.shutdown, "WATCHDOG_GRACE", 0)
 
-    The assertion is indirect but decisive: if the watchdog did not stand down, it calls
-    os._exit and this test process dies rather than reporting a failure.
-    """
     coordinator = make_coordinator(deadline_seconds=0.1)
     coordinator.request_shutdown("test")
     coordinator.mark_complete()
 
-    # comfortably past deadline + WATCHDOG_GRACE
-    time.sleep(0.3)
-    assert coordinator.is_shutting_down
+    coordinator._watchdog.join(5)
+    assert not coordinator._watchdog.is_alive()
+    assert exits == []
 
 
 @pytest.mark.unit
@@ -501,7 +534,8 @@ def test_wait_for_shutdown_wakes_a_forked_child(make_coordinator):
         # child
         try:
             os.close(read_fd)
-            woke = coordinator.wait_for_shutdown(15)
+            # under deadline + WATCHDOG_GRACE: past it the parent's watchdog os._exit(0)s pytest before the assertion
+            woke = coordinator.wait_for_shutdown(5)
             os.write(write_fd, b"1" if woke else b"0")
             os.close(write_fd)
         finally:

@@ -1,13 +1,21 @@
 from datetime import datetime, timedelta
 import inspect
 import logging
+import math
 import os
+import shutil
+import signal
+import stat
+import subprocess
 import time
+from collections.abc import Sequence
 from typing import TYPE_CHECKING, Optional, Type, Union
-from saq.analysis.analysis import Analysis
+from saq.analysis.analysis import Analysis, close_with_error
+from saq.analysis.errors import AnalysisError
 from saq.analysis.interfaces import RootAnalysisInterface
 from saq.analysis.module_path import MODULE_PATH
 from saq.analysis.observable import Observable
+from saq.configuration.config import get_config
 from saq.constants import (
     DIRECTIVE_EXCLUDE_ALL,
     DIRECTIVE_IGNORE_AUTOMATION_LIMITS,
@@ -19,9 +27,73 @@ from saq.filesystem.notification import FileWatcherMixin
 from saq.modules.config import AnalysisModuleConfig
 from saq.modules.context import AnalysisModuleContext
 from saq.observables.type_hierarchy import get_type_hierarchy
+from saq.util.filesystem import is_path_under
+from saq.sandbox.runner import (
+    NODE_FAILURE_EXIT_CODES,
+    SandboxCancelled,
+    SandboxOutputExceeded,
+    SandboxResult,
+    build_sandbox_argv,
+    create_workdir,
+    get_read_dirs,
+    landlock_available,
+    run_sandboxed,
+    sweep_stale_workdirs,
+)
 
 if TYPE_CHECKING:
     pass
+
+
+# how long before its call to analyze() runs out of time run_tool() stops a tool, so that the module
+# still returns before the engine's watchdog kills the whole worker
+TOOL_TIMEOUT_MARGIN_SECONDS = 5
+
+# the sandbox work roots swept for directories a killed worker left behind, once per process
+_SWEPT_WORK_ROOTS: set[str] = set()
+
+# a program's own directory is readable to it in the sandbox unless it is one of these, or holds
+# SAQ_HOME or the data directory: a tool installed there would expose everything under it
+_NEVER_TOOL_DIRS = ("/", "/etc", "/home", "/root", "/auth", "/tmp", "/proc", "/var", "/opt")
+
+
+def _tool_dirs(program: str) -> list[str]:
+    """The directory of the program a sandboxed tool runs, when the fixed allowlist does not cover it
+    (/opt/dotnet for ilspycmd, john's run directory). Raises ValueError for one that must not be
+    readable."""
+    directory = os.path.dirname(os.path.realpath(program))
+    if any(is_path_under(directory, path) for path in get_read_dirs()):
+        return []
+
+    if directory in _NEVER_TOOL_DIRS or any(
+            root and is_path_under(root, directory) for root in (get_base_dir(), get_data_dir())):
+        raise ValueError(f"{program} is in {directory}, which cannot be made readable to the tool")
+
+    return [directory]
+
+
+def _sweep_tool_workdirs(work_root: str):
+    if work_root not in _SWEPT_WORK_ROOTS:
+        _SWEPT_WORK_ROOTS.add(work_root)
+        sweep_stale_workdirs(work_root)
+
+
+def _keep_tool_output(path: str, destination: str) -> bool:
+    """Moves a file a sandboxed tool wrote to where the module keeps it, and returns False when the
+    tool left something there that is not one. The tool may have left anything there, so only a plain
+    file with a single link is taken: not a symlink to a file of ACE's, not a hard link to one. The
+    launcher has killed everything the tool started, so nothing can swap the path after it is checked."""
+    try:
+        st = os.lstat(path)
+    except FileNotFoundError:
+        # the tool did not write this output, which is how most tools fail
+        return True
+
+    if not stat.S_ISREG(st.st_mode) or st.st_nlink != 1:
+        return False
+
+    shutil.move(path, destination)
+    return True
 
 
 class AnalysisModule(FileWatcherMixin):
@@ -232,8 +304,12 @@ class AnalysisModule(FileWatcherMixin):
         """Returns True if this analysis module allows re-analysis when the previous analysis failed.
 
         When True, if an observable already has a completed analysis from this module
-        but that analysis has a truthy 'error' attribute, the module will be allowed
-        to run again (the failed analysis will be removed first).
+        but that analysis failed (Analysis.error is set), the module will be allowed
+        to run again: the engine deletes the failed analysis, and what it added, right
+        before the module runs (see will_retry()). The engine retries a failed analysis
+        once per work item, so a retry that fails again waits for the next one. It never
+        retries in final analysis mode, where execute_analysis() cannot run, so the work
+        item of a delayed analysis request leaves the failed analysis in place.
 
         Override this property in subclasses to enable retry behavior.
         Defaults to False.
@@ -288,6 +364,176 @@ class AnalysisModule(FileWatcherMixin):
     def set_context(self, context: AnalysisModuleContext):
         """Set the analysis context for dependency injection."""
         self._context = context
+
+    def set_analysis_deadline(self, deadline: Optional[float]):
+        """Called by the engine around each call to analyze(), with the time.monotonic() value
+        past which the engine stops that call, or None once it has returned."""
+        self._context.analysis_deadline = deadline
+
+    def time_left(self) -> float:
+        """Returns how many seconds the current call to analyze() has before the engine stops it:
+        either the worker is killed for exceeding the module's maximum_analysis_time, or the rest
+        of the root's pass is abandoned for exceeding the mode's cumulative fail time. Negative
+        once the deadline has passed. Outside of an engine call (a unit test, the GUI) this is the
+        module's maximum_analysis_time."""
+        if self._context.analysis_deadline is None:
+            return float(self.maximum_analysis_time)
+
+        return self._context.analysis_deadline - time.monotonic()
+
+    def run_tool(self, args: list[str], target: str, *, timeout: Optional[float] = None,
+                 **kwargs) -> Optional[subprocess.CompletedProcess]:
+        """Runs an external tool on target as subprocess.run(args, **kwargs) does and returns its
+        CompletedProcess, or None if it had to be stopped: a tool still running after timeout
+        seconds, or TOOL_TIMEOUT_MARGIN_SECONDS before this call to analyze() runs out of time, is
+        killed, where it would otherwise run until the engine kills the worker."""
+        allowed = max(1.0, self.time_left() - TOOL_TIMEOUT_MARGIN_SECONDS)
+        timeout = allowed if timeout is None else max(1.0, min(timeout, allowed))
+        try:
+            return subprocess.run(args, timeout=timeout, **kwargs)
+        except subprocess.TimeoutExpired:
+            logging.warning("%s stopped %s on %s after %.0f seconds", self, args[0], target, timeout)
+            return None
+
+    def run_sandboxed_tool(
+        self,
+        args: list[str],
+        target: str,
+        *,
+        timeout: Optional[float] = None,
+        read_files: Sequence[str] = (),
+        read_dirs: Sequence[str] = (),
+        write_dirs: Sequence[str] = (),
+        outputs: Optional[dict[str, str]] = None,
+        cwd: Optional[str] = None,
+        env: Optional[dict[str, str]] = None,
+        memory_limit: Optional[int] = None,
+        startup_errors: Sequence[str] = (),
+        partial_output: bool = False,
+    ) -> Optional[SandboxResult]:
+        """Runs an external tool on target, a file from the alert, in the Landlock sandbox
+        (docs/TOOL_SANDBOX.md), and returns what it did; None if it was stopped or could not run.
+
+        The tool can read target, read_files and read_dirs, and the directory its program is in, and
+        write only its own empty working directory (its cwd, HOME and TMPDIR, unless cwd names one of
+        write_dirs) and write_dirs, which the module creates for it; no network. A name in args
+        without a directory is relative to the working directory, and an arg that is target or one of
+        read_files or write_dirs is made absolute (one inside a longer arg, like 7z's -o<dir>, is the
+        module's to make absolute). outputs maps names relative to the working directory to where
+        the module keeps them, and each one the tool left as a plain file is moved there once it has
+        finished, whatever its exit status. Nothing is moved from a tool that was stopped.
+
+        It is stopped like run_tool() stops one (at timeout seconds, or before this call to analyze()
+        runs out of time), when it writes more than tool_sandbox.max_output_bytes, and when
+        should_stop() says so. env is added to the tool's environment, which is never ACE's own.
+        memory_limit replaces tool_sandbox.memory_limit for a runtime that reserves more address
+        space than it uses. startup_errors are what such a runtime starts its stdout or stderr with
+        when the sandbox keeps it from starting (a directory it needs is not readable, the memory
+        limit is too small for it): a non-zero exit that starts so is reported like a program the
+        sandbox cannot start. With partial_output, a tool stopped for writing too much output returns
+        what it wrote up to then, flagged output_exceeded, rather than None; it keeps no outputs."""
+        config = get_config().tool_sandbox
+        if memory_limit is not None:
+            config = config.model_copy(update={"memory_limit": memory_limit})
+        program = self._resolve_tool(args[0])
+        if program is None:
+            self._sandbox_failed(args[0], target, f"{args[0]} not found")
+            return None
+
+        try:
+            tool_dirs = _tool_dirs(program)
+        except ValueError as e:
+            self._sandbox_failed(program, target, str(e))
+            return None
+
+        available = landlock_available()
+        if available is None:
+            # landlock_available() reported why with its traceback; the next call probes again, so
+            # this says nothing about the node, and a later failure of the tool is still reported
+            logging.warning("%s did not run %s on %s: the Landlock probe could not run", self, os.path.basename(program),
+                            target, extra={"path": target})
+            return None
+        if not available:
+            self._sandbox_failed(program, target, "the Landlock sandbox is not available on this node")
+            return None
+
+        # ACE's paths are often relative to SAQ_HOME, the tool's are relative to its working directory
+        absolute = {path: os.path.abspath(path) for path in [target, *read_files, *write_dirs]}
+        args = [absolute.get(arg, arg) for arg in args]
+        target = absolute[target]
+
+        allowed = max(1.0, self.time_left() - TOOL_TIMEOUT_MARGIN_SECONDS)
+        seconds = allowed if timeout is None else max(1.0, min(timeout, allowed))
+        tool = os.path.basename(program)
+        work_root = os.path.abspath(os.path.join(get_data_dir(), config.work_dir))
+        _sweep_tool_workdirs(work_root)
+        with create_workdir(work_root) as workdir:
+            argv = build_sandbox_argv(
+                [program, *args[1:]], workdir, config, timedelta(seconds=seconds),
+                read_files=[path for path in (target, *(absolute[path] for path in read_files)) if os.path.exists(path)],
+                read_dirs=[*tool_dirs, *read_dirs],
+                write_dirs=[absolute[path] for path in write_dirs],
+                # RLIMIT_CPU counts every thread, and john, 7z and the JVM run one per core; the
+                # timeout still bounds the wall time
+                cpu_seconds=math.ceil(seconds * (os.cpu_count() or 1)),
+            )
+            # never os.environ: Landlock does not filter the environment and ACE's carries secrets
+            tool_env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "LANG": "C.UTF-8", "HOME": workdir,
+                        "TMPDIR": workdir, **(env or {})}
+            try:
+                result = run_sandboxed(argv, None, tool_env, os.path.abspath(cwd) if cwd else workdir,
+                                       timedelta(seconds=seconds), config.max_output_bytes, cancel=self.should_stop)
+            except SandboxCancelled:
+                logging.info("%s stopped %s on %s: the analysis was stopped", self, tool, target,
+                             extra={"path": target})
+                return None
+            except SandboxOutputExceeded as e:
+                # the file's doing, not the node's
+                logging.warning("%s stopped %s on %s: %s", self, tool, target, e, extra={"path": target})
+                return e.result if partial_output else None
+            except RuntimeError as e:
+                # a timeout: the file's doing, not the node's
+                logging.warning("%s stopped %s on %s: %s", self, tool, target, e, extra={"path": target})
+                return None
+
+            # a program the sandbox cannot start: a wrong path, or a directory it needs that is not readable
+            if not result.stdout.strip() and result.returncode in NODE_FAILURE_EXIT_CODES:
+                self._sandbox_failed(program, target, result.stderr.strip()[-500:])
+                return None
+
+            # the start of the output, which the file it analyzes does not decide
+            if result.returncode != 0 and any(output.lstrip().startswith(error) for error in startup_errors
+                                              for output in (result.stdout, result.stderr)):
+                self._sandbox_failed(program, target, (result.stdout.strip() or result.stderr.strip())[:500])
+                return None
+
+            # SIGXFSZ: what it was writing is cut off at the limit, and it wrote nothing after that.
+            # The file's doing, like a timeout
+            if result.returncode == 128 + signal.SIGXFSZ:
+                logging.warning("%s stopped %s on %s: it wrote a file larger than tool_sandbox's file size limit "
+                                "of %d bytes", self, tool, target, config.file_size_limit, extra={"path": target})
+                return None
+
+            for name, destination in (outputs or {}).items():
+                if not _keep_tool_output(os.path.join(workdir, name), destination):
+                    logging.warning("%s did not keep %s's output %s on %s: not a plain file", self, tool, name, target,
+                                    extra={"path": target})
+
+        return result
+
+    def _resolve_tool(self, name: str) -> Optional[str]:
+        """The absolute path of the program a tool runs, found the way Popen would find it."""
+        if os.sep not in name:
+            return shutil.which(name)
+
+        path = name if os.path.isabs(name) else os.path.join(get_base_dir(), name)
+        return path if os.access(path, os.X_OK) else None
+
+    def _sandbox_failed(self, program: str, target: str, reason: str):
+        """A tool this node cannot run in the sandbox is an operator's problem. It fails the same way on every
+        file, and ErrorReportHandler writes its report once per cause, not once per file."""
+        message = f"{self} cannot run {program} in the sandbox: {reason}"
+        logging.error("%s (on %s)", message, target, exc_info=RuntimeError(message), extra={"path": target})
 
     def get_root(self) -> RootAnalysisInterface:
         """Get the root analysis interface from the dependency injection context."""
@@ -367,6 +613,11 @@ class AnalysisModule(FileWatcherMixin):
         """Put your custom "should I analyze this?" logic in this function."""
         return True
 
+    def will_retry(self, analysis: Analysis) -> bool:
+        """Returns True if this module runs again to replace the given analysis of its own:
+        it is completed, it failed, and the module allows reanalysis on failure."""
+        return self.allow_reanalysis_on_failure and analysis.completed and analysis.error is not None
+
     def accepts(self, observable: Observable) -> bool:
         """Returns True if this observable should be analyzed by this module, False otherwise."""
 
@@ -403,7 +654,7 @@ class AnalysisModule(FileWatcherMixin):
                     if observable.type not in valid_types:
                         return False
             except Exception:
-                logging.error(
+                logging.exception(
                     "valid_observable_types returned invalid data type {} for {}".format(
                         type(valid_types), self
                     )
@@ -480,28 +731,12 @@ class AnalysisModule(FileWatcherMixin):
                 )
                 return False
 
-            # has this analysis completed?
-            if current_analysis.completed:
-                # Check if this module allows re-analysis on failure and the analysis failed
-                if self.allow_reanalysis_on_failure and hasattr(current_analysis, 'error'):
-                    # Load details to get the actual error value from disk
-                    current_analysis.load_details()
-                    if current_analysis.error:
-                        # Remove the failed analysis to allow retry
-                        logging.info(
-                            f"removing failed analysis {current_analysis} from {observable} "
-                            f"to allow retry by {self}"
-                        )
-                        module_path = current_analysis.module_path
-                        if module_path in observable.analysis:
-                            del observable.analysis[module_path]
-                        # Continue - don't return False, allow reanalysis
-                    else:
-                        logging.debug("already analyzed {} with {}".format(observable, self))
-                        return False
-                else:
-                    logging.debug("already analyzed {} with {}".format(observable, self))
-                    return False
+            # has this analysis completed? a failed one we retry is accepted and left in
+            # place: the engine replaces it only when it actually runs this module, since
+            # accepts() is also asked by checks that do not run it (declared dependencies)
+            if current_analysis.completed and not self.will_retry(current_analysis):
+                logging.debug("already analyzed {} with {}".format(observable, self))
+                return False
 
         # is this observable a file and do we have a file size limit for this module?
         if observable.type == F_FILE and self.file_size_limit > 0:
@@ -514,7 +749,7 @@ class AnalysisModule(FileWatcherMixin):
                         )
                         return False
             except Exception as e:
-                logging.warning(f"unable to get size of file {target_path}: {e}")
+                logging.warning(f"unable to get size of file {observable.file_path} for {self}: {e}")
 
         # are we in cooldown mode?
         # XXX side effect!
@@ -532,9 +767,12 @@ class AnalysisModule(FileWatcherMixin):
             # this can be the case if an analyst is forcing analysis of something
             if not observable.has_directive(DIRECTIVE_IGNORE_AUTOMATION_LIMITS):
                 # how many times have we already generated analysis with this module?
+                # a failed analysis being retried is replaced, so it does not count
                 current_analysis_count = len(
                     self.get_root().get_analysis_by_type(self.generated_analysis_type)
                 )
+                if isinstance(current_analysis, Analysis) and self.will_retry(current_analysis):
+                    current_analysis_count -= 1
                 if current_analysis_count >= self.automation_limit:
                     logging.debug(
                         f"{self} reached automation limit of {self.automation_limit} for {self.get_root()}"
@@ -623,20 +861,39 @@ class AnalysisModule(FileWatcherMixin):
 
         analysis_result = AnalysisExecutionResult.COMPLETED
 
-        # if we are executing in "final analysis mode" then we call this function instead
-        if final_analysis:
-            analysis_result = self.execute_final_analysis(observable)
-        # are we continuing analysis of a delayed analysis?
-        elif delayed_analysis:
-            # get the analysis that has been completed so far
-            existing_analysis = observable.get_and_load_analysis(self.generated_analysis_type, instance=self.instance)
-            if existing_analysis:
-                analysis_result = self.continue_analysis(observable, existing_analysis)
+        try:
+            # if we are executing in "final analysis mode" then we call this function instead
+            if final_analysis:
+                analysis_result = self.execute_final_analysis(observable)
+            # are we continuing analysis of a delayed analysis?
+            elif delayed_analysis:
+                # get the analysis that has been completed so far
+                existing_analysis = observable.get_and_load_analysis(self.generated_analysis_type, instance=self.instance)
+                if existing_analysis:
+                    analysis_result = self.continue_analysis(observable, existing_analysis)
+                else:
+                    analysis_result = self.execute_analysis(observable)
             else:
                 analysis_result = self.execute_analysis(observable)
-        else:
-            analysis_result = self.execute_analysis(observable)
-                
+        except AnalysisError as e:
+            # the module said it failed: the analyst sees why on its analysis, which is kept with
+            # whatever the module put in it before it failed
+            close_with_error(self.create_analysis(observable), e.message)
+            # at INFO, so no error report: the failure was expected. the traceback of the exception it
+            # wraps, if any, is still the only way to find its cause from the log
+            logging.info(
+                "%s failed to analyze %s: %s", self, observable, e.message,
+                exc_info=e.__cause__ or e.__context__,
+                extra={
+                    "module_name": self.name,
+                    "observable_uuid": observable.uuid,
+                    "observable_type": observable.type,
+                    "root_uuid": self.get_root().uuid,
+                    "analysis_error": e.message,
+                },
+            )
+            return AnalysisExecutionResult.COMPLETED
+
         if not isinstance(analysis_result, AnalysisExecutionResult):
             logging.error(f"analysis module {self} should return an AnalysisExecutionResult (returned {type(analysis_result)})")
             return analysis_result
@@ -708,13 +965,9 @@ class AnalysisModule(FileWatcherMixin):
             analysis.delayed = True
             return AnalysisExecutionResult.INCOMPLETE
 
-        # the delay was refused (deadline expired): the analysis is closed out
-        # WITHOUT the module ever receiving its result. Transient attribute
-        # (never serialized) -- the executor's cache write checks it in this
-        # same pass to keep the empty result out of the analysis cache.
-        analysis.delay_analysis_timed_out = True
-        analysis.completed = True
-        analysis.delayed = False
+        # the delay was refused (deadline expired): the analysis is closed out WITHOUT the module
+        # ever receiving its result, which is a failure the analyst sees, and is never cached
+        close_with_error(analysis, "timed out waiting for delayed analysis to complete")
         return AnalysisExecutionResult.COMPLETED
 
     # ========================================
@@ -857,8 +1110,13 @@ class AnalysisModule(FileWatcherMixin):
         self.cancel_analysis_handler()
 
     def is_canceled_analysis(self) -> bool:
-        """Returns True if the current analysis has been canceled."""
-        return self._context.cancel_analysis_flag
+        """Returns True if the current analysis has been canceled, by this module or by the engine."""
+        return self._context.cancel_analysis_flag or self._context.engine_canceled
+
+    def should_stop(self) -> bool:
+        """Returns True if the module should abandon what it is doing: the engine is shutting down
+        or the analysis was cancelled. Pass it as the cancel of a blocking call (run_sandboxed)."""
+        return self.shutdown or self.is_canceled_analysis()
 
     def cancel_analysis_handler(self):
         """Override this function to implement custom cancel code."""
@@ -881,11 +1139,9 @@ class AnalysisModule(FileWatcherMixin):
 
     def sleep(self, seconds):
         """Utility function to sleep for N seconds without blocking shutdown."""
-        while (
-            not self.shutdown and not self._context.cancel_analysis_flag and seconds > 0
-        ):
+        while not self.should_stop() and seconds > 0:
             # we also want to support sleeping for less than a second
-            time.sleep(1 if seconds > 0 else seconds)
+            time.sleep(min(1, seconds))
             seconds -= 1
 
     def auto_reload(self):

@@ -6,7 +6,7 @@ FROM ${DOCKER_IMAGE_PREFIX}/library/docker:dind
 # It needs the host docker socket to be mounted at /var/run/docker.sock
 # so that `docker run` from here actually launches sibling containers.
 
-RUN apk update && apk add --no-cache python3
+RUN apk update && apk add --no-cache python3 tzdata
 
 RUN python3 -m venv /opt/venv
 RUN /opt/venv/bin/pip install -U pip

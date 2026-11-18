@@ -13,6 +13,7 @@ from fastapi import HTTPException
 from sqlalchemy import Select, and_, or_, select
 from sqlalchemy.orm import aliased
 
+from aceapi_v2.auth.schemas import ApiAuthResult
 from aceapi_v2.common.listing import (
     CHANGED_SINCE_SETTLE_SECONDS,
     InvalidListingRequest,
@@ -37,11 +38,10 @@ from saq.svs.preconditions import NONE, Precondition, StaleWrite
 from saq.svs.samples import to_utc_naive
 
 
-def require_user(user_id: Optional[int]) -> int:
+def require_user(user_id: Optional[int]) -> None:
     # every decision records who made it; a config API key belongs to nobody
     if user_id is None:
         raise HTTPException(status_code=422, detail="this action records who took it: it requires a user's API key or session")
-    return user_id
 
 
 def decision_errors(e: Exception) -> HTTPException:
@@ -157,13 +157,12 @@ def _current_expectation(test_guid: str, platform: str, signature_uuid: str) -> 
 # deciding (svs:run_manage)
 #
 
-def set_expectation(guid: str, platform: str, signature_uuid: str, body: ExpectationRequest, user_id: Optional[int],
-                    actor: Optional[str], precondition: Precondition = NONE) -> Expectation:
-    user_id = require_user(user_id)
+def set_expectation(guid: str, platform: str, signature_uuid: str, body: ExpectationRequest, auth: ApiAuthResult,
+                    precondition: Precondition = NONE) -> Expectation:
+    require_user(auth.auth_user_id)
     try:
-        expectation = expectations.set_expectation(guid, signature_uuid, body.state, user_id, platform=platform,
-                                                   reason=body.reason, run_uuid=body.run_id, actor=actor,
-                                                   precondition=precondition)
+        expectation = expectations.set_expectation(guid, signature_uuid, body.state, auth, platform=platform,
+                                                   reason=body.reason, run_uuid=body.run_id, precondition=precondition)
     except (expectations.UnknownTest, expectations.InvalidDecision) as e:
         raise decision_errors(e)
     except StaleWrite as e:
@@ -171,11 +170,10 @@ def set_expectation(guid: str, platform: str, signature_uuid: str, body: Expecta
     return _expectation(expectation.test_guid, expectation.platform, expectation.signature_uuid)
 
 
-def remove_expectation(guid: str, platform: str, signature_uuid: str, user_id: Optional[int],
-                       actor: Optional[str]) -> None:
-    user_id = require_user(user_id)
+def remove_expectation(guid: str, platform: str, signature_uuid: str, auth: ApiAuthResult) -> None:
+    require_user(auth.auth_user_id)
     try:
-        expectations.remove_expectation(guid, platform, signature_uuid, user_id, actor=actor)
+        expectations.remove_expectation(guid, platform, signature_uuid, auth)
     except (expectations.UnknownTest, expectations.UnknownDecision, expectations.InvalidDecision) as e:
         raise decision_errors(e)
 
@@ -189,7 +187,7 @@ def _settings(settings: SVSTestSettings) -> TestSettings:
     if settings.set_by_user_id is not None:
         username = get_db().execute(select(User.username).where(User.id == settings.set_by_user_id)).scalar()
     return TestSettings(test_guid=settings.test_guid, observation_minutes=settings.observation_minutes,
-                        set_by=username, updated_at=settings.updated_at)
+                        holds_host=settings.holds_host, set_by=username, updated_at=settings.updated_at)
 
 
 def get_test_settings(guid: str) -> TestSettings:
@@ -203,19 +201,19 @@ def get_test_settings(guid: str) -> TestSettings:
     return _settings(settings)
 
 
-def set_test_settings(guid: str, body: TestSettingsRequest, user_id: Optional[int], actor: Optional[str]) -> TestSettings:
-    user_id = require_user(user_id)
+def set_test_settings(guid: str, body: TestSettingsRequest, auth: ApiAuthResult) -> TestSettings:
+    require_user(auth.auth_user_id)
     try:
-        settings = expectations.set_test_settings(guid, user_id, observation_minutes=body.observation_minutes,
-                                                  actor=actor)
+        settings = expectations.set_test_settings(guid, auth, observation_minutes=body.observation_minutes,
+                                                  holds_host=body.holds_host)
     except (expectations.UnknownTest, expectations.InvalidDecision) as e:
         raise decision_errors(e)
     return _settings(settings)
 
 
-def remove_test_settings(guid: str, user_id: Optional[int], actor: Optional[str]) -> None:
-    user_id = require_user(user_id)
+def remove_test_settings(guid: str, auth: ApiAuthResult) -> None:
+    require_user(auth.auth_user_id)
     try:
-        expectations.remove_test_settings(guid, user_id, actor=actor)
+        expectations.remove_test_settings(guid, auth)
     except (expectations.UnknownTest, expectations.UnknownDecision) as e:
         raise decision_errors(e)

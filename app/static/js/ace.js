@@ -134,7 +134,8 @@ function add_observable_filter(element, observable_type, observable_value, apply
 }
 
 // API keys are display-once (revealed at creation, never recoverable), so there is no nav-bar
-// "Copy API Key" action any more. Keys are managed by an admin on the user management page.
+// "Copy API Key" action. A user manages their own keys on Preferences (with user:self); an admin
+// manages anyone's on Admin > Users.
 
 // Puts a small yellow dot on the browser tab's favicon when the current user has alerts
 // waiting in their default queue -- the same open-or-mine-in-my-queue alerts the "Reset"

@@ -32,17 +32,20 @@ from sqlalchemy import select, update
 from sqlalchemy.dialects.mysql import insert as mysql_insert
 
 from saq.analysis.root import load_root
+from saq.auth import ApiAuthResult
 from saq.configuration.config import get_config
 from saq.constants import DISPOSITION_OPEN, DISPOSITION_SIMULATED
 from saq.database.model import Alert, AlertQueueChange, DetectionPoint, SVSAttribution, SVSRun
 from saq.database.pool import get_db
 from saq.database.util.alert import change_alert_owner, move_alert_to_queue, set_dispositions
+from saq.logging import log_audit
 from saq.svs.alert_status import alert_svs_statuses
 from saq.svs.attribution import alert_event_time, flag_changed_since_review
 from saq.svs.constants import (
     SVS_MANUAL_ROUTER,
     AttributionConfidence,
     AttributionSource,
+    AttributionTimeSource,
     RunEventKind,
     RunState,
     SVSStatus,
@@ -137,13 +140,14 @@ def _movable(alert: _Alert, user_id: int) -> bool:
         None, get_config().global_settings.automation_user_id, user_id)
 
 
-def _move(alert: _Alert, queue: str, reason: str, user_id: int) -> bool:
+def _move(alert: _Alert, queue: str, reason: str, auth: ApiAuthResult) -> bool:
     """Moves the alert while _movable still holds for it when the row is written: an analyst may
     have taken it since it was read."""
     db = get_db()
     row = db.get(Alert, alert.id)
-    return move_alert_to_queue(row, queue, reason, actor_user_id=user_id, router=SVS_MANUAL_ROUTER,
-                               open_unless_owned_by_others={get_config().global_settings.automation_user_id, user_id})
+    return move_alert_to_queue(row, queue, reason, auth, router=SVS_MANUAL_ROUTER,
+                               open_unless_owned_by_others={get_config().global_settings.automation_user_id,
+                                                            auth.auth_user_id})
 
 
 def _changed(run: SVSRun, session) -> None:
@@ -152,32 +156,31 @@ def _changed(run: SVSRun, session) -> None:
     mark_runs_stale(session, run_ids=[run.id])
 
 
-def _audit(message: str, run: SVSRun, alert_uuid: str, actor: str, user_id: int, **fields) -> None:
-    logging.info(f"AUDIT: {message}", extra={**run_log_fields(run), "alert_uuid": alert_uuid, "actor": actor,
-                                             "actor_user_id": user_id, **fields})
+def _audit(message: str, run: SVSRun, alert_uuid: str, auth: ApiAuthResult, **fields) -> None:
+    log_audit(message, auth=auth, **run_log_fields(run), alert_uuid=alert_uuid, **fields)
 
 
-def _late(alert: _Alert, run: SVSRun) -> bool:
-    """The alert's event came after the run's observation window, judged as the router judges it."""
-    if run.observation_ends_at is None:
-        return False
+def _event_time(alert: _Alert) -> tuple[datetime, AttributionTimeSource]:
+    """The alert's event time and where it came from, judged as the router judges them."""
     try:
-        event_time = alert_event_time(load_root(alert.storage_dir), alert.insert_date)
-    except Exception as e:
-        logging.warning("unable to load alert %s for its event time; using its insert time: %s", alert.uuid, e)
-        event_time = alert.insert_date
-    return event_time > run.observation_ends_at
+        return alert_event_time(load_root(alert.storage_dir), alert.insert_date)
+    except Exception:
+        logging.exception("unable to load alert %s for its event time; using its insert time", alert.uuid,
+                          extra={"alert_uuid": alert.uuid, "storage_dir": alert.storage_dir})
+        return alert.insert_date, AttributionTimeSource.INSERT_TIME
 
 
 #
 # associating
 #
 
-def associate(run_uuid: str, alert_uuid: str, user_id: int, actor: str, reason: Optional[str] = None,
+def associate(run_uuid: str, alert_uuid: str, auth: ApiAuthResult, reason: Optional[str] = None,
               now: Optional[datetime] = None) -> AssociationResult:
     """Attributes every detection of the alert to the run, by hand, and moves the alert to the test
-    queue when it is now fully attributed. Raises UnknownRun, UnknownAlert, AssociationConflict (a
-    run that never started), InvalidAssociation (an alert without detections)."""
+    queue when it is now fully attributed. auth is the user making the change. Raises UnknownRun,
+    UnknownAlert, AssociationConflict (a run that never started), InvalidAssociation (an alert
+    without detections)."""
+    user_id, actor = auth.auth_user_id, auth.auth_name
     now = now or datetime.now()
     run = get_run(run_uuid)
     if run.state == RunState.CREATED:
@@ -193,9 +196,12 @@ def associate(run_uuid: str, alert_uuid: str, user_id: int, actor: str, reason: 
         db.rollback()
         raise InvalidAssociation(f"alert {alert.uuid} has no detections to attribute")
 
-    late = _late(alert, run)
+    event_time, source = _event_time(alert)
+    # a run canceled or timed out before it started has no observation window to be late for
+    late = run.observation_ends_at is not None and event_time > run.observation_ends_at
     manual = {"source": AttributionSource.MANUAL.value, "confidence": AttributionConfidence.MARKER.value,
-              "scan_point": None, "late": late, "actor": actor[:256], "actor_user_id": user_id,
+              "scan_point": None, "late": late, "event_time": event_time, "event_time_source": source.value,
+              "actor": actor[:256], "actor_user_id": user_id,
               "removed_at": None, "removed_by": None, "removed_by_user_id": None, "removal_reason": None}
     for content_hash, signature_uuid, signature_family in detections:
         db.execute(mysql_insert(SVSAttribution)
@@ -204,18 +210,18 @@ def associate(run_uuid: str, alert_uuid: str, user_id: int, actor: str, reason: 
                    .on_duplicate_key_update(**manual))
 
     hashes = [content_hash for content_hash, _, _ in detections]
-    db.add(new_run_event(run.id, RunEventKind.ASSOCIATED, actor, actor_user_id=user_id, now=now,
+    db.add(new_run_event(run.id, RunEventKind.ASSOCIATED, auth, now=now,
                          details={"alert_uuid": alert.uuid, "detections": hashes, "late": late, "reason": reason}))
     _changed(run, db)
     db.commit()
-    _audit("svs alert associated with a run", run, alert.uuid, actor, user_id, reason=reason, late=late)
+    _audit("svs alert associated with a run", run, alert.uuid, auth, reason=reason, late=late)
 
     alert = _read_alert(alert.id)
     status = _status(alert)
     moved = False
     queue = get_config().svs.queue
     if status in (SVSStatus.TEST, SVSStatus.TEST_CONTEXT) and alert.queue != queue and _movable(alert, user_id):
-        moved = _move(alert, queue, REASON_ASSOCIATED.format(run=run.uuid), user_id)
+        moved = _move(alert, queue, REASON_ASSOCIATED.format(run=run.uuid), auth)
         alert = _read_alert(alert.id)
     return AssociationResult(alert.uuid, status.value if status else None, alert.queue, moved=moved)
 
@@ -239,12 +245,13 @@ def _previous_queue(alert: _Alert) -> Optional[str]:
     return from_queue
 
 
-def disassociate(run_uuid: str, alert_uuid: str, user_id: int, actor: str, reason: Optional[str] = None, *,
+def disassociate(run_uuid: str, alert_uuid: str, auth: ApiAuthResult, reason: Optional[str] = None, *,
                  not_a_test: bool = False, now: Optional[datetime] = None) -> AssociationResult:
     """Removes the alert's attributions to the run, by hand: the router never attributes the alert
     to the run again. An alert that is no longer fully attributed is given back: OPEN if it was
     SIMULATED, and back in the queue SVS took it from. not_a_test applies only to an alert the run
     holds by context alone. Raises UnknownRun, UnknownAlert, AssociationConflict."""
+    user_id, actor = auth.auth_user_id, auth.auth_name
     now = now or datetime.now()
     run = get_run(run_uuid)
     db = get_db()
@@ -267,12 +274,12 @@ def disassociate(run_uuid: str, alert_uuid: str, user_id: int, actor: str, reaso
                .values(removed_at=now, removed_by=actor[:256], removed_by_user_id=user_id,
                        removal_reason=removal_reason)
                .execution_options(synchronize_session=False))
-    db.add(new_run_event(run.id, RunEventKind.DISASSOCIATED, actor, actor_user_id=user_id, now=now, details={
+    db.add(new_run_event(run.id, RunEventKind.DISASSOCIATED, auth, now=now, details={
         "alert_uuid": alert.uuid, "detections": [content_hash for _, content_hash, _ in rows], "reason": reason,
         "not_a_test": not_a_test}))
     _changed(run, db)
     db.commit()
-    _audit("svs alert disassociated from a run", run, alert.uuid, actor, user_id, reason=reason, not_a_test=not_a_test)
+    _audit("svs alert disassociated from a run", run, alert.uuid, auth, reason=reason, not_a_test=not_a_test)
 
     alert = _read_alert(alert.id)
     status = _status(alert)
@@ -282,24 +289,23 @@ def disassociate(run_uuid: str, alert_uuid: str, user_id: int, actor: str, reaso
 
     reopened = False
     if alert.disposition == DISPOSITION_SIMULATED:
-        # the automation user set SIMULATED and owns the alert, so it is the writer; the comment
-        # names the person
-        automation_user_id = get_config().global_settings.automation_user_id
+        # the automation user set SIMULATED and owns the alert, so it is the writer (system); the
+        # comment names the person
         result = set_dispositions(
-            [alert.uuid], DISPOSITION_OPEN, automation_user_id,
+            [alert.uuid], DISPOSITION_OPEN, auth,
             user_comment=f"disassociated from SVS test run {run.uuid} by {actor}", system=True,
             expected_dispositions={DISPOSITION_SIMULATED})
         reopened = alert.uuid in result.permitted
         if reopened:
             # nobody is working the alert it gives back: unowned, it is picked up like a new one. An
             # analyst who took it meanwhile keeps it
-            change_alert_owner([alert.uuid], None, automation_user_id)
+            change_alert_owner([alert.uuid], None, auth, system=True)
         alert = _read_alert(alert.id)
 
     moved = False
     previous = _previous_queue(alert)
     if previous is not None and previous != alert.queue and _movable(alert, user_id):
-        moved = _move(alert, previous, REASON_DISASSOCIATED.format(run=run.uuid), user_id)
+        moved = _move(alert, previous, REASON_DISASSOCIATED.format(run=run.uuid), auth)
         alert = _read_alert(alert.id)
     return AssociationResult(alert.uuid, status.value if status else None, alert.queue, moved=moved,
                              reopened=reopened)
@@ -309,7 +315,7 @@ def disassociate(run_uuid: str, alert_uuid: str, user_id: int, actor: str, reaso
 # keeping a context attribution
 #
 
-def keep(run_uuid: str, alert_uuid: str, user_id: int, actor: str, now: Optional[datetime] = None) -> AssociationResult:
+def keep(run_uuid: str, alert_uuid: str, auth: ApiAuthResult, now: Optional[datetime] = None) -> AssociationResult:
     """Confirms the alert's context attributions to the run: it is the run's. Raises UnknownRun,
     UnknownAlert, AssociationConflict (no context attribution to keep)."""
     now = now or datetime.now()
@@ -321,16 +327,16 @@ def keep(run_uuid: str, alert_uuid: str, user_id: int, actor: str, now: Optional
         .where(SVSAttribution.run_id == run.id, SVSAttribution.alert_uuid == alert.uuid,
                SVSAttribution.removed_at.is_(None),
                SVSAttribution.confidence == AttributionConfidence.CONTEXT.value)
-        .values(kept_at=now, kept_by_user_id=user_id)
+        .values(kept_at=now, kept_by_user_id=auth.auth_user_id)
         .execution_options(synchronize_session=False))
     if kept.rowcount == 0:
         db.rollback()
         raise AssociationConflict(f"alert {alert.uuid} has no context attribution to run {run.uuid} to keep")
 
-    db.add(new_run_event(run.id, RunEventKind.CONTEXT_KEPT, actor, actor_user_id=user_id, now=now,
+    db.add(new_run_event(run.id, RunEventKind.CONTEXT_KEPT, auth, now=now,
                          details={"alert_uuid": alert.uuid}))
     db.commit()
-    _audit("svs context attribution kept", run, alert.uuid, actor, user_id)
+    _audit("svs context attribution kept", run, alert.uuid, auth)
 
     alert = _read_alert(alert.id)
     status = _status(alert)
@@ -341,7 +347,7 @@ def keep(run_uuid: str, alert_uuid: str, user_id: int, actor: str, now: Optional
 # from the alert's side
 #
 
-def disassociate_alert(alert_uuid: str, user_id: int, actor: str, reason: Optional[str] = None, *,
+def disassociate_alert(alert_uuid: str, auth: ApiAuthResult, reason: Optional[str] = None, *,
                        not_a_test: bool = False, now: Optional[datetime] = None) -> AlertDisassociationResult:
     """Disassociates the alert from every run that holds it, oldest run first, so it is given back
     to analysts (docs/SVS_RUNS.md, *Associating alerts by hand*). not_a_test applies only to a TEST?
@@ -367,7 +373,7 @@ def disassociate_alert(alert_uuid: str, user_id: int, actor: str, reason: Option
     done, moved, reopened = [], False, False
     for run_uuid in run_uuids:
         try:
-            result = disassociate(run_uuid, alert_uuid, user_id, actor, reason, not_a_test=not_a_test, now=now)
+            result = disassociate(run_uuid, alert_uuid, auth, reason, not_a_test=not_a_test, now=now)
         except AssociationConflict as e:
             # a concurrent change released the alert from this run first
             logging.info(f"svs alert {alert_uuid} was no longer held by run {run_uuid}: {e}",

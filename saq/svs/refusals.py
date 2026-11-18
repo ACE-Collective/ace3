@@ -22,6 +22,7 @@ from sqlalchemy import delete, update
 from sqlalchemy.exc import IntegrityError
 
 from saq.analysis.root import RootAnalysis
+from saq.auth import ApiAuthResult
 from saq.configuration.config import get_config
 from saq.constants import ANALYSIS_MODE_CORRELATION, F_HOSTNAME, F_IPV4, F_USER, QUEUE_DEFAULT
 from saq.database.model import SVSRegistrationRefusal
@@ -45,12 +46,22 @@ MAX_HOST = 255
 
 @dataclass(frozen=True)
 class Caller:
-    """Who called the run API: the user or API key, and where from."""
+    """Who called the run API (the user or API key), and where from."""
 
-    name: str
-    user_id: Optional[int] = None
-    key_id: Optional[int] = None
+    auth: ApiAuthResult
     address: Optional[str] = None
+
+    @property
+    def name(self) -> str:
+        return self.auth.auth_name
+
+    @property
+    def user_id(self) -> Optional[int]:
+        return self.auth.auth_user_id
+
+    @property
+    def key_id(self) -> Optional[int]:
+        return self.auth.key_id
 
 
 def _host_key(hostname: str) -> str:

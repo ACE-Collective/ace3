@@ -163,7 +163,6 @@ class HARAnalysis(Analysis):
     KEY_ENTRY_COUNT = "entry_count"
     KEY_RESPONSES = "responses"
     KEY_SKIPPED_COUNT = "skipped_count"
-    KEY_ERROR = "error"
 
     # keys of one KEY_RESPONSES item
     KEY_URL = "url"
@@ -181,7 +180,6 @@ class HARAnalysis(Analysis):
             HARAnalysis.KEY_ENTRY_COUNT: 0,
             HARAnalysis.KEY_RESPONSES: [],
             HARAnalysis.KEY_SKIPPED_COUNT: 0,
-            HARAnalysis.KEY_ERROR: None,
         }
 
     @property
@@ -211,14 +209,6 @@ class HARAnalysis(Analysis):
     @skipped_count.setter
     def skipped_count(self, value: int):
         self.details[HARAnalysis.KEY_SKIPPED_COUNT] = value
-
-    @property
-    def error(self) -> str | None:
-        return self.details.get(HARAnalysis.KEY_ERROR)
-
-    @error.setter
-    def error(self, value: str | None):
-        self.details[HARAnalysis.KEY_ERROR] = value
 
     def generate_summary(self) -> str | None:
         if not self.details:

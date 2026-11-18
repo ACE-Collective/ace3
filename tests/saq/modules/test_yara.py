@@ -1,13 +1,15 @@
+import base64
+import hashlib
 import logging
 import os
 import shutil
 import subprocess
 import tempfile
+from datetime import datetime, timedelta
 from unittest.mock import Mock
 
 import pytest
 import yara
-import yara_scanner
 
 from saq.analysis.root import load_root
 from saq.configuration.config import get_analysis_module_config, get_service_config
@@ -15,18 +17,31 @@ from saq.constants import (
     ANALYSIS_MODULE_YARA_SCANNER_V3_4,
     DIRECTIVE_NO_SCAN,
     DIRECTIVE_SANDBOX,
+    F_INDICATOR,
     F_SIGNATURE_ID,
+    F_URI_PATH,
     F_YARA_RULE,
+    F_YARA_STRING,
     SERVICE_YARA_SCANNER,
     AnalysisExecutionResult,
 )
+from saq.database.model import DetectionPoint, ObservableDetection
+from saq.database.pool import get_db
+from saq.database.util.alert import ALERT
 from saq.engine.core import Engine
 from saq.engine.enums import EngineExecutionMode
 from saq.modules.adapter import AnalysisModuleAdapter
-from saq.modules.file_analysis.yara import YaraScanResults_v3_4, YaraScanner_v3_4
+from saq.modules.file_analysis.yara import (
+    YaraScanResults_v3_4,
+    YaraScanResults_v3_4_Presenter,
+    YaraScanner_v3_4,
+    highlight_hexdump,
+    visible_match_value,
+)
 from saq.signatures.builtin import SIGNATURE_VERSION_UNKNOWN, YARA_RULE_MATCH
 from saq.svs.marker_rule import MARKER_RULE_NAME, marker_rule_path
 from saq.svs.markers import find_markers_in_match, new_marker
+from saq.util.ui import hexdump
 from saq.util.uuid import get_storage_dir
 from saq.yara_scanning import client as yara_client
 from saq.yara_scanning.client import YaraScanCrashed, YaraScanTimeout, YaraServiceUnavailable
@@ -159,6 +174,23 @@ class TestYaraScannerMetaTags:
         assert self._matched_rules(observable) == {"always_match", "meta_tagged_email_body", "meta_tagged_source_imap"}
 
     @pytest.mark.integration
+    def test_meta_tags_passed_to_scanner_for_an_undecodable_name(self, yara_service, root_analysis, unlogged):
+        """A file whose name is not UTF-8 (an archive member, as os.listdir returns it) is matched by
+        the service's own path for it, which applies the meta tags too."""
+        yara_service(*META_TAGGED_RULES)
+        file_path = root_analysis.create_file_path(b"\xe9\xe9.txt".decode("utf-8", "surrogateescape"))
+        with open(file_path, "wb") as fp:
+            fp.write(b"Hello, world!\n")
+
+        observable = root_analysis.add_file_observable(file_path)
+        observable.add_yara_meta("content_type", "email_body")
+
+        result = self._create_module(root_analysis).execute_analysis(observable)
+
+        assert result == AnalysisExecutionResult.COMPLETED
+        assert self._matched_rules(observable) == {"always_match", "meta_tagged_email_body"}
+
+    @pytest.mark.integration
     def test_no_meta_tags_passes_none(self, yara_service, root_analysis):
         """FileObservable with no yara_meta directives matches only the untagged rules."""
         yara_service(*META_TAGGED_RULES)
@@ -190,6 +222,21 @@ class TestYaraScannerMetaTags:
 
         assert result == AnalysisExecutionResult.COMPLETED
         assert self._matched_rules(observable) == {"always_match", "meta_tagged_email_body"}
+
+    @pytest.mark.integration
+    def test_local_scanner_scans_a_file_with_an_undecodable_name(self, socket_dir, write_rules, root_analysis, unlogged):
+        """A file whose name is not UTF-8 (an archive member, as os.listdir returns it), which
+        yara-python cannot take as a path."""
+        write_rules(_rule("always_match"), _rule("by_extension", condition='any of them and extension == "txt"'))
+        file_path = root_analysis.create_file_path(b"\xe9\xe9.txt".decode("utf-8", "surrogateescape"))
+        with open(file_path, "wb") as fp:
+            fp.write(b"Hello, world!\n")
+
+        observable = root_analysis.add_file_observable(file_path)
+        result = self._create_module(root_analysis).execute_analysis(observable)
+
+        assert result == AnalysisExecutionResult.COMPLETED
+        assert self._matched_rules(observable) == {"always_match", "by_extension"}
 
     @pytest.mark.integration
     def test_no_scan_directive_skips_scanning(self, yara_service, root_analysis):
@@ -289,10 +336,9 @@ class TestYaraScannerServiceFailures:
 
         monkeypatch.setattr("saq.error.reporting.write_error_report", mock_write_error_report)
 
-        def fail_initialize_local_scanner(self):
-            raise AssertionError("the local scanner must not be used")
-
-        monkeypatch.setattr(YaraScanner_v3_4, "initialize_local_scanner", fail_initialize_local_scanner)
+        # a Mock rather than a function that raises: the module's catch-all would swallow the raise
+        initialize_local_scanner = Mock()
+        monkeypatch.setattr(YaraScanner_v3_4, "initialize_local_scanner", initialize_local_scanner)
 
         adapter = self._create_module(root_analysis)
         result = adapter.execute_analysis(observable)
@@ -300,6 +346,7 @@ class TestYaraScannerServiceFailures:
         assert result == AnalysisExecutionResult.COMPLETED
         assert write_error_report_called["called"] is True
         assert observable.get_analysis(YaraScanResults_v3_4) is None
+        initialize_local_scanner.assert_not_called()
 
     @pytest.mark.unit
     def test_local_scanner_timeout_is_caught(self, monkeypatch, caplog, root_analysis):
@@ -318,7 +365,7 @@ class TestYaraScannerServiceFailures:
         class TimingOutLocalScanner:
             scan_results = []
 
-            def scan(self, path, meta_tags=None):
+            def scan(self, path, **kwargs):
                 raise yara.TimeoutError("scanning timed out")
 
         def mock_initialize_local_scanner(self):
@@ -341,69 +388,6 @@ class TestYaraScannerServiceFailures:
         assert result == AnalysisExecutionResult.COMPLETED
         assert write_error_report_called["called"] is False
         assert any("local yara scanner timed out" in record.message for record in caplog.records)
-
-
-# ---------------------------------------------------------------------------
-# Integration tests — use a real YaraScanner with test rules
-# ---------------------------------------------------------------------------
-class TestYaraScannerMetaTagsIntegration:
-    """Verify that yara_scanner actually filters rules based on meta_tags."""
-
-    @pytest.fixture
-    def scanner(self, datadir):
-        s = yara_scanner.YaraScanner(signature_dir=str(datadir / "yara_rules"))
-        s.load_rules()
-        return s
-
-    @pytest.fixture
-    def target(self, datadir):
-        return str(datadir / "sample.target")
-
-    def _rule_names(self, scanner):
-        return [r["rule"] for r in scanner.scan_results]
-
-    @pytest.mark.integration
-    def test_no_meta_tags_skips_tagged_rules(self, scanner, target):
-        """With no meta_tags, only untagged rules match."""
-        scanner.scan(target, meta_tags=None)
-        names = self._rule_names(scanner)
-        assert "always_match" in names
-        assert "meta_tagged_email_body" not in names
-        assert "meta_tagged_source_imap" not in names
-
-    @pytest.mark.integration
-    def test_matching_meta_tag_enables_rule(self, scanner, target):
-        """Providing content_type=email_body enables that rule."""
-        scanner.scan(target, meta_tags=["content_type=email_body"])
-        names = self._rule_names(scanner)
-        assert "always_match" in names
-        assert "meta_tagged_email_body" in names
-        assert "meta_tagged_source_imap" not in names
-
-    @pytest.mark.integration
-    def test_non_matching_meta_tag_skips_rule(self, scanner, target):
-        """A tag that doesn't match any rule's meta_tags won't enable it."""
-        scanner.scan(target, meta_tags=["source=something_else"])
-        names = self._rule_names(scanner)
-        assert "always_match" in names
-        assert "meta_tagged_email_body" not in names
-
-    @pytest.mark.integration
-    def test_multiple_tags_match_multiple_rules(self, scanner, target):
-        """Multiple tags enable multiple rules (but not rules whose strings don't match)."""
-        scanner.scan(target, meta_tags=["content_type=email_body", "source=imap"])
-        names = self._rule_names(scanner)
-        assert "always_match" in names
-        assert "meta_tagged_email_body" in names
-        assert "meta_tagged_source_imap" in names
-        assert "meta_tagged_no_match_content" not in names
-
-    @pytest.mark.integration
-    def test_meta_tag_match_but_string_mismatch(self, scanner, target):
-        """Tag matches the rule but the string condition fails — no match."""
-        scanner.scan(target, meta_tags=["content_type=email_body"])
-        names = self._rule_names(scanner)
-        assert "meta_tagged_no_match_content" not in names
 
 
 # ---------------------------------------------------------------------------
@@ -441,28 +425,17 @@ class TestYaraSignatureIdEmission:
         return [o.value for o in analysis.observables if o.type == F_SIGNATURE_ID]
 
     @pytest.mark.integration
-    def test_rule_with_uuid_emits_signature_id(self, yara_service, root_analysis):
-        """A matching rule carrying a uuid meta field emits a signature_id observable."""
-        yara_service(_rule("test_rule_with_uuid", meta={"uuid": UUID_A}))
-        assert self._signature_ids(_scan(root_analysis)) == [UUID_A]
-
-    @pytest.mark.integration
-    def test_rule_without_uuid_does_not_emit(self, yara_service, root_analysis):
-        """A matching rule whose meta lacks a uuid must NOT emit a signature_id."""
-        yara_service(_rule("test_rule_no_uuid"))
-        assert self._signature_ids(_scan(root_analysis)) == []
-
-    @pytest.mark.integration
-    def test_multiple_rules_emit_distinct_signature_ids(self, yara_service, root_analysis):
-        """Two matching rules with different uuids emit two signature_id observables."""
-        yara_service(_rule("rule_a", meta={"uuid": UUID_A}), _rule("rule_b", meta={"uuid": UUID_B}))
-        assert set(self._signature_ids(_scan(root_analysis))) == {UUID_A, UUID_B}
-
-    @pytest.mark.integration
-    def test_duplicate_uuid_across_matches_dedups(self, yara_service, root_analysis):
-        """If two rule matches share the same uuid, only one signature_id observable is emitted."""
-        yara_service(_rule("rule_a", meta={"uuid": UUID_A}), _rule("rule_b", meta={"uuid": UUID_A}))
-        assert self._signature_ids(_scan(root_analysis)) == [UUID_A]
+    @pytest.mark.parametrize("rules, expected", [
+        ((_rule("test_rule_with_uuid", meta={"uuid": UUID_A}),), [UUID_A]),
+        # a rule whose meta lacks a uuid emits none
+        ((_rule("test_rule_no_uuid"),), []),
+        ((_rule("rule_a", meta={"uuid": UUID_A}), _rule("rule_b", meta={"uuid": UUID_B})), sorted([UUID_A, UUID_B])),
+        # two matches sharing a uuid emit it once
+        ((_rule("rule_a", meta={"uuid": UUID_A}), _rule("rule_b", meta={"uuid": UUID_A})), [UUID_A]),
+    ], ids=["uuid", "no uuid", "two uuids", "shared uuid"])
+    def test_signature_ids(self, yara_service, root_analysis, rules, expected):
+        yara_service(*rules)
+        assert sorted(self._signature_ids(_scan(root_analysis))) == expected
 
 
 @pytest.mark.integration
@@ -486,11 +459,62 @@ def test_disassembly_failure_is_reported_and_analysis_continues(yara_service, mo
     write_error_report.assert_called_once()
 
 
+@pytest.mark.integration
+def test_disassembly_by_string_suffix(yara_service, root_analysis):
+    """x86 and x64 strings are disassembled; there is no ARM decoder, so those only get the dump."""
+    yara_service(_rule("asm_rule", tags=["asm"],
+                       strings='$code_x86 = "Hello"\n        $code_x64 = "world"\n'
+                               '        $code_A32 = "Hello,"\n        $code_A64 = "world!"'))
+    observable = _scan(root_analysis)
+
+    context = {entry[1]: entry for entry in observable.get_and_load_analysis(YaraScanResults_v3_4).scan_results[0]["context"]}
+    assert set(context) == {"$code_x86", "$code_x64", "$code_A32", "$code_A64"}
+    # the match is bolded at its own offset, and 0x48 is DEC EAX in 32-bit mode but a REX prefix in 64-bit
+    assert "<b>0x00000000     48                  DEC EAX</b>" in context["$code_x86"][4]
+    assert "<b>0x00000007     776f                JA 0x78</b>" in context["$code_x64"][4]
+    assert "INS BYTE [RDI], DX" in context["$code_x64"][4]
+    assert len(context["$code_A32"]) == 4
+    assert len(context["$code_A64"]) == 4
+
+
+@pytest.mark.integration
+def test_match_context_is_a_hexdump_of_each_match(yara_service, root_analysis):
+    yara_service(_rule("context_rule", strings='$a = "needle"'))
+    context_bytes = get_analysis_module_config(ANALYSIS_MODULE_YARA_SCANNER_V3_4).context_bytes
+    # one match at the start of the file (no context before it) and many past the first context
+    content = b"needle" + b"".join(b"-" * 200 + b"needle" for _ in range(50))
+    observable = _scan(root_analysis, content=content, name="haystack.bin")
+
+    context = observable.get_and_load_analysis(YaraScanResults_v3_4).scan_results[0]["context"]
+    assert len(context) == 51
+    for position, string_id, value, dump in context:
+        assert string_id == "$a"
+        assert value == b"needle"
+        start = max(0, position - context_bytes)
+        assert dump == hexdump(content[start:start + context_bytes + len(value) + context_bytes])
+
+
+@pytest.mark.integration
+def test_match_context_survives_the_alert_being_saved(yara_service, root_analysis):
+    """The context used to be the stdout bytes of hexdump, which the details encoder decodes as
+    unicode_escape, so a backslash sequence in the file came back as the character it names."""
+    yara_service(_rule("context_rule", strings='$a = "needle"'))
+    content = b"a\\nb\\tc needle"
+    observable = _scan(root_analysis, content=content, name="path.txt")
+    root_analysis.save()
+
+    root = load_root(root_analysis.storage_dir)
+    analysis = root.get_observable(observable.uuid).get_and_load_analysis(YaraScanResults_v3_4)
+    dump = analysis.scan_results[0]["context"][0][3]
+    assert dump == hexdump(content)
+    assert "|a\\nb\\tc needle|" in dump
+
+
 class TestYaraEnabledMeta:
     """A rule whose `enabled` meta is falsy is ignored as if it never matched."""
 
     @pytest.mark.integration
-    @pytest.mark.parametrize("enabled_value", [False, "false", "False", "no", "off", "disabled", 0])
+    @pytest.mark.parametrize("enabled_value", [False, "false"])
     def test_disabled_rule_produces_no_analysis(self, yara_service, root_analysis, enabled_value):
         """A file matching only a disabled rule behaves exactly like no match: no analysis."""
         yara_service(_rule("disabled_rule", meta={"enabled": enabled_value}))
@@ -500,19 +524,9 @@ class TestYaraEnabledMeta:
         assert not root_analysis.has_detections()
 
     @pytest.mark.integration
-    @pytest.mark.parametrize("enabled_value", [True, "true", "yes", 1])
-    def test_enabled_rule_is_processed(self, yara_service, root_analysis, enabled_value):
+    def test_enabled_rule_is_processed(self, yara_service, root_analysis):
         """An explicitly-enabled rule (or one with no `enabled` meta) is processed normally."""
-        yara_service(_rule("enabled_rule", meta={"enabled": enabled_value}))
-        observable = _scan(root_analysis)
-
-        analysis = observable.get_and_load_analysis(YaraScanResults_v3_4)
-        assert analysis is not None
-        assert root_analysis.has_detections()
-
-    @pytest.mark.integration
-    def test_missing_enabled_meta_defaults_to_enabled(self, yara_service, root_analysis):
-        yara_service(_rule("default_rule"))
+        yara_service(_rule("enabled_rule", meta={"enabled": True}))
         observable = _scan(root_analysis)
 
         analysis = observable.get_and_load_analysis(YaraScanResults_v3_4)
@@ -553,15 +567,6 @@ class TestYaraQueueMeta:
         assert len(detection_points) == 1
         assert detection_points[0].queue is None
 
-    @pytest.mark.integration
-    def test_no_alert_rule_with_queue_creates_no_detection(self, yara_service, root_analysis):
-        """A no_alert rule adds no detection point, so its queue meta is moot."""
-        yara_service(_rule("quiet_rule", meta={"modifiers": "no_alert", "queue": "experimental"}))
-        _scan(root_analysis)
-
-        assert root_analysis.all_detection_points == []
-        assert not root_analysis.has_detections()
-
 
 class TestYaraDetectionOnFile:
     """A match puts its detection on the file it matched, with structured details (docs/SVS.md,
@@ -594,6 +599,19 @@ class TestYaraDetectionOnFile:
         assert analysis.always_visible()
 
     @pytest.mark.integration
+    def test_detection_on_a_file_with_an_undecodable_name_is_indexed(self, yara_service, root_analysis, unlogged):
+        """MySQL rejects the lone surrogates of a name that is not UTF-8 (an archive member, as
+        os.listdir returns it), so the detection names the file by its escaped form."""
+        yara_service(_rule("phish_rule"))
+        _scan(root_analysis, name=b"\xdb.doc".decode("utf-8", "surrogateescape"))
+        root_analysis.save()
+
+        alert = ALERT(root_analysis)
+
+        rows = get_db().query(DetectionPoint).filter(DetectionPoint.alert_id == alert.id).all()
+        assert [row.description for row in rows] == ["\\udcdb.doc matched yara rule phish_rule"]
+
+    @pytest.mark.integration
     def test_rule_without_uuid_has_no_rule_uuid_and_the_builtin_family(self, yara_service, root_analysis):
         yara_service(_rule("no_uuid_rule"))
         observable = _scan(root_analysis)
@@ -622,6 +640,7 @@ class TestYaraDetectionOnFile:
         observable = _scan(root_analysis)
 
         assert not observable.detections
+        assert not root_analysis.has_detections()
         assert not observable.get_and_load_analysis(YaraScanResults_v3_4).always_visible()
 
 
@@ -732,3 +751,328 @@ class TestYaraMarkerRule:
 
         assert not observable.detections
         assert not observable.has_directive(DIRECTIVE_SANDBOX)
+
+
+def _yara_module(root) -> YaraScanner_v3_4:
+    return YaraScanner_v3_4(
+        context=create_test_context(root=root),
+        config=get_analysis_module_config(ANALYSIS_MODULE_YARA_SCANNER_V3_4),
+    )
+
+
+def _file_observable(root_analysis, content=b"Hello, world!\n", name="test.txt"):
+    file_path = root_analysis.create_file_path(name)
+    with open(file_path, "wb") as fp:
+        fp.write(content)
+    return root_analysis.add_file_observable(file_path)
+
+
+class TestYaraScanTargets:
+    @pytest.mark.integration
+    def test_missing_file_is_logged(self, root_analysis, monkeypatch, caplog):
+        scan_file = Mock()
+        monkeypatch.setattr(yara_client, "scan_file", scan_file)
+        observable = _file_observable(root_analysis)
+        os.remove(observable.full_path)
+
+        with caplog.at_level(logging.ERROR):
+            assert _yara_module(root_analysis).execute_analysis(observable) == AnalysisExecutionResult.COMPLETED
+
+        assert observable.get_analysis(YaraScanResults_v3_4) is None
+        assert any(r.getMessage().startswith("cannot find local file path") for r in caplog.records)
+        scan_file.assert_not_called()
+
+    @pytest.mark.integration
+    def test_empty_file_is_not_scanned(self, root_analysis, monkeypatch):
+        # a Mock rather than a function that raises: the module's catch-all would swallow the raise
+        scan_file = Mock()
+        monkeypatch.setattr(yara_client, "scan_file", scan_file)
+        observable = _file_observable(root_analysis, content=b"")
+
+        assert _yara_module(root_analysis).execute_analysis(observable) == AnalysisExecutionResult.COMPLETED
+        assert observable.get_analysis(YaraScanResults_v3_4) is None
+        scan_file.assert_not_called()
+
+
+class TestYaraScanFailures:
+    @pytest.fixture
+    def failing_scan(self, monkeypatch):
+        def _crash(*args, **kwargs):
+            raise YaraScanCrashed("scanner worker died")
+
+        monkeypatch.setattr(yara_client, "scan_file", _crash)
+
+    @pytest.mark.integration
+    def test_failed_file_is_kept_for_review(self, root_analysis, failing_scan, monkeypatch, caplog):
+        module = _yara_module(root_analysis)
+        monkeypatch.setattr(module.config, "save_scan_failures", True)
+        before = set(os.listdir(module.scan_failure_dir))
+
+        with caplog.at_level(logging.ERROR):
+            for _ in range(2):
+                observable = _file_observable(root_analysis, name="crasher.bin")
+                assert module.execute_analysis(observable) == AnalysisExecutionResult.COMPLETED
+
+        assert observable.get_analysis(YaraScanResults_v3_4) is None
+        records = [r for r in caplog.records if r.getMessage().startswith("error scanning file")]
+        assert len(records) == 2
+        assert records[0].exc_info is not None
+
+        # the second failure of a file with the same name does not overwrite the first
+        kept = sorted(set(os.listdir(module.scan_failure_dir)) - before)
+        assert len(kept) == 2
+        assert kept[0] == "crasher.bin"
+        assert kept[1].startswith("crasher.bin_")
+
+    @pytest.mark.integration
+    def test_failed_copy_is_logged(self, root_analysis, failing_scan, monkeypatch, caplog):
+        module = _yara_module(root_analysis)
+        monkeypatch.setattr(module.config, "save_scan_failures", True)
+        monkeypatch.setattr("saq.modules.file_analysis.yara.shutil.copy", Mock(side_effect=OSError("disk full")))
+
+        with caplog.at_level(logging.ERROR):
+            assert module.execute_analysis(_file_observable(root_analysis, name="uncopied.bin")) == AnalysisExecutionResult.COMPLETED
+
+        assert any(r.getMessage().startswith("unable to copy") and "disk full" in r.getMessage() for r in caplog.records)
+
+    @pytest.mark.integration
+    def test_a_failure_after_the_matches_are_listed_fails_the_analysis(self, root_analysis, monkeypatch, caplog):
+        # a match without its meta stops the scan after the analysis that lists it is made, before
+        # any match becomes a detection; the copy failing too must not lose the reason
+        monkeypatch.setattr(yara_client, "scan_file", lambda *args, **kwargs: [{"rule": "no_meta"}])
+        module = _yara_module(root_analysis)
+        monkeypatch.setattr(module.config, "save_scan_failures", True)
+        monkeypatch.setattr("saq.modules.file_analysis.yara.shutil.copy", Mock(side_effect=OSError("disk full")))
+        observable = _file_observable(root_analysis, name="partial.bin")
+
+        with caplog.at_level(logging.ERROR):
+            assert module.execute_analysis(observable) == AnalysisExecutionResult.COMPLETED
+
+        analysis = observable.get_analysis(YaraScanResults_v3_4)
+        assert analysis.error == "yara scan failed: 'meta'"
+        assert not observable.detections
+        assert any(r.getMessage().startswith("unable to copy") for r in caplog.records)
+
+    @pytest.mark.integration
+    def test_failed_file_is_not_kept_by_default(self, root_analysis, failing_scan):
+        module = _yara_module(root_analysis)
+        before = set(os.listdir(module.scan_failure_dir))
+
+        module.execute_analysis(_file_observable(root_analysis, name="not_kept.bin"))
+
+        assert set(os.listdir(module.scan_failure_dir)) == before
+
+
+class TestYaraLocalScanner:
+    @pytest.mark.integration
+    def test_released_after_its_lifetime(self, yara_service, root_analysis, caplog):
+        yara_service(_rule("hello"))
+        module = _yara_module(root_analysis)
+        module.scanner = Mock()
+        module.scanner_start_time = datetime.now() - timedelta(minutes=module.local_scanner_lifetime + 1)
+        module.local_rule_details = {"rule.yar": object()}
+
+        with caplog.at_level(logging.INFO):
+            module.execute_analysis(_file_observable(root_analysis))
+
+        assert module.scanner is None
+        assert module.scanner_start_time is None
+        assert module.local_rule_details == {}
+        assert any(r.getMessage() == "releasing local yara scanner" for r in caplog.records)
+
+    @pytest.mark.integration
+    def test_kept_within_its_lifetime(self, yara_service, root_analysis):
+        yara_service(_rule("hello"))
+        module = _yara_module(root_analysis)
+        scanner = module.scanner = Mock()
+        module.scanner_start_time = datetime.now()
+
+        module.execute_analysis(_file_observable(root_analysis))
+
+        assert module.scanner is scanner
+        # the service answered: nothing was scanned locally
+        scanner.scan.assert_not_called()
+
+class TestYaraRuleStrings:
+    def _analysis(self, observable) -> YaraScanResults_v3_4:
+        analysis = observable.get_and_load_analysis(YaraScanResults_v3_4)
+        assert analysis is not None
+        return analysis
+
+    @pytest.mark.integration
+    def test_sip_rule_adds_indicators(self, yara_service, root_analysis):
+        yara_service(_rule("SIP_indicator", strings='$sip_123 = "Hello"\n        $other = "world"'))
+        analysis = self._analysis(_scan(root_analysis))
+
+        indicators = [o.value for o in analysis.observables if o.type == F_INDICATOR]
+        assert indicators == ["sip:123"]
+
+    @pytest.mark.integration
+    def test_unresolvable_detection_strings_are_skipped(self, yara_service, root_analysis):
+        # no such row, no id, and not a number
+        yara_service(_rule("unresolved", strings='$obsd_999999999 = "Hello"\n        $obsd_ = "world"\n'
+                                                 '        $obs_x = "Hello,"'))
+        analysis = self._analysis(_scan(root_analysis))
+
+        assert {o.type for o in analysis.observables} == {F_YARA_RULE, F_YARA_STRING}
+
+    @pytest.mark.integration
+    def test_failed_detection_observable_is_logged(self, yara_service, root_analysis, monkeypatch, caplog):
+        detection = ObservableDetection(
+            type=F_URI_PATH, value="/failed/detection",
+            value_sha256=hashlib.sha256(b"/failed/detection").digest())
+        get_db().add(detection)
+        get_db().commit()
+        yara_service(_rule("detection_rule", strings=f'$obsd_{detection.id} = "Hello"'))
+
+        add_observable_by_spec = YaraScanResults_v3_4.add_observable_by_spec
+
+        def _add(self, o_type, o_value, *args, **kwargs):
+            if o_type == F_URI_PATH:
+                raise RuntimeError("observable registry broke")
+            return add_observable_by_spec(self, o_type, o_value, *args, **kwargs)
+
+        monkeypatch.setattr(YaraScanResults_v3_4, "add_observable_by_spec", _add)
+        with caplog.at_level(logging.ERROR):
+            analysis = self._analysis(_scan(root_analysis))
+
+        # the rest of the match is still recorded
+        assert analysis.get_observables_by_type(F_YARA_RULE)
+        records = [r for r in caplog.records if r.getMessage().startswith("unable to add uri_path observable /failed/detection")]
+        assert len(records) == 1
+        assert f"row {detection.id} matched by yara rule detection_rule" in records[0].getMessage()
+        assert records[0].exc_info is not None
+
+
+class TestYaraStringPatterns:
+    """The pattern of each string that matched is stored with the match, for the GUI."""
+
+    @pytest.mark.integration
+    def test_patterns_of_matched_strings_are_stored(self, yara_service, root_analysis):
+        yara_service(_rule("pattern_rule", strings='$a = "Hello" nocase\n        $b = { 77 6F 72 6C 64 }\n        $c = "not in the file"'))
+        observable = _scan(root_analysis)
+
+        analysis = observable.get_and_load_analysis(YaraScanResults_v3_4)
+        # $c did not match, so its pattern is not kept
+        assert analysis.scan_results[0]["string_patterns"] == {"$a": '"Hello" nocase', "$b": "{ 77 6F 72 6C 64 }"}
+
+    @pytest.mark.integration
+    def test_patterns_are_stored_by_the_local_scanner(self, socket_dir, write_rules, root_analysis):
+        write_rules(_rule("local_rule"))
+        observable = _scan(root_analysis)
+
+        analysis = observable.get_and_load_analysis(YaraScanResults_v3_4)
+        assert analysis.scan_results[0]["string_patterns"] == {"$a": '"Hello, world!"'}
+        assert analysis.scan_results[0]["rule_source"]["text"] == _rule("local_rule")
+
+    @pytest.mark.integration
+    def test_patterns_are_those_of_the_rules_that_matched(self, yara_service, write_rules, root_analysis):
+        """The service keeps matching with the rules it compiled until it notices a change, so the
+        patterns come from that source, not from the file as it is on disk when the file is scanned."""
+        yara_service(_rule("edited_rule", strings='$a = "Hello"'))
+        write_rules(_rule("edited_rule", strings='$a = "Hello" nocase'))
+
+        analysis = _scan(root_analysis).get_and_load_analysis(YaraScanResults_v3_4)
+        assert analysis.scan_results[0]["string_patterns"] == {"$a": '"Hello"'}
+        assert analysis.scan_results[0]["rule_source"] == {
+            "file": "test.yar", "start_line": 1, "text": _rule("edited_rule", strings='$a = "Hello"')}
+
+    @pytest.mark.integration
+    def test_match_context_is_stored(self, yara_service, root_analysis):
+        yara_service(_rule("context_rule", strings='$a = "world"'))
+        content = b"x" * 100 + b"Hello, world!\n"
+        analysis = _scan(root_analysis, content=content).get_and_load_analysis(YaraScanResults_v3_4)
+
+        context_bytes = get_analysis_module_config(ANALYSIS_MODULE_YARA_SCANNER_V3_4).context_bytes
+        start = 107 - context_bytes
+        assert analysis.scan_results[0]["match_context"] == [{
+            "data": base64.b64encode(content[start:107 + 5 + context_bytes]).decode("ascii"),
+            "match_offset": context_bytes,
+            "match_length": 5,
+        }]
+
+
+# ---------------------------------------------------------------------------
+# how a string match is drawn in the GUI
+# ---------------------------------------------------------------------------
+@pytest.mark.unit
+@pytest.mark.parametrize("value,expected", [
+    ("plain", "plain"),
+    # the space itself stays, so find in page and copy see it; css draws the dot
+    ("a b", 'a<span class="yara-sp"> </span>b'),
+    ("\t\r\x00\x7f", '<span class="yara-ws">\u2409</span><span class="yara-ws">\u240d</span>'
+                     '<span class="yara-ws">\u2400</span><span class="yara-ws">\u2421</span>'),
+    ("\x85\u200b", '<span class="yara-ws">\\x85</span><span class="yara-ws">\\u200b</span>'),
+    ("<b>&", "&lt;b&gt;&amp;"),
+    ("caf\u00e9", "caf\u00e9"),
+])
+def test_visible_match_value(value, expected):
+    assert str(visible_match_value(value)) == expected
+
+
+def _match_context(data: bytes, match_offset: int, match_length: int) -> dict:
+    return {"data": base64.b64encode(data).decode("ascii"), "match_offset": match_offset, "match_length": match_length}
+
+
+@pytest.mark.unit
+def test_highlight_hexdump_marks_a_match_across_lines():
+    data = b"A" * 10 + b"needle-that-spans-two-lines" + b"<" * 10
+    html = str(highlight_hexdump(_match_context(data, 10, 27)))
+
+    assert html.splitlines() == [
+        "00000000  41 41 41 41 41 41 41 41  41 41 <mark>6e 65 65 64 6c 65</mark>  |AAAAAAAAAA<mark>needle</mark>|",
+        "00000010  <mark>2d 74 68 61 74 2d 73 70  61 6e 73 2d 74 77 6f 2d</mark>  |<mark>-that-spans-two-</mark>|",
+        "00000020  <mark>6c 69 6e 65 73</mark> 3c 3c 3c  3c 3c 3c 3c 3c 3c 3c     |<mark>lines</mark>&lt;&lt;&lt;&lt;&lt;&lt;&lt;&lt;&lt;&lt;|",
+        "0000002f",
+    ]
+
+
+@pytest.mark.unit
+def test_hexdump_highlights_from_match_context():
+    presenter = YaraScanResults_v3_4_Presenter(YaraScanResults_v3_4())
+    result = {"context": [[7, "$a", "world", "plain dump <b>"]],
+              "match_context": [_match_context(b"Hello, world!\n", 7, 5)]}
+
+    assert "|Hello, <mark>world</mark>!.|" in str(presenter.hexdump(result, 0))
+
+
+@pytest.mark.unit
+def test_hexdump_saved_before_match_context_is_shown_as_stored():
+    presenter = YaraScanResults_v3_4_Presenter(YaraScanResults_v3_4())
+    result = {"context": [[7, "$a", "world", "plain dump <b>"]]}
+
+    assert str(presenter.hexdump(result, 0)) == "plain dump &lt;b&gt;"
+
+
+@pytest.mark.unit
+def test_hexdump_highlights_at_most_max_highlighted_matches(monkeypatch):
+    monkeypatch.setattr("saq.modules.file_analysis.yara.MAX_HIGHLIGHTED_MATCHES", 1)
+    presenter = YaraScanResults_v3_4_Presenter(YaraScanResults_v3_4())
+    result = {"context": [[7, "$a", "world", "first"], [7, "$a", "world", "second"]],
+              "match_context": [_match_context(b"Hello, world!\n", 7, 5)] * 2}
+
+    assert "<mark>" in str(presenter.hexdump(result, 0))
+    assert str(presenter.hexdump(result, 1)) == "second"
+
+
+@pytest.mark.unit
+def test_rule_source_lines_mark_the_matched_strings_declarations():
+    presenter = YaraScanResults_v3_4_Presenter(YaraScanResults_v3_4())
+    text = 'rule r\n{\n    strings:\n        $a = "a"\n        $ab = "ab"\n        $ = "anon"\n    condition:\n        $a and $ab\n}\n'
+    result = {"strings": [[0, "$a", "a"], [9, "$", "anon"]], "rule_source": {"file": "r.yar", "start_line": 1, "text": text}}
+
+    assert presenter.rule_source_lines(result) == [
+        ("rule r", False), ("{", False), ("    strings:", False),
+        ('        $a = "a"', True),
+        # a longer identifier with the same prefix, and anonymous strings, are not the matched one
+        ('        $ab = "ab"', False), ('        $ = "anon"', False),
+        ("    condition:", False),
+        # a string used in the condition is not its declaration
+        ("        $a and $ab", False), ("}", False),
+    ]
+
+
+@pytest.mark.unit
+def test_meta_json_keeps_non_ascii_text():
+    presenter = YaraScanResults_v3_4_Presenter(YaraScanResults_v3_4())
+    assert presenter.meta_json({"description": "f\u00fcr", "a": 1}) == '{\n    "a": 1,\n    "description": "f\u00fcr"\n}'

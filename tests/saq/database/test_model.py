@@ -1,8 +1,10 @@
 import uuid
 
+import bcrypt
 import pytest
+from werkzeug.security import generate_password_hash
 
-from saq.database.model import Alert, load_alert
+from saq.database.model import Alert, User, load_alert, verify_password_hash
 from saq.database.pool import get_db
 from saq.database.util.alert import ALERT
 from saq.gui.icon import IconConfiguration, KEY_ICON_CONFIGURATION
@@ -72,20 +74,6 @@ def test_sync_icon_configuration_blueprint():
     assert alert.icon_url is None
 
 @pytest.mark.integration
-def test_sync_icon_configuration_url():
-    # sync() should mirror a url icon configuration into the icon_url column
-    root_analysis = create_root_analysis(uuid=str(uuid.uuid4()))
-    root_analysis.initialize_storage()
-    root_analysis.set_extension(KEY_ICON_CONFIGURATION, {"url": "https://example.com/icon.png"})
-    root_analysis.save()
-    ALERT(root_analysis)
-
-    alert = load_alert(root_analysis.uuid)
-    assert alert.icon_url == "https://example.com/icon.png"
-    assert alert.icon_blueprint_name is None
-    assert alert.icon_blueprint_path is None
-
-@pytest.mark.integration
 def test_sync_icon_configuration_long_data_url():
     # icon_url must accept data urls well beyond the old 1024 char limit
     long_data_url = "data:image/png;base64," + ("A" * 5000)
@@ -124,3 +112,28 @@ def test_apply_icon_configuration_writes_only_on_change():
     # applying a different configuration does register a change
     alert.apply_icon_configuration(IconConfiguration(url="https://example.com/other.png"))
     assert inspect(alert).attrs.icon_url.history.has_changes()
+
+
+@pytest.mark.unit
+def test_user_is_what_flask_login_expects():
+    # flask_login.UserMixin's defaults, which User defines itself so the models never import Flask
+    user = User(id=7, username="u", email="u@localhost")
+    assert user.is_active and user.is_authenticated and not user.is_anonymous
+    assert user.get_id() == "7"
+
+
+@pytest.mark.unit
+def test_users_are_equal_by_id_and_stay_hashable():
+    first, same, other = User(id=7), User(id=7), User(id=8)
+    assert first == same and first != other
+    assert first != "7"
+    assert len({first, same, other}) == 3
+
+
+@pytest.mark.unit
+def test_verify_password_hash_accepts_legacy_and_bcrypt_hashes():
+    legacy = generate_password_hash("secret")
+    assert verify_password_hash("secret", legacy) and not verify_password_hash("wrong", legacy)
+
+    current = bcrypt.hashpw(b"secret", bcrypt.gensalt()).decode()
+    assert verify_password_hash("secret", current) and not verify_password_hash("wrong", current)

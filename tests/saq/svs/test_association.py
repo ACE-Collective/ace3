@@ -3,6 +3,7 @@
 saq.svs.attribution)."""
 
 import json
+import logging
 import uuid
 from datetime import datetime, timedelta
 
@@ -39,10 +40,11 @@ from saq.svs import association, attribution, runs
 from saq.svs.association import AssociationConflict, InvalidAssociation, UnknownAlert
 from saq.svs.attribution import evaluate, write_attributions
 from saq.svs.constants import SVS_MANUAL_ROUTER, RunEventKind, RunState
-from tests.saq.helpers import create_root_analysis, insert_alert
-from tests.saq.svs.conftest import LAUNCHER, add_catalog_test, add_test_host, started_run, sync_alert
+from tests.saq.helpers import audit_actors, create_root_analysis, insert_alert
+from tests.saq.svs.conftest import LAUNCHER, add_catalog_test, add_test_host, person, started_run, sync_alert
 
-pytestmark = pytest.mark.integration
+# several runs on one test host are fixtures here; the host's claim is tested in test_runs.py
+pytestmark = [pytest.mark.integration, pytest.mark.usefixtures("overlapping_runs")]
 
 GUID = "aaaaaaaa-1111-4111-8111-111111111111"
 ACTOR = "unittest"
@@ -67,9 +69,10 @@ def run() -> SVSRun:
     return started_run(GUID, now=datetime.now() - timedelta(minutes=1))
 
 
-def _alert(*, marker=None, host="win10-01", analysis_mode=None) -> RootAnalysis:
+def _alert(*, marker=None, host="win10-01", analysis_mode=None, event_time=None) -> RootAnalysis:
     """An alert inserted through ALERT(), which the marker router judges."""
-    root = create_root_analysis(uuid=str(uuid.uuid4()), event_time=datetime.now(), analysis_mode=analysis_mode)
+    root = create_root_analysis(uuid=str(uuid.uuid4()), event_time=event_time or datetime.now(),
+                                analysis_mode=analysis_mode)
     root.initialize_storage()
     root.add_observable_by_spec(F_HOSTNAME, host)
     if marker:
@@ -111,15 +114,19 @@ def _events(run: SVSRun, kind: RunEventKind) -> list[dict]:
 
 class TestAssociate:
     def test_an_unattributed_alert(self, run, user_id):
-        root = _alert(host="srv-01")
+        # an event time well before the alert's insert time, so the two can't be confused
+        event_time = (datetime.now() - timedelta(seconds=30)).replace(microsecond=0)
+        root = _alert(host="srv-01", event_time=event_time)
         assert _row(root.uuid).queue == QUEUE_DEFAULT
 
-        result = association.associate(run.uuid, root.uuid, user_id, ACTOR, "seen on the test VM's console")
+        result = association.associate(run.uuid, root.uuid, person(user_id), "seen on the test VM's console")
         assert (result.svs_status, result.queue, result.moved) == ("test", get_config().svs.queue, True)
 
         (row,) = _attributions(root.uuid, run.id)
         assert (row.source, row.confidence, row.scan_point, row.late, row.actor, row.actor_user_id) == (
             "manual", "marker", None, False, ACTOR, user_id)
+        assert row.event_time == event_time
+        assert row.event_time_source == "event"
         assert _last_change(root.uuid) == (QUEUE_DEFAULT, get_config().svs.queue, SVS_MANUAL_ROUTER)
         (event,) = _events(run, RunEventKind.ASSOCIATED)
         assert event["alert_uuid"] == root.uuid and event["reason"] == "seen on the test VM's console"
@@ -129,7 +136,7 @@ class TestAssociate:
         root = _alert(marker=run.marker)
         assert [r.source for r in _attributions(root.uuid, run.id)] == ["router"]
 
-        result = association.associate(run.uuid, root.uuid, user_id, ACTOR)
+        result = association.associate(run.uuid, root.uuid, person(user_id))
         assert result.moved is False and result.svs_status == "test"
         (row,) = _attributions(root.uuid, run.id)
         assert (row.source, row.scan_point) == ("manual", None)
@@ -137,21 +144,21 @@ class TestAssociate:
     def test_a_late_alert(self, user_id):
         early = started_run(GUID, now=datetime.now() - timedelta(hours=3))
         root = _alert(host="srv-01")
-        association.associate(early.uuid, root.uuid, user_id, ACTOR)
+        association.associate(early.uuid, root.uuid, person(user_id))
         assert _attributions(root.uuid, early.id)[0].late is True
 
     def test_a_reviewed_run_changes_since_review(self, run, user_id):
         db = get_db()
         db.execute(update(SVSRun).where(SVSRun.id == run.id).values(state=RunState.REVIEWED.value))
         db.commit()
-        association.associate(run.uuid, _alert(host="srv-01").uuid, user_id, ACTOR)
+        association.associate(run.uuid, _alert(host="srv-01").uuid, person(user_id))
         db.expire_all()
         assert db.get(SVSRun, run.id).changed_since_review is True
 
     def test_a_dispositioned_alert_is_not_moved(self, run, user_id):
         root = _alert(host="srv-01")
-        set_dispositions([root.uuid], DISPOSITION_FALSE_POSITIVE, user_id)
-        result = association.associate(run.uuid, root.uuid, user_id, ACTOR)
+        set_dispositions([root.uuid], DISPOSITION_FALSE_POSITIVE, person(user_id))
+        result = association.associate(run.uuid, root.uuid, person(user_id))
         assert (result.svs_status, result.moved, result.queue) == ("test", False, QUEUE_DEFAULT)
 
     def test_an_alert_taken_meanwhile_is_not_moved(self, run, user_id, monkeypatch):
@@ -166,23 +173,49 @@ class TestAssociate:
             return movable(alert, user)
 
         monkeypatch.setattr(association, "_movable", taken_first)
-        result = association.associate(run.uuid, root.uuid, user_id, ACTOR)
+        result = association.associate(run.uuid, root.uuid, person(user_id))
         assert (result.svs_status, result.moved, result.queue) == ("test", False, QUEUE_DEFAULT)
+
+    def test_a_run_canceled_before_it_started(self, user_id):
+        """It has no observation window, so nothing associated with it is late."""
+        canceled = runs.register(runs.Registration(test_guid=GUID, targets=[runs.TargetSpec("win10-01")],
+                                                   launcher="art"), LAUNCHER)
+        runs.cancel(canceled.uuid, LAUNCHER)
+        assert runs.get_run(canceled.uuid).observation_ends_at is None
+
+        root = _alert(host="srv-01")
+        association.associate(canceled.uuid, root.uuid, person(user_id))
+        (row,) = _attributions(root.uuid, canceled.id)
+        assert (row.source, row.late, row.event_time_source) == ("manual", False, "event")
+
+    def test_an_alert_that_cannot_be_loaded_is_judged_by_its_insert_time(self, run, user_id, monkeypatch, caplog):
+        root = _alert(host="srv-01")
+
+        def unloadable(storage_dir):
+            raise OSError(f"{storage_dir} is gone")
+
+        monkeypatch.setattr(association, "load_root", unloadable)
+        association.associate(run.uuid, root.uuid, person(user_id))
+        (row,) = _attributions(root.uuid, run.id)
+        assert row.event_time_source == "insert_time"
+        assert abs(row.event_time - _row(root.uuid).insert_date) <= timedelta(seconds=1)
+        (record,) = [r for r in caplog.records if f"unable to load alert {root.uuid}" in r.getMessage()]
+        assert record.levelno == logging.ERROR and record.exc_info and record.alert_uuid == root.uuid
 
     def test_refused(self, user_id):
         created = runs.register(runs.Registration(test_guid=GUID, targets=[runs.TargetSpec("win10-01")],
                                                   launcher="art"), LAUNCHER)
         root = _alert(host="srv-01")
         with pytest.raises(AssociationConflict):
-            association.associate(created.uuid, root.uuid, user_id, ACTOR)
+            association.associate(created.uuid, root.uuid, person(user_id))
 
         run = started_run(GUID)
         with pytest.raises(InvalidAssociation):
-            association.associate(run.uuid, insert_alert().uuid, user_id, ACTOR)
+            association.associate(run.uuid, insert_alert().uuid, person(user_id))
         with pytest.raises(UnknownAlert):
-            association.associate(run.uuid, str(uuid.uuid4()), user_id, ACTOR)
+            association.associate(run.uuid, str(uuid.uuid4()), person(user_id))
         with pytest.raises(runs.UnknownRun):
-            association.associate(str(uuid.uuid4()), root.uuid, user_id, ACTOR)
+            association.associate(str(uuid.uuid4()), root.uuid, person(user_id))
 
 
 class TestDisassociate:
@@ -190,7 +223,7 @@ class TestDisassociate:
         root = _alert(marker=run.marker)
         assert _row(root.uuid).queue == get_config().svs.queue
 
-        result = association.disassociate(run.uuid, root.uuid, user_id, ACTOR, "the analyst ran this by hand")
+        result = association.disassociate(run.uuid, root.uuid, person(user_id), "the analyst ran this by hand")
         assert (result.svs_status, result.queue, result.moved, result.reopened) == (None, QUEUE_DEFAULT, True, False)
         (row,) = _attributions(root.uuid, run.id)
         assert (row.removed_by, row.removed_by_user_id, row.removal_reason) == (
@@ -199,14 +232,20 @@ class TestDisassociate:
         (event,) = _events(run, RunEventKind.DISASSOCIATED)
         assert event["not_a_test"] is False
 
-    def test_a_simulated_alert_is_given_back_open(self, run, user_id):
+    def test_a_simulated_alert_is_given_back_open(self, run, user_id, caplog):
+        caplog.set_level(logging.INFO)
         root = _alert(marker=run.marker)
         runs.cancel(run.uuid, LAUNCHER)
         runs.run_timers(now=run.attribution_ends_at + timedelta(seconds=1))
         assert _row(root.uuid).disposition == DISPOSITION_SIMULATED
 
-        result = association.disassociate(run.uuid, root.uuid, user_id, ACTOR)
+        caplog.clear()
+        result = association.disassociate(run.uuid, root.uuid, person(user_id, key_id=7))
         assert (result.reopened, result.moved, result.queue) == (True, True, QUEUE_DEFAULT)
+        # the automation user writes the disposition; the records name the analyst whose key acted
+        analyst = (ACTOR, user_id, 7, "user")
+        assert audit_actors(caplog, "alert dispositioned") == [analyst]
+        assert audit_actors(caplog, "alert moved to queue") == [analyst]
         alert = _row(root.uuid)
         assert alert.disposition == DISPOSITION_OPEN
         assert alert.disposition_user_id == get_config().global_settings.automation_user_id
@@ -222,21 +261,21 @@ class TestDisassociate:
         bob = add_user("bob", "bob@localhost", "Bob", "bob").id
         give_up = association.change_alert_owner
 
-        def bob_takes_it_first(alert_uuids, owner_id, acting_user_id):
+        def bob_takes_it_first(alert_uuids, owner_id, acting_user_id, **kwargs):
             with private_transaction() as session:
                 session.execute(update(Alert).where(Alert.uuid == root.uuid).values(owner_id=bob))
-            return give_up(alert_uuids, owner_id, acting_user_id)
+            return give_up(alert_uuids, owner_id, acting_user_id, **kwargs)
 
         monkeypatch.setattr(association, "change_alert_owner", bob_takes_it_first)
-        assert association.disassociate(run.uuid, root.uuid, user_id, ACTOR).reopened
+        assert association.disassociate(run.uuid, root.uuid, person(user_id)).reopened
         assert _row(root.uuid).owner_id == bob
 
     def test_an_alert_still_fully_attributed_to_another_run_stays(self, run, user_id):
         root = _alert(marker=run.marker)
         other = started_run(GUID)
-        association.associate(other.uuid, root.uuid, user_id, ACTOR)
+        association.associate(other.uuid, root.uuid, person(user_id))
 
-        result = association.disassociate(run.uuid, root.uuid, user_id, ACTOR)
+        result = association.disassociate(run.uuid, root.uuid, person(user_id))
         assert (result.svs_status, result.queue, result.moved) == ("test", get_config().svs.queue, False)
 
     def test_an_alert_submitted_to_the_test_queue_stays_there(self, run, user_id):
@@ -246,55 +285,38 @@ class TestDisassociate:
         root.add_detection_point("hunt hit")
         root.save()
         ALERT(root)
-        association.associate(run.uuid, root.uuid, user_id, ACTOR)
-        result = association.disassociate(run.uuid, root.uuid, user_id, ACTOR)
+        association.associate(run.uuid, root.uuid, person(user_id))
+        result = association.disassociate(run.uuid, root.uuid, person(user_id))
         assert (result.moved, result.queue) == (False, get_config().svs.queue)
 
     def test_it_is_reversible(self, run, user_id):
         root = _alert(marker=run.marker)
-        association.disassociate(run.uuid, root.uuid, user_id, ACTOR)
-        result = association.associate(run.uuid, root.uuid, user_id, ACTOR)
+        association.disassociate(run.uuid, root.uuid, person(user_id))
+        result = association.associate(run.uuid, root.uuid, person(user_id))
         assert (result.svs_status, result.queue) == ("test", get_config().svs.queue)
         (row,) = _attributions(root.uuid, run.id)
         assert (row.source, row.removed_at, row.removed_by_user_id) == ("manual", None, None)
 
-    def test_nothing_to_disassociate(self, run, user_id):
-        with pytest.raises(AssociationConflict):
-            association.disassociate(run.uuid, _alert(host="srv-01").uuid, user_id, ACTOR)
-
-
 class TestNotATestAndKeep:
-    def test_not_a_test_on_a_context_alert(self, run, user_id):
-        root = _alert()
-        assert [r.confidence for r in _attributions(root.uuid, run.id)] == ["context"]
-        result = association.disassociate(run.uuid, root.uuid, user_id, ACTOR, not_a_test=True)
-        assert (result.svs_status, result.queue) == (None, QUEUE_DEFAULT)
-        assert _attributions(root.uuid, run.id)[0].removal_reason == "not a test"
-
-    def test_not_a_test_on_a_marker_alert_is_refused(self, run, user_id):
-        root = _alert(marker=run.marker)
-        with pytest.raises(AssociationConflict):
-            association.disassociate(run.uuid, root.uuid, user_id, ACTOR, not_a_test=True)
-
     def test_keep(self, run, user_id):
         root = _alert()
-        result = association.keep(run.uuid, root.uuid, user_id, ACTOR)
+        result = association.keep(run.uuid, root.uuid, person(user_id))
         assert result.svs_status == "test?"
         (row,) = _attributions(root.uuid, run.id)
         assert row.kept_by_user_id == user_id and row.kept_at is not None
         assert _events(run, RunEventKind.CONTEXT_KEPT) == [{"alert_uuid": root.uuid}]
 
         with pytest.raises(AssociationConflict):
-            association.keep(run.uuid, _alert(marker=run.marker).uuid, user_id, ACTOR)
+            association.keep(run.uuid, _alert(marker=run.marker).uuid, person(user_id))
 
 
 class TestFromTheAlertsSide:
     def test_every_run_lets_the_alert_go(self, run, user_id):
         root = _alert(marker=run.marker)
         other = started_run(GUID)
-        association.associate(other.uuid, root.uuid, user_id, ACTOR)
+        association.associate(other.uuid, root.uuid, person(user_id))
 
-        result = association.disassociate_alert(root.uuid, user_id, ACTOR, "a real attack")
+        result = association.disassociate_alert(root.uuid, person(user_id), "a real attack")
         assert result.runs == (run.uuid, other.uuid)
         assert (result.svs_status, result.queue, result.moved, result.reopened) == (None, QUEUE_DEFAULT, True, False)
         for held_by in (run, other):
@@ -308,27 +330,27 @@ class TestFromTheAlertsSide:
         runs.run_timers(now=run.attribution_ends_at + timedelta(seconds=1))
         assert _row(root.uuid).disposition == DISPOSITION_SIMULATED
 
-        result = association.disassociate_alert(root.uuid, user_id, ACTOR)
+        result = association.disassociate_alert(root.uuid, person(user_id))
         assert (result.runs, result.reopened, result.moved) == ((run.uuid,), True, True)
         assert (_row(root.uuid).disposition, _row(root.uuid).owner_id) == (DISPOSITION_OPEN, None)
 
     def test_not_a_test(self, run, user_id):
         root = _alert()
-        result = association.disassociate_alert(root.uuid, user_id, ACTOR, not_a_test=True)
+        result = association.disassociate_alert(root.uuid, person(user_id), not_a_test=True)
         assert (result.runs, result.svs_status, result.queue) == ((run.uuid,), None, QUEUE_DEFAULT)
         assert _attributions(root.uuid, run.id)[0].removal_reason == "not a test"
 
     def test_not_a_test_only_for_a_context_alert(self, run, user_id):
         root = _alert(marker=run.marker)
         with pytest.raises(AssociationConflict):
-            association.disassociate_alert(root.uuid, user_id, ACTOR, not_a_test=True)
+            association.disassociate_alert(root.uuid, person(user_id), not_a_test=True)
         assert _attributions(root.uuid, run.id)[0].removed_at is None
 
     def test_nothing_holds_it(self, run, user_id):
         with pytest.raises(AssociationConflict):
-            association.disassociate_alert(_alert(host="srv-01").uuid, user_id, ACTOR)
+            association.disassociate_alert(_alert(host="srv-01").uuid, person(user_id))
         with pytest.raises(UnknownAlert):
-            association.disassociate_alert(str(uuid.uuid4()), user_id, ACTOR)
+            association.disassociate_alert(str(uuid.uuid4()), person(user_id))
 
 
 class TestTheRouterRespectsAPerson:
@@ -336,7 +358,7 @@ class TestTheRouterRespectsAPerson:
         # the engine stage below ends the session the run was read in
         run_id, marker = run.id, run.marker
         root = _alert(marker=marker, analysis_mode=ANALYSIS_MODE_CORRELATION)
-        association.disassociate(run.uuid, root.uuid, user_id, ACTOR)
+        association.disassociate(run.uuid, root.uuid, person(user_id))
 
         # a later pass finds another detection on the marker's branch
         root.add_observable_by_spec(F_TEST, f"ran {marker}").add_detection_point("test detection")
@@ -346,7 +368,7 @@ class TestTheRouterRespectsAPerson:
 
     def test_another_runs_marker_is_attributed_but_the_queue_is_held(self, run, user_id):
         root = _alert(marker=run.marker, analysis_mode=ANALYSIS_MODE_CORRELATION)
-        association.disassociate(run.uuid, root.uuid, user_id, ACTOR)
+        association.disassociate(run.uuid, root.uuid, person(user_id))
 
         other = started_run(GUID, now=datetime.now() - timedelta(minutes=1))
         other_id = other.id
@@ -357,7 +379,7 @@ class TestTheRouterRespectsAPerson:
 
     def test_a_hand_associated_alert_is_never_moved_back(self, run, user_id):
         root = _alert(host="srv-01", analysis_mode=ANALYSIS_MODE_CORRELATION)
-        association.associate(run.uuid, root.uuid, user_id, ACTOR)
+        association.associate(run.uuid, root.uuid, person(user_id))
 
         # a later pass finds a detection the association doesn't cover: the alert is partial
         root.add_observable_by_spec(F_TEST, "unrelated").add_detection_point("real detection")

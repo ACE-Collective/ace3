@@ -6,14 +6,12 @@ import re
 from subprocess import PIPE, Popen
 from typing import Optional, Union
 from saq.analysis.observable import Observable
-from saq.analysis.presenter.observable_presenter import ObservablePresenter, register_observable_presenter
 from saq.analysis.serialize.observable_serializer import KEY_VALUE
 from saq.configuration.config import get_config
 from saq.constants import DIRECTIVE_YARA_META_PREFIX, EVENT_RELATIONSHIP_ADDED, F_FILE, F_FILE_LOCATION, F_FILE_NAME, F_FILE_PATH, F_MD5, F_SHA1, F_SHA256, FILE_SUBDIR, R_IS_HASH_OF, parse_file_location
-from saq.gui import ObservableActionCollectFile, ObservableActionSeparator
 from saq.observables.base import CaselessObservable, ObservableValueError
-from saq.observables.generator import register_observable_type
 from saq.util.hashing import EMPTY_CONTENT_MD5, EMPTY_CONTENT_SHA1, EMPTY_CONTENT_SHA256, is_sha256_hex
+from saq.util.ui import human_readable_size
 
 KEY_MD5_HASH = "md5_hash"
 KEY_SHA1_HASH = "sha1_hash"
@@ -250,11 +248,15 @@ class FileObservable(Observable):
 
     @property
     def display_value(self) -> str:
+        # the value is the sha256, so the file path stands in for it, both on its own and
+        # after an assigned display value
+        if self._display_value is not None:
+            return f"{self._display_value} ({self.file_path})"
         return self.file_path
 
-    @property
-    def jinja_template_path(self) -> str:
-        return "analysis/file_observable.html"
+    @display_value.setter
+    def display_value(self, value: Optional[str]):
+        self._display_value = value
 
     @property
     def mime_type(self) -> Optional[str]:
@@ -268,6 +270,12 @@ class FileObservable(Observable):
         self._mime_type = self._mime_type_from_file_type_analysis()
         if self._mime_type:
             return self._mime_type
+
+        if not os.path.exists(self.path):
+            # `file` reports a missing path on stdout with exit status 0, so its answer would be
+            # taken (and serialized) as the mime type; a missing file has none
+            logging.debug("unable to determine mime type of %s: file does not exist", self.path)
+            return None
 
         p = Popen(['file', '-b', '--mime-type', '-L', self.path], stdout=PIPE, stderr=PIPE)
         stdout, stderr = p.communicate()
@@ -305,14 +313,10 @@ class FileObservable(Observable):
     @property
     def ext(self) -> Optional[str]:
         """Returns the file extension of this file in lower case, or None if it doesn't have one."""
-        if '.' not in self.full_path:
+        if '.' not in self.file_name:
             return None
 
-        try:
-            return os.path.basename(self.full_path).split('.')[-1].lower()
-        except Exception as e:
-            logging.error(f"unable to get file extension of {self.full_path}: {e}")
-            return None
+        return self.file_name.split('.')[-1].lower()
 
     @property
     def exists(self) -> bool:
@@ -324,20 +328,10 @@ class FileObservable(Observable):
 
     @property
     def human_readable_size(self) -> str:
-        from math import log2
-
         if self.size is None:
             return ""
 
-        _suffixes = ["bytes", "K", "M", "G", "T", "E", "Z"]
-
-        # determine binary order in steps of size 10 
-        # (coerce to int, // still returns a float)
-        order = int(log2(self.size) / 10) if self.size else 0
-        # format file size
-        # (.4g results in rounded numbers for exact matches and max 3 decimals, 
-        # should never resort to exponent values)
-        return "{:.4g} {}".format(self.size / (1 << (order * 10)), _suffixes[order])
+        return human_readable_size(self.size)
 
     @property
     def is_image(self) -> bool:
@@ -438,55 +432,13 @@ class FileObservable(Observable):
         return result
 
 
-class FileObservablePresenter(ObservablePresenter):
-    """Presenter for FileObservable."""
-
-    @property
-    def template_path(self) -> str:
-        return "analysis/file_observable.html"
-
-    def _build_available_actions(self) -> list:
-        from saq.gui.observable_actions.file import (
-            ObservableActionDownloadFileAsZip,
-            ObservableActionViewAsHex,
-            ObservableActionViewAsText,
-            ObservableActionFileRender,
-        )
-        from saq.gui import ObservableActionSeparator
-
-        result = [
-            ObservableActionDownloadFileAsZip(),
-            ObservableActionViewAsHex(),
-            ObservableActionViewAsText(),
-            ObservableActionFileRender(),
-            ObservableActionSeparator(),
-        ]
-        result.extend(super()._build_available_actions())
-        return result
-
-
-register_observable_presenter(FileObservable, FileObservablePresenter)
-
-
 class FilePathObservable(CaselessObservable):
     def __init__(self, *args, **kwargs):
         super().__init__(F_FILE_PATH, *args, **kwargs)
 
-    @property
-    def jinja_available_actions(self):
-        result = [ ]
-        result.extend(super().jinja_available_actions)
-        return result
-
 class FileNameObservable(CaselessObservable):
     def __init__(self, *args, **kwargs):
         super().__init__(F_FILE_NAME, *args, **kwargs)
-
-    @property
-    def jinja_available_actions(self):
-        result = [ ]
-        result.extend(super().jinja_available_actions)
-        return result
 
 class FileLocationObservable(Observable):
     def __init__(self, *args, **kwargs):
@@ -509,36 +461,6 @@ class FileLocationObservable(Observable):
     @property
     def full_path(self):
         return self._full_path
-
-    @property
-    def jinja_available_actions(self):
-        result = [ ObservableActionCollectFile(), ObservableActionSeparator() ]
-        result.extend(super().jinja_available_actions)
-        return result
-
-    @property
-    def jinja_template_path(self):
-        return "analysis/file_location_observable.html"
-
-
-class FileLocationObservablePresenter(ObservablePresenter):
-    """Presenter for FileLocationObservable."""
-
-    @property
-    def template_path(self) -> str:
-        return "analysis/file_location_observable.html"
-
-    def _build_available_actions(self) -> list:
-        from saq.gui.observable_actions.file import ObservableActionCollectFile
-        from saq.gui import ObservableActionSeparator
-
-        result = [ObservableActionCollectFile(), ObservableActionSeparator()]
-        result.extend(super()._build_available_actions())
-        return result
-
-
-register_observable_presenter(FileLocationObservable, FileLocationObservablePresenter)
-
 
 def validate_hash_value(value: str, empty_content_hash: str, label: str) -> str:
     """Strips and validates a hash observable value, raising ObservableValueError if it is not worth tracking.
@@ -568,13 +490,6 @@ class MD5Observable(CaselessObservable):
         related = self.get_relationship_by_type(R_IS_HASH_OF)
         return related.target if related else None
 
-    @property
-    def jinja_available_actions(self):
-        result = [ ]
-        result.extend(super().jinja_available_actions)
-        return result
-
-
 class SHA1Observable(CaselessObservable):
     def __init__(self, *args, **kwargs):
         super().__init__(F_SHA1, *args, **kwargs)
@@ -587,23 +502,6 @@ class SHA1Observable(CaselessObservable):
     def related_file(self) -> Union[FileObservable, None]:
         related = self.get_relationship_by_type(R_IS_HASH_OF)
         return related.target if related else None
-
-    @property
-    def jinja_available_actions(self):
-        result = [ ]
-        result.extend(super().jinja_available_actions)
-        return result
-
-
-class SHA1ObservablePresenter(ObservablePresenter):
-    """Presenter for SHA1Observable."""
-
-    @property
-    def template_path(self) -> str:
-        return "analysis/default_observable.html"
-
-
-register_observable_presenter(SHA1Observable, SHA1ObservablePresenter)
 
 
 class SHA256Observable(CaselessObservable):
@@ -618,32 +516,3 @@ class SHA256Observable(CaselessObservable):
     def related_file(self) -> Union[FileObservable, None]:
         related = self.get_relationship_by_type(R_IS_HASH_OF)
         return related.target if related else None
-
-    @property
-    def jinja_template_path(self):
-        return "analysis/sha256_observable.html"
-
-    @property
-    def jinja_available_actions(self):
-        result = [ ]
-        result.extend(super().jinja_available_actions)
-        return result
-
-
-class SHA256ObservablePresenter(ObservablePresenter):
-    """Presenter for SHA256Observable."""
-
-    @property
-    def template_path(self) -> str:
-        return "analysis/sha256_observable.html"
-
-
-register_observable_presenter(SHA256Observable, SHA256ObservablePresenter)
-
-register_observable_type(F_FILE, FileObservable)
-register_observable_type(F_FILE_PATH, FilePathObservable)
-register_observable_type(F_FILE_NAME, FileNameObservable)
-register_observable_type(F_FILE_LOCATION, FileLocationObservable)
-register_observable_type(F_MD5, MD5Observable)
-register_observable_type(F_SHA1, SHA1Observable)
-register_observable_type(F_SHA256, SHA256Observable)

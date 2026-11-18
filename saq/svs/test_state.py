@@ -186,7 +186,7 @@ def evaluate_tests(session, tests: Iterable[SVSCatalogTest]) -> dict[tuple[str, 
         return {}
 
     platforms = set(session.execute(
-        select(SVSRun.test_guid, SVSRun.platform).distinct().where(SVSRun.test_guid.in_(guids))).tuples())
+        select(SVSRun.test_guid, SVSRun.platform).distinct().where(SVSRun.test_guid.in_(guids))))
     reviewed = _latest_reviewed(session, guids)
     expected = _expected(session, guids)
     signed_off = _signed_off(session, [run.id for run in reviewed.values()])

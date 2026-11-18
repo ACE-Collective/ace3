@@ -15,6 +15,7 @@ import os
 import shlex
 import signal
 import sys
+from collections.abc import Callable
 
 import requests
 from fastapi import HTTPException
@@ -22,14 +23,19 @@ from sqlalchemy import func, select, text, update
 from sqlalchemy.orm import defer
 
 import ace_api
+from aceapi_v2.auth.schemas import ApiAuthResult
 from aceapi_v2.cli.schemas import CliExecutionRead, CliExecutionSummary, CliNodeRead
 from aceapi_v2.common.listing import InvalidCursor, decode_cursor, encode_cursor
 from aceapi_v2.sync import run_db_in_thread
 from saq.constants import ENV_ACE_LOG_CONFIG_PATH
 from saq.database.model import CliExecution, Nodes
 from saq.database.pool import get_db
+from saq.engine.node_manager.distributed_node_manager import translate_node
 from saq.environment import get_base_dir, get_global_runtime_settings
 from saq.error.reporting import log_loop_exception, log_peer_unavailable
+from saq.logging import log_audit
+from saq.sandbox.launcher import EXIT_KILLED
+from saq.sandbox.runner import LAUNCHER, LAUNCHER_DEADLINE_GRACE, LAUNCHER_STOP_SECONDS, sandbox_python
 
 logger = logging.getLogger(__name__)
 
@@ -45,14 +51,19 @@ MAX_OUTPUT_BYTES = 1024 * 1024
 # how often a running command's output so far is written to its row, for the page to show
 OUTPUT_FLUSH_SECONDS = 2.0
 # a pending or running row this long past its timeout belongs to a run nothing is watching any more
-# (the node's API was killed mid-run, or the dispatch never happened)
-STALE_GRACE_SECONDS = 120
+# (the node's API was killed mid-run, or the dispatch never happened). Longer than stopping a run takes
+# (TERM_GRACE_SECONDS + LAUNCHER_STOP_SECONDS + KILL_WAIT_SECONDS + OUTPUT_FLUSH_SECONDS), so a run that
+# is still being stopped is not taken for one
+STALE_GRACE_SECONDS = 180
 # the dispatch only asks the node to start the run, so it returns at once
 DISPATCH_TIMEOUT = (10, 30)
-# a stopped child gets SIGTERM, so ACE's own shutdown runs (an engine started this way releases its
-# locks and marks its node stopped), and SIGKILL if it is still there this long after
-TERM_GRACE_SECONDS = 30
-# how long a killed child gets to be reaped
+# a stopped command gets SIGTERM, so ACE's own shutdown runs (an engine started this way stops its
+# workers, releases its locks and marks its node stopped), and this long to finish it before the launcher
+# kills everything it started. Longer than any service takes, as docker's stop_grace_period is: SIGTERM
+# reaches only the command's own group, so an engine stops a worker waiting on a module's subprocess
+# itself, and its shutdown watchdog ends it at shutdown_deadline_seconds plus WATCHDOG_GRACE (95 seconds)
+TERM_GRACE_SECONDS = 100
+# how long a killed launcher gets to be reaped
 KILL_WAIT_SECONDS = 10
 # each run is a whole `ace` process in http-api-engine, the container the engines transfer work
 # through, so a node runs only this many at once and refuses the rest
@@ -139,10 +150,12 @@ def _resolve_nodes(node_ids: list[int] | None) -> list[Nodes]:
 # rows
 #
 
-def create_executions(user_id: int, username: str, argv: list[str], node_ids: list[int] | None,
+def create_executions(auth: ApiAuthResult, argv: list[str], node_ids: list[int] | None,
                       timeout_seconds: int) -> list[int]:
-    """One pending row per node, committed, so each node can read its row."""
+    """One pending row per node, committed, so each node can read its row. The run is recorded
+    against auth's user, so auth must have one."""
     session = get_db()
+    user_id, username = auth.auth_user_id, auth.auth_name
     nodes = _resolve_nodes(node_ids)
     command = shlex.join(argv)
 
@@ -153,9 +166,8 @@ def create_executions(user_id: int, username: str, argv: list[str], node_ids: li
     session.commit()
 
     for execution, node in zip(executions, nodes):
-        logger.info("AUDIT: user %s requested cli execution %s on node %s: ace %s",
-                    username, execution.id, node.name, command,
-                    extra={"cli_execution_id": execution.id, "node": node.name, "user": username})
+        log_audit("user %s requested cli execution %s on node %s: ace %s", username, execution.id, node.name, command,
+                  auth=auth, cli_execution_id=execution.id, node=node.name)
 
     return [e.id for e in executions]
 
@@ -268,9 +280,6 @@ def dispatch_execution(execution_id: int) -> None:
     node_name, location = row
     context = f"starting cli execution {execution_id} on node {node_name} ({location})"
 
-    # imported here: the node manager pulls in saq.modules, which imports aceapi_v2 back (circular)
-    from saq.engine.node_manager.distributed_node_manager import translate_node
-
     try:
         ace_api.start_cli_execution(execution_id, remote_host=translate_node(location), timeout=DISPATCH_TIMEOUT)
         return
@@ -349,10 +358,22 @@ def _record_output(execution_id: int, output: str, output_truncated: bool) -> No
 
 
 def cli_command_line(argv: list[str]) -> list[str]:
-    # setpriv execs the CLI with SIGTERM as its parent-death signal: if the API worker dies without
-    # stopping it (SIGKILL, OOM), the command still gets a graceful stop instead of running unwatched
+    return [sys.executable, os.path.join(get_base_dir(), "ace"), *argv]
+
+
+def supervised_command_line(command: list[str], timeout_seconds: int) -> list[str]:
+    """command under the sandbox launcher, a child subreaper: whatever the command starts, in whatever
+    session or group, is killed when it exits or is stopped, so the API signals only the launcher.
+
+    --unconfined: the command runs as a shell's would, with no Landlock domain. setpriv gives the
+    launcher SIGTERM as its parent-death signal: if the API worker dies without stopping it (SIGKILL,
+    OOM), the command still gets its graceful stop instead of running unwatched."""
     return ["setpriv", "--pdeathsig", "TERM", "--",
-            sys.executable, os.path.join(get_base_dir(), "ace"), *argv]
+            sandbox_python(), "-I", "-S", LAUNCHER,
+            f"--deadline={timeout_seconds + LAUNCHER_DEADLINE_GRACE.total_seconds():g}",
+            f"--term-grace={TERM_GRACE_SECONDS}",
+            "--unconfined",
+            "--", *command]
 
 
 def _child_environment() -> dict[str, str]:
@@ -363,34 +384,60 @@ def _child_environment() -> dict[str, str]:
     return env
 
 
-def _signal_group(process: asyncio.subprocess.Process, signum: int) -> None:
-    try:
-        # start_new_session made the child a process group leader, so this reaches its children too
-        os.killpg(process.pid, signum)
-    except ProcessLookupError:
-        pass  # the whole group is already gone
-
-
-async def _stop(execution_id: int, process: asyncio.subprocess.Process) -> None:
-    """SIGTERM the command's process group, then SIGKILL it if the command is still there after
-    TERM_GRACE_SECONDS. Bounded: at most TERM_GRACE_SECONDS + KILL_WAIT_SECONDS."""
+async def _stop(execution_id: int, process: asyncio.subprocess.Process, append: Callable[[bytes], None]) -> None:
+    """Tell the launcher to stop the command: it SIGTERMs the command's group, gives it
+    TERM_GRACE_SECONDS, then kills everything the command started and exits. What it prints meanwhile
+    goes to append. Bounded: at most TERM_GRACE_SECONDS + LAUNCHER_STOP_SECONDS + KILL_WAIT_SECONDS
+    + OUTPUT_FLUSH_SECONDS."""
     if process.returncode is not None:
         return
 
-    _signal_group(process, signal.SIGTERM)
-    try:
-        await asyncio.wait_for(process.wait(), timeout=TERM_GRACE_SECONDS)
-        return
-    except TimeoutError:
-        logger.warning("cli execution %s: child %s ignored SIGTERM for %s seconds, killing it",
-                       execution_id, process.pid, TERM_GRACE_SECONDS, extra={"cli_execution_id": execution_id})
+    async def _read_to_eof():
+        while chunk := await process.stdout.read(READ_CHUNK_SIZE):
+            append(chunk)
 
-    _signal_group(process, signal.SIGKILL)
-    # SIGKILL cannot be ignored, so only an unkillable (D state) child takes this long
+    # read while it stops: a command that writes more than the pipe holds would block on it until
+    # it is killed, and the launcher's own messages after it
+    reader = asyncio.ensure_future(_read_to_eof())
     try:
-        await asyncio.wait_for(process.wait(), timeout=KILL_WAIT_SECONDS)
+        await _signal_launcher(execution_id, process)
+    finally:
+        try:
+            # bounded, as a launcher that had to be killed leaves whatever the command started holding the pipe
+            await asyncio.wait_for(reader, timeout=OUTPUT_FLUSH_SECONDS)
+        except TimeoutError:
+            pass  # wait_for cancelled the reader; the rest of the output is not worth waiting for
+
+
+async def _signal_launcher(execution_id: int, process: asyncio.subprocess.Process) -> None:
+    try:
+        process.send_signal(signal.SIGTERM)
+        exit_code = await asyncio.wait_for(process.wait(), timeout=TERM_GRACE_SECONDS + LAUNCHER_STOP_SECONDS)
+    except ProcessLookupError:
+        return  # it exited since the check
     except TimeoutError:
-        logger.warning("cli execution %s: child %s did not exit after SIGKILL", execution_id, process.pid,
+        # the launcher is stuck; what the command started is reparented to init once it dies, and nothing
+        # kills it
+        logger.exception("cli execution %s: launcher %s did not exit %s seconds after SIGTERM, killing it; "
+                         "what the command started may be left running",
+                         execution_id, process.pid, TERM_GRACE_SECONDS + LAUNCHER_STOP_SECONDS,
+                         extra={"cli_execution_id": execution_id, "pid": process.pid})
+    else:
+        if exit_code == EXIT_KILLED:
+            # an engine killed this way kept its locks and left its node running
+            logger.warning("cli execution %s: the command or what it started was still running after SIGTERM "
+                           "and was killed (the end of the run's output says which)", execution_id,
+                           extra={"cli_execution_id": execution_id})
+        return
+
+    try:
+        process.kill()
+        # SIGKILL cannot be ignored, so only an unkillable (D state) launcher takes this long
+        await asyncio.wait_for(process.wait(), timeout=KILL_WAIT_SECONDS)
+    except ProcessLookupError:
+        pass  # it exited after all
+    except TimeoutError:
+        logger.warning("cli execution %s: launcher %s did not exit after SIGKILL", execution_id, process.pid,
                        extra={"cli_execution_id": execution_id})
 
 
@@ -418,7 +465,7 @@ async def run_execution(execution_id: int, argv: list[str], timeout_seconds: int
     try:
         try:
             process = await asyncio.create_subprocess_exec(
-                *cli_command_line(argv),
+                *supervised_command_line(cli_command_line(argv), timeout_seconds),
                 stdin=asyncio.subprocess.DEVNULL,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.STDOUT,
@@ -465,17 +512,7 @@ async def run_execution(execution_id: int, argv: list[str], timeout_seconds: int
                 timed_out = True  # closed its output but kept running
 
         if timed_out:
-            await _stop(execution_id, process)
-            # what it printed while stopping; bounded, as a child it started may still hold the pipe
-            drain_deadline = loop.time() + OUTPUT_FLUSH_SECONDS
-            while (remaining := drain_deadline - loop.time()) > 0:
-                try:
-                    chunk = await asyncio.wait_for(process.stdout.read(READ_CHUNK_SIZE), timeout=remaining)
-                except TimeoutError:
-                    break
-                if not chunk:
-                    break
-                _append(chunk)
+            await _stop(execution_id, process, _append)
             status = STATUS_TIMED_OUT
             error = f"stopped after its timeout of {timeout_seconds} seconds"
         else:
@@ -487,13 +524,13 @@ async def run_execution(execution_id: int, argv: list[str], timeout_seconds: int
         status = STATUS_ABANDONED
         error = "the node's API stopped while the command was running"
         if process is not None:
-            await _shielded_stop(execution_id, process)
+            await _shielded_stop(execution_id, process, _append)
         raise
     except Exception as e:
         log_loop_exception(e, f"running cli execution {execution_id}")
         error = f"internal error running the command: {e}"
         if process is not None:
-            await _shielded_stop(execution_id, process)
+            await _shielded_stop(execution_id, process, _append)
     finally:
         logger.info("cli execution %s finished: %s (exit code %s)", execution_id, status, exit_code,
                     extra={"cli_execution_id": execution_id})
@@ -506,10 +543,11 @@ async def run_execution(execution_id: int, argv: list[str], timeout_seconds: int
             log_loop_exception(e, f"recording the end of cli execution {execution_id}")
 
 
-async def _shielded_stop(execution_id: int, process: asyncio.subprocess.Process) -> None:
+async def _shielded_stop(execution_id: int, process: asyncio.subprocess.Process,
+                         append: Callable[[bytes], None]) -> None:
     """_stop() on a path that must not raise, and must not be cut short by a cancellation."""
     try:
-        await asyncio.shield(_stop(execution_id, process))
+        await asyncio.shield(_stop(execution_id, process, append))
     except asyncio.CancelledError:
         # cancelled again while stopping: the shielded stop carries on by itself, and the
         # cancellation still belongs to the task

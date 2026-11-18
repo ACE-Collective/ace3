@@ -95,7 +95,7 @@ class ManagedTable:
     """A table whose partitions are maintained here."""
     database: str           # the ACE database name (database_<name> in the config)
     table: str
-    column: str             # the DATETIME column the table is partitioned by
+    column: str             # the DATETIME (or DATE) column the table is partitioned by
     granularity: Granularity
     retention_days: int     # partitions entirely older than this many days are dropped
     future_periods: int     # how many periods past the current one to provision
@@ -114,12 +114,19 @@ def get_managed_tables() -> list[ManagedTable]:
     """Returns every table whose partitions are maintained, configured from the ACE config."""
     config = get_config()
     email_retention = config.email_archive.partition_retention_days
-    history_retention = config.email_archive.email_history_retention_days
     cache_retention = config.analysis_cache.partition_retention_days
+    # GC keeps a ttl object while it has a touch within ttl_days, so a touch partition must outlive
+    # the longest ttl of the pools indexed here (docs/CAS.md)
+    touch_retention = max((pool.ttl_days for pool in config.cas.pools.values()
+                           if pool.retention == "ttl" and pool.index_database == DB_EMAIL_ARCHIVE),
+                          default=email_retention)
     return [
+        # at least the email_archive pool's ttl_days (ACEConfig refuses less)
+        ManagedTable(DB_EMAIL_ARCHIVE, "archived_messages", "insert_date", Granularity.WEEK, email_retention, 4),
+        # LEGACY: nothing writes these; maintenance empties them until a later release drops them
         ManagedTable(DB_EMAIL_ARCHIVE, "archive", "insert_date", Granularity.WEEK, email_retention, 4),
         ManagedTable(DB_EMAIL_ARCHIVE, "archive_index", "insert_date", Granularity.WEEK, email_retention, 4),
-        ManagedTable(DB_EMAIL_ARCHIVE, "email_history", "insert_date", Granularity.WEEK, history_retention, 4),
+        ManagedTable(DB_EMAIL_ARCHIVE, "cas_touches", "day", Granularity.DAY, touch_retention, 7),
         # cache rows live for up to 30 days (the longest module cache_ttl), so a partition must outlive that
         ManagedTable(DB_ANALYSIS_RESULT_CACHE, "analysis_result_cache", "created_at", Granularity.DAY, cache_retention, 7,
                      minimum_retention_days=31),

@@ -1,7 +1,7 @@
 ARG DOCKER_IMAGE_PREFIX=docker.io
 FROM ${DOCKER_IMAGE_PREFIX}/library/docker:dind
 
-RUN apk update && apk add --no-cache python3 libmagic
+RUN apk update && apk add --no-cache python3 libmagic tzdata
 
 RUN python3 -m venv /opt/venv
 RUN /opt/venv/bin/pip install -U pip

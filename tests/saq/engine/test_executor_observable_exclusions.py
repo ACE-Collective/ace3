@@ -25,6 +25,7 @@ from saq.constants import (
     DIRECTIVE_EXCLUDE_ALL,
     F_FQDN,
     F_IPV4,
+    F_MAC_ADDRESS,
     F_URL,
 )
 from saq.engine.configuration_manager import ConfigurationManager
@@ -126,11 +127,11 @@ def test_exclusion_ipv4_outside_cidr(tmp_path):
 
 
 @pytest.mark.unit
-def test_exclusion_value_containing_a_colon(tmp_path):
-    """Exclusion specs split on the first colon only, so a url value keeps its
-    scheme separator."""
-    executor = _make_executor({F_URL: ["https://google.com/evil"]})
-    work_item = _make_work_item(tmp_path, F_URL, "https://google.com/evil")
+def test_exclusion_matches_mac_in_any_notation(tmp_path):
+    """mac_address values are stored as aa-bb-cc-dd-ee-ff, but an exclusion written
+    with colons or in upper case still matches (``MacAddressObservable.matches``)."""
+    executor = _make_executor({F_MAC_ADDRESS: ["00:50:56:C0:00:08"]})
+    work_item = _make_work_item(tmp_path, F_MAC_ADDRESS, "00-50-56-c0-00-08")
 
     assert (
         executor._process_observable_exclusions(work_item)
@@ -140,19 +141,9 @@ def test_exclusion_value_containing_a_colon(tmp_path):
 
 @pytest.mark.unit
 def test_no_exclusion_for_unlisted_type(tmp_path):
-    """An observable of a type with no exclusions configured passes through."""
-    executor = _make_executor({F_IPV4: ["127.0.0.1"]})
-    work_item = _make_work_item(tmp_path, F_FQDN, "google.com")
-
-    assert (
-        executor._process_observable_exclusions(work_item)
-        == ObservableExclusionResult.OK
-    )
-
-
-@pytest.mark.unit
-def test_no_exclusions_configured(tmp_path):
-    executor = _make_executor({})
+    """An observable of a type with no exclusions configured passes through, even when another
+    type excludes its value."""
+    executor = _make_executor({F_URL: ["google.com"]})
     work_item = _make_work_item(tmp_path, F_FQDN, "google.com")
 
     assert (
@@ -184,15 +175,15 @@ def test_exclusion_fails_waiting_dependency(tmp_path):
 
 
 @pytest.mark.unit
-def test_whitelisted_observable_is_excluded(tmp_path):
-    """The whitelist check sits above the exclusion check and is unaffected."""
+def test_an_observable_tagged_whitelisted_is_analyzed(tmp_path):
     executor = _make_executor({})
     work_item = _make_work_item(tmp_path, F_FQDN, "google.com")
-    work_item.observable.whitelist()
+    work_item.observable.add_tag("whitelisted")
+    work_item.observable.add_directive("whitelisted")
 
     assert (
         executor._process_observable_exclusions(work_item)
-        == ObservableExclusionResult.EXCLUDED
+        == ObservableExclusionResult.OK
     )
 
 

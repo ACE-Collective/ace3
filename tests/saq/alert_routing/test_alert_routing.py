@@ -8,9 +8,11 @@ import pytest
 from sqlalchemy import update
 
 from saq.alert_routing import AlertRouter, RouteDecision, RouteStage, register_alert_router
+from saq.analysis.analysis import Analysis
 from saq.analysis.root import RootAnalysis, load_root
+from saq.auth import ApiAuthResult
 from saq.configuration.config import get_config
-from saq.constants import ANALYSIS_MODE_CORRELATION, DISPOSITION_FALSE_POSITIVE, QUEUE_DEFAULT
+from saq.constants import ANALYSIS_MODE_CORRELATION, DISPOSITION_FALSE_POSITIVE, F_TEST, QUEUE_DEFAULT
 from saq.database.model import Alert, AlertQueueChange, User, load_alert
 from saq.database.pool import get_db
 from saq.database.private_session import private_transaction
@@ -19,7 +21,10 @@ from saq.database.util.alert import ALERT, get_last_queue_change, move_alert_to_
 from saq.engine.core import Engine
 from saq.engine.enums import EngineExecutionMode
 from saq.engine.execution_context import EngineExecutionContext
-from tests.saq.helpers import create_root_analysis, create_test_orchestrator
+from tests.saq.helpers import create_root_analysis, create_test_orchestrator, person
+
+# a router moving an alert, as the engine names it
+MARKER = ApiAuthResult.system("svs_marker")
 
 pytestmark = pytest.mark.integration
 
@@ -30,7 +35,7 @@ class StageRouter(AlertRouter):
         self.queue = queue
         self.stage = stage
 
-    def route(self, root, stage):
+    def route(self, root, stage, final):
         if stage != self.stage:
             return None
         return RouteDecision(queue=self.queue, reason="test routing")
@@ -101,7 +106,7 @@ class TestPreInsert:
 
     def test_a_raising_router_never_breaks_the_insert(self, monkeypatch):
         class Broken(AlertRouter):
-            def route(self, root, stage):
+            def route(self, root, stage, final):
                 raise RuntimeError("broken router")
 
         monkeypatch.setattr("saq.error.reporting.write_error_report", lambda *a, **k: None)
@@ -120,7 +125,8 @@ class TestMoveAlertToQueue:
         user = get_db().query(User).filter(User.username == "unittest").one()
 
         with caplog.at_level(logging.INFO):
-            assert move_alert_to_queue(alert, "triage", "analyst moved it", actor_user_id=user.id) is True
+            auth = ApiAuthResult(auth_type="user", auth_name="unittest", auth_user_id=user.id, key_id=7)
+            assert move_alert_to_queue(alert, "triage", "analyst moved it", auth) is True
 
         assert alert.queue == "triage"
         assert alert.version != version
@@ -133,30 +139,31 @@ class TestMoveAlertToQueue:
 
         (record,) = [r for r in caplog.records if r.getMessage() == "AUDIT: alert moved to queue"]
         assert (record.alert_uuid, record.from_queue, record.to_queue) == (root.uuid, QUEUE_DEFAULT, "triage")
+        assert (record.actor, record.actor_user_id, record.actor_key_id) == ("unittest", user.id, 7)
 
     def test_moving_back_restores_through_the_record(self, submitted_payloads):
         """The newest change row says what queue the alert came from, which is how a move is
         reversed."""
         alert = ALERT(_saved_root())
-        move_alert_to_queue(alert, "svs", "attributed to a test run", router="svs_marker")
+        move_alert_to_queue(alert, "svs", "attributed to a test run", MARKER, router="svs_marker")
 
         previous = get_last_queue_change(alert.id)
         assert previous.router == "svs_marker"
-        move_alert_to_queue(alert, previous.from_queue, "disassociated", actor_user_id=None)
+        move_alert_to_queue(alert, previous.from_queue, "disassociated", person(None))
 
         assert _stored_queue(alert.uuid) == QUEUE_DEFAULT
         assert [c.to_queue for c in _changes(alert.id)] == ["svs", QUEUE_DEFAULT]
 
     def test_the_same_queue_is_not_a_move(self, submitted_payloads):
         alert = ALERT(_saved_root())
-        assert move_alert_to_queue(alert, QUEUE_DEFAULT, "no-op") is False
+        assert move_alert_to_queue(alert, QUEUE_DEFAULT, "no-op", person(None)) is False
         assert _changes(alert.id) == []
         assert submitted_payloads == []
 
     def test_a_given_root_carries_the_queue(self, submitted_payloads):
         root = _saved_root()
         alert = ALERT(root)
-        move_alert_to_queue(alert, "triage", "moved", root=root)
+        move_alert_to_queue(alert, "triage", "moved", person(None), root=root)
         assert root.queue == "triage"
 
     @pytest.mark.parametrize("change, moved", [
@@ -174,7 +181,7 @@ class TestMoveAlertToQueue:
             session.execute(update(Alert).where(Alert.id == alert.id).values(**values))
 
         automation = get_config().global_settings.automation_user_id
-        assert move_alert_to_queue(alert, "svs", "attributed", router="svs_marker",
+        assert move_alert_to_queue(alert, "svs", "attributed", MARKER, router="svs_marker",
                                    open_unless_owned_by_others={automation}) is moved
         assert _stored_queue(alert.uuid) == ("svs" if moved else QUEUE_DEFAULT)
         assert len(_changes(alert.id)) == int(moved)
@@ -184,7 +191,7 @@ class TestMoveAlertToQueue:
     def test_a_bad_queue_is_refused(self, queue):
         alert = ALERT(_saved_root())
         with pytest.raises(ValueError):
-            move_alert_to_queue(alert, queue, "bad")
+            move_alert_to_queue(alert, queue, "bad", person(None))
 
 
 def _context(root: RootAnalysis) -> EngineExecutionContext:
@@ -202,14 +209,19 @@ class TestPostAnalysis:
     def _sync(self, root):
         create_test_orchestrator()._sync_alert_to_database(_context(root))
 
-    def test_an_open_unowned_alert_is_moved(self, correlation_alert, submitted_payloads):
+    def test_an_open_unowned_alert_is_moved(self, correlation_alert, submitted_payloads, caplog):
         root, alert = correlation_alert
-        self._sync(root)
+        with caplog.at_level(logging.INFO):
+            self._sync(root)
 
         assert _stored_queue(root.uuid) == "post_queue"
         assert load_root(root.storage_dir).queue == "post_queue"
-        assert get_last_queue_change(alert.id).router == "post"
+        change = get_last_queue_change(alert.id)
+        assert (change.router, change.actor_user_id) == ("post", None)
         assert root.uuid in submitted_payloads
+        # the router is who moved it
+        (record,) = [r for r in caplog.records if r.getMessage() == "AUDIT: alert moved to queue"]
+        assert (record.actor, record.auth_type, record.router) == ("post", "system", "post")
 
     def test_an_alert_an_analyst_owns_is_not_moved(self, correlation_alert):
         root, alert = correlation_alert
@@ -247,11 +259,68 @@ class TestReconcile:
         during the next pass see where the alert is now."""
         root = _saved_root(analysis_mode=ANALYSIS_MODE_CORRELATION)
         alert = ALERT(root)
-        move_alert_to_queue(alert, "elsewhere", "moved without the tree")
+        move_alert_to_queue(alert, "elsewhere", "moved without the tree", person(None))
         assert root.queue == QUEUE_DEFAULT
 
         create_test_orchestrator()._check_disposition(_context(root))
         assert root.queue == "elsewhere"
+
+
+class DelayedAnalysis(Analysis):
+    pass
+
+
+class FinalRouter(AlertRouter):
+    """Records the final flag of every call, and decides nothing."""
+
+    def __init__(self, name: str = "final", priority: int = 100):
+        super().__init__(name=name, priority=priority)
+        self.calls: list[tuple[RouteStage, bool]] = []
+
+    def route(self, root, stage, final):
+        self.calls.append((stage, final))
+        return None
+
+
+class TestFinalPass:
+    """Routers are told the alert's last analysis pass (AlertRouter.route)."""
+
+    @pytest.fixture
+    def router(self) -> FinalRouter:
+        router = FinalRouter()
+        register_alert_router(router)
+        return router
+
+    @pytest.fixture
+    def delayed_root(self, router) -> RootAnalysis:
+        root = _saved_root(analysis_mode=ANALYSIS_MODE_CORRELATION)
+        analysis = DelayedAnalysis()
+        analysis.delayed = True
+        root.add_observable_by_spec(F_TEST, "sandbox").add_analysis(analysis)
+        root.save()
+        ALERT(root)
+        return root
+
+    def test_never_at_insert(self, router):
+        ALERT(_saved_root(analysis_mode=ANALYSIS_MODE_CORRELATION))
+        assert router.calls == [(RouteStage.PRE_INSERT, False)]
+
+    def test_a_pass_with_nothing_delayed_is_final(self, router):
+        root = _saved_root(analysis_mode=ANALYSIS_MODE_CORRELATION)
+        ALERT(root)
+        create_test_orchestrator()._sync_alert_to_database(_context(root))
+        assert router.calls[-1] == (RouteStage.POST_ANALYSIS, True)
+
+    def test_a_pass_with_delayed_analysis_is_not(self, router, delayed_root):
+        create_test_orchestrator()._sync_alert_to_database(_context(delayed_root))
+        assert router.calls[-1] == (RouteStage.POST_ANALYSIS, False)
+
+    def test_an_aborted_pass_is_final_although_its_analysis_still_reads_delayed(self, router, delayed_root):
+        context = _context(delayed_root)
+        context.analysis_aborted = True
+        create_test_orchestrator()._sync_alert_to_database(context)
+        assert delayed_root.delayed
+        assert router.calls[-1] == (RouteStage.POST_ANALYSIS, True)
 
 
 class TestEngine:

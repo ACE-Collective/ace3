@@ -98,10 +98,11 @@ def test_build_desired_index_excludes_ignored_observables(root_analysis: RootAna
 
 @pytest.mark.unit
 def test_build_desired_index_collapses_duplicate_observables(root_analysis: RootAnalysis):
-    # the same (type, value) added twice is one row in the observables catalog
-    first = root_analysis.add_observable_by_spec(F_TEST, "same")
-    second = root_analysis.add_observable_by_spec(F_TEST, "same")
-    assert first.sha256_bytes == second.sha256_bytes
+    # the same (type, value) on two observables is one row in the observables catalog; different
+    # times keep the root from merging them into one observable
+    first = root_analysis.add_observable_by_spec(F_TEST, "same", o_time="2026-01-01T00:00:00+00:00")
+    second = root_analysis.add_observable_by_spec(F_TEST, "same", o_time="2026-01-02T00:00:00+00:00")
+    assert first is not second
 
     desired = build_desired_index(root_analysis)
 

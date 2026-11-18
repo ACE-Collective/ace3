@@ -193,10 +193,10 @@ def _run_child(workdir: str, side_dir: str, tree: str, layout: TreeLayout, corpu
                sandbox_config: SandboxConfig, cancel: Optional[threading.Event] = None) -> dict:
     job = {
         "version": child.PROTOCOL_VERSION,
-        "tree_root": tree,
         "file_timeout": get_service_config(SERVICE_YARA_SCANNER).default_timeout,
         "namespaces": [
-            {"name": namespace.name, "directory": namespace.directory, "files": namespace.files}
+            {"name": namespace.name, "directory": namespace.directory, "include_boundary": namespace.include_boundary,
+             "files": namespace.files}
             for namespace in layout.namespaces
         ],
         "units": [
@@ -212,7 +212,7 @@ def _run_child(workdir: str, side_dir: str, tree: str, layout: TreeLayout, corpu
         [sandbox_python(), "-I", os.path.join(workdir, "child.py"), side_dir], workdir, sandbox_config, timeout)
     try:
         result = run_sandboxed(argv, None, _sandbox_env(workdir), workdir, timeout, sandbox_config.max_output_bytes,
-                               cancel=cancel)
+                               cancel=None if cancel is None else cancel.is_set)
     except SandboxCancelled:
         raise ReplayCancelled("the validation was cancelled") from None
     except RuntimeError as e:
@@ -302,7 +302,8 @@ def _side(sha: str, tree: str, layout: TreeLayout, skipped_members: list, output
                 RuleInfo(rule_uuid, rule["name"], entry["namespace"], relative, rule["meta"]))
 
     for unit_id, outcome in output["units"].items():
-        scan.matches[int(unit_id)] = [(match["namespace"], match["rule"], match["meta"]) for match in outcome["matches"]]
+        scan.matches[int(unit_id)] = [(match["namespace"], match["rule"], match["meta"], match["tags"])
+                                     for match in outcome["matches"]]
         if outcome["errors"]:
             scan.errors[int(unit_id)] = {error["namespace"] for error in outcome["errors"]}
 

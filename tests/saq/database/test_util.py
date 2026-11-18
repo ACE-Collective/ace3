@@ -8,7 +8,7 @@ from saq.database.pool import get_db
 from saq.database.util.locking import acquire_lock, release_lock
 from saq.database.util.node import assign_node_analysis_modes, get_node_included_analysis_modes, get_node_excluded_analysis_modes
 from saq.environment import ACE_MP_CONTEXT, get_global_runtime_settings
-from tests.saq.helpers import insert_alert
+from tests.saq.helpers import inject_deadlock, insert_alert
 
 @pytest.mark.integration
 def test_assign_node_analysis_modes():
@@ -115,3 +115,15 @@ def test_expired_lock(monkeypatch: pytest.MonkeyPatch):
     assert not alert.is_locked()
     # and we are able to lock it again
     assert acquire_lock(alert.uuid, lock_uuid)
+@pytest.mark.integration
+def test_assign_node_analysis_modes_runs_again_from_the_start_after_a_deadlock(monkeypatch):
+    assign_node_analysis_modes(analysis_modes=[ANALYSIS_MODE_EMAIL])
+
+    # the second mode's INSERT is the deadlock victim, after the DELETEs and the first INSERT ran
+    failed = inject_deadlock(monkeypatch, "INSERT INTO node_modes (", skip=1)
+    assign_node_analysis_modes(analysis_modes=[ANALYSIS_MODE_CORRELATION, ANALYSIS_MODE_ANALYSIS],
+                               excluded_analysis_modes=[ANALYSIS_MODE_FILE])
+
+    assert len(failed) == 1
+    assert set(get_node_included_analysis_modes()) == {ANALYSIS_MODE_CORRELATION, ANALYSIS_MODE_ANALYSIS}
+    assert get_node_excluded_analysis_modes() == [ANALYSIS_MODE_FILE]

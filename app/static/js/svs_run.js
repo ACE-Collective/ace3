@@ -15,7 +15,7 @@
     const STATES = {
         created: {css: "text-muted", title: "registered; the launcher hasn't started it"},
         started: {css: "text-primary", title: "running: its observation window is open"},
-        ended: {css: "text-warning-emphasis fw-semibold", title: "the observation window passed; it waits for a review"},
+        ended: {css: "text-warning-emphasis fw-semibold", title: "the observation window passed, or a person ended it early; it waits for a review"},
         reviewed: {css: "text-success", title: "signed off"},
         canceled: {css: "text-muted", title: "canceled; it still attributes alerts until its attribution window ends"},
         error: {css: "text-danger fw-semibold", title: "the launcher reported a failure, or never started it"},
@@ -32,6 +32,8 @@
                     title: "it fired, and nobody has decided about it"},
         rejected: {label: "rejected", css: "text-muted", mark: "×", title: "it fired, and it was rejected for the test"},
         ignored: {label: "ignored", css: "text-muted", mark: "–", title: "it fired, and it is ignored"},
+        cleanup: {label: "cleanup only", css: "text-muted fst-italic", mark: "c",
+                  title: "it fired only during the test's cleanup: not a candidate, and never an expectation"},
     };
 
     const SVS_STATUSES = {
@@ -378,6 +380,19 @@
                     act(bulk("take-ownership", null), "The run is yours.");
                 }));
             }
+            if (run.state === "started") {
+                actions.appendChild(button("End now…", "btn-outline-primary",
+                                           "Stop waiting for alerts and review the run now", function() {
+                    act(ask({title: "End this run now?", submit: "End the run",
+                             text: "The run ends now instead of when its observation window passes, and waits for " +
+                                   "review. An expected signature that hasn't had time to fire is missing from its " +
+                                   "result. An alert that fires anyway is still attributed to the run, as late, " +
+                                   "until its attribution window ends.",
+                             reason: {required: true, hint: "Why nothing more will fire."}})
+                        .then(function(answer) { return answer ? bulk("end", answer.reason) : false; }),
+                        "The run has ended.");
+                }));
+            }
             if (ACTIVE_STATES.indexOf(run.state) >= 0) {
                 actions.appendChild(button("Cancel…", null, "Cancel the run, as the launcher would", function() {
                     act(ask({title: "Cancel this run?", submit: "Cancel the run",
@@ -491,6 +506,7 @@
 
             const legend = el("div", "small d-flex flex-wrap gap-3");
             [["registered", run.created_at], ["started", run.started_at], ["executed", run.executed_at],
+             ["cleanup began", run.cleanup_at],
              ["observation ends", run.observation_ends_at], ["ended", run.ended_at], ["canceled", run.canceled_at],
              ["attribution ends", run.attribution_ends_at], ["closed", run.closed_at], ["reviewed", run.reviewed_at]]
                 .forEach(function(item) {
@@ -599,7 +615,16 @@
                 fact("Exit code", String(run.exit_code));
             }
             fact("Launcher error", run.launcher_error ? el("span", "text-danger", run.launcher_error) : null);
+            if (run.launcher_output) {
+                // what the test printed, folded: it can be 64 KiB
+                const output = el("details");
+                output.appendChild(el("summary", "small", run.launcher_output.split("\n").length + " lines"));
+                output.appendChild(el("pre", "small mb-0 text-break-all bg-body-tertiary p-2", run.launcher_output));
+                output.open = !!run.exit_code || !!run.launcher_error;
+                fact("Output", output);
+            }
             fact("Error", run.error_reason ? el("span", "text-danger", run.error_reason) : null);
+            fact("Ended early", run.end_reason);
             fact("Close reason", run.close_reason);
             if (run.extra && Object.keys(run.extra).length) {
                 fact("Extra", el("pre", "small mb-0 text-break-all", JSON.stringify(run.extra, null, 2)));
@@ -752,15 +777,22 @@
                 .forEach(function(label) { head.appendChild(el("th", "small", label)); });
             table.appendChild(append(el("thead"), head));
             const body = el("tbody");
-            state.results.forEach(function(row) {
+            // what fired only during the test's cleanup is shown apart, after the rest
+            const cleanup = state.results.filter(function(r) { return r.status === "cleanup"; });
+            const ordered = state.results.filter(function(r) { return r.status !== "cleanup"; }).concat(cleanup);
+            ordered.forEach(function(row) {
+                if (cleanup.length && row === cleanup[0]) {
+                    const cell = el("td", "small text-muted pt-3",
+                                    "Fired only during the test's cleanup (after " + date(run.cleanup_at) +
+                                    " UTC): never a candidate, never learned as an expectation.");
+                    cell.colSpan = head.children.length;
+                    body.appendChild(append(el("tr"), cell));
+                }
                 const tr = el("tr", row.status ? null : "text-muted");
                 const status = append(el("td"), status_node(row.status));
                 if (row.status === "possibly_suppressed" && row.suppressing_alert_uuid) {
                     const why = el("div", "small");
                     append(why, muted("by the hunt's alert "), alert_link(row.suppressing_alert_uuid));
-                    if (row.suppression_imprecise) {
-                        why.appendChild(muted(" (the hunt groups or deduplicates: maybe not)"));
-                    }
                     status.appendChild(why);
                 }
                 if ((row.status === "missing" || row.status === "possibly_suppressed") && row.signature_family === "yara") {
@@ -772,6 +804,9 @@
                 tr.appendChild(status);
                 tr.appendChild(append(el("td"), signature_node(row)));
                 const alerts = append(el("td", "small"), String(row.alert_count));
+                if (row.fallback_time) {
+                    alerts.appendChild(el("div", "text-warning-emphasis", "by a fallback time"));
+                }
                 if (row.late_only) {
                     alerts.appendChild(el("div", "text-muted", "late only"));
                 }
@@ -980,6 +1015,12 @@
             if (alert.late) {
                 parts.push("late");
             }
+            if (alert.cleanup) {
+                parts.push("cleanup");
+            }
+            if (alert.fallback_time) {
+                parts.push("judged by a fallback time");
+            }
             if (alert.kept) {
                 parts.push("kept");
             }
@@ -1009,6 +1050,16 @@
                 }
                 if (a && a.late && !a.removed_at) {
                     item.appendChild(muted(" · late"));
+                }
+                if (a && a.cleanup && !a.removed_at) {
+                    item.appendChild(muted(" · cleanup"));
+                }
+                if (a && a.fallback_time && !a.removed_at) {
+                    const label = {query_time: "the hunt's query time", now: "the time it was created"}[a.event_time_source]
+                        || "the alert's insert time";
+                    const fallback = el("span", "text-warning-emphasis", " · " + label);
+                    fallback.title = "not the event's own time: it may have put the alert in the wrong window";
+                    item.appendChild(fallback);
                 }
                 list.appendChild(item);
             });

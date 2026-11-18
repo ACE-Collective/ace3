@@ -19,17 +19,18 @@ from saq.database.model import (
     SVSRunEvent,
     SVSRunResult,
     SVSRunResultState,
+    SVSSuppressedMatch,
     User,
 )
 from saq.database.pool import get_db
 from saq.database.private_session import private_transaction
 from saq.signatures.builtin import GENERIC, OBSERVABLE_FLAGGED
 from saq.signatures.loaders.util import content_hash
-from saq.svs import expectations, results, runs, windows
+from saq.svs import expectations, results, review, runs, windows
 from saq.svs.constants import ObservationSource, RunEventKind, RunState
 from saq.svs.result_state import mark_runs_stale
 from saq.svs.runs import Registration, TargetSpec
-from tests.saq.helpers import insert_alert
+from tests.saq.helpers import insert_alert, person
 from tests.saq.svs.conftest import (
     LAUNCHER,
     add_catalog_test,
@@ -40,7 +41,8 @@ from tests.saq.svs.conftest import (
     yara_rule_source,
 )
 
-pytestmark = pytest.mark.integration
+# several runs on one test host are fixtures here; the host's claim is tested in test_runs.py
+pytestmark = [pytest.mark.integration, pytest.mark.usefixtures("overlapping_runs")]
 
 GUID = "aaaaaaaa-1111-4111-8111-111111111111"
 OTHER_GUID = "bbbbbbbb-2222-4222-8222-222222222222"
@@ -83,12 +85,13 @@ def _run(test_guid: str = GUID, *, ended: bool = True, started_at: timedelta = t
 
 
 def _attribute(run: SVSRun, signature_uuid: str, *, alert_uuid=None, late=False, confidence="marker",
-               removed=False) -> str:
+               removed=False, event_time: Optional[datetime] = None, event_time_source: Optional[str] = None) -> str:
     alert_uuid = alert_uuid or str(uuid.uuid4())
     with private_transaction() as session:
         session.add(SVSAttribution(
             run_id=run.id, alert_uuid=alert_uuid, content_hash=uuid.uuid4().hex + uuid.uuid4().hex,
             signature_uuid=signature_uuid, signature_family="yara", confidence=confidence, late=late,
+            event_time=event_time, event_time_source=event_time_source,
             source="router", actor="svs", created_at=datetime.now(),
             removed_at=datetime.now() if removed else None, removed_by="svs" if removed else None))
     return alert_uuid
@@ -114,16 +117,28 @@ def _state(run: SVSRun) -> SVSRunResultState:
     return db.get(SVSRunResultState, run.id)
 
 
-def _hunt(hunt_dir: Path, *, suppression: Optional[str] = "1:00:00:00", grouped=False, latency="01:00:00") -> Path:
+def _hunt(hunt_dir: Path, *, suppression: Optional[str] = "1:00:00:00", grouped=False, dedup=False,
+          latency="01:00:00") -> Path:
     """HUNT's file: a hunt whose latency is its frequency."""
     rule = {"name": "suspicious powershell"}
     if suppression:
         rule["suppression"] = suppression
     if grouped:
         rule["group_by"] = "hostname"
+    if dedup:
+        rule["dedup_key"] = "{{ hostname }}"
     path = write_hunt(hunt_dir, HUNT, frequency=latency, **rule)
     windows.clear_cache()
     return path
+
+
+def _suppressed_match(run: SVSRun, hunt_uuid: str = HUNT, dedup_key: Optional[str] = None) -> None:
+    """The hunter's record that the hunt dropped a match during the run: for its suppression, or with
+    dedup_key as a duplicate."""
+    with private_transaction() as session:
+        session.add(SVSSuppressedMatch(run_id=run.id, hunt_uuid=hunt_uuid,
+                                       group_value=None if dedup_key else "win10-01", dedup_key=dedup_key,
+                                       event_time=run.started_at + timedelta(minutes=5)))
 
 
 def _hunt_alert(inserted_at: datetime) -> str:
@@ -142,24 +157,66 @@ class TestStatuses:
         run = _run()
         for signature in (HUNT, YARA, NOISE, OTHER):
             _attribute(run, signature)
-        expectations.set_expectation(GUID, HUNT, "expected", user_id, platform="windows")
-        expectations.set_expectation(GUID, YARA, "rejected", user_id, platform="windows")
-        expectations.set_ignore(NOISE, user_id, reason="winrm")
+        expectations.set_expectation(GUID, HUNT, "expected", person(user_id), platform="windows")
+        expectations.set_expectation(GUID, YARA, "rejected", person(user_id), platform="windows")
+        expectations.set_ignore(NOISE, person(user_id), reason="winrm")
         # expected and never fired
         missing = "55555555-eeee-4eee-8eee-555555555555"
-        expectations.set_expectation(GUID, missing, "expected", user_id, platform="windows")
+        expectations.set_expectation(GUID, missing, "expected", person(user_id), platform="windows")
 
         results.compute_result(run.id)
         assert _statuses(run) == {HUNT: "hit", YARA: "rejected", NOISE: "ignored", OTHER: "candidate",
                                   missing: "missing"}
 
+    def test_what_fired_only_in_the_cleanup(self, user_id):
+        run = _run()
+        cleanup_at = run.started_at + timedelta(minutes=10)
+        db = get_db()
+        db.execute(update(SVSRun).where(SVSRun.id == run.id).values(cleanup_at=cleanup_at))
+        db.commit()
+        before, after = cleanup_at - timedelta(minutes=1), cleanup_at
+        # fired by the test and again by its cleanup: counted by the test's alerts alone
+        _attribute(run, HUNT, event_time=before)
+        _attribute(run, HUNT, event_time=after)
+        _attribute(run, HUNT, event_time=after)
+        # fired only by the cleanup: not a candidate
+        _attribute(run, OTHER, event_time=after)
+        # expected, and fired only by the cleanup: missing
+        _attribute(run, YARA, event_time=after + timedelta(minutes=1))
+        expectations.set_expectation(GUID, YARA, "expected", person(user_id), platform="windows")
+        # an attribution from before event times were kept is the test's
+        _attribute(run, NOISE)
+
+        results.compute_result(run.id)
+        assert _statuses(run) == {HUNT: "candidate", OTHER: "cleanup", YARA: "missing", NOISE: "candidate"}
+        assert _row(run, HUNT).alert_count == 1
+        assert _row(run, OTHER).alert_count == 1
+        # nothing the cleanup fired stands in the way of a review
+        assert review.review_blockers(get_db(), get_db().get(SVSRun, run.id), lock=False)["candidates"] == sorted(
+            [HUNT, NOISE])
+
+    def test_a_signature_judged_by_a_fallback_time_says_so(self):
+        run = _run()
+        _attribute(run, HUNT, event_time_source="event")
+        _attribute(run, HUNT, event_time_source="query_time")
+        _attribute(run, YARA, event_time_source="event")
+        _attribute(run, OTHER, event_time_source="insert_time")
+        created = "55555555-eeee-4eee-8eee-555555555555"
+        _attribute(run, created, event_time_source="now")
+        # from before the source was kept
+        _attribute(run, NOISE)
+
+        results.compute_result(run.id)
+        assert {uuid: _row(run, uuid).fallback_time for uuid in (HUNT, YARA, OTHER, created, NOISE)} == {
+            HUNT: True, YARA: False, OTHER: True, created: True, NOISE: False}
+
     def test_an_ignore_wins_over_an_expectation(self, user_id):
         run = _run()
         _attribute(run, HUNT)
-        expectations.set_expectation(GUID, HUNT, "expected", user_id, platform="windows")
-        expectations.set_expectation(GUID, YARA, "expected", user_id, platform="windows")
-        expectations.set_ignore(HUNT, user_id, test_guid=GUID)
-        expectations.set_ignore(YARA, user_id, test_guid=GUID)
+        expectations.set_expectation(GUID, HUNT, "expected", person(user_id), platform="windows")
+        expectations.set_expectation(GUID, YARA, "expected", person(user_id), platform="windows")
+        expectations.set_ignore(HUNT, person(user_id), test_guid=GUID)
+        expectations.set_ignore(YARA, person(user_id), test_guid=GUID)
 
         results.compute_result(run.id)
         # an ignored signature that fired is ignored, and one that didn't is not missing
@@ -168,8 +225,8 @@ class TestStatuses:
     def test_another_tests_decisions_do_not_apply(self, user_id):
         run = _run()
         _attribute(run, HUNT)
-        expectations.set_expectation(OTHER_GUID, HUNT, "expected", user_id, platform="windows")
-        expectations.set_ignore(HUNT, user_id, test_guid=OTHER_GUID)
+        expectations.set_expectation(OTHER_GUID, HUNT, "expected", person(user_id), platform="windows")
+        expectations.set_ignore(HUNT, person(user_id), test_guid=OTHER_GUID)
         results.compute_result(run.id)
         assert _statuses(run) == {HUNT: "candidate"}
 
@@ -177,13 +234,13 @@ class TestStatuses:
         _multi_platform_test()
         run = started_run(MULTI, "linux-01")
         _attribute(run, HUNT)
-        expectations.set_expectation(MULTI, HUNT, "rejected", user_id, platform="windows")
-        expectations.set_expectation(MULTI, YARA, "expected", user_id, platform="windows")
+        expectations.set_expectation(MULTI, HUNT, "rejected", person(user_id), platform="windows")
+        expectations.set_expectation(MULTI, YARA, "expected", person(user_id), platform="windows")
         results.compute_result(run.id)
         assert _statuses(run) == {HUNT: "candidate"}
 
         # but the test's ignores apply on every platform
-        expectations.set_ignore(HUNT, user_id, test_guid=MULTI)
+        expectations.set_ignore(HUNT, person(user_id), test_guid=MULTI)
         results.compute_result(run.id)
         assert _statuses(run) == {HUNT: "ignored"}
 
@@ -216,7 +273,7 @@ class TestStatuses:
         _attribute(run, YARA)
         write_yara_rule(yara_dir, "Suspicious_Macro", YARA)
         hunt_file = _hunt(hunt_dir)
-        expectations.set_expectation(GUID, HUNT, "expected", user_id, platform="windows")
+        expectations.set_expectation(GUID, HUNT, "expected", person(user_id), platform="windows")
 
         results.compute_result(run.id)
         yara, hunt = _row(run, YARA), _row(run, HUNT)
@@ -237,7 +294,7 @@ class TestStatuses:
 class TestSuppression:
     @pytest.fixture(autouse=True)
     def expected_hunt(self, user_id):
-        expectations.set_expectation(GUID, HUNT, "expected", user_id, platform="windows")
+        expectations.set_expectation(GUID, HUNT, "expected", person(user_id), platform="windows")
 
     def test_a_hunt_alert_within_its_suppression_period(self, hunt_dir):
         _hunt(hunt_dir)
@@ -249,14 +306,51 @@ class TestSuppression:
         row = _row(run, HUNT)
         assert row.status == "possibly_suppressed"
         assert row.suppressing_alert_uuid == during != before
-        assert row.suppression_imprecise is False
 
-    def test_a_grouped_hunt_is_imprecise(self, hunt_dir):
-        _hunt(hunt_dir, grouped=True)
+    @pytest.mark.parametrize("suppression", ["1:00:00:00", None])
+    def test_a_duplicate_the_collector_recorded(self, hunt_dir, suppression):
+        """The collector dropped the run's match as a duplicate of its key, whatever the hunt's
+        suppression: certain, and the hunt's alert is not named, since it may be another key's."""
+        _hunt(hunt_dir, dedup=True, suppression=suppression)
         run = _run()
         _hunt_alert(run.started_at - timedelta(hours=3))
+        _suppressed_match(run, dedup_key=f"{HUNT}:win10-01")
         results.compute_result(run.id)
-        assert _row(run, HUNT).suppression_imprecise is True
+        row = _row(run, HUNT)
+        assert (row.status, row.suppressing_alert_uuid) == ("possibly_suppressed", None)
+
+    def test_a_grouped_hunt_the_hunter_recorded_as_suppressed(self, hunt_dir, caplog):
+        """Certain, whatever its alerts: none is named, since the latest may be another group's."""
+        _hunt(hunt_dir, grouped=True)
+        run = _run()
+        _hunt_alert(run.started_at + timedelta(minutes=10))
+        _suppressed_match(run)
+
+        with caplog.at_level(logging.INFO):
+            results.compute_result(run.id)
+        row = _row(run, HUNT)
+        assert (row.status, row.suppressing_alert_uuid) == ("possibly_suppressed", None)
+        record = next(r for r in caplog.records if "is missing expected signature" in r.getMessage())
+        assert record.getMessage().endswith(", possibly suppressed") and record.possibly_suppressed
+
+    def test_a_grouped_hunt_the_hunter_did_not_suppress_is_missing(self, hunt_dir):
+        """An alert of the hunt within its suppression period, of another group, or a record of
+        another run, does not make it suppressed."""
+        _hunt(hunt_dir, grouped=True)
+        run = _run()
+        _hunt_alert(run.started_at + timedelta(minutes=10))
+        _suppressed_match(_run(OTHER_GUID))
+
+        results.compute_result(run.id)
+        assert _row(run, HUNT).status == "missing"
+
+    def test_another_runs_alert_of_an_ungrouped_hunt_still_suppresses(self, hunt_dir):
+        _hunt(hunt_dir)
+        run = _run()
+        other = _run(started_at=timedelta(hours=30))
+        _attribute(other, YARA, alert_uuid=_hunt_alert(run.started_at - timedelta(hours=3)))
+        results.compute_result(run.id)
+        assert _row(run, HUNT).status == "possibly_suppressed"
 
     @pytest.mark.parametrize("hunt, offset", [
         ({}, timedelta(days=-2)),                     # before the suppression period
@@ -301,7 +395,7 @@ class TestKeepingRows:
     def test_an_event_and_a_record_only_when_the_result_changes(self, user_id, caplog):
         run = _run()
         _attribute(run, YARA)
-        expectations.set_expectation(GUID, HUNT, "expected", user_id, platform="windows")
+        expectations.set_expectation(GUID, HUNT, "expected", person(user_id), platform="windows")
 
         with caplog.at_level(logging.DEBUG):
             results.compute_result(run.id)
@@ -407,31 +501,31 @@ class TestDecisionsMarkRunsStale:
         _multi_platform_test()
         linux, windows_run = started_run(MULTI, "linux-01"), started_run(MULTI, "windows-01")
         self._clear(linux, windows_run)
-        expectations.set_expectation(MULTI, YARA, "expected", user_id, platform="linux")
+        expectations.set_expectation(MULTI, YARA, "expected", person(user_id), platform="linux")
         assert _state(linux).stale and not _state(windows_run).stale
 
         self._clear(linux)
-        expectations.remove_expectation(MULTI, "linux", YARA, user_id)
+        expectations.remove_expectation(MULTI, "linux", YARA, person(user_id))
         assert _state(linux).stale and not _state(windows_run).stale
 
     def test_a_tests_decision_marks_its_runs(self, user_id):
         mine, other = _run(), _run(OTHER_GUID)
         self._clear(mine, other)
-        expectations.set_expectation(GUID, YARA, "expected", user_id, platform="windows")
+        expectations.set_expectation(GUID, YARA, "expected", person(user_id), platform="windows")
         assert _state(mine).stale and not _state(other).stale
 
         self._clear(mine)
-        expectations.set_ignore(YARA, user_id, test_guid=GUID)
+        expectations.set_ignore(YARA, person(user_id), test_guid=GUID)
         assert _state(mine).stale and not _state(other).stale
 
     def test_a_global_ignore_marks_every_run(self, user_id):
         mine, other = _run(), _run(OTHER_GUID)
         self._clear(mine, other)
-        expectations.set_ignore(YARA, user_id)
+        expectations.set_ignore(YARA, person(user_id))
         assert _state(mine).stale and _state(other).stale
 
         self._clear(mine, other)
-        expectations.remove_ignore(YARA, user_id)
+        expectations.remove_ignore(YARA, person(user_id))
         assert _state(mine).stale and _state(other).stale
 
 
@@ -440,8 +534,8 @@ class TestDecisions:
         run = _run()
         _attribute(run, YARA)
         results.compute_result(run.id)
-        expectation = expectations.set_expectation(GUID, YARA, "expected", user_id, reason="the macro",
-                                                   run_uuid=run.uuid, actor="analyst")
+        expectation = expectations.set_expectation(GUID, YARA, "expected", person(user_id, "analyst"), reason="the macro",
+                                                   run_uuid=run.uuid)
         assert (expectation.decided_from_run_id, expectation.signature_family) == (run.id, "yara")
 
         db = get_db()
@@ -454,20 +548,20 @@ class TestDecisions:
         _multi_platform_test()
         linux = started_run(MULTI, "linux-01")
         with pytest.raises(expectations.InvalidDecision, match="is not one of"):
-            expectations.set_expectation(MULTI, YARA, "expected", user_id, platform="macos")
+            expectations.set_expectation(MULTI, YARA, "expected", person(user_id), platform="macos")
         with pytest.raises(expectations.InvalidDecision, match="is not one of"):
-            expectations.set_expectation(MULTI, YARA, "expected", user_id)
+            expectations.set_expectation(MULTI, YARA, "expected", person(user_id))
         with pytest.raises(expectations.InvalidDecision, match="is on linux"):
-            expectations.set_expectation(MULTI, YARA, "expected", user_id, platform="windows", run_uuid=linux.uuid)
+            expectations.set_expectation(MULTI, YARA, "expected", person(user_id), platform="windows", run_uuid=linux.uuid)
         # from a run, the decision is about the run's platform
-        assert expectations.set_expectation(MULTI, YARA, "expected", user_id, run_uuid=linux.uuid).platform == "linux"
+        assert expectations.set_expectation(MULTI, YARA, "expected", person(user_id), run_uuid=linux.uuid).platform == "linux"
         with pytest.raises(expectations.UnknownDecision):
             expectations.get_expectation(MULTI, "windows", YARA)
 
     def test_a_run_of_another_test_is_refused(self, user_id):
         other = _run(OTHER_GUID)
         with pytest.raises(expectations.InvalidDecision):
-            expectations.set_expectation(GUID, YARA, "expected", user_id, run_uuid=other.uuid)
+            expectations.set_expectation(GUID, YARA, "expected", person(user_id), run_uuid=other.uuid)
 
     @pytest.mark.parametrize("test_guid, signature_uuid, state, error", [
         ("cccccccc-0000-4000-8000-000000000000", YARA, "expected", expectations.UnknownTest),
@@ -476,22 +570,22 @@ class TestDecisions:
     ])
     def test_refused(self, user_id, test_guid, signature_uuid, state, error):
         with pytest.raises(error):
-            expectations.set_expectation(test_guid, signature_uuid, state, user_id, platform="windows")
+            expectations.set_expectation(test_guid, signature_uuid, state, person(user_id), platform="windows")
 
     def test_deciding_again_replaces_the_decision_and_removing_it_forgets_it(self, user_id):
-        expectations.set_expectation(GUID, YARA, "expected", user_id, platform="windows")
-        assert expectations.set_expectation(GUID, YARA, "rejected", user_id, platform="windows").state == "rejected"
-        expectations.remove_expectation(GUID, "windows", YARA, user_id)
+        expectations.set_expectation(GUID, YARA, "expected", person(user_id), platform="windows")
+        assert expectations.set_expectation(GUID, YARA, "rejected", person(user_id), platform="windows").state == "rejected"
+        expectations.remove_expectation(GUID, "windows", YARA, person(user_id))
         with pytest.raises(expectations.UnknownDecision):
             expectations.get_expectation(GUID, "windows", YARA)
 
     def test_settings_are_bounded(self, user_id):
         with pytest.raises(expectations.InvalidDecision):
-            expectations.set_test_settings(GUID, user_id, observation_minutes=0)
+            expectations.set_test_settings(GUID, person(user_id), observation_minutes=0)
         with pytest.raises(expectations.InvalidDecision):
-            expectations.set_test_settings(GUID, user_id, observation_minutes=expectations.max_observation_minutes() + 1)
-        assert expectations.set_test_settings(GUID, user_id, observation_minutes=90).observation_minutes == 90
-        expectations.remove_test_settings(GUID, user_id)
+            expectations.set_test_settings(GUID, person(user_id), observation_minutes=expectations.max_observation_minutes() + 1)
+        assert expectations.set_test_settings(GUID, person(user_id), observation_minutes=90).observation_minutes == 90
+        expectations.remove_test_settings(GUID, person(user_id))
         assert expectations.get_test_settings(GUID) is None
 
 
@@ -513,10 +607,10 @@ class TestWindows:
     def test_the_expected_signatures(self, hunt_dir, user_id):
         write_hunt(hunt_dir, OTHER, name="slow", frequency="20:00:00")
         _hunt(hunt_dir, latency="02:00:00")
-        expectations.set_expectation(GUID, HUNT, "expected", user_id, platform="windows")
-        expectations.set_expectation(GUID, OTHER, "expected", user_id, platform="windows")
+        expectations.set_expectation(GUID, HUNT, "expected", person(user_id), platform="windows")
+        expectations.set_expectation(GUID, OTHER, "expected", person(user_id), platform="windows")
         # an ignored expectation doesn't hold the window open
-        expectations.set_ignore(OTHER, user_id, test_guid=GUID)
+        expectations.set_ignore(OTHER, person(user_id), test_guid=GUID)
 
         run = self._register()
         assert self._source(run) == ObservationSource.EXPECTED
@@ -525,7 +619,7 @@ class TestWindows:
     def test_only_the_runs_platforms_expected_signatures(self, hunt_dir, user_id):
         _multi_platform_test()
         _hunt(hunt_dir, latency="02:00:00")
-        expectations.set_expectation(MULTI, HUNT, "expected", user_id, platform="linux")
+        expectations.set_expectation(MULTI, HUNT, "expected", person(user_id), platform="linux")
 
         def register(hostname: str) -> SVSRun:
             return runs.register(Registration(test_guid=MULTI, targets=[TargetSpec(hostname)], launcher="art"),
@@ -535,7 +629,7 @@ class TestWindows:
         assert self._source(register("windows-01")) == ObservationSource.ALL_HUNTS
 
     def test_the_tests_override(self, user_id):
-        expectations.set_test_settings(GUID, user_id, observation_minutes=15)
+        expectations.set_test_settings(GUID, person(user_id), observation_minutes=15)
         run = self._register()
         assert self._source(run) == ObservationSource.OVERRIDE
         # used as it is: no slack, no floor

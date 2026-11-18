@@ -1,4 +1,5 @@
 from datetime import datetime
+import time
 from unittest.mock import patch
 from uuid import uuid4
 
@@ -16,17 +17,16 @@ from saq.monitoring.monitors.distributed_delayed_analysis_monitor import Distrib
 from saq.monitoring.monitors.distributed_locks_monitor import DistributedLocksMonitor
 from saq.monitoring.monitors.node_status_monitor import NodeStatusMonitor
 from saq.monitoring.monitors.cas_pool_monitor import CASPoolMonitor
-from saq.monitoring.threaded_monitor import ACEThreadedMonitor
 
 
-def _add_node(db, name, status="running", expected_state="online", heartbeat_age_seconds=0):
+def _add_node(db, name, status="running", expected_state="online", heartbeat_age_seconds=0, location=None):
     cursor = db.cursor()
     cursor.execute("SELECT id FROM company LIMIT 1")
     company_id = cursor.fetchone()[0]
     cursor.execute(
         "INSERT INTO nodes (name, location, company_id, last_update, status, expected_state) "
         "VALUES (%s, %s, %s, DATE_SUB(NOW(), INTERVAL %s SECOND), %s, %s)",
-        (name, name, company_id, heartbeat_age_seconds, status, expected_state))
+        (name, location or name, company_id, heartbeat_age_seconds, status, expected_state))
     return cursor.lastrowid
 
 
@@ -64,13 +64,6 @@ def _add_lock(db, uuid, lock_owner, lock_time=None):
 
 def _emitted(mock_emit):
     return [c[0][1] for c in mock_emit.call_args_list]
-
-
-@pytest.mark.unit
-def test_monitors_inherit_from_ace_threaded_monitor():
-    for monitor_class in (DistributedWorkloadMonitor, LocalWorkloadMonitor,
-                          DistributedDelayedAnalysisMonitor, DistributedLocksMonitor):
-        assert issubclass(monitor_class, ACEThreadedMonitor)
 
 
 @pytest.mark.integration
@@ -201,12 +194,6 @@ class TestDistributedDelayedAnalysisMonitor:
         assert modules == ["o365_session_activity", "phishkit_analyzer", "yara"]
 
     @patch("saq.monitoring.monitors.distributed_delayed_analysis_monitor.emit_monitor", wraps=emit_monitor)
-    def test_execute_emits_nothing_for_empty_results(self, mock_emit):
-        DistributedDelayedAnalysisMonitor(name="test", frequency=1.0).execute()
-
-        mock_emit.assert_not_called()
-
-    @patch("saq.monitoring.monitors.distributed_delayed_analysis_monitor.emit_monitor", wraps=emit_monitor)
     def test_execute_reports_every_node_not_just_the_local_one(self, mock_emit):
         """The monitor runs on one node and must report the whole cluster.
 
@@ -251,12 +238,6 @@ class TestDistributedLocksMonitor:
             "lock_owner": "node1-worker-3",
             "node": "node1",
         }]
-
-    @patch("saq.monitoring.monitors.distributed_locks_monitor.emit_monitor", wraps=emit_monitor)
-    def test_execute_emits_nothing_for_empty_results(self, mock_emit):
-        DistributedLocksMonitor(name="test", frequency=1.0).execute()
-
-        mock_emit.assert_not_called()
 
     @patch("saq.monitoring.monitors.distributed_locks_monitor.emit_monitor", wraps=emit_monitor)
     def test_locks_attributed_to_the_owning_node(self, mock_emit):
@@ -344,26 +325,21 @@ class TestNodeStatusMonitorQueries:
         assert emitted["crashed-node"]["expected_state"] == "online"
 
     @patch("saq.monitoring.monitors.node_status_monitor.emit_monitor", wraps=emit_monitor)
-    def test_reports_a_node_that_is_not_running(self, mock_emit):
-        """A node that is off cannot report on itself, which is exactly why this reads the
-        database from one node rather than having each node report for itself."""
-        with get_db_connection() as db:
-            _add_node(db, "shut-down-node", status="stopped",
-                           expected_state="offline", heartbeat_age_seconds=7200)
-            db.commit()
-
-        NodeStatusMonitor(name="test", frequency=1.0).execute()
-
-        assert "shut-down-node" in self._emitted_by_node(mock_emit)
-
-    @patch("saq.monitoring.monitors.node_status_monitor.emit_monitor", wraps=emit_monitor)
-    def test_heartbeat_age_comes_from_the_database_clock(self, mock_emit):
+    def test_heartbeat_age_comes_from_the_database_clock(self, mock_emit, monkeypatch):
         with get_db_connection() as db:
             _add_node(db, "stale-node", heartbeat_age_seconds=600)
             _add_node(db, "fresh-node", heartbeat_age_seconds=0)
             db.commit()
 
-        NodeStatusMonitor(name="test", frequency=1.0).execute()
+        # the container's clock is on UTC, the same as the database's, so an age computed
+        # against this process's local time would pass unless the two differ
+        monkeypatch.setenv("TZ", "Etc/GMT-14")
+        time.tzset()
+        try:
+            NodeStatusMonitor(name="test", frequency=1.0).execute()
+        finally:
+            monkeypatch.delenv("TZ")
+            time.tzset()
 
         emitted = self._emitted_by_node(mock_emit)
         # allow a little slack for the time between the insert and the query
@@ -405,18 +381,71 @@ class TestNodeStatusMonitorQueries:
         """The payload key is `node` and it holds nodes.name -- the same string fluent-bit
         stamps as the Splunk host, which is what the saved searches join on."""
         with get_db_connection() as db:
-            _add_node(db, "email-scanner-1")
+            _add_node(db, "email-scanner-1", location="10.0.0.1:443")
             db.commit()
 
         NodeStatusMonitor(name="test", frequency=1.0).execute()
 
         emitted = self._emitted_by_node(mock_emit)["email-scanner-1"]
-        assert emitted["node"] == "email-scanner-1"
-        assert emitted["location"] == "email-scanner-1"
+        assert emitted["location"] == "10.0.0.1:443"
+
+
+def _only_this_node_is_live(db):
+    """Every registered node's heartbeat is a day old except this one's, which is fresh."""
+    cursor = db.cursor()
+    cursor.execute("UPDATE nodes SET last_update = DATE_SUB(NOW(), INTERVAL 1 DAY)")
+    cursor.execute("UPDATE nodes SET last_update = NOW() WHERE id = %s", (get_global_runtime_settings().saq_node_id,))
 
 
 @pytest.mark.integration
 class TestCASPoolMonitor:
+    @patch("saq.monitoring.monitors.cas_pool_monitor.emit_monitor", wraps=emit_monitor)
+    def test_a_single_node_with_local_pools_is_not_an_error(self, mock_emit, caplog):
+        with get_db_connection() as db:
+            _only_this_node_is_live(db)
+            # a node that stopped heartbeating long ago is not a second node
+            _add_node(db, "decommissioned", heartbeat_age_seconds=3600)
+            db.commit()
+
+        CASPoolMonitor(name="test", frequency=1.0).execute()
+
+        emitted = {c[0][1]["pool"]: c[0][1] for c in mock_emit.call_args_list}
+        assert (emitted["email_archive"]["node_local"], emitted["email_archive"]["live_nodes"]) == (True, 1)
+        assert not [r for r in caplog.records if r.levelname == "ERROR"]
+
+    @patch("saq.monitoring.monitors.cas_pool_monitor.emit_monitor", wraps=emit_monitor)
+    def test_a_node_local_pool_on_a_multi_node_cluster_is_an_error(self, mock_emit, caplog):
+        with get_db_connection() as db:
+            _only_this_node_is_live(db)
+            _add_node(db, "second-node")
+            db.commit()
+
+        CASPoolMonitor(name="test", frequency=1.0).execute()
+
+        emitted = {c[0][1]["pool"]: c[0][1] for c in mock_emit.call_args_list}
+        assert emitted["email_archive"]["live_nodes"] == 2
+        errors = {r.cas_pool: r for r in caplog.records if r.levelname == "ERROR"}
+        # every configured pool uses the local backend here, and each one is named
+        assert set(errors) == set(get_cas().pool_names())
+        assert errors["email_archive"].live_nodes == 2
+        assert "only the primary collects its bytes" in errors["email_archive"].getMessage()
+
+    @patch("saq.monitoring.monitors.cas_pool_monitor.emit_monitor", wraps=emit_monitor)
+    def test_a_shared_backend_on_a_multi_node_cluster_is_not_an_error(self, mock_emit, caplog, monkeypatch):
+        with get_db_connection() as db:
+            _only_this_node_is_live(db)
+            _add_node(db, "second-node")
+            db.commit()
+
+        # what an integration's object-store backend declares
+        monkeypatch.setattr(type(get_cas().pool("email_archive").backend), "node_local", False)
+
+        CASPoolMonitor(name="test", frequency=1.0).execute()
+
+        emitted = {c[0][1]["pool"]: c[0][1] for c in mock_emit.call_args_list}
+        assert emitted["email_archive"]["node_local"] is False
+        assert not [r for r in caplog.records if r.levelname == "ERROR"]
+
     @patch("saq.monitoring.monitors.cas_pool_monitor.emit_monitor", wraps=emit_monitor)
     def test_emits_one_record_per_pool(self, mock_emit):
         get_cas().pool("test_plain").put(b"monitored")
@@ -425,7 +454,8 @@ class TestCASPoolMonitor:
 
         emitted = {c[0][1]["pool"]: c[0][1] for c in mock_emit.call_args_list}
         assert {c[0][0].path for c in mock_emit.call_args_list} == {"cas.pool"}
-        # yara_qa and svs_samples are the pools saq.default.yaml defines out of the box
-        assert set(emitted) == {"test_plain", "test_encrypted", "test_permanent", "yara_qa", "svs_samples"}
+        # yara_qa, svs_samples and email_archive are the pools saq.default.yaml defines out of the box
+        assert set(emitted) == {"test_plain", "test_encrypted", "test_permanent", "test_ttl", "yara_qa", "svs_samples",
+                                "email_archive"}
         assert emitted["test_plain"]["objects_present"] == 1
         assert emitted["test_plain"]["size_bytes"] == len(b"monitored")

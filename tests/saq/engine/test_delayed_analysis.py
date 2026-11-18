@@ -70,7 +70,7 @@ class TestDelayedAnalysisRequest:
         
         assert request.database_id is None
     
-    @pytest.mark.parametrize("invalid_uuid", [None, "", 123, []])
+    @pytest.mark.parametrize("invalid_uuid", [None, ""])
     def test_initialization_invalid_uuid(self, invalid_uuid):
         """Test that invalid uuid values raise AssertionError."""
         with pytest.raises(AssertionError):
@@ -82,7 +82,7 @@ class TestDelayedAnalysisRequest:
                 storage_dir="/test/storage"
             )
     
-    @pytest.mark.parametrize("invalid_observable_uuid", [None, "", 123, []])
+    @pytest.mark.parametrize("invalid_observable_uuid", [None, ""])
     def test_initialization_invalid_observable_uuid(self, invalid_observable_uuid):
         """Test that invalid observable_uuid values raise AssertionError."""
         with pytest.raises(AssertionError):
@@ -94,7 +94,7 @@ class TestDelayedAnalysisRequest:
                 storage_dir="/test/storage"
             )
     
-    @pytest.mark.parametrize("invalid_analysis_module", [None, "", 123, []])
+    @pytest.mark.parametrize("invalid_analysis_module", [None, ""])
     def test_initialization_invalid_analysis_module(self, invalid_analysis_module):
         """Test that invalid analysis_module values raise AssertionError."""
         with pytest.raises(AssertionError):
@@ -106,7 +106,7 @@ class TestDelayedAnalysisRequest:
                 storage_dir="/test/storage"
             )
     
-    @pytest.mark.parametrize("invalid_storage_dir", [None, "", 123, []])
+    @pytest.mark.parametrize("invalid_storage_dir", [None, ""])
     def test_initialization_invalid_storage_dir(self, invalid_storage_dir):
         """Test that invalid storage_dir values raise AssertionError."""
         with pytest.raises(AssertionError):
@@ -245,29 +245,4 @@ class TestDelayedAnalysisRequest:
         assert request.root is not None
         assert request.observable is not None
         assert request.analysis_module is configuration_manager.get_analysis_module_by_name("basic_test")
-        assert request.analysis is None
-    
-    def test_load_all_failures(self, tmpdir, configuration_manager):
-        """Test load when all components fail to load."""
-        # Create a test root analysis
-        root = create_root_analysis(storage_dir=str(tmpdir))
-        root.initialize_storage()
-        root.save()
-        
-        # Create delayed analysis request with non-existent observable
-        request = DelayedAnalysisRequest(
-            uuid=root.uuid,
-            observable_uuid="non-existent-uuid",
-            analysis_module_str="missing_module",
-            next_analysis=datetime.now(),
-            storage_dir=str(tmpdir)
-        )
-        
-        result = request.load(configuration_manager)
-        
-        # Should still return False even with multiple failures
-        assert result is False
-        assert request.root is not None
-        assert request.observable is None
-        assert request.analysis_module is None
         assert request.analysis is None

@@ -41,8 +41,17 @@ class ApiKeyCreated(BaseModel):
 
 
 class ApiKeyScope(BaseModel):
-    major: str
-    minor: str
+    # the auth_api_key_permission columns are String(512) ascii; a value that doesn't fit can still
+    # match the catalog (a run of `*`, a non-ascii char in a [] class) and would 500 on the insert
+    major: str = Field(max_length=512)
+    minor: str = Field(max_length=512)
+
+    @field_validator("major", "minor")
+    @classmethod
+    def ascii_only(cls, value: str) -> str:
+        if not value.isascii():
+            raise ValueError("must be ASCII")
+        return value
 
 
 class ApiKeyRead(BaseModel):
@@ -70,6 +79,25 @@ class ApiKeyUpdate(BaseModel):
     name: str
     inherit: bool = False
     scope: list[ApiKeyScope] = []
+
+
+class ApiKeySelfWrite(BaseModel):
+    """A user's request to create or change one of their OWN keys. Self-service keys are always
+    scoped -- only an admin mints a key that inherits its owner's full permissions -- so there is
+    no inherit field, and this is deliberately not ApiKeyCreate with one removed."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(min_length=1, max_length=255)
+    scope: list[ApiKeyScope] = Field(min_length=1, max_length=64)
+
+    @field_validator("name")
+    @classmethod
+    def strip_name(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("must not be blank")
+        return value
 
 
 class GroupRead(BaseModel):

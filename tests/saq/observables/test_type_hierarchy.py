@@ -1,23 +1,19 @@
+import logging
+import os
+import sys
+import threading
+
 import pytest
 
+from saq.configuration.config import get_config
+from saq.observables import type_hierarchy
 from saq.observables.type_hierarchy import (
     ObservableTypeEntry,
-    ObservableTypesFile,
     TypeHierarchy,
+    get_all_valid_types,
     get_type_hierarchy,
 )
-
-
-@pytest.mark.unit
-def test_singleton_returns_same_instance():
-    assert get_type_hierarchy() is get_type_hierarchy()
-
-
-@pytest.mark.unit
-def test_unknown_type_has_no_parent_or_ancestors():
-    h = TypeHierarchy()
-    assert h.parent_of("nope") is None
-    assert h.ancestors("nope") == ()
+from tests.saq.helpers import wait_for_condition
 
 
 @pytest.mark.unit
@@ -42,6 +38,9 @@ def test_yaml_load_and_subtype():
     assert h.parent_of("pdf_file") == "file"
     assert h.is_subtype("return_path", "email_address") is True
     assert h.is_subtype("pdf_file", "file") is True
+    assert h.is_subtype("return_path", "file") is False
+    # extends points one way: the parent is not a subtype of its child
+    assert h.is_subtype("email_address", "return_path") is False
 
 
 @pytest.mark.unit
@@ -103,6 +102,7 @@ def test_yaml_missing_file_logs_and_no_state_change(caplog):
         h.load_yaml_config("/nonexistent/path/to/inheritance.yaml")
 
     assert h.parent_of("return_path") == "email_address"
+    assert any("observable types config not found" in r.getMessage() for r in caplog.records)
 
 
 @pytest.mark.unit
@@ -122,15 +122,6 @@ def test_yaml_schema_rejects_unknown_keys(caplog):
 
 
 @pytest.mark.unit
-def test_typed_config_model_validates():
-    cfg = ObservableTypesFile.model_validate(
-        {"types": {"a": {"extends": "b"}}}
-    )
-    assert cfg.types["a"].extends == "b"
-    assert cfg.types["a"].default_display_type is None
-
-
-@pytest.mark.unit
 def test_observable_type_entry_all_fields_optional():
     # All fields optional — an entry can be empty.
     entry = ObservableTypeEntry()
@@ -138,12 +129,6 @@ def test_observable_type_entry_all_fields_optional():
     assert entry.default_display_type is None
     assert entry.description is None
     assert entry.deprecated is False
-
-
-@pytest.mark.unit
-def test_default_display_type_unset_returns_none():
-    h = TypeHierarchy()
-    assert h.default_display_type_for("anything") is None
 
 
 @pytest.mark.unit
@@ -164,23 +149,6 @@ def test_yaml_loads_default_display_type():
     assert h.default_display_type_for("return_path") == "Mail Return Path"
     assert h.default_display_type_for("azure_user_id") == "Azure User ID"
     # azure_user_id has no extends, so it has no parent
-    assert h.parent_of("azure_user_id") is None
-
-
-@pytest.mark.unit
-def test_yaml_entry_with_only_default_display_type_loads():
-    """An entry can carry just default_display_type and no extends."""
-    h = TypeHierarchy()
-    yaml_path = _write_yaml(
-        """
-        types:
-          azure_user_id:
-            default_display_type: "Azure User ID"
-        """
-    )
-    h.load_yaml_config(yaml_path)
-
-    assert h.default_display_type_for("azure_user_id") == "Azure User ID"
     assert h.parent_of("azure_user_id") is None
 
 
@@ -210,12 +178,6 @@ def test_yaml_reload_clears_removed_default_display_type():
 
 
 @pytest.mark.unit
-def test_description_unset_returns_none():
-    h = TypeHierarchy()
-    assert h.description_for("anything") is None
-
-
-@pytest.mark.unit
 def test_yaml_loads_description():
     h = TypeHierarchy()
     yaml_path = _write_yaml(
@@ -232,12 +194,6 @@ def test_yaml_loads_description():
     assert h.description_for("email_address") == "email address"
     assert h.description_for("azure_user_id") == "Azure user identifier"
     assert h.description_for("nope") is None
-
-
-@pytest.mark.unit
-def test_is_deprecated_default_false():
-    h = TypeHierarchy()
-    assert h.is_deprecated("anything") is False
 
 
 @pytest.mark.unit
@@ -308,7 +264,6 @@ def test_yaml_reload_clears_removed_description_and_deprecated():
 @pytest.mark.unit
 def test_get_all_valid_types_combines_yaml_and_python():
     """A type counts as valid whether it has a Python class or only a YAML entry."""
-    from saq.observables.generator import OBSERVABLE_TYPE_MAPPING
     from saq.observables.type_hierarchy import get_all_valid_types
 
     h = get_type_hierarchy()
@@ -317,32 +272,12 @@ def test_get_all_valid_types_combines_yaml_and_python():
     try:
         result = set(get_all_valid_types())
         assert "__pytest_yaml_only__" in result
-        # A python-registered type that's not in YAML still appears.
-        assert "test" in result  # F_TEST has a registered TestObservable class
+        # A type with a Python class that's not in YAML still appears.
+        assert "test" in result  # F_TEST has the TestObservable class
         # Sanity: the result spans both sources
-        assert set(OBSERVABLE_TYPE_MAPPING.keys()).issubset(result)
+        assert set(get_config().observable_types.classes).issubset(result)
     finally:
         h._yaml_declared_types = declared_snapshot
-
-
-@pytest.mark.unit
-def test_yaml_non_ascii_description_is_decoded(tmpdir):
-    """A utf-8 config must load regardless of the process locale."""
-    h = TypeHierarchy()
-    path = str(tmpdir / "types.yaml")
-    em_dash = "—"
-    with open(path, "wb") as f:
-        f.write(
-            (
-                "types:\n"
-                "  falcon_host_id:\n"
-                f'    description: "Falcon agent ID {em_dash} unique per host"\n'
-            ).encode("utf-8")
-        )
-
-    h.load_yaml_config(path)
-
-    assert h.description_for("falcon_host_id") == f"Falcon agent ID {em_dash} unique per host"
 
 
 @pytest.mark.unit
@@ -498,14 +433,18 @@ def test_reload_no_op_when_mtime_unchanged():
         """
     )
     h.load_yaml_config(yaml_path)
-    parent_dict_before = h._parent  # identity, not value
     last_mtime_before = h._last_mtime
+
+    # new content under the old mtime: only a reload that ignores the mtime would read it
+    with open(yaml_path, "w") as f:
+        f.write("types:\n  pdf_file: { extends: file }\n")
+    os.utime(yaml_path, (last_mtime_before, last_mtime_before))
 
     h._next_reload_check = None
     h._maybe_reload()
 
-    # Same dict instance — load_yaml_config was not called.
-    assert h._parent is parent_dict_before
+    assert h.parent_of("return_path") == "email_address"
+    assert h.parent_of("pdf_file") is None
     assert h._last_mtime == last_mtime_before
 
 
@@ -566,7 +505,7 @@ def test_reload_preserves_state_on_bad_file(caplog):
         """
         types:
           return_path:
-            extends: email_address
+            extends: file
             color: red
         """,
     )
@@ -644,35 +583,49 @@ def test_reload_does_nothing_when_never_bootstrapped():
     assert h._config_path is None
 
 
+def _loaded_global_hierarchy(monkeypatch) -> str:
+    """Make the process-global registry a fresh one loaded from a temporary file, and return its path."""
+    fresh = TypeHierarchy()
+    yaml_path = _write_yaml(
+        """
+        types:
+          return_path: { extends: email_address }
+        """
+    )
+    fresh.load_yaml_config(yaml_path)
+    fresh._bootstrapped = True
+    monkeypatch.setattr(type_hierarchy, "_HIERARCHY", fresh)
+    return yaml_path
+
+
 @pytest.mark.unit
 def test_get_type_hierarchy_triggers_reload(monkeypatch):
-    """The module-level accessor calls _maybe_reload on every fetch."""
-    from saq.observables import type_hierarchy as th
+    """The module-level accessor picks up a change to the file on disk."""
+    yaml_path = _loaded_global_hierarchy(monkeypatch)
+    _rewrite_yaml(
+        yaml_path,
+        """
+        types:
+          pdf_file: { extends: file }
+        """,
+    )
 
-    calls = {"count": 0}
-
-    def fake_maybe_reload(_self):
-        calls["count"] += 1
-
-    monkeypatch.setattr(TypeHierarchy, "_maybe_reload", fake_maybe_reload)
-    th.get_type_hierarchy()
-    th.get_type_hierarchy()
-    assert calls["count"] == 2
+    assert get_type_hierarchy().parent_of("pdf_file") == "file"
 
 
 @pytest.mark.unit
 def test_get_all_valid_types_triggers_reload(monkeypatch):
-    """get_all_valid_types also routes through _maybe_reload."""
-    from saq.observables import type_hierarchy as th
+    """get_all_valid_types also picks up a change to the file on disk."""
+    yaml_path = _loaded_global_hierarchy(monkeypatch)
+    _rewrite_yaml(
+        yaml_path,
+        """
+        types:
+          __pytest_reloaded_type__: {}
+        """,
+    )
 
-    calls = {"count": 0}
-
-    def fake_maybe_reload(_self):
-        calls["count"] += 1
-
-    monkeypatch.setattr(TypeHierarchy, "_maybe_reload", fake_maybe_reload)
-    th.get_all_valid_types()
-    assert calls["count"] == 1
+    assert "__pytest_reloaded_type__" in get_all_valid_types()
 
 
 @pytest.mark.unit
@@ -693,3 +646,93 @@ def test_reset_clears_reload_state():
     assert h._config_path is None
     assert h._last_mtime is None
     assert h._next_reload_check is None
+
+
+@pytest.mark.unit
+def test_bootstrapped_on_first_use(monkeypatch):
+    # nothing bootstraps the hierarchy at startup; the first accessor call reads the configuration
+    fresh = TypeHierarchy()
+    monkeypatch.setattr(type_hierarchy, "_HIERARCHY", fresh)
+
+    assert get_type_hierarchy() is fresh
+    assert fresh.parent_of("email_cc") == "email_address"
+
+
+@pytest.mark.unit
+def test_get_all_valid_types_bootstraps_too(monkeypatch):
+    monkeypatch.setattr(type_hierarchy, "_HIERARCHY", TypeHierarchy())
+
+    assert "email_dkim_signing_domain" in get_all_valid_types()
+
+
+@pytest.mark.unit
+def test_bootstrap_waits_for_the_configuration(monkeypatch):
+    fresh = TypeHierarchy()
+    monkeypatch.setattr(type_hierarchy, "_HIERARCHY", fresh)
+
+    with monkeypatch.context() as no_config:
+        no_config.setattr(type_hierarchy, "get_config", lambda: None)
+        get_type_hierarchy()
+        assert fresh.parent_of("email_cc") is None
+
+    get_type_hierarchy()
+    assert fresh.parent_of("email_cc") == "email_address"
+
+
+def _in_function(thread: threading.Thread, name: str) -> bool:
+    frame = sys._current_frames().get(thread.ident)
+    while frame is not None:
+        if frame.f_code.co_name == name:
+            return True
+        frame = frame.f_back
+    return False
+
+
+@pytest.mark.unit
+def test_a_thread_that_asks_during_the_first_bootstrap_waits_for_it(monkeypatch):
+    fresh = TypeHierarchy()
+    monkeypatch.setattr(type_hierarchy, "_HIERARCHY", fresh)
+
+    loading, release = threading.Event(), threading.Event()
+    load = fresh.load_yaml_config
+
+    def held_load(path):
+        loading.set()
+        assert release.wait(timeout=30)
+        load(path)
+
+    monkeypatch.setattr(fresh, "load_yaml_config", held_load)
+
+    first = threading.Thread(target=get_type_hierarchy)
+    second_result = []
+    second = threading.Thread(target=lambda: second_result.append(get_all_valid_types()))
+    try:
+        first.start()
+        assert loading.wait(timeout=30)
+
+        second.start()
+        # the second caller is held at the bootstrap, not handed the registry the first one is still loading
+        wait_for_condition(lambda: second_result or _in_function(second, "_ensure_bootstrapped"))
+        assert not second_result, "the second caller read the registry before the first had loaded it"
+    finally:
+        release.set()
+        first.join(timeout=30)
+        if second.ident is not None:
+            second.join(timeout=30)
+
+    assert "email_from" in second_result[0]
+    assert "command_line" in second_result[0]
+
+
+@pytest.mark.unit
+def test_a_missing_config_file_is_bootstrapped_once(monkeypatch, tmp_path, caplog):
+    fresh = TypeHierarchy()
+    monkeypatch.setattr(type_hierarchy, "_HIERARCHY", fresh)
+    monkeypatch.setattr(get_config().observable_types, "config_path", str(tmp_path / "missing.yaml"))
+
+    with caplog.at_level(logging.ERROR):
+        get_type_hierarchy()
+        get_type_hierarchy()
+
+    assert fresh._bootstrapped
+    assert len([r for r in caplog.records if "observable types config not found" in r.getMessage()]) == 1

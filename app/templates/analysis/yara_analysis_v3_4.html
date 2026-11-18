@@ -1,5 +1,26 @@
+<style>
+    .yara-ws { opacity: 0.5; }
+    .yara-sp { position: relative; white-space: pre-wrap; }
+    .yara-sp::after { content: "\00b7"; position: absolute; left: 0; right: 0; text-align: center; opacity: 0.5; }
+    /* bootstrap pads a mark, which would push the columns of the dump out of line */
+    .yara-hexdump mark, .yara-rule mark { padding: 0; }
+    .yara-meta { counter-reset: yara-meta-line; }
+    .yara-meta-line::before {
+        counter-increment: yara-meta-line;
+        content: counter(yara-meta-line);
+        display: inline-block;
+        width: 2.5em;
+        margin-right: 1em;
+        text-align: right;
+        opacity: 0.5;
+        user-select: none;
+    }
+</style>
 {% if analysis.details and 'scan_results' in analysis.details %}
 {% for yara_result in analysis.details['scan_results'] %}
+{% set string_patterns = yara_result.get('string_patterns') or {} %}
+{% set rule_source = None if ace_config.gui.hide_intel else yara_result.get('rule_source') %}
+{% set rule_view = 'yara_rule_' ~ analysis.uuid ~ '_' ~ loop.index %}
 <div class="panel panel-default">
     <div class="panel-heading">
         <h3 class="panel-title">{{yara_result['rule']}}</h3>
@@ -8,12 +29,31 @@
         <table class="table">
         <tr>
             <td>target</td>
-            <td>{{yara_result['target']}}</td>
+            <td><code>{{yara_result['target']}}</code></td>
         </tr>
-        {% if yara_result['meta'] | count > 0 %}
+        {% if yara_result['meta'] | count > 0 or rule_source %}
         <tr>
+            {% if rule_source %}
+            {# the two views share the class rule_view, so either button swaps one for the other #}
+            <td><span class="collapse show {{rule_view}}">meta</span><span class="collapse {{rule_view}}">rule</span></td>
+            <td>
+                <div class="collapse show {{rule_view}}">
+                    <button type="button" class="btn btn-sm btn-outline-secondary mb-1" data-bs-toggle="collapse" data-bs-target=".{{rule_view}}">Show full rule</button>
+                    <pre class="mb-0 yara-meta">{% for line in analysis_presenter.meta_json(yara_result['meta']).splitlines() %}<span class="yara-meta-line">{{line}}</span>
+{% endfor %}</pre>
+                </div>
+                <div class="collapse {{rule_view}}">
+                    <button type="button" class="btn btn-sm btn-outline-secondary mb-1" data-bs-toggle="collapse" data-bs-target=".{{rule_view}}">Show meta</button>
+                    <span class="text-muted small ms-2">{{rule_source['file']}}, line {{rule_source['start_line']}}</span>
+                    <pre class="mb-0 yara-meta yara-rule" style="counter-reset: yara-meta-line {{rule_source['start_line'] - 1}}">{% for line, matched in analysis_presenter.rule_source_lines(yara_result) %}<span class="yara-meta-line">{% if matched %}<mark>{{line}}</mark>{% else %}{{line}}{% endif %}</span>
+{% endfor %}</pre>
+                </div>
+            </td>
+            {% else %}
             <td>meta</td>
-                <td>{{yara_result['meta']}}</td>
+            <td><pre class="mb-0 yara-meta">{% for line in analysis_presenter.meta_json(yara_result['meta']).splitlines() %}<span class="yara-meta-line">{{line}}</span>
+{% endfor %}</pre></td>
+            {% endif %}
         </tr>
         {% endif %}
         {% if yara_result['tags'] | count > 0 %}
@@ -42,8 +82,11 @@
                                 {% for s in yara_result['context'] %}
                         {% if s | count > 0 %}
                             <li class="list-group-item">
-                                position <b>{{s[0]}}</b> string $<b>{{s[1]}}</b> value <b>{{s[2]}}</b>
-                                <pre>{{s[3]}}</pre>
+                                position <b>{{s[0]}}</b> string <b>{{s[1]}}</b> value <b>{{analysis_presenter.visible_value(s[2], loop.index0)}}</b>
+                                {% if s[1] in string_patterns %}
+                                <br>pattern <code>{{string_patterns[s[1]]}}</code>
+                                {% endif %}
+                                <pre class="yara-hexdump">{{analysis_presenter.hexdump(yara_result, loop.index0)}}</pre>
                                 {% if s|length > 4 %}
                                     Disassembly<pre>{{s[4]|safe}}</pre>
                                 {% endif %}
@@ -53,7 +96,11 @@
                             {% else %}
                                 {% for s in yara_result['strings'] %}
                                 {% if s | count > 0 %}
-                                    <li class="list-group-item">position <b>{{s[0]}}</b> string $<b>{{s[1]}}</b> value <b>{{s[2]}}</b></li>
+                                    <li class="list-group-item">position <b>{{s[0]}}</b> string <b>{{s[1]}}</b> value <b>{{analysis_presenter.visible_value(s[2], loop.index0)}}</b>
+                                    {% if s[1] in string_patterns %}
+                                    <br>pattern <code>{{string_patterns[s[1]]}}</code>
+                                    {% endif %}
+                                    </li>
                                 {% endif %}
                                 {% endfor %}
                             {% endif %}

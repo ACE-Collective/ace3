@@ -16,7 +16,8 @@ the engine; see the fork-safety note in aceapi_v2/database.py:create_engine_for.
 """
 import os
 
-import aceapi_v2
+from aceapi_v2.app_factory import create_engine_app
+from aceapi_v2.serving import serve_under
 from saq.constants import ENV_ACE_LOG_CONFIG_PATH
 from saq.environment import initialize_environment
 
@@ -30,7 +31,7 @@ if logging_config_path is None:
 elif not os.path.isabs(logging_config_path):
     logging_config_path = os.path.join(saq_home, logging_config_path)
 
-initialize_environment(saq_home=saq_home, config_paths=None, logging_config_path=logging_config_path, relative_dir=saq_home)
+initialize_environment(saq_home=saq_home, config_paths=None, logging_config_path=logging_config_path)
 
 # create the node-to-node fastapi application (only the engine routes; see docs/ENGINE_API.md)
-application = aceapi_v2.create_engine_app()
+application = serve_under("/api/v2", create_engine_app())

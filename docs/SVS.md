@@ -237,7 +237,9 @@ in the service, keyed on `(rule uuid, rule version, sha256)`, capped and expirin
 disposition time, in the engine, only on classified alerts, keyed on `(alert, sha256, rule uuid)`,
 and holds for as long as the capture record exists. `svs_yara_captures` stays its own table and
 reuses the building blocks: the hold idiom, the row written before the CAS puts in private
-sessions, the record's serialization and summary, `signature_version` taken exactly as QA takes it,
+sessions, the record's serialization and summary, `signature_version` taken as a detection point
+carries it (the commit; QA has since filed its matches under the rule's content hash instead,
+`docs/YARA_QA.md`, *Versions*),
 the namespace stored relative to the signature directory (the match carries the absolute rule
 directory, which a replay tree does not have), the `wrong_node` answer for bytes on another node's
 local pool, and the infected-password zips of `aceapi_v2/common/archive.py` for downloads. [FR-27]
@@ -252,9 +254,9 @@ reachable from every node (`shared: true`). The CAS ships only the `local` backe
 for a single-node instance. **Providing a shared backend is the site integrator's job**: a
 `custom` class that declares `node_local = False`, over an object store or a shared filesystem.
 ACE does not build one as an SVS prerequisite. Capture is enabled by default with a `local` pool,
-which is right for a single node. A multi-node site gives `svs_samples` a shared backend, or sets
-`analysis_module_svs_yara_sample_capture.enabled: false` until it has one; otherwise each node keeps
-the bytes it captured. The `yara_qa` pool already works this way (`docs/YARA_QA.md`, *Nodes*): a
+which is right for a single node. A multi-node site gives `svs_samples` a shared backend; otherwise
+each node keeps the bytes it captured. A node-local backend means a single-node install whether or
+not capture runs (`docs/CAS.md`, "Sharing between nodes"). The `yara_qa` pool already works this way (`docs/YARA_QA.md`, *Nodes*): a
 site that has given it a shared backend gives `svs_samples` the same one. [FR-1, CAS-6]
 
 The YARA module is deliberately not cached (`docs/ANALYSIS_CACHING.md`): its filtered output
@@ -491,9 +493,12 @@ and the result is recomputed. [ART-3, ART-2] "Inside the window" is judged on `r
   `context`. Context-only attribution also routes. [ART-5] An alert whose marker disagreed never
   reaches this fallback. It has no per-detection signal, so it
   attributes **every** detection on the alert: a context-only alert is always `TEST?`, never
-  `PARTIAL TEST`. It also requires exactly one candidate run. When two runs on the same target
-  have overlapping windows, nothing is attributed and a WARNING record names both run UUIDs,
-  because attributing to the wrong run teaches the wrong expectation. [FR-9]
+  `PARTIAL TEST`. It also requires exactly one candidate run. Registration keeps two runs from
+  holding one host at once (`docs/SVS_RUNS.md`, *One run per test host*), so when several runs'
+  windows cover the alert, the one that started last claims it if every other one's claim on the
+  host had ended by then. Otherwise (claims that overlap, which only runs registered before that
+  rule can have) nothing is attributed and a WARNING record names the run UUIDs, because
+  attributing to the wrong run teaches the wrong expectation. [FR-9]
 
 The launcher's contract is to put the marker where the technique's process telemetry will show it:
 an input argument, a file name, or a trailing shell comment on the executor command.
@@ -576,7 +581,7 @@ ACE itself, not only to SVS. [D-13, ART-15]
     `svs_test` tag. Hunt alerts are analyzed after insert and engine-converted alerts get a
     correlation pass, so a mismatch still surfaces before an analyst sees the alert. [FR-3]
   - A decision there moves the existing alert through `move_alert_to_queue(alert, queue, reason,
-    actor)`. That new core primitive updates the column and `root.queue`, touches the alert,
+    auth)`. That new core primitive updates the column and `root.queue`, touches the alert,
     refreshes the search payload, writes an audit line, and records the previous queue and that
     the move was SVS's.
 - **An alert that is not `OPEN`, or that an analyst owns, is never moved.** It gets its SVS status
@@ -697,12 +702,18 @@ and keeps the router from attributing the alert to that run again. Every move it
 with the router name `svs_manual`, and while that is an alert's latest move the SVS router holds
 the alert where it is. [ART-13]
 
-**Hunt suppression.** When an expected hunt signature is *missing* and that hunt alerted within its
-`suppression` period before the run started, the result reads *missing, possibly suppressed*. It is
-imprecise for `group_by` and `dedup_key`, and says so. Preventing suppression for test targets is
-deferred. The revisit trigger is 50 Reviewed runs or 3 months: if more than about 10% of *missing*
-results are *possibly suppressed*, reconsider. The Runs tab shows that share, read from the
-results as signed off (`GET /api/v2/svs/runs/suppression-share`). [D-19, ART-8]
+**Hunt suppression.** Re-running a test inside a hunt's `suppression` period is the normal case, so
+a hunt with `group_by` keys its suppression of a group by the run while a run's window covers the
+group's event time on one of the run's test hosts: each run's first match alerts, the rest of that
+run's are suppressed, and a test never suppresses production or another run, nor production a test
+(`docs/SVS_RUNS.md`, *Hunt suppression during runs*). A match it still drops there is recorded for
+the run (`svs_suppressed_matches`), and so is a match the collector drops as a duplicate of a hunt's
+`dedup_key`, so for those the result is never a guess (`docs/SVS_RUNS.md`, *Results*). A hunt
+without `group_by` suppresses as a whole and can still hide a test: when an expected hunt signature
+is *missing* and that hunt alerted within its `suppression` period before the run started, the
+result reads *missing, possibly suppressed*. The revisit trigger is 50 Reviewed runs or 3 months: if more than about
+10% of *missing* results are *possibly suppressed*, reconsider the rest. The Runs tab shows that
+share, read from the results as signed off (`GET /api/v2/svs/runs/suppression-share`). [D-19, ART-8]
 
 ### The Atomic Red Team catalog
 
@@ -927,6 +938,8 @@ carries `svs_run`**, plus `svs_test` and `svs_marker` wherever they are known, s
 | Attribution written or removed | INFO | `alert_uuid`, `detection`, `confidence`, `late`, `source` |
 | A reviewed run changed since review | INFO | `alert_uuid` |
 | A run's alerts closed as `SIMULATED` | INFO | `alert_uuids`, `left_alone`, `late`, `actor` |
+| A hunt with `group_by` suppressed a match on the run's test host, the first per hunt | INFO | `hunt_uuid`, `group_value` |
+| The collector dropped a hunt's match on the run's test host as a duplicate, the first per hunt | INFO | `hunt_uuid`, `group_value`, `dedup_key` |
 | Result computed | INFO, plus DEBUG per signature | per-status counts |
 | Missing expected signature | INFO | `signature_uuid`, `signature_family`, `possibly_suppressed` |
 
@@ -1094,6 +1107,7 @@ tables are on the main chain.
 | `svs_ignores` | `(scope: global/test, test guid?, signature uuid)` |
 | `svs_test_settings` | Per test: an observation window that replaces the computed one |
 | `svs_run_results` | Per `(run, signature)`: hit / missing / possibly suppressed / candidate / rejected / ignored, with the rule's content hash; live and as reviewed |
+| `svs_suppressed_matches` | Per `(run, hunt)`: a hunt dropped a match on one of the run's test hosts inside its window, for its suppression (`group_by`) or as a duplicate of its `dedup_key`; the first match's group value, dedup key and event time |
 | `svs_run_result_state` | Whether a run's live result is stale: a generation each change bumps, so a computation that raced a change leaves it stale |
 | `svs_technique_worklist` | The declared-vs-measured worklist: one row per signature × technique; the resolution is stored, the status derived on each coverage refresh |
 | `svs_run_events` | Append-only run event log (Part 5) |
@@ -1181,7 +1195,7 @@ Every value here is illustrative. The schema rejects unknown keys. Test hosts ar
 |---|---|
 | **0: prerequisites** (independent PRs, each useful without SVS). **Landed** in v3.0.122 (PRs #638–#648) | `archive()` fix; disposition clean-up; prevalence default-queue change; `saq/storage` and `saq/crypto` fixes; the CAS with the `svs_samples` pool (the pool itself is defined in phase 2 [FR-29]); `GET /api/v2/alerts` with `alerts.updated_at`; saved filters per screen; the structured hunt completion record; remote-node correlation submissions get an `alerts` row [FR-6]; the alert-router registry and `move_alert_to_queue` [FR-2] |
 | **1: labels**. **Landed** (PRs #651–#656) | Detection identity (**must land before any verdict is written**); YARA detections on the file; verdict table, effective verdicts and sources, verdict history; the GUI; the detection-points API |
-| **2: YARA capture**. **Landed** (PRs #658–#664 and the Samples card) | The capture module, with the `transfer_work_target` mode fix [FR-5]; the Samples card in the Signatures hub and its API [FR-28]. Capture is on by default; a multi-node site gives `svs_samples` its shared backend or disables capture [FR-1] |
+| **2: YARA capture**. **Landed** (PRs #658–#664 and the Samples card) | The capture module, with the `transfer_work_target` mode fix [FR-5]; the Samples card in the Signatures hub and its API [FR-28]. Capture is on by default; a multi-node site gives `svs_samples` its shared backend or disables capture [FR-1] (disabling capture is no longer an option: a node-local pool means a single-node install, `docs/CAS.md`) |
 | **3: YARA validation**. **Landed** (PRs #668–#674 and the Validations card); CI is wired into a signature repository by its operators (`docs/SVS_VALIDATION.md`) | API, mirror clones, isolated scanning that compiles the way the production loader does [FR-26], the validation queue and result cache, the report and its actions; the Validations card in the Signatures hub [FR-28]; CI in one signature repo |
 | **4: runs**. **Built** on the `jd/svs` integration branch (PRs #683–#721), released to `main` with `jd/svs` | Registration, the test-host table and admin tab, markers, the SVS marker router, the built-in marker rule shipped as a namespace the yara service loads [FR-25], `SIMULATED` and its retention, SVS statuses, the ART catalog; the Runs and Tests tabs, the run page with learned expectations, ownership, *Close*, event log; the SVS logging contract; the run APIs and the reviewed-result snapshot |
 | **5: coverage**. **Built** on the `jd/svs` integration branch (PRs #725–#741), released to `main` with `jd/svs` | Coverage states, the declared-vs-measured worklist, the ATT&CK release pin with the vendored extract and `bin/update-attack-catalog` [FR-14]; the Coverage and Worklist tabs, daily snapshots and their APIs; `docs/SVS_API.md` complete |
@@ -1318,6 +1332,7 @@ probably suppressed.
 
 - The dynamic case of YARA regression: re-deriving a sample with the current tool before scanning.
   [YR-10]
-- Preventing hunt suppression for test targets, with the revisit trigger above. [ART-8]
+- Preventing hunt suppression for test targets beyond hunts with `group_by`, with the revisit
+  trigger above. [ART-8]
 - Moving other byte stores onto the CAS (`docs/CAS.md`, Consumers). [CAS-8]
 - Per-company coverage. [COV-1]

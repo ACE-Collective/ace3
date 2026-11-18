@@ -1,18 +1,20 @@
+import importlib
 import logging
 import re
 import string
 import sys
 from typing import TYPE_CHECKING, Annotated, Any, Literal, Optional, Union
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, ValidationInfo, field_validator, model_validator
 
 from saq.configuration.lazy_registry import LazyConfigRegistry
 from saq.configuration.secret_ref import SecretRef
+from saq.configuration.yaml_parser import resolve_model_fields, resolve_values
+from saq.observables.export.config import ObservableExportConfig
 from saq.svs.attack_files import release_path
 
 if TYPE_CHECKING:
     from saq.configuration.yaml_parser import YAMLConfig
     from saq.modules.config import AnalysisModuleConfig
-    from saq.observables.export.config import ObservableExportConfig
 
 # how many times a collection group retries a failed delivery before giving up on the work item.
 # each attempt is one full submit (which itself retries at the HTTP layer) plus roughly a second
@@ -146,6 +148,9 @@ class RabbitMQConfig(BaseModel):
 class PhishkitConfig(BaseModel):
     max_file_age_days: int = Field(default=3, description="age in days after which phishkit input/output job directories are deleted")
 
+class JsDeobfuscatorConfig(BaseModel):
+    max_file_age_days: int = Field(default=3, description="age in days after which js-deobfuscator input/output job directories are deleted")
+
 class StorageBackendSpec(BaseModel):
     """Selects and configures a pluggable storage backend.
 
@@ -158,20 +163,23 @@ class StorageBackendSpec(BaseModel):
     config: dict = Field(default_factory=dict, description="backend-specific config, validated against the class's get_config_class()")
 
 class StorageConfig(BaseModel):
-    target: Literal["local", "custom"] = Field(default="local", description="storage target: local or custom")
+    target: str = Field(default="local", description="storage target: local, s3 or custom")
     base_dir: str = Field(default="data/storage", description="base directory for local storage (relative to SAQ_HOME)")
-    backend: Optional[StorageBackendSpec] = Field(default=None, description="pluggable storage backend, loaded when target is custom. This is how a deployment uses an object store such as S3: ACE ships no object store client, so the site supplies the class")
+    backend: Optional[StorageBackendSpec] = Field(default=None, description="pluggable storage backend, loaded when target is custom. Use this when the object store needs credentials the built-in s3 backend does not model (IAM instance roles, STS, etc.)")
 
-    @field_validator("target", mode="before")
-    @classmethod
-    def _reject_s3(cls, value):
-        # the built-in s3 backend was removed; without this the operator would get only the
-        # generic "should be 'local' or 'custom'"
-        if value == "s3":
-            raise ValueError(
-                "storage.target s3 is no longer supported (ACE ships no S3 client): set it to "
-                "custom with a storage.backend class that reaches the object store, or to local")
-        return value
+class S3Config(BaseModel):
+    host: str = Field(..., description="s3-compatible storage host")
+    port: int = Field(..., description="s3-compatible storage port")
+    access_key: str = Field(..., description="s3 access key")
+    secret_key: str = Field(..., description="s3 secret key")
+    secure: bool = Field(..., description="set to use SSL")
+    cert_check: bool = Field(..., description="set to validate SSL certification")
+    region: Optional[str] = Field(description="s3 region")
+    # botocore's own defaults here are 60s/60s with legacy retries (5 attempts), which means a
+    # black-holed endpoint can occupy a caller for minutes per request. these bound that.
+    connect_timeout: int = Field(default=10, ge=1, description="seconds to wait for a TCP connection to the s3 endpoint before giving up. 60s (botocore's default) to establish a connection is pathological; this is the setting that bounds a black-holed endpoint")
+    read_timeout: int = Field(default=60, ge=1, description="seconds to wait for a single socket read. NOT a cap on a whole transfer: uploads and downloads are multipart (8MiB parts, up to 10 concurrent), so this is a per-part stall detector. lowering it imposes a per-stream throughput floor and can break large transfers on a slow link")
+    max_attempts: int = Field(default=3, ge=1, description="total attempts per request, including the first, under botocore's standard retry mode (which classifies retryable errors more narrowly than the legacy mode boto3 otherwise defaults to)")
 
 class RedisConfig(BaseModel):
     name: str = Field(..., description="redis name")
@@ -181,6 +189,9 @@ class RedisConfig(BaseModel):
     password: str = Field(..., description="redis password")
     use_ssl: bool = Field(..., description="use SSL for redis connection")
     ssl_ca_path: Optional[str] = Field(default=None, description="path to SSL CA certificate")
+    socket_connect_timeout: float = Field(default=5, gt=0, description="how long (in seconds) to wait for the TCP connection to redis")
+    # must outlast the longest blocking command, the search indexer's 1 second BLPOP, which would otherwise always time out
+    socket_timeout: float = Field(default=10, gt=1, description="how long (in seconds) to wait for a reply from redis before raising redis.TimeoutError")
 
 class QdrantConfig(BaseModel):
     url: str = Field(..., description="qdrant URL")
@@ -248,6 +259,26 @@ class ExecutableSandboxConfig(SandboxConfig):
     work_dir: str = Field(default="var/correlation_sandbox", description="where each execution gets its private working directory (relative to DATA_DIR); must be on a filesystem that allows execution (not a noexec tmpfs)")
     allowed_tcp_ports: Optional[list[Annotated[int, Field(ge=1, le=65535)]]] = Field(default_factory=lambda: [443, 53], description="the only TCP ports a command may connect to (Landlock ABI 4, Linux 6.7); keeps it off the cloud metadata endpoint and ACE's own services. null leaves TCP unrestricted, and has to on an older kernel, where every command fails otherwise")
 
+class ToolSandboxConfig(SandboxConfig):
+    """the Landlock sandbox analysis modules run their external tools in (AnalysisModule.run_sandboxed_tool)"""
+    work_dir: str = Field(default="var/tool_sandbox", description="where each tool run gets its private working directory (relative to DATA_DIR); on the same filesystem as the alert storage, the outputs a module keeps are moved out by a rename")
+    file_size_limit: int = Field(default=1024 ** 3, gt=0, description="largest file a tool may write, in bytes (RLIMIT_FSIZE); a tool that writes a larger one is stopped there, and an extraction stopped this way is recorded as incomplete")
+
+class PcapConfig(BaseModel):
+    """pcap/pcapng dissection with tshark in the Landlock sandbox, shared by every pcap module (docs/PCAP_ANALYSIS.md)"""
+    model_config = ConfigDict(extra="forbid")
+    tshark_path: str = Field(default="/usr/bin/tshark", description="the tshark binary; capinfos is taken from the same directory")
+    tshark_timeout: int = Field(default=120, gt=0, description="seconds one tshark run may take")
+    work_dir: str = Field(default="var/pcap_sandbox", description="where each tshark run gets its private working directory (relative to DATA_DIR)")
+    sandbox: SandboxConfig = Field(default_factory=SandboxConfig, description="limits for the sandboxed tshark process; allowed_tcp_ports stays empty (no network)")
+    max_file_size: int = Field(default=1024 ** 3, gt=0, description="largest capture dissected, in bytes")
+    max_keylog_size: int = Field(default=10 * 1024 ** 2, gt=0, description="largest file considered as a TLS key log, in bytes")
+    max_table_rows: int = Field(default=500, gt=0, description="most rows kept in each table of the analysis details")
+    max_field_packets: int = Field(default=50_000, gt=0, description="DNS, TLS, HTTP, DHCP and NBNS are read from this many packets at the start of the capture (tshark's JSON for them must fit under sandbox.max_output_bytes); endpoints, flows and carved files cover the whole capture")
+    max_extracted_files: int = Field(default=100, ge=0, description="most files carved out of one capture (objects and certificates)")
+    max_observables_per_type: int = Field(default=50, ge=0, description="most observables of one type one capture adds, across all its pcap analysis nodes")
+    excluded_fqdn_suffixes: list[str] = Field(default_factory=lambda: [".arpa", ".local"], description="names ending in one of these are never added as fqdn observables")
+
 class CorrelationConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
     query_sources: list[QuerySourceConfig] = Field(default_factory=list, description="query sources to register at hunter startup")
@@ -294,7 +325,6 @@ class GUIConfig(BaseModel):
     upload_vxstream: bool = Field(..., description="enable VxStream upload")
     view_in_vx: bool = Field(..., description="enable view in VxStream")
     show_total_alert_count: bool = Field(..., description="show the total alerts resulting from the current filter")
-    matching_open_events_collapsed: bool = Field(..., description="default matching open events toggle position")
     alert_details_collapsed: bool = Field(..., description="default alert details toggle position")
     hide_intel: bool = Field(..., description="hide intel if we don't want to let people see it")
     default_company_id: int = Field(..., description="default company for manual analysis")
@@ -315,27 +345,10 @@ class WikiConfig(BaseModel):
     alert_reference_enabled: bool = Field(..., description="enable alert reference links to wiki documentation")
     event_link_enabled: bool = Field(..., description="enable wiki link next to event names on manage events page")
 
-class SMTPConfig(BaseModel):
-    enabled: bool = Field(..., description="enable SMTP email sending")
-    server: str = Field(..., description="SMTP server address")
-    mail_from: str = Field(..., description="from email address")
-
 class EmailArchiveConfig(BaseModel):
-    target: Literal["local"] = Field(default="local", description="where archived email is stored; local is the only target")
-    primary: str = Field(..., description="if this system is archiving emails, this determines what section to use for the database config")
-    partition_retention_days: int = Field(default=30, description="days of archive and archive_index rows to keep; `ace partitions maintain` drops a weekly partition once all of it is older than this (docs/DATABASE_PARTITIONS.md)")
-    email_history_retention_days: int = Field(default=30, description="days of email_history rows (who received each message-id, which remediation looks up) to keep; `ace partitions maintain` drops a weekly partition once all of it is older than this (docs/DATABASE_PARTITIONS.md)")
-
-    @field_validator("target", mode="before")
-    @classmethod
-    def _reject_s3(cls, value):
-        # the s3 target was removed; say so rather than only "should be 'local'"
-        if value == "s3":
-            raise ValueError(
-                "email_archive.target s3 is no longer supported (ACE ships no S3 client): set it "
-                "to local. ACE no longer reads the copies already in the bucket; the node that "
-                "archived an email still has its local copy")
-        return value
+    pool: str = Field(default="email_archive", description="the CAS pool archived emails are stored in (docs/EMAIL_ARCHIVE.md)")
+    archive_dir: str = Field(default="archive/email", description="the directory of the archive before it moved to the CAS (relative to the data directory); only `ace email-archive migrate` reads it")
+    partition_retention_days: int = Field(default=30, description="days of archived_messages rows (Message-ID -> digest) to keep; `ace partitions maintain` drops a weekly partition once all of it is older than this. At least the pool's ttl_days, or the config fails to load (docs/DATABASE_PARTITIONS.md)")
 
 class MemcachedConfig(BaseModel):
     client_address: str = Field(..., description="the address of the memcached system used by ACE")
@@ -391,6 +404,7 @@ class SIPYaraExportConfig(BaseModel):
 class CustomAlertsConfig(BaseModel):
     template_dir: str = Field(..., description="directory containing all flask views")
     dirs: list[str] = Field(..., description="list of dirs containing all custom alert views")
+    selectable_templates: list[str] = Field(default_factory=list, description="alert templates (jinja names) analysts can pick for a manual analysis submission besides analysis/alert.html")
 
 class SettingsConfig(BaseModel):
     refresh_seconds: int = Field(..., description="how often to refresh settings (in seconds)")
@@ -412,11 +426,36 @@ class TimelineConfig(BaseModel):
     #shodan_default: str = Field(..., description="path to default shodan configuration")
     #splunk_default: str = Field(..., description="path to default splunk configuration")
 
+# module:attribute, imported only by the process that uses it
+_IMPORT_TARGET = re.compile(r"[A-Za-z_]\w*(\.[A-Za-z_]\w*)*:[A-Za-z_]\w*")
+
+# an integration's API routes are served under /api/v2/integrations/<name>
+_INTEGRATION_ROUTER_NAME = re.compile(r"[a-z0-9]+([_-][a-z0-9]+)*")
+
+
 class IntegrationConfig(BaseModel):
     name: str = Field(..., description="the name of the integration")
     description: str = Field(..., description="the description of the integration")
     enabled: bool = Field(..., description="whether the integration is enabled or disabled")
-    python_module: str = Field(..., description="the python module of the integration")
+    python_module: str = Field(..., description="the python module of the integration, imported by every ACE process")
+    api_router: Optional[str] = Field(default=None, description="the integration's FastAPI APIRouter as module:attribute, served under /api/v2/integrations/<name>; only the API imports it")
+    gui_blueprint: Optional[str] = Field(default=None, description="a function as module:attribute that the GUI calls with its Flask app to register the integration's blueprints; only the GUI imports it")
+
+    @field_validator("api_router", "gui_blueprint")
+    @classmethod
+    def _validate_import_target(cls, value: Optional[str], info: ValidationInfo) -> Optional[str]:
+        # a module or attribute that does not exist is found when the app imports it, which only the
+        # app that uses it does
+        if value is not None and not _IMPORT_TARGET.fullmatch(value):
+            raise ValueError(f"{info.field_name}: {value!r} is not module:attribute")
+        return value
+
+    @model_validator(mode="after")
+    def _validate_router_name(self) -> "IntegrationConfig":
+        if self.api_router is not None and not _INTEGRATION_ROUTER_NAME.fullmatch(self.name):
+            raise ValueError(f"integration {self.name!r} declares an api_router, so its name must be lowercase "
+                             f"letters, digits, dashes and underscores: it is the routes' URL prefix")
+        return self
 
 class AnalysisModuleGroupConfig(BaseModel):
     name: str = Field(..., description="the name of the analysis module group")
@@ -472,11 +511,12 @@ class AIQueryBackendLimits(BaseModel):
 class AIQueryBackendConfig(BaseModel):
     """Base configuration for an ai_query_backend_<name> section.
 
-    Backend-specific fields are permitted (extra="allow") because the registry re-validates the raw
-    section against the backend class's own get_config_class() at the point the class is imported.
-    The prefix scan below validates only this base model and deliberately does NOT import
-    python_module -- every ACE process parses the config, and only the AI API app should ever
-    import vendor query clients.
+    The prefix scan below validates only the fields this base model declares, and deliberately does
+    NOT import python_module -- every ACE process parses the config, and only the AI API app should
+    ever import vendor query clients (or has the backend's environment variables). The backend's own
+    fields reach it when load_backend() re-validates the whole section against the backend class's
+    get_config_class(); extra="allow" keeps them there for a backend that does not declare its own
+    config class, and for the fields a subclass leaves undeclared.
     """
     model_config = ConfigDict(extra="allow")
 
@@ -600,6 +640,18 @@ class ObservableTypesConfig(BaseModel):
     """Configuration for the per-observable-type registry (inheritance, default display types, ...)."""
     config_path: str = Field(default="", description="path to a YAML file providing per-observable-type configuration; blank disables YAML-defined config (Python-class inheritance still applies)")
     reload_check_interval_seconds: float = Field(default=60.0, description="how often (in seconds) accessors stat the YAML and reload if mtime changed; set to 0 (or negative) to disable runtime reload entirely")
+    classes: dict[str, str] = Field(default_factory=dict, description="the Python class of each observable type as module:Class, imported the first time an observable of that type is built; a type without one is a DefaultObservable")
+
+    @field_validator("classes")
+    @classmethod
+    def _validate_classes(cls, value: dict[str, str]) -> dict[str, str]:
+        # a value that is not module:Class fails at startup in every process; a module or class that
+        # does not exist fails only when its type is first built, since importing it here would load
+        # every observable type into every process
+        for o_type, target in value.items():
+            if not _IMPORT_TARGET.fullmatch(target):
+                raise ValueError(f"observable_types.classes.{o_type}: {target!r} is not module:Class")
+        return value
 
 
 class SecretsConfig(BaseModel):
@@ -630,7 +682,7 @@ class AnalysisCacheConfig(BaseModel):
     file_blob_max_bytes: int = Field(default=32 * 1024 * 1024, description="Per-file size cap (bytes) for file observables produced by a cacheable module. A delta containing a larger file is refused (refusal_reason=file_too_large) — file bytes live in the blob store, outside the delta row, so max_compressed_bytes does not cover them. OCR/QR outputs are KB-scale; this is a safety net, not a budget. A value of 0 disables the check entirely (no per-file size cap).")
     partition_retention_days: int = Field(default=35, description="Retention window (days) for analysis_result_cache / blob_refs partitions. `ace partitions maintain` drops partitions older than this (docs/DATABASE_PARTITIONS.md). MUST exceed the longest module cache_ttl (currently 30 days) or partition drops would delete rows still inside their TTL.")
     blob_gc_grace_seconds: int = Field(default=24 * 3600, description="Durable-tier blob GC grace period (seconds). A blob with zero blob_refs rows is only deleted once its durable-tier object is older than this. Guards the window between blob_store.put() and the blob_refs row being committed.")
-    local_cache_max_age_seconds: int = Field(default=7 * 24 * 3600, description="Max age (seconds) of a blob in a node's local cache tier before local maintenance evicts it. Only meaningful for two-tier backends (a custom remote store with a node-local cache); ignored by the pure-local backend whose store is the durable tier.")
+    local_cache_max_age_seconds: int = Field(default=7 * 24 * 3600, description="Max age (seconds) of a blob in a node's local cache tier before local maintenance evicts it. Only meaningful for two-tier backends (e.g. S3); ignored by the pure-local backend whose store is the durable tier.")
     local_cache_max_bytes: Optional[int] = Field(default=None, description="Optional size cap (bytes) on a node's local cache tier. When set, local maintenance evicts oldest-first until the tier is under budget. None means age-based eviction only.")
 
 
@@ -683,18 +735,27 @@ class CASPoolConfig(BaseModel):
     encryption, retention and whether the bytes must be reachable from every node.
     """
     model_config = ConfigDict(extra="forbid")
-    backend: Literal["local", "custom"] = Field(default="local", description="local (a directory on this node) or custom (python_module/python_class under `custom`). An object store is reached through a custom backend class")
+    backend: Literal["local", "custom"] = Field(default="local", description="local (a directory on this node) or custom (python_module/python_class under `custom`). An object-store backend is not implemented yet")
     root: Optional[str] = Field(default=None, description="local backend only: the pool's directory (relative to DATA_DIR). Defaults to <cas.local_root>/<pool name>")
     custom: Optional[CASBackendSpec] = Field(default=None, description="custom backend only: the class to load and its config")
     encryption: Literal["none", "system"] = Field(default="none", description="none stores plaintext; system encrypts every object with the system data key (saq/crypto, v1 format)")
-    retention: Literal["held", "ttl", "permanent"] = Field(default="held", description="held: an object lives while it has a live hold, plus grace. permanent: only purge deletes. ttl is reserved and not implemented yet (gated on the GC load test, docs/CAS.md)")
-    grace_seconds: Optional[int] = Field(default=None, ge=0, description="held pools: how long an object outlives its last hold before GC may delete it. Defaults to cas.default_grace_seconds")
+    compression: Literal["none", "gzip"] = Field(default="none", description="gzip compresses every object before it is encrypted and stored; the digest is still of the uncompressed plaintext")
+    retention: Literal["held", "ttl", "permanent"] = Field(default="held", description="held: an object lives while it has a live hold, plus grace. ttl: an object lives while it was put within ttl_days (or has a live hold), plus grace. permanent: only purge deletes")
+    ttl_days: Optional[int] = Field(default=None, ge=1, description="ttl pools only (and required there): an object outlives the last day it was put by this many days, plus grace")
+    index_database: Literal["ace", "email_archive"] = Field(default="ace", description="the database whose chain holds this pool's index tables (database_<name>). A ttl pool's index is high churn and never goes in the main database (ace)")
+    grace_seconds: Optional[int] = Field(default=None, ge=0, description="how long an object outlives its last hold (held) or its ttl (ttl) before GC may delete it. Defaults to cas.default_grace_seconds")
     shared: bool = Field(default=False, description="the bytes must be reachable from every node. A node-local backend (local, or a custom class that says node_local) is refused for a shared pool")
 
     @model_validator(mode="after")
     def _check(self):
         if self.retention == "ttl":
-            raise ValueError("retention 'ttl' is not implemented, gated on the GC load test (docs/CAS.md)")
+            if self.ttl_days is None:
+                raise ValueError("retention 'ttl' requires ttl_days")
+            if self.index_database == "ace":
+                raise ValueError("a ttl pool keeps its index in its own database chain, never the main database: "
+                                 "set index_database (docs/CAS.md)")
+        elif self.ttl_days is not None:
+            raise ValueError("ttl_days is only valid with retention 'ttl'")
         if self.backend == "custom" and self.custom is None:
             raise ValueError("backend 'custom' requires a 'custom' spec (python_module, python_class)")
         if self.backend != "custom" and self.custom is not None:
@@ -736,12 +797,13 @@ class YaraQAConfig(BaseModel):
     Every matched file and its full match record go into a CAS pool, held for retention_days after
     the last time the file matched. The number of files kept per rule is capped twice: per
     (signature uuid, signature version), and per signature uuid across all of its versions. The
-    version is the commit of the rule's repository, so every commit to that repository starts a new
-    version of every rule in it, and the per-uuid ceiling keeps that churn from growing storage."""
+    version is the rule's content hash, so only an edit to the rule starts a new version, and the
+    per-uuid ceiling bounds what a rule that is edited often keeps. When the ceiling stops a file
+    from being stored, a file of a version that has stopped matching makes room for it."""
     model_config = ConfigDict(extra="forbid")
     pool: str = Field(default="yara_qa", description="the CAS pool (cas.pools.<name>) that holds the files and match records. A multi-node site redefines this pool with a shared backend")
     max_files_per_version: int = Field(default=25, ge=0, description="most distinct files kept for one (signature uuid, signature version). Matches past the cap are still counted")
-    max_files_per_signature: int = Field(default=250, ge=0, description="most distinct files kept for one signature uuid across all of its versions")
+    max_files_per_signature: int = Field(default=250, ge=0, description="most distinct files kept for one signature uuid across all of its versions. When it is reached, files of versions that have stopped matching make room for the current version's (rollover)")
     retention_days: int = Field(default=30, ge=1, description="how long a stored file is kept after it last matched; each new match of the same file renews it")
     prune_batch_size: int = Field(default=500, ge=1, le=5000, description="expired matches removed per batch by `ace yara-qa prune`, one short transaction each")
     prune_batch_pause_seconds: float = Field(default=0.5, ge=0, description="pause between prune batches")
@@ -754,7 +816,7 @@ class SVSSamplesConfig(BaseModel):
     """The YARA samples SVS captures from dispositioned alerts (docs/SVS_SAMPLES.md): every file a
     YARA rule matched on an alert whose disposition classifies tp or fp, with its match record."""
     model_config = ConfigDict(extra="forbid")
-    pool: str = Field(default="svs_samples", description="the CAS pool (cas.pools.<name>) that holds the captured files and match records. A multi-node site redefines this pool with a shared backend, or disables analysis_module_svs_yara_sample_capture")
+    pool: str = Field(default="svs_samples", description="the CAS pool (cas.pools.<name>) that holds the captured files and match records. A multi-node site redefines this pool with a shared backend, whether or not capture runs")
     max_bulk_download_files: int = Field(default=500, ge=1, description="most files one bulk sample download may contain")
     max_bulk_download_bytes: int = Field(default=1024 * 1024 * 1024, ge=1, description="most plaintext bytes one bulk sample download may contain")
     inventory_refresh_seconds: int = Field(default=300, ge=0, description="how old a YARA rule inventory capture accepts when it records a rule's content hash. Each engine process caches its own and parses only changed rule files again")
@@ -816,6 +878,7 @@ class SVSRunsConfig(BaseModel):
     max_extra_bytes: int = Field(default=16384, ge=0, description="the largest launcher extra a registration may carry, as serialized JSON; it is stored and shown on the run page")
     max_targets: int = Field(default=16, ge=1, description="the most targets one run may have")
     timer_interval_seconds: int = Field(default=30, gt=0, description="how often service_svs looks for runs whose start timeout or windows have passed")
+    max_maintenance_minutes: int = Field(default=240, ge=1, description="the longest maintenance window a launcher may open on a test host (docs/SVS_RUNS.md, *Maintenance windows*)")
 
 
 class SVSAttributionConfig(BaseModel):
@@ -916,6 +979,10 @@ REMOVED_DISPOSITION_CONFIG_KEYS = (
 DISPOSITION_NAME_MAX_LENGTH = 64  # alerts.disposition
 
 
+# DD:HH:MM:SS as create_timedelta parses it, checked at load because the alert page computes it on render
+DetectionLifetime = Annotated[Optional[str], Field(pattern=r"^\d+(?::\d+){0,3}$")]
+
+
 class ACEConfig(BaseModel):
     global_settings: GlobalConfig = Field(alias="global")
     fixed_directives: list[str] = Field(default_factory=list, description="Directives that cannot be copied between observables via copy_directives_to.")
@@ -923,7 +990,11 @@ class ACEConfig(BaseModel):
     monitor: Optional[MonitorConfig] = None
     rabbitmq: Optional[RabbitMQConfig] = None
     phishkit: PhishkitConfig = Field(default_factory=PhishkitConfig, description="phishkit subsystem configuration")
+    js_deobfuscator: JsDeobfuscatorConfig = Field(default_factory=JsDeobfuscatorConfig, description="js-deobfuscator subsystem configuration")
+    pcap: PcapConfig = Field(default_factory=PcapConfig, description="pcap/pcapng dissection shared by every pcap analysis module")
+    tool_sandbox: ToolSandboxConfig = Field(default_factory=ToolSandboxConfig, description="the Landlock sandbox analysis modules run the external tools that parse alert files in")
     storage: Optional[StorageConfig] = None
+    s3: Optional[S3Config] = None
     redis: Optional[RedisConfig] = None
     redis_local: Optional[RedisConfig] = Field(default=None, alias="redis-local")
     qdrant: Optional[QdrantConfig] = None
@@ -957,7 +1028,6 @@ class ACEConfig(BaseModel):
     gui_favicons: Optional[dict[str, str]] = None
     network_configuration: Optional[NetworkConfigurationConfig] = None
     wiki: Optional[WikiConfig] = None
-    smtp: Optional[SMTPConfig] = None
     email_archive: Optional[EmailArchiveConfig] = None
     memcached: Optional[MemcachedConfig] = None
     ldap: Optional[LDAPConfig] = None
@@ -986,12 +1056,21 @@ class ACEConfig(BaseModel):
     tags: Optional[dict[str, str]] = None
     tag_css_class: Optional[dict[str, str]] = None
     settings: Optional[SettingsConfig] = None
-    observable_expiration_mappings: dict[str, str] = Field(default_factory=dict, description="dictionary of observable types and their expiration mappings")
+    observable_expiration_default: DetectionLifetime = Field(default="90:00:00:00", description="default lifetime for new observable detections in DD:HH:MM:SS format; null means never expire")
+    observable_expiration_mappings: dict[str, DetectionLifetime] = Field(default_factory=dict, description="per-observable-type detection lifetimes, overriding observable_expiration_default; null means never expire for that type")
     events: Optional[EventsConfig] = None
     timeline: Optional[TimelineConfig] = None
     alert_routers: list[AlertRouterConfig] = Field(default_factory=list, description="alert routers to load in every process that creates or analyzes alerts, next to the built-in ones (see docs/INTEGRATIONS.md)")
     dispositions: dict[str, DispositionConfig] = Field(default_factory=dict, description="the alert dispositions, in the order the disposition modals show them; the only list of dispositions there is")
     disposition_classification: dict[str, Literal["tp", "fp"]] = Field(default_factory=dict, description="disposition -> tp (the detections found malicious activity) or fp (they did not); a disposition not listed is unclassified")
+
+    @model_validator(mode="before")
+    @classmethod
+    def _resolve_references(cls, data):
+        # the other sections are resolved by whatever validates them, when it does
+        if isinstance(data, dict):
+            return {**data, **resolve_model_fields(cls, data)}
+        return data
 
     @model_validator(mode="before")
     @classmethod
@@ -1003,6 +1082,56 @@ class ACEConfig(BaseModel):
                     f"{', '.join(removed)}: replaced by the dispositions: block (one entry per "
                     f"disposition with rank, css, show_save_to_event, analyst_selectable) and "
                     f"disposition_classification:; see etc/saq.default.yaml")
+        return data
+
+    @model_validator(mode="before")
+    @classmethod
+    def _reject_removed_email_archive_s3(cls, data):
+        # the archive is a CAS pool now; a site that archived to S3 would otherwise silently fall back
+        # to the local backend
+        if isinstance(data, dict):
+            archive = data.get("email_archive")
+            if isinstance(archive, dict) and archive.get("target", "local") != "local":
+                raise ValueError(f"email_archive.target: {archive.get('target')!r} was removed: archived emails are "
+                                 "stored in the email_archive CAS pool, which an integration can give a custom "
+                                 "backend; see docs/EMAIL_ARCHIVE.md")
+        return data
+
+    @model_validator(mode="after")
+    def _archive_rows_outlive_their_emails(self):
+        # archived_messages is how an archived email is found: rows dropped before the pool's ttl
+        # would lose emails the pool still has. Refused here, before an upgrade migrates anything,
+        # rather than by partition maintenance once rows have filled the table's catchall
+        archive = self.email_archive
+        pool = self.cas.pools.get(archive.pool) if archive is not None else None
+        if pool is not None and pool.retention == "ttl" and archive.partition_retention_days < pool.ttl_days:
+            raise ValueError(f"email_archive.partition_retention_days ({archive.partition_retention_days}) must be at "
+                             f"least the ttl_days of cas pool {archive.pool} ({pool.ttl_days}); see docs/EMAIL_ARCHIVE.md")
+        return self
+
+    @model_validator(mode="before")
+    @classmethod
+    def _reject_moved_email_archive_dir(cls, data):
+        # the email archive reads its directory from its own section, so a site overlay that still sets
+        # it on the email archiver module would otherwise be silently ignored
+        if isinstance(data, dict):
+            archiver = data.get("analysis_module_email_archiver")
+            if isinstance(archiver, dict) and "archive_dir" in archiver:
+                raise ValueError("analysis_module_email_archiver.archive_dir: set email_archive.archive_dir "
+                                 "instead; see etc/saq.default.yaml")
+        return data
+
+    @model_validator(mode="before")
+    @classmethod
+    def _reject_removed_email_whitelist_path(cls, data):
+        # the email analyzer's config is validated only when the engine loads the module, so a site
+        # overlay that still sets the removed key would fail there and leave the engine running
+        # without email analysis
+        if isinstance(data, dict):
+            analyzer = data.get("analysis_module_email_analyzer")
+            if isinstance(analyzer, dict) and "whitelist_path" in analyzer:
+                raise ValueError("analysis_module_email_analyzer.whitelist_path: the brotex whitelist was "
+                                 "removed; delete this setting")
         return data
 
     @model_validator(mode="before")
@@ -1054,15 +1183,18 @@ class ACEConfig(BaseModel):
         self.__remediators: Optional[dict[str, RemediatorConfig]] = None
         self.__file_collectors: Optional[dict[str, FileCollectorConfig]] = None
         self.__external_remediation_probes: Optional[dict[str, ExternalRemediationProbeConfig]] = None
-        self.__observable_exports: Optional[LazyConfigRegistry["ObservableExportConfig"]] = None
-        # (python_module, instance) -> analysis module config *name*; storing the name rather
-        # than the config object keeps this in step with add_analysis_module_config() and
-        # avoids forcing resolution of every module just to build the index
-        self.__module_config_by_python_module: dict[tuple[str, Optional[str]], str] = {}
-
-    def resolve_all_values(self):
-        self.__raw.resolve_all_values()
-        self.parse_raw_data()
+        self.__observable_exports: Optional[LazyConfigRegistry[ObservableExportConfig]] = None
+        # (python_module, instance) -> the names of the analysis module configs in that python
+        # module; storing names rather than config objects keeps this in step with
+        # add_analysis_module_config() and avoids forcing resolution of every module just to
+        # build the index. One python module can host several analysis modules, so the class
+        # a module path names is matched against these in
+        # get_analysis_module_config_by_module_path()
+        self.__module_configs_by_python_module: dict[tuple[str, Optional[str]], list[str]] = {}
+        # module_path -> analysis module config name (None when no config generates it), filled
+        # on first lookup: telling the modules of one python module apart reads their
+        # generated_analysis_type, and the alert page looks this up for every tree node
+        self.__module_config_name_by_module_path: dict[str, Optional[str]] = {}
 
     #
     # raw data parsing
@@ -1122,7 +1254,7 @@ class ACEConfig(BaseModel):
 
             integration_name = key[len("integration_"):]
 
-            integration_config = IntegrationConfig.model_validate(value)
+            integration_config = IntegrationConfig.model_validate(resolve_values(value, key))
             self.__integrations[integration_name] = integration_config
 
     @property
@@ -1151,7 +1283,7 @@ class ACEConfig(BaseModel):
             if not key.startswith("database_"):
                 continue
 
-            database_config = DatabaseConfig.model_validate(value)
+            database_config = DatabaseConfig.model_validate(resolve_values(value, key))
             self.add_database_config(database_config.name, database_config)
 
     def add_database_config(self, name: str, database_config: DatabaseConfig):
@@ -1196,14 +1328,23 @@ class ACEConfig(BaseModel):
             # loaded here -- see saq.configuration.lazy_registry
             self.__services.add_raw(key, value)
 
-    def get_service_config(self, name: str) -> ServiceConfig:
+    def find_service_config(self, name: str) -> ServiceConfig | None:
+        """Returns None when there is no service_<name> section, which is normal on a site that does
+        not run that service. A section that is present but fails to validate still raises."""
         if self.__services is None:
             self._raise_raw_data_error()
 
         if name not in self.__services:
-            raise ValueError(f"service config for {name} not found")
+            return None
 
         return self.__services.get(name)
+
+    def get_service_config(self, name: str) -> ServiceConfig:
+        config = self.find_service_config(name)
+        if config is None:
+            raise ValueError(f"service config for {name} not found")
+
+        return config
 
     #
     # analysis modules
@@ -1223,26 +1364,43 @@ class ACEConfig(BaseModel):
             self._raise_raw_data_error()
 
         self.__analysis_modules.add_resolved(name, analysis_module_config)
+        self._index_analysis_module_config(name, analysis_module_config)
+
+    def _index_analysis_module_config(self, name: str, analysis_module_config: "AnalysisModuleConfig"):
+        # both fields are on the base model so this does not require the plugin subclass
         lookup_key = (analysis_module_config.python_module, analysis_module_config.instance)
-        self.__module_config_by_python_module[lookup_key] = name
+        names = self.__module_configs_by_python_module.setdefault(lookup_key, [])
+        if name not in names:
+            names.append(name)
+
+        # a new module can be the one a module path that resolved to nothing refers to
+        self.__module_config_name_by_module_path.clear()
 
     def load_analysis_module_configs(self):
         from saq.modules.config import AnalysisModuleConfig
         self.__analysis_modules = LazyConfigRegistry(AnalysisModuleConfig, "analysis module config")
-        self.__module_config_by_python_module = {}
+        self.__module_configs_by_python_module = {}
+        self.__module_config_name_by_module_path = {}
 
         for key, value in self.raw._data.items():
             if not key.startswith("analysis_module_"):
                 continue
 
+            # a site overlay that only set keys on a module ACE has since removed is all that is
+            # left of its block; it can never load, and failing on it would stop every process
+            if isinstance(value, dict) and not value.keys() & {"name", "python_module", "python_class"}:
+                logging.warning(
+                    "config %s does not define an analysis module (its module was probably removed "
+                    "from ACE); ignoring it, delete it from the config overlay that sets it",
+                    key,
+                    extra={"config_key": key},
+                )
+                continue
+
             # the analysis module class (and therefore the config class it declares) is
             # not loaded here -- see saq.configuration.lazy_registry
             analysis_module_config = self.__analysis_modules.add_raw(key, value)
-
-            # build lookup for module_path -> config resolution. both fields are on the
-            # base model so this does not require the plugin subclass
-            lookup_key = (analysis_module_config.python_module, analysis_module_config.instance)
-            self.__module_config_by_python_module[lookup_key] = analysis_module_config.name
+            self._index_analysis_module_config(analysis_module_config.name, analysis_module_config)
 
     def get_analysis_module_config(self, name: str) -> "AnalysisModuleConfig":
         if self.__analysis_modules is None:
@@ -1253,19 +1411,75 @@ class ACEConfig(BaseModel):
 
         return self.__analysis_modules.get(name)
 
-    def get_analysis_module_config_by_module_path(self, module_path: str) -> Optional["AnalysisModuleConfig"]:
-        """Look up an analysis module config by a module_path string (e.g. 'saq.modules.x:AnalysisClass:instance')."""
-        from saq.analysis.module_path import SPLIT_MODULE_PATH
-        try:
-            module_name, _class_name, instance = SPLIT_MODULE_PATH(module_path)
-        except ValueError:
-            return None
+    def peek_analysis_module_config(self, name: str) -> "AnalysisModuleConfig":
+        """Returns an analysis module's config without importing the module or reading the environment
+        variables of the fields its own config class declares: the base config until
+        get_analysis_module_config() has resolved it. The GUI reads the base fields of every module, and
+        has only their variables."""
+        if self.__analysis_modules is None:
+            self._raise_raw_data_error()
 
-        name = self.__module_config_by_python_module.get((module_name, instance))
+        if name not in self.__analysis_modules:
+            raise ValueError(f"analysis module config for {name} not found")
+
+        return self.__analysis_modules.peek(name)
+
+    def is_analysis_module_enabled(self, name: str) -> bool:
+        # enabled is on the base config, so this imports nothing; get_analysis_module_config() imports the
+        # module to validate its own config class, and the engine asks this of every module it might load
+        return self.peek_analysis_module_config(name).enabled
+
+    def has_analysis_module_config(self, name: str) -> bool:
+        if self.__analysis_modules is None:
+            self._raise_raw_data_error()
+
+        return name in self.__analysis_modules
+
+    def get_analysis_module_config_by_module_path(self, module_path: str) -> Optional["AnalysisModuleConfig"]:
+        """Look up the base config (see peek_analysis_module_config()) of the analysis module that
+        generates the analysis a module_path string names (e.g. 'saq.modules.x:AnalysisClass:instance'),
+        or None if no configured module generates it."""
+        try:
+            name = self.__module_config_name_by_module_path[module_path]
+        except KeyError:
+            name = self._find_analysis_module_config_name(module_path)
+            self.__module_config_name_by_module_path[module_path] = name
+
         if name is None:
             return None
 
-        return self.get_analysis_module_config(name)
+        return self.peek_analysis_module_config(name)
+
+    def _find_analysis_module_config_name(self, module_path: str) -> Optional[str]:
+        # local: saq.analysis imports saq.configuration, so a module-level import is circular
+        from saq.analysis.module_path import SPLIT_MODULE_PATH
+        try:
+            module_name, class_name, instance = SPLIT_MODULE_PATH(module_path)
+        except ValueError:
+            return None
+
+        # a module path names the generated Analysis class, not the module class, so each
+        # candidate in that python module is asked which Analysis class it generates
+        for name in self.__module_configs_by_python_module.get((module_name, instance), []):
+            try:
+                config = self.peek_analysis_module_config(name)
+                module_class = getattr(importlib.import_module(config.python_module), config.python_class)
+                # generated_analysis_type is an instance property, and instantiating a module
+                # runs its __init__, which can create directories or open clients; every module
+                # returns a class from it without reading instance state, so an instance that
+                # was never initialized answers it
+                analysis_type = module_class.__new__(module_class).generated_analysis_type
+            except Exception:
+                logging.exception("unable to read the generated analysis type of analysis module %s "
+                                  "while looking up the config for module path %s", name, module_path,
+                                  extra={"analysis_module": name, "module_path": module_path})
+                continue
+
+            if analysis_type is not None and analysis_type.__module__ == module_name \
+                    and analysis_type.__name__ == class_name:
+                return name
+
+        return None
 
     # 
     # analysis modes
@@ -1289,7 +1503,7 @@ class ACEConfig(BaseModel):
                 continue
 
             try:
-                analysis_mode_config = AnalysisModeConfig.model_validate(value)
+                analysis_mode_config = AnalysisModeConfig.model_validate(resolve_values(value, key))
             except ValidationError as e:
                 sys.stderr.write(f"CONFIG ERROR: failed to validate analysis mode config for {key}\n")
                 sys.stderr.write(str(value))
@@ -1325,7 +1539,7 @@ class ACEConfig(BaseModel):
                 continue
 
             module_group_name = key[len("module_group_"):]
-            module_group_config = AnalysisModuleGroupConfig.model_validate(value)
+            module_group_config = AnalysisModuleGroupConfig.model_validate(resolve_values(value, key))
             self.add_module_group_config(module_group_name, module_group_config)
 
     def add_module_group_config(self, name: str, module_group_config: AnalysisModuleGroupConfig):
@@ -1365,7 +1579,7 @@ class ACEConfig(BaseModel):
                 continue
 
             collection_group_name = key[len("collection_group_"):]
-            collection_group_config = CollectionGroupConfig.model_validate(value)
+            collection_group_config = CollectionGroupConfig.model_validate(resolve_values(value, key))
             self.add_collection_group_config(collection_group_name, collection_group_config)
 
     def get_collection_group_config(self, name: str) -> CollectionGroupConfig:
@@ -1402,7 +1616,7 @@ class ACEConfig(BaseModel):
                 continue
 
             proxy_name = key[len("proxy_"):]
-            proxy_config = ProxyConfig.model_validate(value)
+            proxy_config = ProxyConfig.model_validate(resolve_values(value, key))
             self.add_proxy_config(proxy_name, proxy_config)
 
     def get_proxy_config(self, name: Optional[str] = None) -> ProxyConfig:
@@ -1445,7 +1659,7 @@ class ACEConfig(BaseModel):
                 continue
 
             splunk_name = key[len("splunk_config_"):]
-            splunk_config = SplunkConfig.model_validate(value)
+            splunk_config = SplunkConfig.model_validate(resolve_values(value, key))
             self.add_splunk_config(splunk_name, splunk_config)
 
     def get_splunk_config(self, name: str = "default") -> SplunkConfig:
@@ -1476,7 +1690,7 @@ class ACEConfig(BaseModel):
                 continue
 
             api_query_defaults_name = key[len("api_query_defaults_"):]
-            api_query_defaults_config = APIQueryDefaultsConfig.model_validate(value)
+            api_query_defaults_config = APIQueryDefaultsConfig.model_validate(resolve_values(value, key))
             self.add_api_query_defaults_config(api_query_defaults_name, api_query_defaults_config)
 
     def add_api_query_defaults_config(self, name: str, api_query_defaults_config: APIQueryDefaultsConfig):
@@ -1516,7 +1730,7 @@ class ACEConfig(BaseModel):
                 continue
 
             hunt_type_name = key[len("hunt_type_"):]
-            hunt_type_config = HuntTypeConfig.model_validate(value)
+            hunt_type_config = HuntTypeConfig.model_validate(resolve_values(value, key))
             self.add_hunt_type_config(hunt_type_name, hunt_type_config)
 
     def get_hunt_type_config(self, name: str) -> HuntTypeConfig:
@@ -1547,7 +1761,7 @@ class ACEConfig(BaseModel):
                 continue
 
             backend_name = key[len("ai_query_backend_"):]
-            backend_config = AIQueryBackendConfig.model_validate(value)
+            backend_config = AIQueryBackendConfig.model_validate(resolve_model_fields(AIQueryBackendConfig, value, key))
             self.__ai_query_backends[backend_name] = backend_config
 
     def get_ai_query_backend_config(self, name: str) -> AIQueryBackendConfig:
@@ -1565,7 +1779,7 @@ class ACEConfig(BaseModel):
         if key not in self.raw._data:
             raise ValueError(f"ai query backend config for {name} not found")
 
-        return self.raw._data[key]
+        return resolve_values(self.raw._data[key], key)
 
     #
     # git repos
@@ -1590,7 +1804,7 @@ class ACEConfig(BaseModel):
             if not key.startswith("git_repo_"):
                 continue
 
-            git_repo_config = GitRepoConfig.model_validate(value)
+            git_repo_config = GitRepoConfig.model_validate(resolve_values(value, key))
             if git_repo_config.name in section_keys:
                 logging.error(
                     "git repo sections %s and %s are both named %s: %s replaces %s",
@@ -1630,7 +1844,7 @@ class ACEConfig(BaseModel):
             if not key.startswith("remediator_"):
                 continue
 
-            remediator_config = RemediatorConfig.model_validate(value)
+            remediator_config = RemediatorConfig.model_validate(resolve_values(value, key))
             self.add_remediator_config(remediator_config.name, remediator_config)
     
     def add_remediator_config(self, name: str, remediator_config: RemediatorConfig):
@@ -1663,7 +1877,7 @@ class ACEConfig(BaseModel):
             if not key.startswith("file_collector_"):
                 continue
 
-            file_collector_config = FileCollectorConfig.model_validate(value)
+            file_collector_config = FileCollectorConfig.model_validate(resolve_values(value, key))
             self.add_file_collector_config(file_collector_config.name, file_collector_config)
 
     def add_file_collector_config(self, name: str, file_collector_config: FileCollectorConfig):
@@ -1696,7 +1910,7 @@ class ACEConfig(BaseModel):
             if not key.startswith("external_remediation_probe_"):
                 continue
 
-            probe_config = ExternalRemediationProbeConfig.model_validate(value)
+            probe_config = ExternalRemediationProbeConfig.model_validate(resolve_values(value, key))
             self.add_external_remediation_probe_config(probe_config.name, probe_config)
 
     def add_external_remediation_probe_config(
@@ -1720,7 +1934,7 @@ class ACEConfig(BaseModel):
     #
 
     @property
-    def observable_exports(self) -> list["ObservableExportConfig"]:
+    def observable_exports(self) -> list[ObservableExportConfig]:
         # NOTE: this forces resolution of every observable export config, which imports
         # every export module. Prefer get_observable_export_config() for a single export.
         if self.__observable_exports is None:
@@ -1729,7 +1943,6 @@ class ACEConfig(BaseModel):
         return self.__observable_exports.values()
 
     def load_observable_export_configs(self):
-        from saq.observables.export.config import ObservableExportConfig
         self.__observable_exports = LazyConfigRegistry(ObservableExportConfig, "observable export config")
 
         for key, value in self.raw._data.items():
@@ -1740,13 +1953,13 @@ class ACEConfig(BaseModel):
             # loaded here -- see saq.configuration.lazy_registry
             self.__observable_exports.add_raw(key, value)
 
-    def add_observable_export_config(self, name: str, export_config: "ObservableExportConfig"):
+    def add_observable_export_config(self, name: str, export_config: ObservableExportConfig):
         if self.__observable_exports is None:
             self._raise_raw_data_error()
 
         self.__observable_exports.add_resolved(name, export_config)
 
-    def get_observable_export_config(self, name: str) -> "ObservableExportConfig":
+    def get_observable_export_config(self, name: str) -> ObservableExportConfig:
         if self.__observable_exports is None:
             self._raise_raw_data_error()
 

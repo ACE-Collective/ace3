@@ -1,18 +1,25 @@
+import json
 import logging
 import os
 import pprint
-from typing import override
+import signal
+from typing import Type, override
 
-import exiftool
+from pydantic import Field
+
 from saq.analysis.analysis import Analysis
 from saq.constants import AnalysisExecutionResult, F_FILE, R_EXTRACTED_FROM
 from saq.modules import AnalysisModule
+from saq.modules.config import AnalysisModuleConfig
+from saq.modules.file_analysis.file_type import FileTypeAnalyzer
+from saq.modules.file_analysis.hash import FileHashAnalyzer
 from saq.modules.file_analysis.is_file_type import (
     is_office_file,
     is_ole_file,
     is_pdf_file,
 )
 from saq.observables.file import FileObservable
+from saq.sandbox.runner import SandboxResult
 from saq.util.strings import format_item_list_for_summary
 
 example_exif_data = [
@@ -40,14 +47,12 @@ example_exif_data = [
 ]
 
 KEY_EXIF_DATA = "exifdata"
-KEY_ERROR = "error"
 
 class ExifAnalysis(Analysis):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.details = {
-            KEY_ERROR: None,
             KEY_EXIF_DATA: {},
         }
 
@@ -63,14 +68,6 @@ class ExifAnalysis(Analysis):
     @exifdata.setter
     def exifdata(self, value: dict):
         self.details[KEY_EXIF_DATA] = value
-
-    @property
-    def error(self) -> str:
-        return self.details.get(KEY_ERROR, "")
-
-    @error.setter
-    def error(self, value: str):
-        self.details[KEY_ERROR] = value
 
     def generate_summary(self) -> str:
         if not self.details:
@@ -93,7 +90,46 @@ class ExifAnalysis(Analysis):
         return f"{self.display_name}: {format_item_list_for_summary(parts)}"
 
 
+def _read_metadata(stdout: str) -> dict:
+    """The metadata exiftool printed for the one file it was given. Raises ValueError for anything else."""
+    metadata = json.loads(stdout)
+    if not isinstance(metadata, list) or len(metadata) != 1 or not isinstance(metadata[0], dict):
+        raise ValueError(f"expected a list holding one object, not {metadata!r:.100}")
+
+    return metadata[0]
+
+
+def _failure_reason(process: SandboxResult) -> str:
+    # a file exiftool cannot read still gets its JSON, with the reason in ExifTool:Error and nothing on stderr
+    try:
+        reason = _read_metadata(process.stdout).get("ExifTool:Error")
+    except ValueError:
+        reason = None  # nothing was printed for the file (it vanished, or Perl died), so stderr has the reason
+
+    if reason:
+        return str(reason)
+
+    # Perl prints its warnings before the line that ended it, and this ends up in the summary
+    lines = process.stderr.strip().splitlines()
+    if lines:
+        return lines[-1][:500]
+
+    # the sandbox exits 128 + N for a command killed by signal N; Perl exits 255 when it dies
+    if 128 < process.returncode <= 128 + signal.SIGRTMAX:
+        return f"exiftool was killed by signal {process.returncode - 128}"
+
+    return f"exiftool exited with status {process.returncode}"
+
+
+class ExifAnalyzerConfig(AnalysisModuleConfig):
+    timeout: int = Field(..., gt=0, description="Seconds one exiftool run may take before the file is recorded as timed out. Keep it well below maximum_analysis_time, where the worker itself is killed.")
+
+
 class ExifAnalyzer(AnalysisModule):
+
+    @classmethod
+    def get_config_class(cls) -> Type[AnalysisModuleConfig]:
+        return ExifAnalyzerConfig
 
     def verify_environment(self):
         self.verify_program_exists("exiftool")
@@ -107,10 +143,6 @@ class ExifAnalyzer(AnalysisModule):
         return F_FILE
 
     def execute_analysis(self, _file: FileObservable) -> AnalysisExecutionResult:
-
-        from saq.modules.file_analysis.hash import FileHashAnalyzer
-        from saq.modules.file_analysis.file_type import FileTypeAnalyzer
-
         local_file_path = _file.full_path
         if not os.path.exists(local_file_path):
             logging.error(f"cannot find local file path {local_file_path}")
@@ -134,31 +166,47 @@ class ExifAnalyzer(AnalysisModule):
             return AnalysisExecutionResult.COMPLETED
 
         analysis = self.create_analysis(_file)
+        log_extra = {"alert_uuid": self.get_root().uuid, "path": local_file_path}
+
+        # exiftool has had code execution bugs in its parsers (CVE-2021-22204), so it runs in the sandbox
+        process = self.run_sandboxed_tool(["exiftool", "-j", "-G", "-n", local_file_path], local_file_path,
+                                          timeout=self.config.timeout)
+        if process is None:
+            # stopped (a timeout, too much output) or not run at all; the log says which
+            analysis.error = "exiftool did not finish"
+            return AnalysisExecutionResult.COMPLETED
+
+        if process.returncode != 0:
+            analysis.error = _failure_reason(process)
+            logging.info(f"Exif data extraction failed for {local_file_path}: {analysis.error}", extra=log_extra)
+            return AnalysisExecutionResult.COMPLETED
 
         try:
-            with exiftool.ExifToolHelper() as et:
-                metadata = et.get_metadata(local_file_path)
-                # this should be a list of dictionaries, of which we want the first one
-                metadata = metadata[0]
-        except Exception as e:
-            analysis.details["error"] = str(e)
-            logging.info(f"Exif data extraction failed for {local_file_path}: {e}")
+            metadata = _read_metadata(process.stdout)
+        except ValueError as e:
+            # exiftool escapes whatever a file holds into valid JSON, so output it reports success with that
+            # does not parse means exiftool itself changed or broke, not that the file is bad
+            analysis.error = f"unreadable exiftool output: {e}"
+            logging.exception("unreadable exiftool output for %s", local_file_path, extra=log_extra)
             return AnalysisExecutionResult.COMPLETED
 
-        # return nicely formatted exif data
-        # exifdata =  pprint.pformat(metadata)
-
-        analysis.details["exifdata"] = metadata
-        if "Error: Exif data extraction failed for" in metadata:
-            return AnalysisExecutionResult.COMPLETED
+        analysis.exifdata = metadata
 
         target_dir = f"{local_file_path}.exif"
         os.makedirs(target_dir, exist_ok=True)
         target_file = os.path.join(target_dir, "exiftool.out")
 
-        # write pretty output to target file
-        with open(target_file, "w") as fp:
+        # pformat recurses in Python once per level of nesting, so a crafted file (a PDF /Title of 500 nested
+        # arrays) exceeds the recursion limit. repr recurses in C, much deeper than exiftool can nest within its
+        # timeout, and writes the same literals the yara rules match on, only without the line breaks
+        try:
             exifdata = pprint.pformat(metadata)
+        except RecursionError:
+            exifdata = repr(metadata)
+            logging.info("exiftool metadata of %s is nested too deeply to pretty print, writing it on one line",
+                         local_file_path, extra=log_extra)
+
+        with open(target_file, "w") as fp:
             fp.write(exifdata)
 
         analysis.details["output_dir"] = target_dir

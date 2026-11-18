@@ -1,9 +1,12 @@
 import base64
 import json
+import logging
+
 import pytest
+from sqlalchemy import text
 
 from app.application import (
-    hexdump_wrapper,
+    create_app,
     s64decode,
     s64encode,
     b64escape,
@@ -12,19 +15,15 @@ from app.application import (
     dict_from_json_string,
     pprint_json_dict
 )
+from saq.database.pool import get_db
 
 
 @pytest.mark.unit
 class TestUtilityFunctions:
     """Test the utility functions in app.application module."""
 
-    def test_hexdump_wrapper(self):
-        """Test hexdump_wrapper function."""
-        test_data = b"Hello World"
-        result = hexdump_wrapper(test_data)
-        
-        # Should return a string containing hexdump output
-        assert isinstance(result, str)
+    def test_hexdump_filter(self, app):
+        result = app.jinja_env.from_string("{{ data | hexdump }}").render(data=b"Hello World")
         assert result == "00000000  48 65 6c 6c 6f 20 57 6f  72 6c 64                 |Hello World|\n0000000b\n"
 
     def test_s64decode(self):
@@ -61,13 +60,6 @@ class TestUtilityFunctions:
         decoded_bytes = base64.b64decode(result)
         assert b"Hello%20World%21" == decoded_bytes
 
-    def test_b64decode_wrapper_valid(self):
-        """Test b64decode_wrapper with valid base64."""
-        test_data = b"Hello World"
-        encoded = base64.b64encode(test_data).decode('ascii')
-        result = b64decode_wrapper(encoded)
-        assert result == test_data
-
     def test_b64decode_wrapper_missing_padding(self):
         """Test b64decode_wrapper with missing padding."""
         test_data = b"Hello World"
@@ -75,12 +67,13 @@ class TestUtilityFunctions:
         result = b64decode_wrapper(encoded)
         assert result == test_data
 
-    def test_b64decode_wrapper_invalid(self):
+    def test_b64decode_wrapper_invalid(self, caplog):
         """Test b64decode_wrapper with invalid base64."""
-        # Test with truly invalid base64 that will cause an exception
-        invalid_b64 = "!!!"
-        result = b64decode_wrapper(invalid_b64)
-        assert result == b''
+        # one data character is never valid base64, whatever the padding; characters outside the
+        # alphabet ("!!!") are only discarded, and decode to b'' without an error
+        with caplog.at_level(logging.ERROR):
+            assert b64decode_wrapper("a") == b''
+        assert [r.getMessage() for r in caplog.records] == ["Unable to b64decode: a"]
 
     def test_btoa(self):
         """Test btoa function."""
@@ -107,32 +100,14 @@ class TestUtilityFunctions:
         test_dict = {"b_key": "value", "a_key": 42, "nested": {"z": 1, "a": 2}}
         result = pprint_json_dict(test_dict)
         
-        # Should be properly formatted JSON
-        assert isinstance(result, str)
-        parsed = json.loads(result)
-        assert parsed == test_dict
+        # indented four spaces, keys sorted at every level
+        assert result == '{\n    "a_key": 42,\n    "b_key": "value",\n    "nested": {\n        "a": 2,\n        "z": 1\n    }\n}'
 
-@pytest.mark.unit
-class TestJinjaFilters:
-    """Test Jinja filter functions directly without full app setup."""
+@pytest.mark.integration
+def test_the_gui_uses_the_ace_session_every_process_uses():
+    session = get_db()
+    create_app()
+    assert get_db() is session
 
-    def test_jinja_filter_functions(self):
-        """Test that the Jinja filter functions work correctly."""
-        # Test btoa filter
-        assert btoa(b"test") == "test"
-        
-        # Test s64decode filter
-        encoded = base64.b64encode("test".encode()).decode()
-        assert s64decode(encoded) == "test"
-        
-        # Test s64encode filter
-        assert s64encode("test") == base64.b64encode("test".encode()).decode()
-        
-        # Test dict_from_json_string filter
-        json_str = '{"key": "value"}'
-        assert dict_from_json_string(json_str) == {"key": "value"}
-        
-        # Test pprint_json_dict filter
-        test_dict = {"key": "value"}
-        result = pprint_json_dict(test_dict)
-        assert json.loads(result) == test_dict
+    # so the GUI's ORM runs at READ COMMITTED like every other engine, not the server's REPEATABLE-READ
+    assert get_db().execute(text("SELECT @@transaction_isolation")).scalar() == "READ-COMMITTED"

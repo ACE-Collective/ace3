@@ -101,12 +101,6 @@ class AnalysisDetailsPersistenceManager:
         analysis.details_size = False
         analysis.details_modified = True
 
-    # XXX: when would I ever want to use this?
-    def discard_details(self, analysis: "Analysis"):
-        """Simply discards the details of this analysis, not saving any changes."""
-        analysis.details = {}
-        analysis.details_modified = True
-
     def load_details(self, analysis: "Analysis") -> bool:
         """Loads the details referenced by this object as a dict or None if the operation failed."""
 

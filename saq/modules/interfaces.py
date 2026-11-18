@@ -163,6 +163,10 @@ class AnalysisModuleInterface(Protocol):
         """Returns True if this module can analyze the given observable."""
         ...
 
+    def will_retry(self, analysis: Analysis) -> bool:
+        """Returns True if this module runs again to replace the given analysis of its own."""
+        ...
+
     def custom_requirement(self, observable: Observable) -> bool:
         """Additional check evaluated by the engine as the final gate before the
         module runs. May raise WaitForAnalysisException to wait on another analysis."""
@@ -182,6 +186,10 @@ class AnalysisModuleInterface(Protocol):
         """Set the dependency injection context."""
         ...
     
+    def set_analysis_deadline(self, deadline: Optional[float]) -> None:
+        """Records the time.monotonic() value past which the engine stops the current call to analyze()."""
+        ...
+
     def get_root(self) -> RootAnalysisInterface:
         """Get the root analysis interface from context."""
         ...

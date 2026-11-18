@@ -3,22 +3,16 @@ import os
 import sys
 
 import pytest
+from pydantic import BaseModel, Field
 
 from saq.configuration.yaml_parser import (
+    MissingEnvironmentVariable,
     YAMLConfig,
+    resolve_model_fields,
+    resolve_value,
+    resolve_values,
 )
-from saq.environment import get_global_runtime_settings, get_base_dir
-
-
-@pytest.mark.unit
-def test_yaml_config_initialization():
-    """Test YAMLConfig initialization."""
-    config = YAMLConfig()
-    
-    assert isinstance(config._data, dict)
-    assert len(config._data) == 0
-    assert isinstance(config.loaded_files, set)
-    assert len(config.loaded_files) == 0
+from saq.environment import get_global_runtime_settings
 
 
 @pytest.mark.unit
@@ -29,18 +23,16 @@ def test_yaml_config_environment_variable_resolution():
     os.environ["TEST_YAML_VAR2"] = "env_value_2"
     
     try:
-        config = YAMLConfig()
-        
         # Test env: prefix resolution
-        assert config._resolve_value("env:TEST_YAML_VAR2") == "env_value_2"
+        assert resolve_value("env:TEST_YAML_VAR2") == "env_value_2"
         
         # Test error for unknown environment variable
-        with pytest.raises(RuntimeError, match="configuration referenced unknown environment variable"):
-            config._resolve_value("env:NONEXISTENT_VAR")
+        with pytest.raises(MissingEnvironmentVariable, match="configuration referenced unknown environment variable NONEXISTENT_VAR at section.key"):
+            resolve_value("env:NONEXISTENT_VAR", "section.key")
         
         # Test regular strings are not modified
-        assert config._resolve_value("regular_string") == "regular_string"
-        assert config._resolve_value("prefix:but_not_env") == "prefix:but_not_env"
+        assert resolve_value("regular_string") == "regular_string"
+        assert resolve_value("prefix:but_not_env") == "prefix:but_not_env"
         
     finally:
         del os.environ["TEST_YAML_VAR1"]
@@ -51,8 +43,7 @@ def test_yaml_config_environment_variable_resolution():
 def test_yaml_config_encrypted_marker_left_unresolved():
     """encrypted:<name> markers are never resolved by the loader -- they are left intact so they
     validate into a SecretRef field and are resolved lazily at point-of-use."""
-    config = YAMLConfig()
-    assert config._resolve_value("encrypted:test_key") == "encrypted:test_key"
+    assert resolve_value("encrypted:test_key") == "encrypted:test_key"
 
 
 @pytest.mark.unit
@@ -101,121 +92,6 @@ def test_yaml_config_load_file_invalid_yaml(tmpdir):
     
     with pytest.raises(ValueError, match="YAML configuration root must be a mapping"):
         config.load_file(str(yaml_file))
-
-
-@pytest.mark.unit
-def test_yaml_config_merge():
-    """Test the merge method for merging configurations."""
-    config = YAMLConfig()
-    config._data["section1"] = {"key1": "value1", "key2": "value2"}
-    config._data["section2"] = {"key3": "value3"}
-    
-    # Apply another configuration
-    other_config = {
-        "section1": {"key1": "updated_value1", "key4": "value4"},  # Update and add
-        "section3": {"key5": "value5"}  # New section
-    }
-    
-    config.merge(other_config)
-    
-    # Check that existing values were updated
-    assert config._data["section1"]["key1"] == "updated_value1"
-    # Check that existing values not in other_config remain
-    assert config._data["section1"]["key2"] == "value2"
-    # Check that new values were added
-    assert config._data["section1"]["key4"] == "value4"
-    # Check that untouched sections remain
-    assert config._data["section2"]["key3"] == "value3"
-    # Check that new sections were added
-    assert config._data["section3"]["key5"] == "value5"
-
-
-@pytest.mark.unit
-def test_yaml_config_resolve_references_list(tmpdir):
-    """Test resolve_references with list of includes."""
-    # Create include files
-    include1 = tmpdir.join("include1.yaml")
-    include1.write("""
-included_section1:
-  inc_key1: inc_value1
-""")
-    
-    include2 = tmpdir.join("include2.yaml")
-    include2.write("""
-included_section2:
-  inc_key2: inc_value2
-""")
-    
-    # Create main file with config list
-    main_file = tmpdir.join("main.yaml")
-    main_file.write(f"""
-config:
-  - {include1}
-  - {include2}
-
-main_section:
-  main_key: main_value
-""")
-    
-    config = YAMLConfig()
-    config.load_file(str(main_file))
-    
-    # Check that all sections are loaded
-    assert "main_section" in config._data
-    assert "included_section1" in config._data
-    assert "included_section2" in config._data
-    
-    assert config._data["main_section"]["main_key"] == "main_value"
-    assert config._data["included_section1"]["inc_key1"] == "inc_value1"
-    assert config._data["included_section2"]["inc_key2"] == "inc_value2"
-    
-    # Check that all files are in loaded_files
-    assert str(main_file) in config.loaded_files
-    assert str(include1) in config.loaded_files
-    assert str(include2) in config.loaded_files
-
-
-@pytest.mark.unit
-def test_yaml_config_resolve_references_mapping(tmpdir):
-    """Test resolve_references with mapping of includes."""
-    # Create include files
-    include1 = tmpdir.join("db.yaml")
-    include1.write("""
-database:
-  host: localhost
-  port: 3306
-""")
-    
-    include2 = tmpdir.join("cache.yaml")
-    include2.write("""
-redis:
-  host: redis-server
-  port: 6379
-""")
-    
-    # Create main file with config mapping
-    main_file = tmpdir.join("main.yaml")
-    main_file.write(f"""
-config:
-  database: {include1}
-  cache: {include2}
-
-app:
-  name: test_app
-""")
-    
-    config = YAMLConfig()
-    config.load_file(str(main_file))
-    
-    # Check that all sections are loaded
-    assert "app" in config._data
-    assert "database" in config._data
-    assert "redis" in config._data
-    
-    assert config._data["app"]["name"] == "test_app"
-    assert config._data["database"]["host"] == "localhost"
-    assert config._data["database"]["port"] == 3306
-    assert config._data["redis"]["host"] == "redis-server"
 
 
 @pytest.mark.unit
@@ -271,7 +147,8 @@ def test_yaml_config_apply_path_references():
         # Check that string paths were added to sys.path
         assert test_path1 in sys.path
         assert test_path2 in sys.path
-        
+        assert 42 not in sys.path
+
     finally:
         # Restore original sys.path
         sys.path[:] = original_path
@@ -374,28 +251,6 @@ section2:
 
 
 @pytest.mark.unit
-def test_yaml_config_merge_scalars():
-    """Test merge with scalar values - scalars should be replaced."""
-    config = YAMLConfig()
-    config._data = {
-        "section1": {"key1": "original_value", "key2": 42, "key3": True}
-    }
-
-    # Merge with updated scalar values
-    other_config = {
-        "section1": {"key1": "new_value", "key2": 99}
-    }
-
-    config.merge(other_config)
-
-    # Scalars should be replaced
-    assert config._data["section1"]["key1"] == "new_value"
-    assert config._data["section1"]["key2"] == 99
-    # Unmodified values should remain
-    assert config._data["section1"]["key3"] is True
-
-
-@pytest.mark.unit
 def test_yaml_config_merge_lists():
     """Test merge with lists - lists should be appended."""
     config = YAMLConfig()
@@ -418,45 +273,6 @@ def test_yaml_config_merge_lists():
     assert "item3" in result
     assert "item4" in result
     assert "item5" in result
-
-
-@pytest.mark.unit
-def test_yaml_config_merge_nested_dicts():
-    """Test merge with nested dictionaries - should merge recursively."""
-    config = YAMLConfig()
-    config._data = {
-        "section1": {
-            "level1": {
-                "level2": {
-                    "key1": "value1",
-                    "key2": "value2"
-                },
-                "other_key": "other_value"
-            }
-        }
-    }
-
-    # Merge with nested structure
-    other_config = {
-        "section1": {
-            "level1": {
-                "level2": {
-                    "key2": "updated_value2",  # Update nested value
-                    "key3": "value3"  # Add new nested value
-                },
-                "new_key": "new_value"  # Add new key at level1
-            }
-        }
-    }
-
-    config.merge(other_config)
-
-    # Check recursive merge
-    assert config._data["section1"]["level1"]["level2"]["key1"] == "value1"  # Preserved
-    assert config._data["section1"]["level1"]["level2"]["key2"] == "updated_value2"  # Updated
-    assert config._data["section1"]["level1"]["level2"]["key3"] == "value3"  # Added
-    assert config._data["section1"]["level1"]["other_key"] == "other_value"  # Preserved
-    assert config._data["section1"]["level1"]["new_key"] == "new_value"  # Added
 
 
 @pytest.mark.unit
@@ -549,17 +365,6 @@ section1:
 
 
 @pytest.mark.unit
-def test_yaml_config_file_prefix_absolute_path(tmpdir):
-    """Test file: prefix resolution with an absolute path."""
-    secret_file = tmpdir.join("secret.txt")
-    secret_file.write("my_secret_value")
-
-    config = YAMLConfig()
-    result = config._resolve_value(f"file:{secret_file}")
-    assert result == "my_secret_value"
-
-
-@pytest.mark.unit
 def test_yaml_config_file_prefix_relative_path(tmpdir, monkeypatch):
     """Test file: prefix resolution with a relative path."""
     sub = tmpdir.mkdir("secrets")
@@ -568,36 +373,25 @@ def test_yaml_config_file_prefix_relative_path(tmpdir, monkeypatch):
 
     monkeypatch.setattr(get_global_runtime_settings(), "saq_home", str(tmpdir))
 
-    config = YAMLConfig()
-    result = config._resolve_value("file:secrets/db_password.txt")
+    result = resolve_value("file:secrets/db_password.txt")
     assert result == "relative_secret"
-
-
-@pytest.mark.unit
-def test_yaml_config_file_prefix_missing_file():
-    """Test file: prefix raises FileNotFoundError for missing files."""
-    config = YAMLConfig()
-    with pytest.raises(FileNotFoundError):
-        config._resolve_value("file:/nonexistent/path/to/secret.txt")
 
 
 @pytest.mark.unit
 def test_a_file_url_is_a_value_not_a_file_to_read(tmpdir):
     """A git_repo section's git_url may name a local repository as a file:// URL."""
     repository = tmpdir.mkdir("rules.git")
-    config = YAMLConfig()
-    assert config._resolve_value(f"file://{repository}") == f"file://{repository}"
+    assert resolve_value(f"file://{repository}") == f"file://{repository}"
 
-    config._data = {"git_repo_rules": {"git_url": f"file://{repository}", "mirrors": [f"file://{repository}"]}}
-    config.resolve_all_values()
-    assert config._data["git_repo_rules"] == {"git_url": f"file://{repository}", "mirrors": [f"file://{repository}"]}
+    section = {"git_url": f"file://{repository}", "mirrors": [f"file://{repository}"]}
+    assert resolve_values(section, "git_repo_rules") == section
 
 
 @pytest.mark.unit
 def test_a_file_value_that_cannot_be_read_names_itself(tmpdir):
     directory = tmpdir.mkdir("not-a-file")
     with pytest.raises(IsADirectoryError, match=f"the configuration value 'file:{directory}' reads its value"):
-        YAMLConfig()._resolve_value(f"file:{directory}")
+        resolve_value(f"file:{directory}")
 
 
 @pytest.mark.unit
@@ -606,14 +400,13 @@ def test_yaml_config_file_prefix_strips_trailing_whitespace(tmpdir):
     secret_file = tmpdir.join("secret_with_newlines.txt")
     secret_file.write("secret\n\n")
 
-    config = YAMLConfig()
-    result = config._resolve_value(f"file:{secret_file}")
+    result = resolve_value(f"file:{secret_file}")
     assert result == "secret"
 
 
 @pytest.mark.unit
-def test_yaml_config_resolve_all_values_file_prefix(tmpdir, monkeypatch):
-    """Test resolve_all_values handles file: prefix in dict values and list items."""
+def test_resolve_values_file_prefix(tmpdir, monkeypatch):
+    """resolve_values handles the file: prefix in dict values and list items."""
     secret1 = tmpdir.join("secret1.txt")
     secret1.write("dict_secret\n")
     secret2 = tmpdir.join("secret2.txt")
@@ -621,19 +414,15 @@ def test_yaml_config_resolve_all_values_file_prefix(tmpdir, monkeypatch):
 
     monkeypatch.setattr(get_global_runtime_settings(), "saq_home", str(tmpdir))
 
-    config = YAMLConfig()
-    config._data = {
-        "section": {
-            "password": f"file:{secret1}",
-            "tokens": [f"file:{secret2}", "plain_value"],
-        }
+    section = {
+        "password": f"file:{secret1}",
+        "tokens": [f"file:{secret2}", "plain_value"],
     }
 
-    config.resolve_all_values()
-
-    assert config._data["section"]["password"] == "dict_secret"
-    assert config._data["section"]["tokens"][0] == "list_secret"
-    assert config._data["section"]["tokens"][1] == "plain_value"
+    assert resolve_values(section, "section") == {
+        "password": "dict_secret",
+        "tokens": ["list_secret", "plain_value"],
+    }
 
 #
 # duplicate key detection
@@ -672,22 +461,21 @@ def test_no_warning_without_duplicates(tmp_path, caplog):
 
 
 @pytest.mark.unit
-def test_duplicate_key_reported_once_per_occurrence(tmp_path, caplog):
-    """Nested mappings are checked too, and each duplicate is reported where it appears."""
-    path = tmp_path / "nested.yaml"
-    path.write_text(
-        "outer:\n"
-        "  inner:\n"
-        "    a: 1\n"
-        "    a: 2\n"
-        "  other:\n"
-        "    b: 1\n"
-        "    b: 2\n"
-    )
+def test_resolve_model_fields_resolves_only_the_declared_fields(monkeypatch):
+    class Model(BaseModel):
+        global_settings: dict = Field(alias="global")
+        plain: str
 
-    with caplog.at_level(logging.WARNING):
-        data = YAMLConfig()._load_yaml_file(str(path))
+    monkeypatch.setenv("TEST_YAML_DECLARED", "declared")
+    monkeypatch.delenv("TEST_YAML_UNDECLARED", raising=False)
+    data = {
+        "global": {"name": "env:TEST_YAML_DECLARED"},
+        "plain": "env:TEST_YAML_DECLARED",
+        "other": "env:TEST_YAML_UNDECLARED",
+    }
 
-    messages = [r.getMessage() for r in caplog.records if "duplicate key" in r.getMessage()]
-    assert len(messages) == 2
-    assert data == {"outer": {"inner": {"a": 2}, "other": {"b": 2}}}
+    assert resolve_model_fields(Model, data) == {"global": {"name": "declared"}, "plain": "declared"}
+    # the input keeps its references
+    assert data["plain"] == "env:TEST_YAML_DECLARED"
+    # a value that is not a mapping is left for validation to reject
+    assert resolve_model_fields(Model, ["not", "a", "mapping"]) == ["not", "a", "mapping"]

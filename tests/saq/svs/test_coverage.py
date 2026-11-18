@@ -1,6 +1,8 @@
 """ATT&CK coverage per technique and platform (saq.svs.coverage, docs/SVS_COVERAGE.md)."""
 
 import json
+import os
+import time
 from argparse import Namespace
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
@@ -10,7 +12,7 @@ import pytest
 from sqlalchemy import select, update
 
 from saq.cli.commands.svs import cli_coverage_refresh, cli_coverage_snapshot, cli_coverage_status
-from saq.configuration.config import get_service_config
+from saq.configuration.config import get_config, get_service_config
 from saq.constants import ENV_ACE_IS_PRIMARY_NODE, SERVICE_YARA_SCANNER
 from saq.database.model import (
     SVSCatalogTest,
@@ -38,6 +40,7 @@ from saq.svs.service import CoverageRefresher, SVSService
 from saq.svs.signatures import SignatureTags, SignatureTagsUnavailable, signature_techniques
 from saq.svs.test_state import Evaluation, TestState
 from tests.saq.svs.conftest import add_catalog_test, add_test_host, started_run, write_hunt, write_yara_rule
+from tests.saq.helpers import person
 
 GUID = "aaaaaaaa-1111-4111-8111-111111111111"
 OTHER_GUID = "bbbbbbbb-2222-4222-8222-222222222222"
@@ -241,6 +244,13 @@ class TestSignatureTechniques:
         with pytest.raises(SignatureTagsUnavailable, match=f"{missing} is not a directory"):
             signature_techniques()
 
+    def test_an_invalid_yara_config_raises(self, hunt_dir, yara_dir):
+        # technique_detail() turns SignatureTagsUnavailable into the page's error, anything else is a 500
+        get_config().raw._data["service_yara"]["git_repo_dirs"] = "unittest"
+        get_config().load_service_configs()
+        with pytest.raises(SignatureTagsUnavailable, match="git_repo_dirs"):
+            signature_techniques()
+
     def test_no_yara_location_is_not_an_error(self, hunt_dir, monkeypatch):
         write_hunt(hunt_dir, "h1", tags=["mitre:T1059"])
         # no service_yara configuration at all, which leaves no yara location
@@ -281,7 +291,7 @@ def _state() -> SVSCoverageState:
 
 def _validated_run(guid: str, user_id: int):
     """A reviewed run of guid on win10-01 that hit SIGNATURE, which is expected of it."""
-    expectations.set_expectation(guid, SIGNATURE, "expected", user_id, platform="windows")
+    expectations.set_expectation(guid, SIGNATURE, "expected", person(user_id), platform="windows")
     run = started_run(guid)
     db = get_db()
     db.execute(update(SVSRun).where(SVSRun.id == run.id).values(state="reviewed", reviewed_at=T0))
@@ -313,11 +323,6 @@ class TestRefresh:
             "validated", T0 + timedelta(hours=1))
         assert (rows[("T1059", "windows")].state, rows[("T1059", "windows")].own_state) == ("validated", "none")
         assert rows[("T1059", "macos")].updated_at == before[("T1059", "macos")]
-
-    def test_removed_tests_do_not_count(self, refreshable):
-        add_catalog_test(GUID, removed=True)
-        refresh_coverage("test")
-        assert _rows()[("T1059.001", "windows")].state == "none"
 
     def test_rows_retire_and_come_back(self, refreshable):
         add_catalog_test(GUID, technique="T1234.001")
@@ -411,6 +416,23 @@ def _snapshots() -> dict[tuple[date, str, str], SVSCoverageSnapshot]:
     return rows
 
 
+@pytest.fixture
+def local_date_is_not_utc():
+    """A local timezone whose date differs from UTC's now: 14 hours ahead from 10:00 UTC on, 12
+    hours behind before noon UTC."""
+    previous = os.environ.get("TZ")
+    os.environ["TZ"] = "Etc/GMT-14" if datetime.now(timezone.utc).hour >= 10 else "Etc/GMT+12"
+    time.tzset()
+    try:
+        yield
+    finally:
+        if previous is None:
+            del os.environ["TZ"]
+        else:
+            os.environ["TZ"] = previous
+        time.tzset()
+
+
 @pytest.mark.integration
 class TestSnapshot:
     def test_a_snapshot_copies_the_live_rows(self, refreshable, user_id):
@@ -447,10 +469,14 @@ class TestSnapshot:
         write_snapshot("test", snapshot_date=DAY + timedelta(days=1))
         assert len(_snapshots()) == 10
 
-    def test_today_in_utc_by_default(self, refreshable):
-        assert write_snapshot("test").snapshot_date == datetime.now(timezone.utc).date()
+    def test_today_in_utc_by_default(self, refreshable, local_date_is_not_utc):
+        today = datetime.now(timezone.utc).date()
+        assert date.today() != today
+        assert write_snapshot("test").snapshot_date == today
 
     def test_a_failed_refresh_writes_no_snapshot(self, refreshable, monkeypatch):
+        # coverage has rows, which a snapshot taken before the refresh would copy
+        refresh_coverage("test")
         monkeypatch.setattr(coverage, "signature_techniques",
                             lambda: (_ for _ in ()).throw(SignatureTagsUnavailable("boom")))
         with pytest.raises(SignatureTagsUnavailable):

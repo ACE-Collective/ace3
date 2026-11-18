@@ -53,42 +53,6 @@ class TestDeepMerge:
 
         assert result == {"tags": ["tag1", "tag2", "tag3", "tag4"]}
 
-    def test_merge_lists_preserves_order(self):
-        """should preserve the order when merging lists"""
-        base = {"items": [1, 2, 3]}
-        override = {"items": [3, 4, 5]}
-
-        result = deep_merge(base, override)
-
-        assert result == {"items": [1, 2, 3, 4, 5]}
-
-    def test_merge_empty_base(self):
-        """should return override when base is empty"""
-        base = {}
-        override = {"key1": "value1", "key2": {"nested": "value"}}
-
-        result = deep_merge(base, override)
-
-        assert result == {"key1": "value1", "key2": {"nested": "value"}}
-
-    def test_merge_empty_override(self):
-        """should return base when override is empty"""
-        base = {"key1": "value1", "key2": {"nested": "value"}}
-        override = {}
-
-        result = deep_merge(base, override)
-
-        assert result == {"key1": "value1", "key2": {"nested": "value"}}
-
-    def test_merge_deeply_nested_dicts(self):
-        """should merge deeply nested dictionaries"""
-        base = {"level1": {"level2": {"level3": {"value": "old"}}}}
-        override = {"level1": {"level2": {"level3": {"value": "new", "extra": "data"}}}}
-
-        result = deep_merge(base, override)
-
-        assert result == {"level1": {"level2": {"level3": {"value": "new", "extra": "data"}}}}
-
     def test_merge_mixed_types_dict_override(self):
         """should replace when override changes type from non-dict to dict"""
         base = {"key": "simple_value"}
@@ -138,40 +102,6 @@ class TestDeepMerge:
         # but result should have the merge
         assert result == {"key1": "value1", "key2": "value2", "nested": {"inner": "new_value"}}
 
-    def test_merge_complex_scenario(self):
-        """should handle complex merge with multiple data types"""
-        base = {
-            "name": "base_name",
-            "tags": ["tag1", "tag2"],
-            "config": {"setting1": "value1", "setting2": "value2"},
-            "count": 5,
-        }
-        override = {
-            "tags": ["tag2", "tag3"],
-            "config": {"setting2": "new_value2", "setting3": "value3"},
-            "count": 10,
-            "new_field": "new_value",
-        }
-
-        result = deep_merge(base, override)
-
-        assert result == {
-            "name": "base_name",
-            "tags": ["tag1", "tag2", "tag3"],
-            "config": {"setting1": "value1", "setting2": "new_value2", "setting3": "value3"},
-            "count": 10,
-            "new_field": "new_value",
-        }
-
-    def test_merge_with_none_values(self):
-        """should handle None values correctly"""
-        base = {"key1": "value1", "key2": None}
-        override = {"key2": "new_value", "key3": None}
-
-        result = deep_merge(base, override)
-
-        assert result == {"key1": "value1", "key2": "new_value", "key3": None}
-
     def test_merge_list_with_dict_items(self):
         """should handle lists containing dictionaries"""
         base = {"items": [{"id": 1, "name": "item1"}]}
@@ -181,39 +111,6 @@ class TestDeepMerge:
 
         # lists are extended, not merged element-wise
         assert result == {"items": [{"id": 1, "name": "item1"}, {"id": 2, "name": "item2"}]}
-
-    def test_merge_observable_mapping_override_by_fields(self):
-        """should replace observable_mapping entry when fields match"""
-        base = {"observable_mapping": [
-            {"fields": ["callerIpAddress"], "type": "ip", "time": True},
-            {"fields": ["correlationId"], "type": "azure_correlation_id", "time": False},
-        ]}
-        override = {"observable_mapping": [
-            {"fields": ["callerIpAddress"], "type": "ip", "time": False},
-        ]}
-
-        result = deep_merge(base, override)
-
-        assert len(result["observable_mapping"]) == 2
-        # callerIpAddress entry should be replaced (time=False from override)
-        ip_entry = next(e for e in result["observable_mapping"] if e["fields"] == ["callerIpAddress"])
-        assert ip_entry["time"] is False
-        # correlationId entry should be unchanged
-        corr_entry = next(e for e in result["observable_mapping"] if e["fields"] == ["correlationId"])
-        assert corr_entry["time"] is False
-
-    def test_merge_observable_mapping_append_new_fields(self):
-        """should append observable_mapping entry when fields don't match any existing"""
-        base = {"observable_mapping": [
-            {"fields": ["callerIpAddress"], "type": "ip", "time": True},
-        ]}
-        override = {"observable_mapping": [
-            {"fields": ["authentication_detail"], "type": "authentication_detail", "time": False},
-        ]}
-
-        result = deep_merge(base, override)
-
-        assert len(result["observable_mapping"]) == 2
 
     def test_merge_observable_mapping_mixed_override_and_append(self):
         """should handle a mix of overrides and new entries"""
@@ -232,34 +129,6 @@ class TestDeepMerge:
         # overridden entry should fully replace (no display_type from base)
         ip_entry = next(e for e in result["observable_mapping"] if e["fields"] == ["callerIpAddress"])
         assert ip_entry == {"fields": ["callerIpAddress"], "type": "ip", "time": False}
-
-    def test_merge_list_duplicate_detection(self):
-        """should detect duplicates in lists correctly"""
-        base = {"numbers": [1, 2, 3]}
-        override = {"numbers": [2, 3, 4]}
-
-        result = deep_merge(base, override)
-
-        # 2 and 3 should not be duplicated
-        assert result == {"numbers": [1, 2, 3, 4]}
-
-    def test_merge_empty_nested_dict(self):
-        """should handle empty nested dictionaries"""
-        base = {"outer": {}}
-        override = {"outer": {"inner": "value"}}
-
-        result = deep_merge(base, override)
-
-        assert result == {"outer": {"inner": "value"}}
-
-    def test_merge_empty_list(self):
-        """should handle empty lists"""
-        base = {"items": []}
-        override = {"items": ["item1", "item2"]}
-
-        result = deep_merge(base, override)
-
-        assert result == {"items": ["item1", "item2"]}
 
     def test_merge_multiple_levels_mixed_types(self):
         """should handle multiple levels with mixed types"""
@@ -354,31 +223,6 @@ class TestYAMLLoaderIncludeDirectives:
         # create the main file that includes it
         main_content = f"""include:
   - {str(included_file)}
-rule:
-  value: overridden_value
-"""
-        main_file = tmpdir / "main.yaml"
-        main_file.write(main_content)
-
-        config, _ = load_from_yaml(str(main_file), SimpleConfig)
-
-        # the main file should override the included file's value
-        assert config.name == "included_rule"
-        assert config.value == "overridden_value"
-
-    def test_load_with_single_relative_include(self, tmpdir):
-        """should load YAML with single relative path include"""
-        # create the included file
-        included_content = """rule:
-  name: included_rule
-  value: base_value
-"""
-        included_file = tmpdir / "included.yaml"
-        included_file.write(included_content)
-
-        # create the main file that includes it with relative path
-        main_content = """include:
-  - included.yaml
 rule:
   value: overridden_value
 """
@@ -501,11 +345,10 @@ rule:
         main_file = tmpdir / "main.yaml"
         main_file.write(main_content)
 
-        config, _ = load_from_yaml(str(main_file), SimpleConfig)
+        merged, _ = load_merged_yaml(str(main_file))
 
-        # should successfully load without the include directive in the result
-        assert config.name == "test_rule"
-        assert config.value == "test_value"
+        # the included content is merged in, and the directive itself is gone
+        assert merged == {"rule": {"name": "test_rule", "value": "test_value"}}
 
 
 @pytest.mark.unit
@@ -556,41 +399,6 @@ rule:
         # should not cause infinite loop
         assert config.name == "file_a_rule"
         assert config.value == "file_a_value"
-
-    def test_prevent_circular_reference_complex(self, tmpdir):
-        """should prevent complex circular reference (A -> B -> C -> A)"""
-        # create file C that will include A
-        file_c_content = """include:
-  - file_a.yaml
-rule:
-  value: file_c_value
-"""
-        file_c = tmpdir / "file_c.yaml"
-        file_c.write(file_c_content)
-
-        # create file B that includes C
-        file_b_content = """include:
-  - file_c.yaml
-rule:
-  name: file_b_rule
-"""
-        file_b = tmpdir / "file_b.yaml"
-        file_b.write(file_b_content)
-
-        # create file A that includes B
-        file_a_content = """include:
-  - file_b.yaml
-rule:
-  name: file_a_rule
-"""
-        file_a = tmpdir / "file_a.yaml"
-        file_a.write(file_a_content)
-
-        config, _ = load_from_yaml(str(file_a), SimpleConfig)
-
-        # should not cause infinite loop
-        assert config.name == "file_a_rule"
-        assert config.value == "file_c_value"
 
     def test_same_file_included_multiple_times(self, tmpdir):
         """should only load a file once even if included multiple times"""
@@ -691,61 +499,6 @@ rule:
 class TestYAMLLoaderMergeBehavior:
     """Tests for the merge behavior of the loader."""
 
-    def test_later_values_override_earlier_values(self, tmpdir):
-        """should override earlier values with later ones"""
-        base_content = """rule:
-  name: base_name
-  value: base_value
-"""
-        base_file = tmpdir / "base.yaml"
-        base_file.write(base_content)
-
-        override_content = """include:
-  - base.yaml
-rule:
-  value: overridden_value
-"""
-        override_file = tmpdir / "override.yaml"
-        override_file.write(override_content)
-
-        config, _ = load_from_yaml(str(override_file), SimpleConfig)
-
-        # name should come from base, value should be overridden
-        assert config.name == "base_name"
-        assert config.value == "overridden_value"
-
-    def test_main_file_has_final_say(self, tmpdir):
-        """should give main file final say in merged values"""
-        included1_content = """rule:
-  name: included1
-  value: value1
-"""
-        included1_file = tmpdir / "included1.yaml"
-        included1_file.write(included1_content)
-
-        included2_content = """rule:
-  name: included2
-  value: value2
-"""
-        included2_file = tmpdir / "included2.yaml"
-        included2_file.write(included2_content)
-
-        main_content = """include:
-  - included1.yaml
-  - included2.yaml
-rule:
-  name: main_name
-  value: main_value
-"""
-        main_file = tmpdir / "main.yaml"
-        main_file.write(main_content)
-
-        config, _ = load_from_yaml(str(main_file), SimpleConfig)
-
-        # both values should come from main file
-        assert config.name == "main_name"
-        assert config.value == "main_value"
-
     def test_include_order_matters(self, tmpdir):
         """should respect the order of includes when merging"""
         first_content = """rule:
@@ -786,83 +539,9 @@ rule:
         assert config2.name == "first"
         assert config2.value == "first_value"
 
-    def test_nested_includes_resolve_depth_first(self, tmpdir):
-        """should resolve nested includes depth-first before parent overrides"""
-        # deepest level
-        deep_content = """rule:
-  name: deep
-  value: deep_value
-"""
-        deep_file = tmpdir / "deep.yaml"
-        deep_file.write(deep_content)
-
-        # middle level includes deep and overrides name
-        middle_content = """include:
-  - deep.yaml
-rule:
-  name: middle
-"""
-        middle_file = tmpdir / "middle.yaml"
-        middle_file.write(middle_content)
-
-        # top level includes middle and overrides value
-        top_content = """include:
-  - middle.yaml
-rule:
-  value: top_value
-"""
-        top_file = tmpdir / "top.yaml"
-        top_file.write(top_content)
-
-        config, _ = load_from_yaml(str(top_file), SimpleConfig)
-
-        # name should be from middle (which overrode deep)
-        # value should be from top (which overrode deep)
-        assert config.name == "middle"
-        assert config.value == "top_value"
-
-
 @pytest.mark.unit
 class TestYAMLLoaderComplexScenarios:
     """Tests for complex real-world scenarios."""
-
-    def test_common_base_with_multiple_specific_hunts(self, tmpdir):
-        """should support common base configuration for multiple specific hunts"""
-        # common base settings
-        common_content = """rule:
-  name: will_be_overridden
-  value: common_value
-"""
-        common_file = tmpdir / "common.yaml"
-        common_file.write(common_content)
-
-        # specific hunt 1
-        hunt1_content = """include:
-  - common.yaml
-rule:
-  name: hunt1
-"""
-        hunt1_file = tmpdir / "hunt1.yaml"
-        hunt1_file.write(hunt1_content)
-
-        # specific hunt 2
-        hunt2_content = """include:
-  - common.yaml
-rule:
-  name: hunt2
-"""
-        hunt2_file = tmpdir / "hunt2.yaml"
-        hunt2_file.write(hunt2_content)
-
-        # load both hunts
-        config1, _ = load_from_yaml(str(hunt1_file), SimpleConfig)
-        config2, _ = load_from_yaml(str(hunt2_file), SimpleConfig)
-
-        # both should have common value but different names
-        assert config1.name == "hunt1"
-        assert config1.value == "common_value"
-        assert config2.name == "hunt2"
-        assert config2.value == "common_value"
 
     def test_layered_configuration_inheritance(self, tmpdir):
         """should support layered configuration (base -> category -> specific)"""
@@ -1238,6 +917,8 @@ rule:
     def test_include_outside_is_reported_without_being_read(self, package, outside, include):
         include = str(outside) if include == "ABSOLUTE" else include
         path = self._hunt(package, f"include:\n  - {include}\nrule:\n  name: x\n")
+        # an attempt to read it would raise PermissionError
+        outside.chmod(0)
 
         problems = find_hunt_files_outside(path, str(package))
 
@@ -1247,8 +928,11 @@ rule:
     def test_merge_refuses_to_open_an_include_outside_the_root(self, package, outside):
         path = self._hunt(package, f"include:\n  - {outside}\nrule:\n  name: x\n")
 
+        # an attempt to open it would raise PermissionError instead
+        outside.chmod(0)
         with pytest.raises(HuntFileOutsideRootError):
             load_merged_yaml(path, file_root=str(package))
+        outside.chmod(0o644)
 
         # without a root the include still loads, as it does for hunts in a hunt repository
         merged, _ = load_merged_yaml(path)

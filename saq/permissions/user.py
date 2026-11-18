@@ -45,11 +45,12 @@ def add_user_permission(
     return perm
 
 
-def delete_user_permission(permission_id: int) -> bool:
+def delete_user_permission(permission_id: int, user_id: Optional[int] = None) -> bool:
     """Revoke user permission.
 
     Args:
         permission_id: The ID of the permission to delete.
+        user_id: When given, the permission is only deleted if it belongs to this user.
 
     Returns:
         True if the permission was deleted, False if it was not found.
@@ -57,6 +58,8 @@ def delete_user_permission(permission_id: int) -> bool:
     session = get_db()
     query = session.query(AuthUserPermission)
     query = query.filter(AuthUserPermission.id == permission_id)
+    if user_id is not None:
+        query = query.filter(AuthUserPermission.user_id == user_id)
     deleted = query.delete(synchronize_session=False)
     session.commit()
     return deleted == 1

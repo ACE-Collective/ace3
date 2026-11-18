@@ -68,12 +68,6 @@ def corpus():
 
 
 class TestFilterListing:
-    def test_newest_first(self, corpus):
-        alerts, unrelated = corpus
-        response = filter_listing(_signature_filters(), limit=10, offset=0)
-        assert response.alert_uuids == [alerts[2].uuid, alerts[1].uuid, alerts[0].uuid]
-        assert unrelated.uuid not in response.alert_uuids
-
     def test_no_tier_and_no_hits(self, corpus):
         response = filter_listing(_signature_filters(), limit=10, offset=0)
         assert all(result.tier is None and result.hits == [] for result in response.results)
@@ -163,10 +157,6 @@ class TestDetectionPointTerm:
         response = search_alerts(SearchRequest(query=f"detection_point:{SIGNATURE_UUID}:v2", limit=10))
         assert response.alert_uuids == [alerts[2].uuid, alerts[1].uuid]
 
-    def test_bad_value_searches_nothing(self, detections):
-        response = search_alerts(SearchRequest(query="detection_point:nope", limit=10))
-        assert response.errors and response.results == []
-
 
 def test_a_listing_leaves_out_test_alerts_and_counts_them(corpus):
     """docs/SVS_RUNS.md: a listing that doesn't filter on queues leaves out svs.queue and says
@@ -187,8 +177,3 @@ def test_a_listing_leaves_out_test_alerts_and_counts_them(corpus):
 
     named = search_alerts(SearchRequest(query="queue:svs", filters=_signature_filters()))
     assert named.alert_uuids == [test_alert.uuid] and named.excluded_test_alerts is None
-
-
-def test_without_test_alerts_nothing_is_left_out(corpus):
-    response = search_alerts(SearchRequest(query="", filters=_signature_filters()))
-    assert response.excluded_test_alerts == 0

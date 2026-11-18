@@ -138,9 +138,12 @@ def test_disposition_check_skipped_outside_correlation_mode(tmp_path, dispositio
 
 
 @pytest.mark.integration
-def test_disposition_check_cancels_on_stop_disposition(tmp_path, disposition_queries, stop_on):
-    """Throttling must not break the reason the check exists."""
+@pytest.mark.parametrize("any_disposition", [True, False])
+def test_disposition_check_cancels_on_stop_disposition(tmp_path, disposition_queries, stop_on, any_disposition):
+    """Throttling must not break the reason the check exists. A disposition stops analysis when
+    any disposition does, or when it is one of stop_analysis_on_dispositions."""
     alert = insert_alert_with_detections([], disposition=DISPOSITION_FALSE_POSITIVE)
+    stop_on(any_disposition=any_disposition, dispositions=[DISPOSITION_FALSE_POSITIVE])
     executor = _make_executor(frequency=5)
     context = _make_context(tmp_path, elapsed_seconds=10)
 

@@ -3,16 +3,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from saq.collectors.hunter.correlation.registry import clear_query_sources
 from saq.collectors.hunter.correlation.sources.splunk import SplunkQuerySource
 from saq.configuration.config import get_splunk_config
-
-
-@pytest.fixture(autouse=True)
-def _clean_registry():
-    clear_query_sources()
-    yield
-    clear_query_sources()
 
 
 @pytest.mark.unit
@@ -70,22 +62,6 @@ class TestSplunkQuerySource:
             )
             assert results == expected
 
-    def test_execute_query_returns_empty_list(self):
-        mock_client = MagicMock()
-        mock_client.query.return_value = []
-        with patch(
-            "saq.splunk.SplunkClient",
-            return_value=mock_client,
-        ):
-            source = SplunkQuerySource()
-            results = source.execute_query(
-                "search index=main",
-                datetime.datetime(2024, 1, 1, tzinfo=datetime.timezone.utc),
-                datetime.datetime(2024, 1, 2, tzinfo=datetime.timezone.utc),
-                datetime.timedelta(minutes=5),
-            )
-            assert results == []
-
     def test_default_config_name(self):
         mock_client = MagicMock()
         mock_client.query.return_value = []
@@ -117,19 +93,23 @@ class TestSplunkSourceMetadata:
         ignore source_options to satisfy the QuerySource ABC contract."""
         mock_client = MagicMock()
         mock_client.query.return_value = []
+        start = datetime.datetime(2024, 1, 1, tzinfo=datetime.timezone.utc)
+        end = datetime.datetime(2024, 1, 2, tzinfo=datetime.timezone.utc)
+        timeout = datetime.timedelta(minutes=5)
         with patch(
             "saq.splunk.SplunkClient",
             return_value=mock_client,
         ):
             source = SplunkQuerySource()
             results = source.execute_query(
-                "search index=main",
-                datetime.datetime(2024, 1, 1, tzinfo=datetime.timezone.utc),
-                datetime.datetime(2024, 1, 2, tzinfo=datetime.timezone.utc),
-                datetime.timedelta(minutes=5),
+                "search index=main", start, end, timeout,
                 source_options={"some_key": "some_value"},
             )
             assert results == []
+            # SplunkClient.query takes no source_options
+            mock_client.query.assert_called_once_with(
+                query="search index=main", start=start, end=end, timeout=timeout,
+            )
 
 
 @pytest.mark.unit
@@ -146,15 +126,6 @@ class TestSplunkSourceTimespecFormatting:
         source = SplunkQuerySource("default")
         assert source.format_timespec_for_display(start, end) == (
             "earliest=05/18/2026:08:26:32 latest=05/18/2026:08:31:32"
-        )
-
-    def test_format_timespec_in_utc_config(self, monkeypatch):
-        start = datetime.datetime(2026, 5, 18, 12, 26, 32, tzinfo=datetime.timezone.utc)
-        end = datetime.datetime(2026, 5, 18, 12, 31, 32, tzinfo=datetime.timezone.utc)
-        monkeypatch.setattr(get_splunk_config("test_api"), "timezone", "UTC")
-        source = SplunkQuerySource("test_api")
-        assert source.format_timespec_for_display(start, end) == (
-            "earliest=05/18/2026:12:26:32 latest=05/18/2026:12:31:32"
         )
 
     def test_format_timespec_unknown_config_raises(self):

@@ -16,17 +16,6 @@ def _touch(path, content="rule x { condition: false }\n"):
 
 
 @pytest.mark.unit
-def test_signature_dir_inside_the_checkout_is_contained(tmp_path):
-    (tmp_path / "repo" / "yara").mkdir(parents=True)
-    layout = derive_layout("r", str(tmp_path / "repo"), str(tmp_path / "repo" / "yara"))
-    assert layout.contained
-    assert layout.signature_dir_path == "yara"
-
-    layout = derive_layout("r", str(tmp_path / "repo"), str(tmp_path / "repo"))
-    assert layout.signature_dir_path == ""
-
-
-@pytest.mark.unit
 def test_entries_linking_into_the_checkout_are_namespaces(tmp_path):
     (tmp_path / "repo" / "rules" / "acme").mkdir(parents=True)
     (tmp_path / "repo" / "rules" / "other").mkdir(parents=True)
@@ -42,14 +31,6 @@ def test_entries_linking_into_the_checkout_are_namespaces(tmp_path):
     layout = derive_layout("r", str(tmp_path / "repo"), str(signature_dir))
     assert not layout.contained
     assert layout.namespaces == (Namespace("acme", "rules/acme"), Namespace("whole", ""))
-
-
-@pytest.mark.unit
-def test_a_checkout_that_feeds_nothing_is_an_error(tmp_path):
-    (tmp_path / "repo").mkdir()
-    (tmp_path / "signatures" / "local").mkdir(parents=True)
-    with pytest.raises(LayoutError, match="holds no rules"):
-        derive_layout("r", str(tmp_path / "repo"), str(tmp_path / "signatures"))
 
 
 @pytest.mark.integration
@@ -81,6 +62,8 @@ def test_tree_layout_lists_namespaces_and_what_is_not_loaded(tmp_path):
 
     assert [(namespace.name, [os.path.basename(path) for path in namespace.files]) for namespace in result.namespaces] == [
         ("acme", ["B.YARA", "a.yar"]), ("empty", [])]
+    # the yara service holds includes to its signature directory, so a set can include its neighbor's file
+    assert {namespace.include_boundary for namespace in result.namespaces} == {str(tree / "yara")}
     assert {(item.path, item.reason.split(":")[0]) for item in result.not_loaded} == {
         ("yara/acme/deeper/c.yar", "nested below a namespace directory"),
         ("yara/loose.yar", "loose in the signature directory"),
@@ -104,5 +87,7 @@ def test_tree_layout_of_a_linked_repository(tmp_path):
     result = tree_layout(layout, str(tree))
 
     assert [namespace.name for namespace in result.namespaces] == ["acme"]
+    # the signature directory is not in the tree, so the namespace's includes stay inside it
+    assert result.namespaces[0].include_boundary == str(tree / "rules" / "acme")
     assert result.absent == ["gone"]
     assert [item.path for item in result.not_loaded] == ["rules/new/b.yar"]

@@ -14,7 +14,7 @@ analysis_module_shodan:
   python_module: saq.modules.shodan
   python_class: ShodanAnalyzer
   enabled: true
-  semaphore: shodan
+  semaphore_name: shodan
 
 module_group_correlation:
   modules:

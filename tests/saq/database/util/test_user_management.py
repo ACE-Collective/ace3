@@ -1,5 +1,4 @@
 import pytest
-from werkzeug.security import check_password_hash
 
 from saq.configuration.config import get_config
 from saq.constants import QUEUE_DEFAULT
@@ -47,14 +46,17 @@ def test_add_user_success():
     
     # Verify password was hashed correctly
     assert user.verify_password(password)
+    assert not user.verify_password("wrong_password")
     assert user.password_hash is not None
     assert user.password_hash != password  # Password should be hashed
-    
-    # Verify user exists in database
+
+    # Verify user exists in database, read in a new transaction so an uncommitted insert fails
+    user_id = user.id
     db = get_db()
+    db.close()
     db_user = db.query(User).filter(User.username == username).first()
     assert db_user is not None
-    assert db_user.id == user.id
+    assert db_user.id == user_id
     
     # Cleanup
     delete_user(username)
@@ -68,13 +70,8 @@ def test_add_user_with_defaults():
     display_name = "Default User"
     password = "password123"
     
-    # Add user without specifying queue and timezone (should use defaults)
-    user = add_user(
-        username=username,
-        email=email,
-        display_name=display_name,
-        password=password
-    )
+    # Add user without specifying queue and timezone (should use defaults), by position
+    user = add_user(username, email, display_name, password)
     
     assert user.username == username
     assert user.email == email
@@ -82,45 +79,6 @@ def test_add_user_with_defaults():
     assert user.queue == QUEUE_DEFAULT
     assert user.timezone == "UTC"
     assert user.verify_password(password)
-    
-    # Cleanup
-    delete_user(username)
-
-
-@pytest.mark.integration
-def test_add_user_minimal_params():
-    """Test adding a user with only required parameters."""
-    username = "minimaluser"
-    email = "minimaluser@example.com"
-    display_name = "Minimal User"
-    password = "minimalpass"
-    
-    user = add_user(username, email, display_name, password)
-    
-    assert user.username == username
-    assert user.email == email
-    assert user.display_name == display_name
-    assert user.verify_password(password)
-    
-    # Cleanup
-    delete_user(username)
-
-
-@pytest.mark.integration
-def test_add_user_password_hashing():
-    """Test that passwords are properly hashed and not stored in plaintext."""
-    username = "hashuser"
-    email = "hashuser@example.com"
-    display_name = "Hash User"
-    password = "plaintext_password"
-    
-    user = add_user(username, email, display_name, password)
-    
-    # Password should be hashed
-    assert user.password_hash != password
-    assert len(user.password_hash) > len(password)
-    assert user.verify_password(password)
-    assert not user.verify_password("wrong_password")
     
     # Cleanup
     delete_user(username)
@@ -148,7 +106,9 @@ def test_delete_user_success():
     # Verify deletion was successful
     assert result is True
     
-    # Verify user no longer exists in database
+    # Verify user no longer exists in database, read in a new transaction so an uncommitted
+    # delete fails
+    db.close()
     assert db.query(User).filter(User.id == user_id).first() is None
     assert db.query(User).filter(User.username == username).first() is None
 
@@ -167,34 +127,6 @@ def test_delete_user_nonexistent():
     
     # Should return False
     assert result is False
-
-
-@pytest.mark.integration
-def test_add_delete_user_lifecycle():
-    """Test the complete lifecycle of adding and then deleting a user."""
-    username = "lifecycleuser"
-    email = "lifecycleuser@example.com"
-    display_name = "Lifecycle User"
-    password = "lifecyclepass"
-    
-    # Initially user should not exist
-    db = get_db()
-    assert db.query(User).filter(User.username == username).first() is None
-    
-    # Add user
-    user = add_user(username, email, display_name, password)
-    assert user is not None
-    user_id = user.id
-    
-    # User should exist
-    assert db.query(User).filter(User.id == user_id).first() is not None
-    
-    # Delete user
-    result = delete_user(username)
-    assert result is True
-    
-    # User should no longer exist
-    assert db.query(User).filter(User.id == user_id).first() is None
 
 
 @pytest.mark.integration
@@ -247,31 +179,6 @@ def test_add_user_duplicate_email():
         delete_user(username1)
 
 
-@pytest.mark.integration
-def test_delete_user_with_relationships():
-    """Test deleting a user that might have related records (comments, etc)."""
-    username = "relationuser"
-    email = "relationuser@example.com"
-    display_name = "Relation User"
-    password = "password123"
-    
-    # Add user
-    user = add_user(username, email, display_name, password)
-    assert user is not None
-    
-    # Note: In a real scenario, the user might have comments, remediations, etc.
-    # For this test, we're just verifying the basic delete works
-    # More complex relationship testing would require setting up those relationships
-    
-    # Delete user
-    result = delete_user(username)
-    assert result is True
-    
-    # Verify deletion
-    db = get_db()
-    assert db.query(User).filter(User.username == username).first() is None
-
-
 def _key_by_plaintext(user_id: int, api_key: str):
     return next((k for k in list_api_keys(user_id) if k.key_hash == sha256_str(api_key)), None)
 
@@ -279,9 +186,16 @@ def _key_by_plaintext(user_id: int, api_key: str):
 @pytest.mark.integration
 def test_create_list_revoke_api_key():
     user_id = get_config().global_settings.automation_user_id
+    other = add_user("api_key_other", "api_key_other@example.com", "Other", "password123")
+    other_id = other.id
+    other_key = create_api_key(other_id, "theirs", inherit=True)
     api_key = create_api_key(user_id, "test", inherit=True)
     assert is_uuid(api_key)
 
+    # read in a new transaction, so an uncommitted key is not listed
+    get_db().close()
+    # only this user's keys are listed
+    assert [k.name for k in list_api_keys(user_id)] == ["test"]
     key = _key_by_plaintext(user_id, api_key)
     assert key is not None
     assert key.name == "test"
@@ -289,7 +203,9 @@ def test_create_list_revoke_api_key():
     assert list(key.scope) == []
 
     assert revoke_api_key(key.id)
+    get_db().close()
     assert _key_by_plaintext(user_id, api_key) is None
+    assert _key_by_plaintext(other_id, other_key) is not None
     assert not revoke_api_key(-1)
 
 

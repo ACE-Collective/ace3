@@ -1,13 +1,17 @@
 from datetime import datetime, timedelta, timezone
+import logging
 
 import pytest
 
+from saq.database.model import ExternalRemediationCheck
 from saq.database.pool import get_db
 from saq.remediation.external.collector import (
     ExternalRemediationCheckCollector,
     build_work_item,
 )
-from saq.remediation.external.types import CheckStatus
+from saq.remediation.external.types import CheckResult, CheckStatus, ProbeOutcome
+from saq.remediation.external.worker import ExternalRemediationCheckWorker
+from tests.saq.remediation.external.conftest import FakeProbe
 
 
 class CollectingListener:
@@ -15,8 +19,12 @@ class CollectingListener:
     def __init__(self):
         self.received = []
 
-    def handle_external_check_request(self, work_item):
+    def handle_request(self, work_item):
         self.received.append(work_item)
+
+    def pending_ids(self) -> set[int]:
+        # done with each item as soon as it has it
+        return set()
 
 
 @pytest.fixture
@@ -43,24 +51,6 @@ def test_collect_picks_up_new_row(make_check, collector_with_listener):
     db.refresh(check)
     assert check.status == CheckStatus.IN_PROGRESS.value
     assert check.lock is not None
-
-
-@pytest.mark.integration
-def test_collect_skips_completed(make_check, collector_with_listener):
-    collector, _ = collector_with_listener
-    make_check(status=CheckStatus.COMPLETED.value, result="CONFIRMED")
-
-    items = collector.collect_work_items()
-    assert items == []
-
-
-@pytest.mark.integration
-def test_collect_skips_unregistered_probe(make_check, collector_with_listener):
-    collector, _ = collector_with_listener
-    make_check(probe_name="some_other_probe")
-
-    items = collector.collect_work_items()
-    assert items == []
 
 
 @pytest.mark.integration
@@ -157,7 +147,12 @@ def test_collect_includes_past_deadline_for_finalization(make_check, collector_w
     """Past-deadline rows must come through the collector so the worker can
     mark them EXPIRED — they can't be hidden from the loop."""
     collector, _ = collector_with_listener
-    expired = make_check(deadline=datetime.now(timezone.utc) - timedelta(minutes=1))
+    # inside its backoff window (retry_count=1 -> 120s), so only the deadline admits it
+    expired = make_check(
+        deadline=datetime.now(timezone.utc) - timedelta(minutes=1),
+        retry_count=1,
+        update_time=datetime.now(timezone.utc) - timedelta(seconds=30),
+    )
 
     items = collector.collect_work_items()
     assert [w.id for w in items] == [expired.id]
@@ -178,13 +173,16 @@ def test_build_work_item_decodes_context(make_check):
 
 
 @pytest.mark.integration
-def test_build_work_item_handles_null_context(make_check):
+def test_build_work_item_handles_null_context(make_check, caplog):
     """Legacy rows queued before context_json existed must not crash dispatch."""
     row = make_check(context_json=None)
 
-    work = build_work_item(row)
+    with caplog.at_level("WARNING"):
+        work = build_work_item(row)
 
     assert work.context is None
+    # a NULL column is the normal case, not an unparseable one
+    assert not [rec for rec in caplog.records if rec.levelno >= logging.WARNING]
 
 
 @pytest.mark.integration
@@ -208,3 +206,30 @@ def test_build_work_item_handles_non_dict_context(make_check, caplog):
 
     assert work.context is None
     assert any("context_json is not a dict" in rec.message for rec in caplog.records)
+
+
+@pytest.mark.integration
+def test_collect_skips_check_still_queued_after_lock_timeout(make_check, db_alert):
+    # the probe is behind: the row waits in its worker's queue past the lock timeout
+    probe = FakeProbe(outcome_factory=lambda target: ProbeOutcome(not_found=True))
+    worker = ExternalRemediationCheckWorker(probe)
+    collector = ExternalRemediationCheckCollector(lock_timeout_seconds=0)
+    collector.register_listener("fake_probe", worker)
+    # the loops below remove the session the fixtures' rows belong to
+    alert_uuid = db_alert.uuid
+    check_id = make_check().id
+
+    collector.start_single_threaded()
+    collector.collection_loop()
+
+    assert worker.work_queue.qsize() == 1
+
+    worker.start_single_threaded()
+
+    assert len(probe.calls) == 1
+    check = get_db().get(ExternalRemediationCheck, check_id)
+    assert check.status == CheckStatus.COMPLETED.value
+    assert check.result == CheckResult.NOT_FOUND.value
+    # finished, it is not collected again, and a new check is
+    new_check_id = make_check(alert_uuid=alert_uuid).id
+    assert [item.id for item in collector.collect_work_items()] == [new_check_id]

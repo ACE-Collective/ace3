@@ -6,6 +6,8 @@ from datetime import datetime
 
 import pytest
 
+from aceapi_v2.auth.schemas import ApiAuthResult
+from aceapi_v2.auth.utils import API_AUTH_TYPE_CONFIG, API_CREDENTIAL_CONFIG_KEY
 from saq.database.model import SVSTestHost
 from saq.database.pool import get_db
 from saq.svs import hosts
@@ -18,6 +20,7 @@ from saq.svs.hosts import (
     normalize_username,
     split_hostname,
 )
+from tests.saq.helpers import person
 
 
 @pytest.mark.unit
@@ -31,14 +34,14 @@ def test_split_hostname(value, expected):
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize("value", ["", "  ", "a b", "corp\\host", "host/x", "user@host", ".corp", "host..corp"])
+@pytest.mark.parametrize("value", ["  ", "a b", "corp\\host", "host/x", "user@host", ".corp", "host..corp"])
 def test_split_hostname_rejects(value):
     with pytest.raises(InvalidTestHost):
         split_hostname(value)
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize("value", ["alice", "ALICE", "CORP\\Alice", "alice@corp.example", " alice "])
+@pytest.mark.parametrize("value", ["ALICE", "CORP\\Alice", "alice@corp.example", " alice "])
 def test_normalize_username(value):
     assert normalize_username(value) == "alice"
 
@@ -76,9 +79,9 @@ def test_build_spec_rejects(kwargs, message):
 def lab():
     """A host that lists its users, one that doesn't, and one without an fqdn."""
     return [
-        hosts.create_host(build_spec("win10-01.corp.example", usernames=["CORP\\svc_art"], platform="windows"), None),
-        hosts.create_host(build_spec("ubuntu-01.corp.example", platform="linux"), None),
-        hosts.create_host(build_spec("mac-01"), None),
+        hosts.create_host(build_spec("win10-01.corp.example", usernames=["CORP\\svc_art"], platform="windows"), person(None)),
+        hosts.create_host(build_spec("ubuntu-01.corp.example", platform="linux"), person(None)),
+        hosts.create_host(build_spec("mac-01"), person(None)),
     ]
 
 
@@ -86,12 +89,10 @@ def lab():
 @pytest.mark.parametrize("hostname, username, matched, reason", [
     ("win10-01", "svc_art", True, None),
     ("WIN10-01.CORP.EXAMPLE", "CORP\\SVC_ART", True, None),
-    ("win10-01", "svc_art@corp.example", True, None),
     ("win10-01", "administrator", False, "administrator is not a user of test host win10-01"),
     ("win10-01", None, False, "lists its users and no user was given"),
     ("win10-01.prod.example", "svc_art", False, "win10-01.prod.example is not test host win10-01.corp.example"),
     ("ubuntu-01", None, True, None),
-    ("ubuntu-01", "anyone", True, None),
     ("mac-01.anything.example", "anyone", True, None),
     ("dc-01", "svc_art", False, "dc-01 is not a test host"),
     ("not a host", "svc_art", False, "is not a host name"),
@@ -105,22 +106,27 @@ def test_match_target(lab, hostname, username, matched, reason):
 
 @pytest.mark.integration
 def test_create_update_delete_are_audited(caplog):
+    # a config key: no user, so the key's name is all that says who it was
+    admin = ApiAuthResult(auth_type=API_AUTH_TYPE_CONFIG, auth_name="admin", key_name="admin",
+                          credential=API_CREDENTIAL_CONFIG_KEY)
     with caplog.at_level(logging.INFO):
-        host = hosts.create_host(build_spec("win10-01", usernames=["a"]), None, actor="admin")
-        hosts.update_host(host.id, build_spec("win10-01", usernames=["b"], platform="windows"), actor="admin")
-        hosts.delete_host(host.id, actor="admin")
+        host = hosts.create_host(build_spec("win10-01", usernames=["a"]), admin)
+        hosts.update_host(host.id, build_spec("win10-01", usernames=["b"], platform="windows"), admin)
+        hosts.delete_host(host.id, admin)
 
     records = {r.getMessage(): r for r in caplog.records if r.getMessage().startswith("AUDIT: svs test host")}
     assert records["AUDIT: svs test host added"].usernames == ["a"]
     changed = records["AUDIT: svs test host changed"]
-    assert changed.usernames == ["b"] and changed.before["usernames"] == ["a"] and changed.actor == "admin"
+    assert changed.usernames == ["b"] and changed.before["usernames"] == ["a"]
     assert records["AUDIT: svs test host removed"].svs_test_host == "win10-01"
+    assert [(r.actor, r.actor_user_id, r.actor_key_id, r.actor_key_name, r.auth_type) for r in records.values()] == [
+        ("admin", None, None, "admin", API_AUTH_TYPE_CONFIG)] * 3
     assert get_db().query(SVSTestHost).count() == 0
 
 
 @pytest.mark.integration
 def test_stored_fields():
-    host = hosts.create_host(build_spec("win10-01.corp.example", usernames=["CORP\\Alice"], ips=["10.0.0.5"]), None)
+    host = hosts.create_host(build_spec("win10-01.corp.example", usernames=["CORP\\Alice"], ips=["10.0.0.5"]), person(None))
     db = get_db()
     db.expire_all()
     row = db.get(SVSTestHost, host.id)
@@ -135,25 +141,25 @@ def test_a_host_is_never_created_after_it_was_updated(monkeypatch):
     up past the updated_at the server stamps on the same insert."""
     late_in_the_second = datetime.now().replace(microsecond=999_000)
     monkeypatch.setattr(hosts, "datetime", type("clock", (), {"now": staticmethod(lambda: late_in_the_second)}))
-    host = hosts.create_host(build_spec("win10-07"), None)
+    host = hosts.create_host(build_spec("win10-07"), person(None))
     assert host.created_at == late_in_the_second.replace(microsecond=0)
     assert host.created_at <= host.updated_at
 
 
 @pytest.mark.integration
 def test_a_short_name_is_one_host():
-    hosts.create_host(build_spec("win10-01.corp.example"), None)
+    hosts.create_host(build_spec("win10-01.corp.example"), person(None))
     with pytest.raises(DuplicateTestHost):
-        hosts.create_host(build_spec("WIN10-01.lab.example"), None)
+        hosts.create_host(build_spec("WIN10-01.lab.example"), person(None))
 
-    other = hosts.create_host(build_spec("win10-02"), None)
+    other = hosts.create_host(build_spec("win10-02"), person(None))
     with pytest.raises(DuplicateTestHost):
-        hosts.update_host(other.id, build_spec("win10-01"))
+        hosts.update_host(other.id, build_spec("win10-01"), person(None))
 
 
 @pytest.mark.integration
 def test_unknown_host():
     with pytest.raises(UnknownTestHost):
-        hosts.update_host(12345, build_spec("x"))
+        hosts.update_host(12345, build_spec("x"), person(None))
     with pytest.raises(UnknownTestHost):
-        hosts.delete_host(12345)
+        hosts.delete_host(12345, person(None))

@@ -7,7 +7,7 @@ from typing import NamedTuple
 # these are used in calls to saq.database.get_db_connection
 #
 
-from enum import Enum
+from enum import Enum, StrEnum
 
 #
 # environment variables
@@ -126,10 +126,8 @@ F_DISPOSITION = 'disposition'
 #
 
 #
-# WARNING
-# XXX NOTE
-# when you add a new observable type you ALSO need to edit lib/saq/observables/__init__.py
-# and add a matching entry to the _OBSERVABLE_TYPE_MAPPING dictionary
+# an observable type with a Python class also needs an entry in observable_types.classes
+# (etc/saq.default.yaml)
 
 F_ASSET = 'asset'
 F_AV_STREETNAME = 'av_streetname'
@@ -196,6 +194,7 @@ F_IPV4_CONVERSATION = 'ipv4_conversation'
 F_IPV4_FULL_CONVERSATION = 'ipv4_full_conversation'
 F_JA3 = 'ja3'
 F_JA3S = 'ja3s'
+F_JA4 = 'ja4'
 F_JARM_HASH = 'jarm_hash'
 F_MAC_ADDRESS = 'mac_address'
 F_MD5 = 'md5'
@@ -368,6 +367,7 @@ DIRECTIVE_EXTRACT_URLS_DOMAIN_AS_URL = 'extract_urls_domain_as_url'
 DIRECTIVE_FORCE_DOWNLOAD = 'force_download'
 DIRECTIVE_IGNORE_AUTOMATION_LIMITS = 'ignore_automation_limits'
 DIRECTIVE_NO_CACHE = 'no_cache'
+DIRECTIVE_NO_CRAWL = 'no_crawl'
 DIRECTIVE_NO_SANDBOX = 'no_sandbox'
 DIRECTIVE_NO_SCAN = 'no_scan'
 DIRECTIVE_OCR = 'ocr'
@@ -384,7 +384,6 @@ DIRECTIVE_SCAN_URLSCAN = 'scan_urlscan'
 DIRECTIVE_SUBMIT_AS_NEW = 'submit_as_new'
 DIRECTIVE_TRACKED = 'tracked'
 DIRECTIVE_TRIAGE = 'triage'
-DIRECTIVE_WHITELISTED = 'whitelisted'
 DIRECTIVE_YARA_META_PREFIX = "yara_meta:"
 
 DIRECTIVE_DESCRIPTIONS = {
@@ -405,6 +404,7 @@ DIRECTIVE_DESCRIPTIONS = {
     DIRECTIVE_FORCE_DOWNLOAD: 'download the content of the URL no matter what',
     DIRECTIVE_IGNORE_AUTOMATION_LIMITS: 'ignores any automation limits when analyzing this observable',
     DIRECTIVE_NO_CACHE: 'do not use local cache',
+    DIRECTIVE_NO_CRAWL: 'do not add crawl URLs for names extracted from this observable (e.g. a passively observed certificate)',
     DIRECTIVE_NO_SANDBOX: 'do not run the observable through any sandboxes',
     DIRECTIVE_NO_SCAN: 'do not scan this file with yara',
     DIRECTIVE_OCR: 'run OCR text extraction on this image file',
@@ -421,7 +421,6 @@ DIRECTIVE_DESCRIPTIONS = {
     DIRECTIVE_SUBMIT_AS_NEW: 'submit the observable as new with flag to bypass any existing analysis',
     DIRECTIVE_TRACKED: 'indicates this observable should be tracked across different analysis requests',
     DIRECTIVE_TRIAGE: 'send this observable to tria.ge for analysis',
-    DIRECTIVE_WHITELISTED: 'indicates this observable was whitelisted, causing the entire analysis to also become whitelisted',
 }
 
 VALID_DIRECTIVES = list(DIRECTIVE_DESCRIPTIONS.keys())
@@ -491,6 +490,7 @@ TAG_LEVEL_CRITICAL = 'critical'
 TAG_LEVEL_HIDDEN = 'hidden'
 
 TAG_DECRYPTED_EMAIL = "decrypted_email"
+TAG_WHITELISTED = "whitelisted"
 
 # --- EVENTS
 # fired when we add a tag to something
@@ -931,11 +931,9 @@ CONFIG_APIKEYS = "apikeys"
 
 # email archive (module)
 CONFIG_EMAIL_ARCHIVE_MODULE = "analysis_module_email_archiver"
-CONFIG_EMAIL_ARCHIVE_MODULE_DIR = "archive_dir"
 
 # email archive
 CONFIG_EMAIL_ARCHIVE = "email_archive"
-CONFIG_EMAIL_ARCHIVE_TARGET = "target"
 CONFIG_EMAIL_ARCHIVE_PRIMARY = "primary"
 
 # timeline
@@ -968,12 +966,6 @@ CONFIG_LDAP_BIND_USER = "ldap_bind_user"
 CONFIG_LDAP_BIND_PASSWORD = "ldap_bind_password"
 CONFIG_LDAP_BASE_DN = "ldap_base_dn"
 CONFIG_LDAP_TOP_USER = "top_user"
-
-# smtp
-CONFIG_SMTP = "smtp"
-CONFIG_SMTP_ENABLED = "enabled"
-CONFIG_SMTP_MAIL_FROM = "mail_from"
-CONFIG_SMTP_SERVER = "server"
 
 # asset tracking
 CONFIG_ASSET_TRACKING = "asset_tracking"
@@ -1080,13 +1072,10 @@ STATE_ANALYSIS_START_TIME = "analysis_start_time"
 # storage constants
 BUCKET_ACE3 = "ace3"
 
-# email archive constants
-EMAIL_ARCHIVE_FIELD_MESSAGE_ID = "message_id"
-EMAIL_ARCHIVE_FIELD_URL = "url"
-
 # analysis module names
 ANALYSIS_MODULE_ACTIVE_MIME = "active_mime"
 ANALYSIS_MODULE_ALERT_ADDED_TO_EVENT = "alert_added_to_event"
+ANALYSIS_MODULE_APEX_DOMAIN_ANALYZER = "apex_domain_analyzer"
 ANALYSIS_MODULE_ARCHIVE = "archive"
 ANALYSIS_MODULE_AUTOIT = "autoit"
 ANALYSIS_MODULE_AUTOMATED_REMEDIATION = "automated_remediation"
@@ -1094,7 +1083,6 @@ ANALYSIS_MODULE_BASIC_TEST = "basic_test"
 ANALYSIS_MODULE_BINARY_FILE_ANALYZER = "binary_file_analyzer"
 ANALYSIS_MODULE_COMMAND_LINE_ANALYZER = "command_line_analyzer"
 ANALYSIS_MODULE_CONFIGURATION_DEFINED_TAGGING = "configuration_defined_tagging"
-ANALYSIS_MODULE_CORRELATED_TAG_ANALYZER = "correlated_tag_analyzer"
 ANALYSIS_MODULE_CVE_2021_30657_ANALYZER = "cve_2021_30657_analyzer"
 ANALYSIS_MODULE_DE4DOT = "de4dot"
 ANALYSIS_MODULE_DHASH = "dhash"
@@ -1106,11 +1094,11 @@ ANALYSIS_MODULE_EMAIL_CONVERSATION_ATTACHMENT_ANALYZER = "email_conversation_att
 ANALYSIS_MODULE_EMAIL_CONVERSATION_FREQUENCY_ANALYZER = "email_conversation_frequency_analyzer"
 ANALYSIS_MODULE_EMAIL_CONVERSATION_LINK_ANALYZER = "email_conversation_link_analyzer"
 ANALYSIS_MODULE_EMAIL_LOGGER = "email_logger"
-ANALYSIS_MODULE_ENCRYPTED_ARCHIVE_ANALYZER = "encrypted_archive_analyzer"
 ANALYSIS_MODULE_EXIF = "exif"
 ANALYSIS_MODULE_EXTRACTED_OLE_ANALYZER = "extracted_ole_analyzer"
 ANALYSIS_MODULE_EXTRACTED_RTF_ANALYZER = "extracted_rtf_analyzer"
 ANALYSIS_MODULE_FILE_HASH_ANALYZER = "file_hash_analyzer"
+ANALYSIS_MODULE_FILE_LOCATION_ANALYSIS = "file_location_analysis"
 ANALYSIS_MODULE_FILE_PATH_ANALYSIS = "file_path_analysis"
 ANALYSIS_MODULE_FILE_TYPE = "file_type"
 ANALYSIS_MODULE_FQDN_ANALYZER = "fqdn_analyzer"
@@ -1140,8 +1128,15 @@ ANALYSIS_MODULE_OFFICEPARSER3 = "officeparser3"
 ANALYSIS_MODULE_OLEVBA_V1_2 = "olevba_v1_2"
 ANALYSIS_MODULE_ONENOTE_EXTRACTION = "onenote_extraction"
 ANALYSIS_MODULE_PARSE_URL = "parse_url"
+ANALYSIS_MODULE_PCAP_ANALYZER = "pcap_analyzer"
+ANALYSIS_MODULE_PCAP_DNS = "pcap_dns"
+ANALYSIS_MODULE_PCAP_FILES = "pcap_files"
+ANALYSIS_MODULE_PCAP_HTTP = "pcap_http"
+ANALYSIS_MODULE_PCAP_TLS = "pcap_tls"
+ANALYSIS_MODULE_PCAP_TLS_DECRYPTION = "pcap_tls_decryption"
 ANALYSIS_MODULE_PCODEDMP = "pcodedmp"
 ANALYSIS_MODULE_PDF_ANALYZER = "pdf_analyzer"
+ANALYSIS_MODULE_PDF_ENCRYPTION_ANALYZER = "pdf_encryption_analyzer"
 ANALYSIS_MODULE_PDFTOTEXT = "pdftotext"
 ANALYSIS_MODULE_PHISHKIT_ANALYZER = "phishkit_analyzer"
 ANALYSIS_MODULE_PROTECTED_URL_ANALYZER = "protected_url_analyzer"
@@ -1153,12 +1148,11 @@ ANALYSIS_MODULE_SITE_TAGGER = "site_tagger"
 ANALYSIS_MODULE_SNORT_SIGNATURE_ANALYSIS_V1 = "snort_signature_analysis_v1"
 ANALYSIS_MODULE_SPLUNK_API = "splunk_api"
 ANALYSIS_MODULE_SSDEEP = "ssdeep"
+ANALYSIS_MODULE_TLS_KEYLOG = "tls_keylog"
 ANALYSIS_MODULE_UPX = "upx"
-ANALYSIS_MODULE_URL_EMAIL_PIVOT_ANALYZER = "url_email_pivot_analyzer"
 ANALYSIS_MODULE_URL_EXTRACTION = "url_extraction"
 ANALYSIS_MODULE_USER_ANALYZER = "user_analyzer"
 ANALYSIS_MODULE_USER_DEFINED_TAGGING = "user_defined_tagging"
-ANALYSIS_MODULE_USER_TAGGER = "user_tagger"
 ANALYSIS_MODULE_VBSCRIPT_ANALYZER = "vbscript_analyzer"
 ANALYSIS_MODULE_X509_ANALYZER = "x509_analyzer"
 ANALYSIS_MODULE_XLMDEOBFUSCATOR = "xlmdeobfuscator"
@@ -1186,3 +1180,11 @@ class ExecutionMode(Enum):
     """Enum representing the mode of execution of something that runs in a loop."""
     SINGLE_SHOT = "single_shot" # execute once and then exit, useful for testing and command line tools
     CONTINUOUS = "continuous" # execute continuously until stopped
+
+class EventTimeSource(StrEnum):
+    """Where a root's event_time came from, so a consumer can tell the event's own time from one a
+    producer substituted for it."""
+    EVENT = 'event'            # the event's own (or a time a person gave for it)
+    QUERY_TIME = 'query_time'  # a hunt couldn't extract the event's timestamp: when it processed the results
+    NOW = 'now'                # nothing gave a time: when the producer created the root
+    UNSET = 'unset'            # the root has no event time

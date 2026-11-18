@@ -126,6 +126,7 @@ class AlertCommentRead(BaseModel):
     comment_id: int
     alert_uuid: str
     insert_date: datetime
+    edited_at: datetime | None = Field(description="when the text last changed; null if never edited")
     user_id: int
     user_display_name: str
     comment: str

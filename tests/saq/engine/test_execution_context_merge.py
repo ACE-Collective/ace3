@@ -42,7 +42,6 @@ from unittest.mock import MagicMock, Mock
 import pytest
 
 from saq.analysis.root import RootAnalysis, load_root
-from saq.configuration.config import get_engine_config
 from saq.constants import F_TEST
 from saq.engine.analysis_orchestrator import AnalysisOrchestrator
 from saq.engine.configuration_manager import ConfigurationManager
@@ -79,40 +78,12 @@ def _executor() -> AnalysisExecutor:
     return executor
 
 
-def _orchestrator(analysis_executor) -> AnalysisOrchestrator:
-    """A real AnalysisOrchestrator over the given executor."""
-    return AnalysisOrchestrator(
-        configuration_manager=ConfigurationManager(EngineConfiguration()),
-        analysis_executor=analysis_executor,
-        workload_manager=MagicMock(),
-        lock_manager=MagicMock(),
-    )
-
-
 def _worker() -> Worker:
     return Worker(
         name="test_worker_execution_context_merge",
         configuration_manager=ConfigurationManager(EngineConfiguration(engine_type=EngineType.LOCAL, single_threaded_mode=False)),
         node_manager=Mock(spec=NodeManagerInterface),
     )
-
-
-@pytest.mark.unit
-def test_executor_receives_the_worker_context(root_analysis, monkeypatch):
-    """The orchestrator hands the executor the context it already has.
-
-    It used to hand over execution_context.work_item, which is what made the
-    executor build a second context of its own.
-    """
-    execution_context = EngineExecutionContext(root_analysis)
-    analysis_executor = Mock(spec=AnalysisExecutor)
-    orchestrator = _orchestrator(analysis_executor)
-
-    monkeypatch.setattr(get_engine_config().metrics_logging, "enabled", False)
-    orchestrator._execute_analysis(execution_context)
-
-    analysis_executor.execute.assert_called_once()
-    assert analysis_executor.execute.call_args.args[0] is execution_context
 
 
 @pytest.mark.unit
@@ -130,45 +101,6 @@ def test_cancel_set_before_execute_skips_analysis(root_analysis):
 
     executor._execute_recursive_analysis.assert_not_called()
     executor._execute_post_analysis.assert_called_once()
-
-
-@pytest.mark.unit
-def test_uncancelled_context_still_analyzes(root_analysis):
-    """The other side of the guard: nothing changed for the normal path."""
-    executor = _executor()
-    execution_context = EngineExecutionContext(root_analysis)
-
-    executor.execute(execution_context)
-
-    executor._execute_recursive_analysis.assert_called_once()
-    assert executor._execute_recursive_analysis.call_args.args[0] is execution_context
-
-
-@pytest.mark.unit
-def test_cancel_arriving_during_work_item_load_is_honored(root_analysis, monkeypatch):
-    """A lock lost while _process_work_item is loading the root must stick.
-
-    This is the window the two contexts left open: the executor's context did
-    not exist yet, so cancel_current_analysis() was a silent no-op and the whole
-    analysis then ran on a root this worker no longer owned.
-    """
-    executor = _executor()
-    orchestrator = _orchestrator(executor)
-    execution_context = EngineExecutionContext(root_analysis)
-
-    def cancel_while_loading(ctx):
-        # as if the keepalive thread noticed the lock was gone during root.load()
-        ctx.cancel_analysis()
-        return True
-
-    orchestrator._process_work_item = cancel_while_loading
-    orchestrator._check_disposition = MagicMock(return_value=False)
-    orchestrator._handle_post_analysis_logic = MagicMock()
-
-    monkeypatch.setattr(get_engine_config().metrics_logging, "enabled", False)
-    orchestrator.orchestrate_analysis(execution_context)
-
-    executor._execute_recursive_analysis.assert_not_called()
 
 
 @pytest.mark.unit

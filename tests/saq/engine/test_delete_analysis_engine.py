@@ -104,32 +104,6 @@ def test_engine_delete_analysis_removes_generated_files_from_disk():
 
 
 @pytest.mark.integration
-def test_engine_delete_analysis_reconciles_detection_points_in_db():
-    """basic_test on 'test_detection' raises a detection; once the alert is synced the
-    detection_points row exists, and deleting the analysis + re-syncing removes it."""
-    root = _run_basic_test_engine("test_detection")
-    assert len(root.all_detection_points) == 1
-
-    # the engine auto-alerts on a detection and syncs the detection_points row
-    alert = load_alert(root.uuid)
-    assert alert is not None
-    assert len(_rows_for(alert.id)) == 1
-    assert alert.detection_count == 1
-
-    obs = alert.root_analysis.get_observable_by_spec(F_TEST, "test_detection")
-    analysis = obs.get_analysis(BasicTestAnalysis)
-    assert analysis is not None
-
-    obs.delete_analysis(analysis)
-    alert.sync()
-
-    assert _rows_for(alert.id) == []
-    get_db().expire_all()
-    assert load_alert(root.uuid).detection_count == 0
-    assert validate_tree_integrity(alert.root_analysis) == []
-
-
-@pytest.mark.integration
 def test_engine_delete_clears_detection_path_and_reconcile_is_idempotent():
     """after the engine raises a detection, deleting the owning analysis takes the
     observable off the detection path and reconciles the DB to zero; a second sync is a
@@ -142,7 +116,9 @@ def test_engine_delete_clears_detection_path_and_reconcile_is_idempotent():
     obs = alert.root_analysis.get_observable_by_spec(F_TEST, "test_detection")
     analysis = obs.get_analysis(BasicTestAnalysis)
     assert analysis.is_on_detection_path()  # the analysis carries the detection
+    # the engine auto-alerts on a detection and syncs the detection_points row
     assert len(_rows_for(alert.id)) == 1
+    assert alert.detection_count == 1
 
     obs.delete_analysis(analysis)
 

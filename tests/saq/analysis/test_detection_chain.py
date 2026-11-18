@@ -61,26 +61,6 @@ def test_detection_on_root_observable_produces_single_step_chain():
 
 
 @pytest.mark.unit
-def test_detection_on_nested_observable_walks_up_to_root():
-    root = RootAnalysis()
-    top = root.add_observable_by_spec(F_TEST, "top")
-    email_analysis = EmailAnalysis()
-    top.add_analysis(email_analysis)
-    nested = email_analysis.add_observable_by_spec(F_TEST, "nested")
-    nested.add_detection_point("nested email detection")
-
-    chains = build_detection_chains(root)
-    assert len(chains) == 1
-    chain = chains[0]
-    assert chain.detection.description == "nested email detection"
-    assert len(chain.steps) == 2
-    assert chain.steps[0].observable is top
-    assert chain.steps[0].extracted_by is None
-    assert chain.steps[1].observable is nested
-    assert chain.steps[1].extracted_by is email_analysis
-
-
-@pytest.mark.unit
 def test_deep_chain_records_every_extracting_analysis():
     root = RootAnalysis()
     top = root.add_observable_by_spec(F_TEST, "original_email")
@@ -99,8 +79,8 @@ def test_deep_chain_records_every_extracting_analysis():
 
     qrcode = QRCodeAnalysis()
     screenshot.add_analysis(qrcode)
-    url_obs = qrcode.add_observable_by_spec(F_URL, "https://mikaija.ru/@bv.com")
-    url_obs.add_detection_point("QR code URL targeting BV employee")
+    url_obs = qrcode.add_observable_by_spec(F_URL, "https://phish.example/@example.com")
+    url_obs.add_detection_point("QR code URL targeting an employee")
 
     chains = build_detection_chains(root)
     assert len(chains) == 1
@@ -111,7 +91,7 @@ def test_deep_chain_records_every_extracting_analysis():
         "nested_email",
         "html_body",
         "screenshot",
-        "https://mikaija.ru/@bv.com",
+        "https://phish.example/@example.com",
     ]
     extractors = [s.extracted_by for s in steps]
     assert extractors[0] is None

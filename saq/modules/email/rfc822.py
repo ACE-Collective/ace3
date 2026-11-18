@@ -7,7 +7,6 @@ import re
 import shutil
 import uuid
 from datetime import datetime
-from functools import cached_property
 from ipaddress import ip_address
 from typing import Optional, Type, override
 
@@ -63,7 +62,7 @@ from saq.email import (
     normalize_email_address,
     normalize_message_id,
 )
-from saq.environment import get_base_dir, get_data_dir, get_local_timezone
+from saq.environment import get_data_dir, get_local_timezone
 from saq.modules import AnalysisModule
 from saq.modules.config import AnalysisModuleConfig
 from saq.modules.email.constants import (
@@ -113,11 +112,6 @@ from saq.modules.email.constants import (
 from saq.observables.file import FileObservable
 from saq.util.filesystem import shorten_basename_for_suffix
 from saq.util.networking import is_subdomain
-from saq.whitelist import (
-    WHITELIST_TYPE_SMTP_FROM,
-    WHITELIST_TYPE_SMTP_TO,
-    BrotexWhitelist,
-)
 
 TAG_OUTBOUND_EMAIL = 'outbound_email'
 TAG_OUTBOUND_EXCEPTION_EMAIL = 'outbound_email_exception'
@@ -576,6 +570,19 @@ def get_address_list(email_obj, header_name):
     return [x[1] for x in addresses]
 
 
+# the email body parts are the unnamed text parts EmailAnalyzer extracts
+HTML_BODY_PART_MARKER = ".unknown_text_html"
+BODY_PART_MARKERS = (HTML_BODY_PART_MARKER, ".unknown_text_plain")
+
+
+def is_body_part(observable) -> bool:
+    return any(marker in (observable.file_name or "") for marker in BODY_PART_MARKERS)
+
+
+def is_html_body_part(observable) -> bool:
+    return HTML_BODY_PART_MARKER in (observable.file_name or "")
+
+
 class EmailAnalysis(Analysis):
     """What are all the contents of this email?"""
     def __init__(self, *args, **kwargs):
@@ -850,6 +857,13 @@ class EmailAnalysis(Analysis):
         return ''
     
     @property
+    def body_parts(self) -> list[FileObservable]:
+        """Every text and html body part of the email, in the order they were extracted. An email can
+        have more than one, and they can differ: a mail gateway adds its banner as an html part of
+        its own, and the text/plain alternative can say what the html does not."""
+        return [o for o in self.observables if o.type == F_FILE and is_body_part(o)]
+
+    @property
     def body(self):
         """Returns the file observable that should be considered the body of the email, or None if one cannot be found."""
 
@@ -905,6 +919,10 @@ class EmailAnalysis(Analysis):
             if _file.type != F_FILE:
                 continue
 
+            # the analyzer writes these next to the email whatever the email file is called
+            if _file.has_yara_meta("type", "email.headers") or _file.has_yara_meta("type", "email.combined"):
+                continue
+
             # skip any file with an auto-generated name (these are typically part of the body)
             # XXX hack
             if "email.rfc822" in _file.file_name:
@@ -931,9 +949,6 @@ class EmailAnalysis(Analysis):
     def generate_summary(self):
         if self.parsing_error:
             return self.parsing_error
-
-        if self.observable.has_tag('whitelisted'):
-            return "Email Analysis: (whitelisted email)"
 
         if self.email:
             result = "Email Analysis:"
@@ -963,8 +978,7 @@ class EmailAnalysis(Analysis):
 _PATTERN_RECEIVED_IPADDR = re.compile(r'from\s\S+\s\(([^)]+)\)\s', re.M)
 
 class EmailAnalyzerConfig(AnalysisModuleConfig):
-    whitelist_path: str = Field(..., description="Relative path to the brotex custom whitelist file.")
-    scan_inbound_only: bool = Field(..., description="Office365 journaling will cause outbound emails to also get journaled. Set this to no to scan outbound office365 emails.")
+    scan_inbound_only: bool = Field(..., description="Office365 journaling will cause outbound emails to also get journaled. Set this to yes to skip the email analysis of outbound office365 emails; the other modules still analyze the file.")
     outbound_exceptions: str = Field(..., description="When only scanning inbound emails from office365, scan the following outbound emails found in outbound_exceptions. Comma separated list!")
     provider_headers: EmailProviderHeaders = Field(
         default_factory=EmailProviderHeaders,
@@ -981,23 +995,6 @@ class EmailAnalyzer(AnalysisModule):
     def get_presenter_class(self) -> Type[AnalysisPresenter]:
         return EmailAnalysisPresenter
 
-    def verify_environment(self):
-        self.verify_path_exists(self.config.whitelist_path)
-
-    @cached_property
-    def whitelist(self) -> BrotexWhitelist:
-        result = BrotexWhitelist(os.path.join(get_base_dir(), self.config.whitelist_path))
-        result.check_whitelist()
-        return result
-
-    #def load_config(self):
-        #self.whitelist = BrotexWhitelist(os.path.join(get_base_dir(), self.config.whitelist_path))
-        #self.auto_reload()
-
-    def auto_reload(self):
-        # make sure the whitelist if up-to-date
-        self.whitelist.check_whitelist()
-        
     @property
     def generated_analysis_type(self):
         return EmailAnalysis
@@ -1008,10 +1005,13 @@ class EmailAnalyzer(AnalysisModule):
 
     @property
     def outbound_exception_list(self):
-        return self.config.outbound_exceptions.split(',')
+        # normalized like the To: addresses they are compared with
+        addresses = (normalize_email_address(_) for _ in self.config.outbound_exceptions.split(','))
+        return [address for address in addresses if address]
 
     def analyze_rfc822(self, _file):
         assert isinstance(_file, FileObservable)
+        # local import: saq.modules.email.message_id imports EmailAnalysis from this module
         from saq.modules.email.message_id import MessageIDAnalyzerV2
 
         # if this is a headers file then we skip it
@@ -1070,7 +1070,7 @@ class EmailAnalyzer(AnalysisModule):
                 target_email = parsed_email = email.parser.BytesParser().parse(fp)
 
         except Exception as e:
-            logging.error("unable to parse email {}: {}".format(_file, e))
+            logging.exception("unable to parse email {}: {}".format(_file, e))
 
             try:
                 # if Python's email parsing library can't parse it then we copy it off to the side
@@ -1080,7 +1080,7 @@ class EmailAnalyzer(AnalysisModule):
                 shutil.copy(src_path, dst_path)
 
             except Exception as e:
-                logging.error("unable to save file for review: {}".format(e))
+                logging.exception("unable to save {} for review: {}".format(_file, e))
 
             return False
 
@@ -1152,17 +1152,6 @@ class EmailAnalyzer(AnalysisModule):
         # at this point target_email either points at the original parse email
         # or it points to a MIME part (an attachment inside the email)
 
-        # START WHITELISTING
-
-        # check to see if the sender or receiver has been whitelisted
-        # this is useful to filter out internally sourced garbage
-        if 'from' in target_email:
-            file_path, address = email.utils.parseaddr(decode_rfc2822(target_email['from']))
-            if address != '':
-                if self.whitelist.is_whitelisted(WHITELIST_TYPE_SMTP_FROM, address):
-                    _file.whitelist()
-                    return False
-
         header_tos = [] # list of header-to addresses
         env_rcpt_to = [] # list of env-to addresses 
         env_mail_from = None # the smtp envelope MAIL FROM
@@ -1190,10 +1179,7 @@ class EmailAnalyzer(AnalysisModule):
         # if we know this is an office365 journaled email AND we did not find the "meta block"
         # then at least log that something is wrong
         if is_office365 and not o365_meta_part:
-            try:
-                message_id = parsed_email['message-id']
-            except:
-                message_id = "unknown"
+            message_id = parsed_email['message-id'] or "unknown"
 
             logging.info(f"unable to find meta block for message-id {message_id} in {self.get_root().storage_dir}")
 
@@ -1218,11 +1204,6 @@ class EmailAnalyzer(AnalysisModule):
             if address:
                 header_tos.append(address)
 
-        for address in header_tos + env_rcpt_to:
-            if self.whitelist.is_whitelisted(WHITELIST_TYPE_SMTP_TO, address):
-                _file.whitelist()
-                return False
-
         # for journaled provider mail we check to see if this email is inbound
         # this only applies to the original email, not email attachments
         if is_office365 and _file.has_directive(DIRECTIVE_ORIGINAL_EMAIL):
@@ -1241,16 +1222,12 @@ class EmailAnalyzer(AnalysisModule):
                                 logging.info("Outbound office365 email exception found: {}".format(email_exception))
                                 break
                         else:
+                            # only the email analysis is skipped: everything else still runs on the
+                            # file, and a detection on it still alerts
                             logging.info("skipping outbound office365 email {}".format(_file))
-                            _file.whitelist()
                             return False
 
-        # END WHITELISTING
-
         analysis = self.create_analysis(_file)
-
-        # if it's not whitelisted we'll want to archive it
-        #_file.add_directive(DIRECTIVE_ARCHIVE)
 
         # parse out important email header information and add observables
 
@@ -1520,6 +1497,17 @@ class EmailAnalyzer(AnalysisModule):
         # we use this later when we write the log message
         attachments = [] # of ( size, type, name, sha256 )
 
+        # (maintype, subtype) -> how many unnamed parts of that type were stored
+        unnamed_part_counts = {}
+
+        def _unnamed_part_name(target, ext: str) -> str:
+            # numbered per type, because EmailAnalysis.body and attachment_names tell the first part of a
+            # type by its _000 (the file manager's own suffix for a taken name would keep the _000)
+            key = (target.get_content_maintype(), target.get_content_subtype())
+            index = unnamed_part_counts.get(key, 0)
+            unnamed_part_counts[key] = index + 1
+            return '{}.unknown_{}_{}_{:03}{}'.format(_file.file_path, key[0], key[1], index, ext)
+
         def __recursive_parser(target):
             nonlocal target_message_id
 
@@ -1566,45 +1554,10 @@ class EmailAnalyzer(AnalysisModule):
                     file_name = re.sub(r'[\r\n]', '', file_name)
 
                 else:
-                    file_name = '{}.unknown_{}_{}_000{}'.format(_file.file_path, target.get_content_maintype(),
-                                                                           target.get_content_subtype(), unknown_ext)
-
-                # sanitize the file name
-                sanitized_file_name = re.sub(r'_+', '_', re.sub(r'\.\.', '_', re.sub(r'/', '_', file_name)))
-                if file_name != sanitized_file_name:
-                    logging.debug("changed file name from {} to {}".format(file_name, sanitized_file_name))
-                    file_name = sanitized_file_name
+                    file_name = _unnamed_part_name(target, unknown_ext)
 
                 if not file_name:
-                    file_name = '{}.unknown_{}_{}_000{}'.format(_file.file_path, target.get_content_maintype(),
-                                                                           target.get_content_subtype(), unknown_ext)
-
-                # make sure the file name isn't too long
-                if len(file_name) > 120:
-                    logging.debug("file name {} is too long".format(file_name))
-                    _file_name, _file_ext = os.path.splitext(file_name)
-                    # this can be wrong too
-                    if len(_file_ext) > 40:
-                        _file_ext = '.unknown'
-                    file_name = '{}{}'.format(file_name[:120], _file_ext)
-
-                # make sure it's unique
-                file_path = self.get_root().create_file_path(file_name)
-                while True:
-                    if not os.path.exists(file_path):
-                        break
-
-                    _file_name, _file_ext = os.path.splitext(os.path.basename(file_path))
-                    m = re.match('(.+)_([0-9]{3})$', _file_name)
-                    if m:
-                        _file_name = m.group(1)
-                        index = int(m.group(2)) + 1
-                    else:
-                        index = 0
-
-                    _file_name = '{}_{:03}'.format(_file_name, index)
-                    file_path = '{}{}'.format(_file_name, _file_ext)
-                    file_path = self.get_root().create_file_path(file_path)
+                    file_name = _unnamed_part_name(target, unknown_ext)
 
                 # figure out what the payload should be
                 if target.get_content_type() == 'message/rfc822':
@@ -1624,6 +1577,8 @@ class EmailAnalyzer(AnalysisModule):
                     # otherwise we just need the decoded contents as bytes
                     payload = target.get_payload(decode=True)
 
+                # the name is the sender's, so the file manager cleans it and keeps it unique
+                file_path = self.get_root().create_output_file(file_name)
                 with open(file_path, 'wb') as fp:
                     fp.write(payload)
 
@@ -1702,9 +1657,15 @@ class EmailAnalyzer(AnalysisModule):
                 })
                 _file.add_tag(TAG_EMAIL_PARSE_INCOMPLETE)
 
+                # the base name: an email extracted from an archive has a file_path in a
+                # subdirectory (<archive>.extracted/...) that the review directory does not have
                 target_path = os.path.join(get_data_dir(), 'review', 'rfc822', '{}.{}'.format(
-                                           _file.file_path, datetime.now().strftime('%Y%m%d%H%M%S')))
-                shutil.copy(_file.full_path, target_path)
+                                           os.path.basename(_file.file_path), datetime.now().strftime('%Y%m%d%H%M%S')))
+                try:
+                    shutil.copy(_file.full_path, target_path)
+                except Exception as copy_error:
+                    # this handler must not raise: the parts already extracted are kept
+                    logging.exception("unable to save %s for review: %s", _file, copy_error)
 
         _recursive_parser(target_email)
 

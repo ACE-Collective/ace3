@@ -17,7 +17,7 @@ from saq.engine.core import Engine
 from saq.engine.engine_configuration import EngineConfiguration
 from saq.engine.enums import EngineExecutionMode
 from saq.svs.capture import CaptureState, capture_hold
-from tests.saq.helpers import create_root_analysis
+from tests.saq.helpers import create_root_analysis, person
 from tests.saq.svs.conftest import (
     OTHER_RULE_UUID,
     RULE_UUID,
@@ -43,7 +43,7 @@ def _alert_with_yara_matches():
 
 
 def _disposition(root, disposition):
-    set_dispositions([root.uuid], disposition, get_db().query(User).first().id)
+    set_dispositions([root.uuid], disposition, person(get_db().query(User).first().id))
     get_db().close()
 
 
@@ -92,10 +92,11 @@ def test_a_disposition_change_does_not_capture_twice():
     assert [r.id for r in capture_rows(root.uuid)] == [r.id for r in first]
 
 
-@pytest.mark.parametrize("state", ["started", "ended", "canceled", "error", "closed"])
-def test_an_alert_of_an_unreviewed_run_is_not_captured(state):
+def test_an_alert_of_an_unreviewed_run_is_not_captured():
     root, _ = _alert_with_yara_matches()
-    attribute_to_run(root.uuid, state)
+    # the query compares the run's state with reviewed alone, so one other state stands for all of
+    # them: ended, because a check for a started run would pass with started
+    attribute_to_run(root.uuid, "ended")
 
     _disposition(root, DISPOSITION_FALSE_POSITIVE)
     _run_dispositioned()

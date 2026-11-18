@@ -42,7 +42,7 @@ async def create_execution(body: CliExecutionCreate, auth: CliPermission) -> Lis
         raise HTTPException(status_code=403, detail="cli executions need a user's credentials")
 
     execution_ids = await run_db_in_thread(
-        service.create_executions, auth.auth_user_id, auth.auth_name, argv, body.node_ids, body.timeout_seconds)
+        service.create_executions, auth, argv, body.node_ids, body.timeout_seconds)
     await asyncio.gather(*(run_db_in_thread(service.dispatch_execution, i) for i in execution_ids))
     return ListResponse(data=await run_db_in_thread(service.get_executions, execution_ids))
 

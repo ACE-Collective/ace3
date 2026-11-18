@@ -7,7 +7,6 @@ from datetime import date, datetime
 from typing import TYPE_CHECKING, Optional
 
 import bcrypt
-from flask_login import UserMixin
 from sqlalchemy import (
     BINARY,
     BLOB,
@@ -49,25 +48,21 @@ from sqlalchemy.ext.hybrid import hybrid_property
 from sqlalchemy.orm import (
     Mapped,
     aliased,
+    declared_attr,
     mapped_column,
     reconstructor,
     relationship,
     validates,
 )
 from sqlalchemy.orm.session import Session
-from werkzeug.security import check_password_hash as werkzeug_check_password_hash
 
 from saq.analysis.analysis import Analysis
-from saq.analysis.observable import Observable as _Observable
 from saq.analysis.root import RootAnalysis
 from saq.configuration.config import get_config
 from saq.constants import (
     DISPOSITION_DELIVERY,
     DISPOSITION_OPEN,
     DISPOSITION_REVIEW_UNREVIEWED,
-    F_FILE,
-    F_FQDN,
-    F_URL,
     MAX_DETECTION_VALUE_LENGTH,
     QUEUE_DEFAULT,
 )
@@ -77,7 +72,7 @@ from saq.database.retry import execute_with_retry, retry
 from saq.database.util.index import IndexSyncResult, sync_alert_index
 from saq.disposition import get_disposition_rank
 from saq.environment import get_global_runtime_settings
-from saq.util import find_all_url_domains, validate_uuid
+from saq.util import validate_uuid
 from saq.util.ui import get_tag_score
 
 if TYPE_CHECKING:
@@ -90,7 +85,9 @@ def verify_password_hash(plain_password: str, hashed_password: str) -> bool:
         # Bcrypt hash ($2a$, $2b$, $2y$)
         return bcrypt.checkpw(plain_password.encode(), hashed_password.encode())
     else:
-        # Legacy werkzeug hash (pbkdf2, scrypt, etc.)
+        # Legacy werkzeug hash (pbkdf2, scrypt, etc.). Imported here: only these hashes need werkzeug,
+        # and every process imports this module.
+        from werkzeug.security import check_password_hash as werkzeug_check_password_hash
         return werkzeug_check_password_hash(hashed_password, plain_password)
 
 
@@ -126,8 +123,6 @@ class Alert(Base):
     def _initialize(self):
         # when we lock the Alert this is the UUID we used to lock it with
         self.lock_uuid = str(uuid.uuid4())
-
-        self._observable_open_event_counts = None
 
         # this is the RootAnalysis object that this Alert is associated with
         self._root_analysis: Optional[RootAnalysis] = None
@@ -386,32 +381,6 @@ class Alert(Base):
         return ''
 
     @property
-    def observable_open_event_counts(self):
-        """
-        Returns a dictionary containing the open events as the keys and the number of observables in this alert
-        that are also in alerts in the event.
-
-        {<event>: # of observables in this alert that are also in the event}
-        """
-        return {}
-
-        if self._observable_open_event_counts is None:
-            results = {}
-
-            # Skip file observables. The calculations will consider their hash observables instead.
-            for observable in [o for o in self.root_analysis.observable_store.values() if o.type != F_FILE]:
-                if 'OPEN' in observable.matching_events_by_status:
-                    for event in observable.matching_events_by_status['OPEN']:
-                        if event not in results:
-                            results[event] = 0
-
-                        results[event] += 1
-
-            self._observable_open_event_counts = results
-
-        return self._observable_open_event_counts
-
-    @property
     def all_email_analysis(self) -> list[Analysis]:
         from saq.modules.email import EmailAnalysis
         observables = self.root_analysis.find_observables(lambda o: o.get_analysis(EmailAnalysis))
@@ -421,24 +390,6 @@ class Alert(Base):
     def has_email_analysis(self) -> bool:
         from saq.modules.email import EmailAnalysis
         return bool(self.root_analysis.find_observable(lambda o: o.get_analysis(EmailAnalysis)))
-
-    @property
-    def has_renderer_screenshot(self) -> bool:
-        # XXX needs to be updated
-        return False
-
-    @property
-    def screenshots(self) -> list[dict]:
-        return [
-            {'alert_id': self.uuid, 'observable_id': o.id, 'scaled_width': o.scaled_width, 'scaled_height': o.scaled_height}
-            for o in self.all_observables
-            if (
-                    o.type == F_FILE
-                    and o.is_image
-                    and o.file_name.startswith('renderer_')
-                    and o.file_name.endswith('.png')
-            )
-        ]
 
     @validates('description')
     def validate_description(self, key, value):
@@ -960,40 +911,6 @@ class Event(Base):
     def alert_objects(self) -> list["Alert"]:
         return [m.alert for m in self.alert_mappings]
 
-    # XXX get rid of this
-    @property
-    def all_observables_sorted(self) -> list[_Observable]: # XXX
-        """Returns a sorted list (by type, then value) of all of the unique observables in all of the alerts in the
-        event. It prefers to add observables that have FA Queue results. So if the same observable is in multiple
-        alerts, but only one has FA Queue results, it will add that one to the list."""
-
-        observables = []
-
-        for alert in self.alert_objects:
-            for observable in alert.root_analysis.all_observables:
-
-                # Check if this observable is already in the list
-                existing_observable = next((o for o in observables if o == observable), None)
-
-                # If it is, then make sure the one that is in the list has FA Queue analysis
-                if existing_observable:
-
-                    # Continue if the version of the observable already in the list has FA Queue analysis
-                    if existing_observable.faqueue_hits is not None:
-                        continue
-
-                    # If this current observable has FA Queue analysis, remove the existing observable and add the
-                    # current one to the list instead
-                    if observable.faqueue_hits is not None:
-                        observables.remove(existing_observable)
-                        observables.append(observable)
-
-                # We haven't seen this observable yet, so just add it to the list
-                else:
-                    observables.append(observable)
-
-        return sorted(observables, key=lambda o: (o.type, o.value))
-
     @property
     def alerts_still_analyzing(self) -> bool:
         """Returns True if any of the alerts in the event have not completed their analysis."""
@@ -1064,96 +981,6 @@ class Event(Base):
     @property
     def wiki(self) -> str:
         return ''
-
-    @property
-    def alert_with_email_and_screenshot(self) -> "Alert":
-        return next((a for a in self.alert_objects if a.has_email_analysis and a.has_renderer_screenshot), None)
-
-    @property
-    def all_file_observables(self) -> list[_Observable]:
-        file_observables = []
-
-        for alert in self.alert_objects:
-            for observable in alert.root_analysis.find_observables(lambda o: o.type == F_FILE):
-                file_observables.append(observable)
-
-        return file_observables
-
-    @property
-    def all_email_file_observables(self) -> list[_Observable]:
-        from saq.modules.email import EmailAnalysis
-
-        file_observables = []
-
-        for alert in self.alert_objects:
-            for observable in alert.root_analysis.find_observables(lambda o: o.type == F_FILE):
-                if observable.get_analysis(EmailAnalysis):
-                    file_observables.append(observable)
-
-        return file_observables
-
-    @property
-    def all_emails(self) -> set[Analysis]:
-        from saq.modules.email import EmailAnalysis
-
-        emails = set()
-
-        for alert in self.alert_objects:
-            observables = alert.root_analysis.find_observables(lambda o: o.get_analysis(EmailAnalysis))
-            email_analyses = {o.get_analysis(EmailAnalysis) for o in observables}
-
-            # Inject the alert's UUID into the EmailAnalysis so that we maintain a link of alert->email
-            for email_analysis in email_analyses:
-                email_analysis.alert_uuid = alert.uuid
-
-            emails |= email_analyses
-
-        return emails
-
-    @property
-    def all_url_domain_counts(self) -> dict[str, int]:
-        url_domain_counts = {}
-
-        for alert in self.alert_objects:
-            domain_counts = find_all_url_domains(alert.root_analysis)
-            for d in domain_counts:
-                if d not in url_domain_counts:
-                    url_domain_counts[d] = domain_counts[d]
-                else:
-                    url_domain_counts[d] += domain_counts[d]
-
-        return url_domain_counts
-
-    @property
-    def all_urls(self) -> set[str]:
-        urls = set()
-
-        for alert in self.alert_objects:
-            observables = alert.root_analysis.find_observables(lambda o: o.type == F_URL)
-            urls |= {o.value for o in observables}
-
-        return urls
-
-    @property
-    def all_fqdns(self) -> set[str]:
-        fqdns = set()
-
-        for alert in self.alert_objects:
-            observables = alert.root_analysis.find_observables(lambda o: o.type == F_FQDN)
-            fqdns |= {o.value for o in observables}
-
-        return fqdns
-
-    @property
-    def all_user_analysis(self) -> set[Analysis]:
-        from saq.modules.user import UserAnalysis
-        user_analysis = set()
-
-        for alert in self.alert_objects:
-            observables = alert.root_analysis.find_observables(lambda o: o.get_analysis(UserAnalysis))
-            user_analysis |= {o.get_analysis(UserAnalysis) for o in observables}
-
-        return user_analysis
 
     @property
     def showable_tags(self) -> dict[str, list]:
@@ -1638,7 +1465,7 @@ class AnalysisModuleCrash(Base):
     has_file: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text('0'))
 
 
-class CASObject(Base):
+class _CASObjectColumns:
     """One object in a content-addressed storage pool (docs/CAS.md).
 
     This table is authoritative for which objects exist: backends are dumb byte stores, and GC and
@@ -1650,20 +1477,23 @@ class CASObject(Base):
     hold() lock the row FOR UPDATE, so taking a hold and the GC flip serialize on it. A put() that
     finds deleting waits for the row to go and re-uploads.
 
-    Only saq/cas/index.py writes this table.
+    The index of a pool lives in the database its index_database names: CASObject (main chain) or
+    EmailArchiveCASObject (email archive chain), the same table in two chains, so a high-churn ttl
+    pool never shares locks with alert inserts. Only saq/cas/index.py writes this table.
     """
 
     __tablename__ = 'cas_objects'
-    __table_args__ = (
+
+    @declared_attr.directive
+    def __table_args__(cls):
         # the GC candidate scan: present objects of one pool whose last hold activity is old
-        Index('i_cas_objects_gc', 'pool', 'state', 'last_held_at'),
-    )
+        return (Index('i_cas_objects_gc', 'pool', 'state', 'last_held_at'),)
 
     pool: Mapped[str] = mapped_column(String(64), primary_key=True)
     digest: Mapped[str] = mapped_column(CHAR(64), primary_key=True)
     # plaintext bytes
     size: Mapped[int] = mapped_column(BigInteger, nullable=False)
-    # bytes in the backend (larger than size for encrypted pools: header + tag)
+    # bytes in the backend (smaller than size for a compressed pool, larger for an encrypted one)
     stored_size: Mapped[int] = mapped_column(BigInteger, nullable=False)
     # saq.crypto key id the object was encrypted with; NULL for plaintext pools
     key_id: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
@@ -1682,7 +1512,7 @@ class CASObject(Base):
     verified_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
 
 
-class CASHold(Base):
+class _CASHoldColumns:
     """An explicit reference that keeps a CAS object alive (docs/CAS.md).
 
     Keyed by (pool, digest, holder_kind, holder_id) with no timestamp in the key, so repeating a
@@ -1696,15 +1526,18 @@ class CASHold(Base):
     """
 
     __tablename__ = 'cas_holds'
-    __table_args__ = (
-        ForeignKeyConstraint(
-            ['pool', 'digest'],
-            ['cas_objects.pool', 'cas_objects.digest'],
-            name='fk_cas_holds_object',
-            ondelete='CASCADE'),
-        # "everything held by this holder", e.g. releasing every hold of one capture record
-        Index('i_cas_holds_holder', 'pool', 'holder_kind', 'holder_id'),
-    )
+
+    @declared_attr.directive
+    def __table_args__(cls):
+        return (
+            ForeignKeyConstraint(
+                ['pool', 'digest'],
+                ['cas_objects.pool', 'cas_objects.digest'],
+                name='fk_cas_holds_object',
+                ondelete='CASCADE'),
+            # "everything held by this holder", e.g. releasing every hold of one capture record
+            Index('i_cas_holds_holder', 'pool', 'holder_kind', 'holder_id'),
+        )
 
     pool: Mapped[str] = mapped_column(String(64), primary_key=True)
     digest: Mapped[str] = mapped_column(CHAR(64), primary_key=True)
@@ -1718,7 +1551,7 @@ class CASHold(Base):
     created_by: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
 
 
-class CASPurge(Base):
+class _CASPurgeColumns:
     """Audit row for a forced deletion of a CAS object across its holds (docs/CAS.md).
 
     purge is the only way to delete an object that is still held. It records who did it and why;
@@ -1726,9 +1559,10 @@ class CASPurge(Base):
     """
 
     __tablename__ = 'cas_purges'
-    __table_args__ = (
-        Index('i_cas_purges_object', 'pool', 'digest'),
-    )
+
+    @declared_attr.directive
+    def __table_args__(cls):
+        return (Index('i_cas_purges_object', 'pool', 'digest'),)
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     pool: Mapped[str] = mapped_column(String(64), nullable=False)
@@ -1741,22 +1575,74 @@ class CASPurge(Base):
         server_default=text('CURRENT_TIMESTAMP'))
 
 
+class CASObject(_CASObjectColumns, Base):
+    pass
+
+
+class CASHold(_CASHoldColumns, Base):
+    pass
+
+
+class CASPurge(_CASPurgeColumns, Base):
+    pass
+
+
+class EmailArchiveCASObject(_CASObjectColumns, EmailArchiveBase):
+    pass
+
+
+class EmailArchiveCASHold(_CASHoldColumns, EmailArchiveBase):
+    pass
+
+
+class EmailArchiveCASPurge(_CASPurgeColumns, EmailArchiveBase):
+    pass
+
+
+class EmailArchiveCASTouch(EmailArchiveBase):
+    """One use of an object in a ttl pool on one day (docs/CAS.md, "Retention modes and churn").
+
+    A ttl object lives while it has a touch within the pool's ttl_days. Append-only: a put writes
+    INSERT IGNORE (CURDATE(), pool, digest), so a use never updates a shared row, and expiry drops
+    whole day partitions (`ace partitions maintain`, docs/DATABASE_PARTITIONS.md) instead of
+    deleting rows. RANGE COLUMNS(day) partitioned, so it has no foreign key and day is in every
+    unique key. Only saq/cas/index.py writes this table.
+    """
+
+    __tablename__ = 'cas_touches'
+    __table_args__ = (
+        # GC asks "has this object a touch since day X", which the primary key (day first) cannot answer
+        Index('i_cas_touches_object', 'pool', 'digest', 'day'),
+    )
+
+    day: Mapped[date] = mapped_column(DATE, primary_key=True)
+    pool: Mapped[str] = mapped_column(String(64), primary_key=True)
+    digest: Mapped[str] = mapped_column(CHAR(64), primary_key=True)
+
+
 class YaraQASignature(Base):
     """Per (signature uuid, signature version) counters for YARA rules in QA mode (docs/YARA_QA.md).
 
-    signature_version is the commit of the rule's repository (or 'unknown'), the same value a
-    detection point carries, so one rule has a row per commit it matched under. match_count counts
+    signature_version is the rule's content hash (version_kind 'content'), so a commit that does not
+    touch the rule keeps its version. A match that came without a hash (its rule file could not be
+    parsed, or changed while it compiled), and every row recorded before content versions, is filed
+    under the commit of the rule's repository or 'unknown' (version_kind 'commit'). first_commit
+    and last_commit are the commits the version first and last matched under. match_count counts
     every match, including those past the file cap, because "how noisy is this rule" is the
     question QA answers and the cap must not hide it. stored_count is the number of
     yara_qa_matches rows for this version: it is the slot counter the cap is enforced against,
     incremented by one conditional UPDATE when a file is stored and decremented when a match is
-    pruned. Only saq/yara_qa writes this table.
+    pruned, evicted or purged. Only saq/yara_qa writes this table.
     """
 
     __tablename__ = 'yara_qa_signatures'
 
     signature_uuid: Mapped[str] = mapped_column(String(36), primary_key=True)
     signature_version: Mapped[str] = mapped_column(String(64), primary_key=True)
+    # 'content' or 'commit' (saq.yara_qa.store.QAVersionKind)
+    version_kind: Mapped[str] = mapped_column(String(16), nullable=False, server_default=text("'commit'"))
+    first_commit: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    last_commit: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     # the rule's name and namespace when it last matched
     rule_name: Mapped[str] = mapped_column(String(256), nullable=False)
     namespace: Mapped[Optional[str]] = mapped_column(String(256), nullable=True)
@@ -1778,8 +1664,9 @@ class YaraQAMatch(Base):
     thousands of times, each with its bytes), which is why it lives in the CAS and not here.
 
     node is the node that stored the file: with a node-local pool the bytes are only there.
-    Rows are removed by `ace yara-qa prune` once expired, in primary-key batches. Only saq/yara_qa
-    writes this table.
+    Rows are removed by `ace yara-qa prune` once expired, in primary-key batches, by the recorder
+    when it rolls a superseded version over, and by an analyst's purge. Only saq/yara_qa writes
+    this table.
     """
 
     __tablename__ = 'yara_qa_matches'
@@ -1792,6 +1679,8 @@ class YaraQAMatch(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     signature_uuid: Mapped[str] = mapped_column(String(36), nullable=False)
     signature_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    # the version's kind, as in yara_qa_signatures
+    version_kind: Mapped[str] = mapped_column(String(16), nullable=False, server_default=text("'commit'"))
     # the file's digest in the pool
     sha256: Mapped[str] = mapped_column(CHAR(64), nullable=False)
     file_name: Mapped[str] = mapped_column(String(1024), nullable=False)
@@ -2193,9 +2082,18 @@ class SVSRun(Base):
     started_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     # what the launcher reported through executed
     executed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    # when the launcher said the test's cleanup began: detections whose event time is at or after
+    # it are the cleanup's, left out of what the run teaches (docs/SVS_RUNS.md, *Cleanup*)
+    cleanup_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     exit_code: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     launcher_error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    # what the test printed (stdout and stderr), as executed reported it, at most
+    # saq.svs.runs.MAX_OUTPUT_BYTES; deferred, since only the run's detail reads it and the
+    # listing and attribution load whole runs
+    launcher_output: Mapped[Optional[str]] = mapped_column(MEDIUMTEXT, nullable=True, deferred=True)
     ended_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    # why a person ended it before its observation window passed; NULL when the window passed
+    end_reason: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     canceled_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     closed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     close_reason: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
@@ -2205,6 +2103,9 @@ class SVSRun(Base):
     attribution_seconds: Mapped[int] = mapped_column(Integer, nullable=False)
     observation_ends_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     attribution_ends_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    # the test's holds_host setting at registration: the run holds its hosts until its attribution
+    # window ends rather than its observation window (docs/SVS_RUNS.md, *One run per test host*)
+    holds_host: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text('0'))
     owner_id: Mapped[Optional[int]] = mapped_column(
         Integer,
         ForeignKey('users.id', ondelete='SET NULL', onupdate='CASCADE'),
@@ -2300,6 +2201,75 @@ class SVSRunEvent(Base):
         server_onupdate=FetchedValue())
 
 
+class SVSMaintenanceWindow(Base):
+    """A test host's maintenance window (docs/SVS_RUNS.md, *Maintenance windows*): while it is open
+    no run may hold the host, and an alert without a marker that involves the host, with its event
+    time inside the window, is routed to the test queue and closed. Only saq/svs/maintenance.py
+    writes this table."""
+
+    __tablename__ = 'svs_maintenance_windows'
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    uuid: Mapped[str] = mapped_column(CHAR(36), nullable=False, unique=True)
+    # the test host, NULL once it is removed; host and fqdn are its names when the window opened
+    test_host_id: Mapped[Optional[int]] = mapped_column(
+        Integer,
+        ForeignKey('svs_test_hosts.id', ondelete='SET NULL', onupdate='CASCADE'),
+        nullable=True)
+    host: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+    fqdn: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    reason: Mapped[str] = mapped_column(Text, nullable=False)
+    opened_by: Mapped[str] = mapped_column(String(256), nullable=False)
+    opened_by_user_id: Mapped[Optional[int]] = mapped_column(
+        Integer,
+        ForeignKey('users.id', ondelete='SET NULL', onupdate='CASCADE'),
+        nullable=True)
+    opened_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    # when it was opened to end; ended_at is when it did, early or at ends_at
+    ends_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, index=True)
+    ended_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    ended_by: Mapped[Optional[str]] = mapped_column(String(256), nullable=True)
+    # ended (early, by a call) or expired (at ends_at, by the timers)
+    end_reason: Mapped[Optional[str]] = mapped_column(Enum('ended', 'expired'), nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        MYSQL_TIMESTAMP(fsp=6),
+        nullable=False,
+        index=True,
+        server_default=text('CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6)'),
+        server_onupdate=FetchedValue())
+
+
+class SVSMaintenanceAlert(Base):
+    """An alert routed to the test queue for a maintenance window, until the timers close it. The
+    marker router writes it as it judges the alert, confirms it at the alert's correlation pass, and
+    marks it removed when a later pass no longer judges the alert maintenance (a marker found in
+    analysis). Only saq/svs/maintenance.py writes this table."""
+
+    __tablename__ = 'svs_maintenance_alerts'
+    __table_args__ = (
+        UniqueConstraint('window_id', 'alert_uuid', name='uq_svs_maintenance_alerts_window_alert'),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    window_id: Mapped[int] = mapped_column(
+        Integer,
+        ForeignKey('svs_maintenance_windows.id', ondelete='CASCADE', onupdate='CASCADE'),
+        nullable=False)
+    alert_uuid: Mapped[str] = mapped_column(CHAR(36), nullable=False, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    # judged maintenance by the router after the alert's correlation pass: it may be closed
+    confirmed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    removed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    # the timers closed it (or found an analyst had taken or dispositioned it)
+    closed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True, index=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        MYSQL_TIMESTAMP(fsp=6),
+        nullable=False,
+        index=True,
+        server_default=text('CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6)'),
+        server_onupdate=FetchedValue())
+
+
 class SVSRegistrationRefusal(Base):
     """Refused registrations per (caller, host, hour) (docs/SVS_RUNS.md, *Refused registrations*):
     the first refusal in an hour creates an alert, the rest only count, so a launcher retrying in a
@@ -2360,6 +2330,13 @@ class SVSAttribution(Base):
     confidence: Mapped[str] = mapped_column(Enum('marker', 'context'), nullable=False)
     # the alert's event time was past the run's observation window
     late: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text('0'))
+    # the alert's event time the attribution was judged by, as runs record time; NULL for rows
+    # written before it was kept. At or after the run's cleanup_at, the detection is the cleanup's
+    event_time: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    # saq.svs.constants.AttributionTimeSource: the event's own time, or a fallback (the hunt's query time,
+    # when its producer created the alert, the alert's insert time) that may place the alert in the wrong window
+    event_time_source: Mapped[Optional[str]] = mapped_column(
+        Enum('event', 'query_time', 'insert_time', 'now'), nullable=True)
     # saq.svs.constants.AttributionSource: the marker router, or a person
     source: Mapped[str] = mapped_column(Enum('router', 'manual'), nullable=False)
     # saq.svs.constants.ScanPoint where the agreeing marker was found, NULL for context
@@ -2499,8 +2476,9 @@ class SVSIgnore(Base):
 
 
 class SVSTestSettings(Base):
-    """Per-test settings (docs/SVS_RUNS.md, *Windows*): an observation window that replaces the
-    computed one for every run registered afterwards. Only saq/svs/expectations.py writes this
+    """Per-test settings (docs/SVS_RUNS.md, *Windows*, *One run per test host*): an observation
+    window that replaces the computed one, and whether a run holds its hosts for its whole attribution
+    window, for every run registered afterwards. Only saq/svs/expectations.py writes this
     table."""
 
     __tablename__ = 'svs_test_settings'
@@ -2508,6 +2486,9 @@ class SVSTestSettings(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     test_guid: Mapped[str] = mapped_column(String(36), nullable=False, unique=True)
     observation_minutes: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    # the test leaves something behind on its hosts, so a run of it holds them for its whole
+    # attribution window
+    holds_host: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text('0'))
     set_by_user_id: Mapped[Optional[int]] = mapped_column(
         Integer,
         ForeignKey('users.id', ondelete='SET NULL', onupdate='CASCADE'),
@@ -2544,21 +2525,22 @@ class SVSRunResult(Base):
     signature_name: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
     # saq.svs.constants.ResultStatus; NULL once the signature left the live result
     status: Mapped[Optional[str]] = mapped_column(
-        Enum('hit', 'missing', 'possibly_suppressed', 'candidate', 'rejected', 'ignored'), nullable=True)
+        Enum('hit', 'missing', 'possibly_suppressed', 'candidate', 'rejected', 'ignored', 'cleanup'), nullable=True)
     # the alerts attributed to the run that carry the signature
     alert_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text('0'))
     # every one of its attributions is late, or by context alone
     late_only: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text('0'))
     context_only: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text('0'))
+    # some attribution of it was judged by a fallback event time, not the event's own
+    fallback_time: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text('0'))
     # the rule's own content hash when the result was computed (saq.signatures.model.Signature)
     content_hash: Mapped[Optional[str]] = mapped_column(CHAR(64), nullable=True)
-    # possibly_suppressed: the latest alert of the hunt inside its suppression period, and whether
-    # the hunt groups or deduplicates its alerts, so that alert may not have suppressed this one
+    # possibly_suppressed: the latest alert of the hunt inside its suppression period. None when the
+    # hunter recorded the drop (svs_suppressed_matches), which names no alert
     suppressing_alert_uuid: Mapped[Optional[str]] = mapped_column(CHAR(36), nullable=True)
-    suppression_imprecise: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text('0'))
     # the result as signed off (docs/SVS.md, Part 6, *History kept for reports*)
     reviewed_status: Mapped[Optional[str]] = mapped_column(
-        Enum('hit', 'missing', 'possibly_suppressed', 'candidate', 'rejected', 'ignored'), nullable=True)
+        Enum('hit', 'missing', 'possibly_suppressed', 'candidate', 'rejected', 'ignored', 'cleanup'), nullable=True)
     reviewed_alert_count: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     reviewed_late_only: Mapped[Optional[bool]] = mapped_column(Boolean, nullable=True)
     reviewed_content_hash: Mapped[Optional[str]] = mapped_column(CHAR(64), nullable=True)
@@ -2568,6 +2550,34 @@ class SVSRunResult(Base):
         index=True,
         server_default=text('CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6)'),
         server_onupdate=FetchedValue())
+
+
+class SVSSuppressedMatch(Base):
+    """A hunt dropped a match inside a run's attribution window, on one of the run's test hosts
+    (docs/SVS_RUNS.md, *Results*): a hunt with group_by for its suppression, or the collector as a
+    duplicate of the hunt's dedup_key. One row per run and hunt, for the first such match: a run's result reads it to tell a suppressed hunt from a missing one, so it
+    lives as long as the run. Only saq/svs/attribution.py writes this table."""
+
+    __tablename__ = 'svs_suppressed_matches'
+    __table_args__ = (
+        UniqueConstraint('run_id', 'hunt_uuid', name='uq_svs_suppressed_matches_run_hunt'),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    run_id: Mapped[int] = mapped_column(
+        Integer,
+        ForeignKey('svs_runs.id', ondelete='CASCADE', onupdate='CASCADE'),
+        nullable=False)
+    hunt_uuid: Mapped[str] = mapped_column(String(36), nullable=False)
+    # the match's group_value, which keys its suppression by itself or with the run
+    # (QueryHunt.key_suppression); None for a duplicate of a hunt without group_by
+    group_value: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    # the dedup key the collector found the match a duplicate of; None when the hunt suppressed it
+    dedup_key: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    # the match's event time, as runs record time (naive, local)
+    event_time: Mapped[datetime] = mapped_column(MYSQL_DATETIME(fsp=6), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        MYSQL_DATETIME(fsp=6), nullable=False, server_default=text('CURRENT_TIMESTAMP(6)'))
 
 
 class SVSRunResultState(Base):
@@ -3553,9 +3563,33 @@ class Tag(Base):
     def init_on_load(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
-class User(UserMixin, Base):
+class User(Base):
 
     __tablename__ = 'users'
+
+    # what Flask-Login expects of a user object, as flask_login.UserMixin defines it; defined here so
+    # importing the models does not import Flask
+    __hash__ = object.__hash__
+
+    @property
+    def is_active(self) -> bool:
+        return True
+
+    @property
+    def is_authenticated(self) -> bool:
+        return self.is_active
+
+    @property
+    def is_anonymous(self) -> bool:
+        return False
+
+    def get_id(self) -> str:
+        return str(self.id)
+
+    def __eq__(self, other):
+        if isinstance(other, User):
+            return self.get_id() == other.get_id()
+        return NotImplemented
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     username: Mapped[str] = mapped_column(String(64), unique=True, nullable=False, index=True)
@@ -3661,6 +3695,12 @@ class AuthGroupUser(Base):
     group: Mapped["AuthGroup"] = relationship('AuthGroup')
     user: Mapped["User"] = relationship('User')
 
+def _lowercase_permission_part(self, key, value):
+    # permissions match case-insensitively (saq.permissions.logic) and the ascii_general_ci unique
+    # indexes on these tables already treat case variants as one row, so a pattern is always
+    # stored lowercase and every reader sees it the way enforcement does
+    return value.lower() if value is not None else value
+
 class AuthPermissionCatalog(Base):
 
     __tablename__ = 'auth_permission_catalog'
@@ -3679,6 +3719,8 @@ class AuthPermissionCatalog(Base):
     minor: Mapped[str] = mapped_column(
         String(512, collation='ascii_general_ci'),
         nullable=False)
+
+    _lowercase_major_minor = validates('major', 'minor')(_lowercase_permission_part)
 
     description: Mapped[Optional[str]] = mapped_column(
         Text,
@@ -3709,6 +3751,8 @@ class AuthUserPermission(Base):
     minor: Mapped[str] = mapped_column(
         String(512, collation='ascii_general_ci'),
         nullable=False)
+
+    _lowercase_major_minor = validates('major', 'minor')(_lowercase_permission_part)
 
     effect: Mapped[str] = mapped_column(
         Enum('ALLOW', 'DENY'),
@@ -3754,6 +3798,8 @@ class AuthGroupPermission(Base):
     minor: Mapped[str] = mapped_column(
         String(512, collation='ascii_general_ci'),
         nullable=False)
+
+    _lowercase_major_minor = validates('major', 'minor')(_lowercase_permission_part)
 
     effect: Mapped[str] = mapped_column(
         Enum('ALLOW', 'DENY'),
@@ -3848,6 +3894,8 @@ class AuthApiKeyPermission(Base):
     minor: Mapped[str] = mapped_column(
         String(512, collation='ascii_general_ci'),
         nullable=False)
+
+    _lowercase_major_minor = validates('major', 'minor')(_lowercase_permission_part)
 
     # v1 mints ALLOW-only (a positive allowlist); the column mirrors the user/group permission
     # tables so a future per-key DENY capability needs no schema change.
@@ -4038,6 +4086,9 @@ class Comment(Base):
 
     comment: Mapped[str] = mapped_column(Text, nullable=False)
 
+    # when the text last changed; NULL when never edited
+    edited_at: Mapped[Optional[datetime]] = mapped_column(TIMESTAMP, nullable=True)
+
     user: Mapped["User"] = relationship(
         'User', primaryjoin='Comment.user_id == User.id',
         foreign_keys=[user_id], backref='comments')
@@ -4070,6 +4121,9 @@ class ObservableComment(Base):
         index=True)
 
     comment: Mapped[str] = mapped_column(Text, nullable=False)
+
+    # when the text last changed; NULL when never edited
+    edited_at: Mapped[Optional[datetime]] = mapped_column(TIMESTAMP, nullable=True)
 
     user: Mapped["User"] = relationship('User', foreign_keys=[user_id])
     observable: Mapped["Observable"] = relationship('Observable', backref='observable_comments')
@@ -4668,8 +4722,29 @@ class EmailThreadDomain(BrocessBase):
         nullable=True)
 
 
+class ArchivedMessage(EmailArchiveBase):
+    """Message-ID -> the digest of an email archived under it in the email archive CAS pool
+    (docs/EMAIL_ARCHIVE.md). One Message-ID can name more than one email (journaled copies, a
+    resent message), so the lookup takes the newest the pool still has.
+
+    The primary key is the lookup, the de-duplication key of archive_email()'s INSERT IGNORE, and
+    contains insert_date because the table is RANGE partitioned by it (`ace partitions`)."""
+
+    __tablename__ = 'archived_messages'
+
+    message_id_hash: Mapped[bytes] = mapped_column(BINARY(32), primary_key=True)    # UNHEX(SHA2(normalized message-id, 256))
+    digest: Mapped[bytes] = mapped_column(BINARY(32), primary_key=True)             # the email's sha256
+    # DATETIME, not DATE: two emails with one Message-ID on one day are still ordered newest first
+    insert_date: Mapped[datetime] = mapped_column(DateTime, primary_key=True)
+
+
+# LEGACY: archive, archive_index and archive_server are the email archive index from before the
+# CAS. Nothing writes them; `ace email-archive migrate` reads them to backfill archived_messages and
+# to find the old files still referenced, and partition maintenance empties them. A later release
+# drops them (docs/EMAIL_ARCHIVE.md, "Migrating from the old archive").
+
 class EmailArchive(EmailArchiveBase):
-    """One row per archived email, keyed by (server_id, SHA-256 hash)."""
+    """LEGACY. One row per archived email, keyed by (server_id, SHA-256 hash)."""
 
     __tablename__ = 'archive'
     __table_args__ = (
@@ -4698,7 +4773,7 @@ class EmailArchive(EmailArchiveBase):
 
 
 class EmailArchiveIndex(EmailArchiveBase):
-    """Fast-search index over archived emails: (field, hashed value) -> archive_id."""
+    """LEGACY. (field, hashed value) -> archive_id; the message_id rows are what the backfill copies."""
 
     __tablename__ = 'archive_index'
     __table_args__ = (
@@ -4726,53 +4801,8 @@ class EmailArchiveIndex(EmailArchiveBase):
         server_default=text('CURRENT_TIMESTAMP'))
 
 
-class EmailHistory(EmailArchiveBase):
-    """Per-(message-id, recipient) delivery history.
-
-    message_id / recipient have no hard length limit so they are stored
-    full-length as TEXT and indexed via fixed-width BINARY(32) SHA-256 hash
-    columns (UNHEX(SHA2(value, 256))).
-    """
-
-    __tablename__ = 'email_history'
-    __table_args__ = (
-        UniqueConstraint('message_id_hash', 'recipient_hash', 'insert_date',
-                         name='idx_eh_message_id_recipient'),
-        Index('idx_eh_insert_date', 'insert_date'),
-        Index('idx_eh_message_id', 'message_id_hash'),
-        Index('idx_eh_recipient', 'recipient_hash'),
-    )
-
-    id: Mapped[int] = mapped_column(
-        BigInteger,
-        primary_key=True,
-        autoincrement=True)
-
-    insert_date: Mapped[datetime] = mapped_column(
-        DateTime,
-        primary_key=True,
-        nullable=False,
-        server_default=text('CURRENT_TIMESTAMP'))
-
-    message_id: Mapped[str] = mapped_column(
-        Text,
-        nullable=False)
-
-    message_id_hash: Mapped[bytes] = mapped_column(
-        BINARY(32),
-        nullable=False)
-
-    recipient: Mapped[str] = mapped_column(
-        Text,
-        nullable=False)
-
-    recipient_hash: Mapped[bytes] = mapped_column(
-        BINARY(32),
-        nullable=False)
-
-
 class EmailArchiveServer(EmailArchiveBase):
-    """Registry of hosts that own archived emails. Not partitioned."""
+    """LEGACY. The hosts whose old archive directories the legacy rows name. Not partitioned."""
 
     __tablename__ = 'archive_server'
     __table_args__ = (

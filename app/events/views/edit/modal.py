@@ -1,6 +1,5 @@
 from datetime import datetime
 from flask import flash, redirect, render_template, request, url_for
-from flask_login import login_required
 from app.auth.permissions import require_permission
 from app.blueprints import events
 from saq.configuration.config import get_config
@@ -10,7 +9,7 @@ from aceapi_v2.sync import run_async_with_session
 from aceapi_v2.threat_types.service import get_threat_types
 
 @events.route('/edit_event_modal', methods=['GET'])
-@login_required
+@require_permission('event', 'read')
 def edit_event_modal():
     event_id = request.args['event_id']
     event = get_db().query(Event).filter(Event.id == event_id).one()
@@ -167,7 +166,8 @@ def edit_event():
 
     get_db().commit()
 
-    if '/manage' in request.referrer:
+    # browsers can be set not to send a referrer
+    if request.referrer and '/manage' in request.referrer:
         return redirect(url_for('events.manage'))
     else:
         return redirect(url_for('events.index', direct=event_id))

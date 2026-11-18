@@ -1,9 +1,9 @@
 import base64
 import hashlib
+import importlib
 import json
 import logging
 import os
-from subprocess import PIPE, Popen
 from typing import Optional
 from flask import Flask
 from markupsafe import Markup
@@ -13,44 +13,28 @@ import urllib
 
 from app.blueprints import register_blueprints
 
-from app.integration import register_integration_blueprints
 from app.user_preferences import get_alert_sections_preference, get_theme_preference
 from saq.configuration.config import get_config
 from flask_config import get_flask_config
 from flask_login import LoginManager
-from flask_sqlalchemy import SQLAlchemy
 from flask_executor import Executor # XXX what is this for?
-from sqlalchemy import event
 
-from saq.database.pool import remove_all_sessions, set_db
+from saq.database.pool import remove_all_sessions
+from saq.integration.integration_loader import apply_integration_hooks
 from saq.disposition import (
     get_disposition_css,
     get_dispositions,
     get_selectable_dispositions,
     is_frozen_disposition,
 )
-from saq.environment import get_global_runtime_settings
-from saq.monitor import emit_monitor
-from saq.monitor_definitions import MONITOR_SQLALCHEMY_DB_POOL_STATUS
 from saq.util.relative_time import is_relative_time, resolve_date_range_for_display
-from saq.util.ui import get_tag_css_class, get_tag_level, human_readable_size
+from saq.util.ui import get_tag_css_class, get_tag_level, hexdump, human_readable_size
 
 # TODO: find something else to use besides this LoginManager
 login_manager = LoginManager()
 # turning this off for now while I figure out how this works with load balancers
 login_manager.session_protection = None
 login_manager.login_view = 'auth.login'
-
-#
-# 01/25/2022 -- JWD - cannot get hexdump to return anything but None as a jinja filter
-# so falling back to some external command execution
-#
-
-def hexdump_wrapper(data):
-    p = Popen(['hexdump', '-C'], stdin=PIPE, stdout=PIPE, stderr=PIPE)
-    p.stdin.write(data)
-    _stdout, _stderr = p.communicate()
-    return _stdout.decode(errors='ignore')
 
 # utility functions to encoding/decoding base64 to/from strings
 def s64decode(s):
@@ -98,24 +82,22 @@ class _ExternalLinksExtension(markdown.Extension):
 def render_markdown(text):
     return Markup(markdown.markdown(text, extensions=["extra", _ExternalLinksExtension()]))
 
-class CustomSQLAlchemy(SQLAlchemy):
-    def apply_driver_hacks(self, app, info, options):
-        # add SSL (if configured)
-        options.update(get_flask_config(get_config().global_settings.instance_type).SQLALCHEMY_DATABASE_OPTIONS)
-        SQLAlchemy.apply_driver_hacks(self, app, info, options)
-
 def initialize_presenters():
-    """Ensures that the appropriate presenters are registered for the current engine configuration."""
+    """Imports the python module of each analysis module the engine would load, which registers its
+    presenters. The modules are not built: that validates each module's whole config block, and with
+    it environment variables only the engine has (#1009)."""
     from saq.engine.configuration_manager import ConfigurationManager
     from saq.engine.engine_configuration import EngineConfiguration
     from saq.engine.enums import EngineType
 
     configuration_manager = ConfigurationManager(EngineConfiguration(engine_type=EngineType.LOCAL, single_threaded_mode=True))
-    configuration_manager.load_modules()
-
-    for analysis_module in configuration_manager.analysis_modules:
-        # there isn't anythign to do here yet, but will soon
-        pass
+    for name in configuration_manager.module_loader.module_names_to_load():
+        python_module = get_config().peek_analysis_module_config(name).python_module
+        try:
+            importlib.import_module(python_module)
+        except Exception:
+            logging.exception("unable to import analysis module %s from %s", name, python_module,
+                              extra={"analysis_module": name, "python_module": python_module})
 
 # (mode, bootstrap icon, label, tooltip) for the theme switchers in base.html and preferences.html
 THEME_CHOICES = [
@@ -123,6 +105,7 @@ THEME_CHOICES = [
     ("light", "bi-sun", "Light", "Dark text on a light background"),
     ("dark", "bi-moon-stars", "Dark", "Light text on a dark background"),
     ("jd", None, "\U0001F474 JD", "High-contrast light"),
+    ("sepia", None, "\U0001F453 Sepia", "Dark brown ink on aged paper, larger text, easy on the eyes"),
     ("halloween", None, "\U0001F383 Halloween", "Pumpkin orange on midnight purple"),
 ]
 
@@ -138,7 +121,7 @@ def static_file_version(path: str) -> Optional[str]:
         return None
 
 
-def create_app(testing: Optional[bool]=False):
+def create_app():
 
     flask_app = Flask(__name__)
     flask_app.config.from_object(get_flask_config(get_config().global_settings.instance_type))
@@ -150,35 +133,18 @@ def create_app(testing: Optional[bool]=False):
 
     login_manager.init_app(flask_app)
 
-    db = CustomSQLAlchemy(engine_options=get_flask_config(get_global_runtime_settings().instance_type).SQLALCHEMY_DATABASE_OPTIONS)
-    if not testing:
-        # XXX hack: tests will create test contexts but the database pool is global
-        # we don't want to change it because things like collectors *also* manage the connections
-        set_db(db.session)
-
-    db.init_app(flask_app)
-
+    # the GUI uses the same thread-local sessions (saq.database.pool) as every other ACE process,
+    # so each request releases them when it ends
     @flask_app.teardown_appcontext
     def _remove_all_sessions(exception):
-        # release thread-local sessions for every registered engine, not just
-        # the ace session that flask-sqlalchemy manages on its own
         remove_all_sessions()
-
-    with flask_app.app_context():
-        @event.listens_for(db.engine, 'checkin')
-        def checkin(dbapi_connection, connection_record):
-            emit_monitor(MONITOR_SQLALCHEMY_DB_POOL_STATUS, db.engine.pool.status())
-
-        @event.listens_for(db.engine, 'checkout')
-        def checkout(dbapi_connection, connection_record, connection_proxy):
-            emit_monitor(MONITOR_SQLALCHEMY_DB_POOL_STATUS, db.engine.pool.status())
 
     # XXX what is this for?
     executor = Executor()
     executor.init_app(flask_app)
 
     register_blueprints(flask_app)
-    register_integration_blueprints(flask_app)
+    apply_integration_hooks("gui_blueprint", lambda integration, register: register(flask_app))
 
     # every url_for() on a static endpoint gets ?v=<hash of the file>, so a release that changes
     # a file changes its URL and nginx can let browsers keep a versioned URL forever
@@ -290,7 +256,7 @@ def create_app(testing: Optional[bool]=False):
     flask_app.jinja_env.filters['s64decode'] = s64decode
     flask_app.jinja_env.filters['s64encode'] = s64encode
     flask_app.jinja_env.filters['b64escape'] = b64escape
-    flask_app.jinja_env.filters['hexdump'] = hexdump_wrapper
+    flask_app.jinja_env.filters['hexdump'] = hexdump
     flask_app.jinja_env.filters['basename'] = os.path.basename
     flask_app.jinja_env.filters['human_readable_size'] = human_readable_size
     flask_app.jinja_env.filters['get_tag_css_class'] = get_tag_css_class

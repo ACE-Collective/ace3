@@ -18,9 +18,10 @@ def get_current_event_id():
     elif 'event_id' in target_dict:
         return target_dict['event_id']
 
-    # Check if the referring URL has the event ID in it
-    if 'direct=' in request.referrer:
-        return re.search(r'direct=(\d+)', request.referrer).group(1)
+    # Check if the referring URL has the event ID in it (browsers can be set not to send one)
+    m = re.search(r'direct=(\d+)', request.referrer or '')
+    if m:
+        return m.group(1)
 
     logging.debug("missing direct or event_id in get_current_event for user {0}".format(current_user))
     return None

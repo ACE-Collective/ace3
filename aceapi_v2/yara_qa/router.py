@@ -7,7 +7,7 @@ anything yet) with their match counts, list what each one matched, and hand out 
 
 Reading counts and match records needs signature:read. Anything that returns the matched files
 needs signature:download: they are live malware, and they are served only inside zips encrypted
-with the password 'infected'.
+with the password 'infected'. Purging stored files needs signature:qa_purge.
 """
 
 import logging
@@ -26,7 +26,16 @@ from aceapi_v2.dependencies import get_current_auth, require_permission
 from aceapi_v2.responses import ZIP_DOWNLOAD_RESPONSES, ZipFileResponse
 from aceapi_v2.sync import run_db_in_thread
 from aceapi_v2.yara_qa import service
-from aceapi_v2.yara_qa.schemas import QAMatch, QAMatchDetail, QAPage, QASignatureDetail, QASignaturePage
+from aceapi_v2.yara_qa.schemas import (
+    QAMatch,
+    QAMatchDetail,
+    QAPage,
+    QAPurgeRequest,
+    QAPurgeResult,
+    QASignatureDetail,
+    QASignaturePage,
+)
+from saq.logging import log_audit
 from saq.yara_qa.listing import QASort, QAStatus
 
 logger = logging.getLogger(__name__)
@@ -117,8 +126,9 @@ async def download_match(
 ) -> ZipFileResponse:
     """Download one matched file and its match record as a zip encrypted with password 'infected'."""
     row = await service.resolve_single_download(session, match_id)
-    logger.info("AUDIT: user %s downloading yara qa match %s (signature %s, sha256 %s)",
-                auth.auth_name, row.id, row.signature_uuid, row.sha256)
+    log_audit("user %s downloading yara qa match %s (signature %s, sha256 %s)",
+              auth.auth_name, row.id, row.signature_uuid, row.sha256,
+              auth=auth, match_id=row.id, signature_uuid=row.signature_uuid, sha256=row.sha256)
     label = f"yara-qa-match-{row.id}"
     zip_path, staging = await run_db_in_thread(service.create_encrypted_zip, label, [row], [], auth.auth_name)
     return ZipFileResponse(
@@ -154,6 +164,26 @@ async def list_matches(
     return await service.list_matches(session, signature_uuid, version=version, limit=limit, offset=offset)
 
 
+@router.post("/{signature_uuid}/purge", response_model=QAPurgeResult)
+async def purge_matches(
+    signature_uuid: str,
+    body: QAPurgeRequest,
+    auth: Annotated[ApiAuthResult, Depends(require_permission("signature", "qa_purge"))],
+) -> QAPurgeResult:
+    """Purge stored files of one signature: every file of the given versions, or the given
+    matches (at most yara_qa.max_bulk_download_files). Removes only YARA QA rows and their holds in
+    the yara_qa pool; a file another rule or version still holds stays. A purged file that
+    matches again is stored again."""
+    service.validate_purge(signature_uuid, body)
+    # before the purge: its batches commit one by one, so a purge that fails partway has already
+    # deleted rows
+    log_audit("%s purging yara qa matches of signature %s (versions %s, match ids %s): %s",
+              auth.auth_name, signature_uuid, body.versions, body.match_ids, body.reason,
+              auth=auth, signature_uuid=signature_uuid, signature_versions=body.versions, match_ids=body.match_ids,
+              reason=body.reason)
+    return await run_db_in_thread(service.purge, signature_uuid, body)
+
+
 @router.get(
     "/{signature_uuid}/download",
     response_class=ZipFileResponse,
@@ -177,8 +207,9 @@ async def download_signature_matches(
     either). Files stored on another node's local pool are listed in the manifest under skipped.
     """
     rows, remote = await service.resolve_bulk_download(session, signature_uuid, version=version, match_ids=match_id)
-    logger.info("AUDIT: user %s downloading %s yara qa matches of signature %s (version %s): %s",
-                auth.auth_name, len(rows), signature_uuid, version or "all", [row.id for row in rows])
+    log_audit("user %s downloading %s yara qa matches of signature %s (version %s): %s",
+              auth.auth_name, len(rows), signature_uuid, version or "all", [row.id for row in rows],
+              auth=auth, signature_uuid=signature_uuid, match_ids=[row.id for row in rows])
     label = f"yara-qa-{signature_uuid}"
     zip_path, staging = await run_db_in_thread(service.create_encrypted_zip, label, rows, remote, auth.auth_name)
     return ZipFileResponse(

@@ -1,6 +1,7 @@
 """Unit tests for OCR/QR extended_version (Phase 4 cache-key invalidation
 tied to external tool versions and the QR filter file)."""
 import hashlib
+from importlib.metadata import PackageNotFoundError
 import os
 
 import pytest
@@ -55,6 +56,10 @@ class TestQRCodeExtendedVersion:
             "saq.modules.file_analysis.qrcode.probe_binary_version",
             lambda name, args=None: versions.get(name),
         )
+        monkeypatch.setattr(
+            "saq.modules.file_analysis.qrcode.package_version",
+            lambda name: {"opencv-python": "9.9.9"}[name],
+        )
         filter_file = tmp_path / "qrcode.filter"
         filter_file.write_text("example\\.com\n")
         monkeypatch.setattr(
@@ -65,6 +70,7 @@ class TestQRCodeExtendedVersion:
         assert ev["zbarimg"] == "0.23"
         assert ev["gs"] == "10.0"
         assert ev["pdfinfo"] == "poppler 22.x"
+        assert ev["opencv"] == "9.9.9"
         # the filter fingerprint is a content sha256, not an mtime+size string
         expected = hashlib.sha256(filter_file.read_bytes()).hexdigest()
         assert ev["qrcode_filter_version"] == expected
@@ -126,6 +132,9 @@ class TestQRCodeExtendedVersion:
             "saq.modules.file_analysis.qrcode.probe_binary_version",
             lambda name, args=None: None,
         )
+        def not_installed(name):
+            raise PackageNotFoundError(name)
+        monkeypatch.setattr("saq.modules.file_analysis.qrcode.package_version", not_installed)
         monkeypatch.setattr(
             QRCodeAnalyzer, "qrcode_filter_path", property(lambda _self: None),
         )

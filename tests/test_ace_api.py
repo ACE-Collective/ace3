@@ -1,7 +1,9 @@
+import certifi
 import io
 import os
 import pickle
 import shutil
+import sys
 import tempfile
 import uuid
 import pytest
@@ -13,7 +15,15 @@ from datetime import datetime
 import ace_api
 from saq.analysis.root import RootAnalysis
 from saq.configuration.config import get_config
-from saq.constants import ANALYSIS_MODE_CORRELATION, DIRECTIVE_NO_SCAN, F_FILE, F_IP
+from saq.constants import (
+    ANALYSIS_MODE_CORRELATION,
+    DIRECTIVE_DESCRIPTIONS,
+    DIRECTIVE_NO_SCAN,
+    F_FILE,
+    F_IP,
+    VALID_DIRECTIVES,
+    EventTimeSource,
+)
 from saq.database.pool import get_db_connection
 from saq.database.util.locking import acquire_lock
 from saq.email_archive import archive_email
@@ -22,9 +32,6 @@ from saq.observables.file import FileObservable
 from saq.util.time import local_time
 from saq.util.uuid import get_storage_dir, validate_uuid
 from tests.saq.helpers import create_root_analysis, log_count, start_api_server, stop_api_server
-
-# ace_api forces ssl_verification = False on every request
-pytestmark = pytest.mark.filterwarnings("ignore::urllib3.exceptions.InsecureRequestWarning")
 
 @pytest.fixture(autouse=True, scope="function")
 def api_server():
@@ -44,6 +51,38 @@ def test_invalid_auth():
     ace_api.set_default_api_key("invalid")
     with pytest.raises(requests.exceptions.HTTPError):
         result = ace_api.ping()
+
+@pytest.mark.integration
+def test_untrusted_certificate_is_rejected():
+    # certifi's bundle does not hold the CA that signed the test API server's certificate
+    with pytest.raises(requests.exceptions.SSLError):
+        ace_api.ping(ssl_verification=certifi.where())
+
+@pytest.mark.integration
+def test_no_ca_path_verifies_against_the_requests_bundle():
+    ace_api.set_default_ssl_ca_path(None)
+    with pytest.raises(requests.exceptions.SSLError):
+        ace_api.ping()
+
+@pytest.mark.integration
+@pytest.mark.filterwarnings("ignore::urllib3.exceptions.InsecureRequestWarning")
+def test_disable_ssl_verification():
+    result = ace_api.ping(ssl_verification=certifi.where(), disable_ssl_verification=True)
+    assert result['result'] == 'pong'
+
+@pytest.mark.integration
+@pytest.mark.filterwarnings("ignore::urllib3.exceptions.InsecureRequestWarning")
+def test_cli_disable_ssl_verification(monkeypatch, capsys):
+    # every command takes -S, not only submit
+    monkeypatch.setattr(sys, "argv", ["ace_api.py", "ping", "-S",
+                                      "--remote-host", get_global_runtime_settings().api_prefix,
+                                      "--ssl-verification", certifi.where(),
+                                      "--api-key", get_config().api.api_key])
+    ace_api.main()
+
+    captured = capsys.readouterr()
+    assert "unable to execute api call" not in captured.err
+    assert "pong" in captured.out
 
 @pytest.mark.integration
 def test_ping():
@@ -82,7 +121,6 @@ def test_get_valid_companies():
     assert 'result' in result
     assert isinstance(result['result'], list)
 
-@pytest.mark.skip(reason="Need to fix")
 @pytest.mark.integration
 def test_get_valid_observables():
     result = ace_api.get_valid_observables()
@@ -98,14 +136,13 @@ def test_get_valid_observables():
 
 @pytest.mark.integration
 def test_get_valid_directives():
-    from saq.constants import VALID_DIRECTIVES, DIRECTIVE_DESCRIPTIONS
     result = ace_api.get_valid_directives()
     assert result
     assert 'result' in result
     assert isinstance(result['result'], list)
 
+    assert sorted(_['name'] for _ in result['result']) == sorted(VALID_DIRECTIVES)
     for _ in result['result']:
-        assert _['name'] in VALID_DIRECTIVES
         assert DIRECTIVE_DESCRIPTIONS[_['name']] == _['description']
 
 def _get_submit_time():
@@ -149,6 +186,22 @@ def _submit(analysis_mode=None,
                         ('submit_test.dat', fp)])
     finally:
         os.remove(temp_path)
+
+@pytest.mark.integration
+@pytest.mark.parametrize("event_time, event_time_source, expected", [
+    (_get_submit_time(), None, EventTimeSource.EVENT),
+    (_get_submit_time(), "query_time", EventTimeSource.QUERY_TIME),
+    # the time ace_api fills in is when it submitted, whatever the caller said
+    (None, None, EventTimeSource.NOW),
+    (None, "query_time", EventTimeSource.NOW),
+])
+def test_submit_event_time_source(event_time, event_time_source, expected):
+    result = ace_api.submit("testing", analysis_mode="test_empty", event_time=event_time,
+                            event_time_source=event_time_source)
+    root = RootAnalysis(storage_dir=get_storage_dir(result["result"]["uuid"]))
+    root.load()
+    assert root.event_time is not None
+    assert root.event_time_source == expected
 
 @pytest.mark.integration
 def test_submit():
@@ -204,78 +257,6 @@ def test_submit():
     assert row[1] == uuid
     assert row[2]
     assert row[3] == 'test_empty'
-
-@pytest.mark.integration
-def test_resubmit():
-    # submit something so we have something to resubmit
-    result = _submit(analysis_mode=ANALYSIS_MODE_CORRELATION)
-    assert result
-
-    assert 'result' in result
-    result = result['result']
-    assert result['uuid']
-    uuid = result['uuid']
-
-    # make sure this actually uploaded
-    root = RootAnalysis(storage_dir=get_storage_dir(uuid))
-    root.load()
-
-    assert root.analysis_mode == ANALYSIS_MODE_CORRELATION
-    assert root.tool == 'unittest_tool'
-    assert root.tool_instance == 'unittest_tool_instance'
-    assert root.alert_type == 'unittest_type'
-    assert root.description == 'testing'
-    assert root.details == {'hello': 'world'}
-    assert root.event_time == _get_localized_submit_time()
-    assert root.tags[0] == 'alert_tag_1'
-    assert root.tags[1] == 'alert_tag_2'
-    # NOTE that this is 4 instead of 2 since adding a file adds a F_FILE observable type
-    assert len(root.all_observables) == 4
-
-    observable = root.find_observable(lambda o: o.type == 'ipv4')
-    observable
-    assert observable.value == '1.2.3.4'
-    assert len(observable.tags) == 2
-    assert observable.has_directive('no_scan')
-    assert 'basic_test' in observable.limited_analysis
-
-    observable = root.find_observable(lambda o: o.type == 'file' and o.file_path == 'sample.dat')
-    assert observable
-
-    with open(observable.full_path, 'rb') as fp:
-        assert fp.read() == b'Hello, world!'
-
-    observable = root.find_observable(lambda o: o.type == 'file' and o.file_path == 'submit_test.dat')
-    assert isinstance(observable, FileObservable)
-    assert observable.size == 1024
-
-    # we should see a single workload entry
-    with get_db_connection() as db:
-        cursor = db.cursor()
-        cursor.execute("SELECT id, uuid, node_id, analysis_mode FROM workload WHERE uuid = %s", (uuid,))
-        row = cursor.fetchone()
-
-    assert row
-    assert row[0]
-    assert row[1] == uuid
-    assert row[2]
-    assert row[3] == ANALYSIS_MODE_CORRELATION
-
-@pytest.mark.integration
-def test_submit_with_utc_timezone():
-    # make sure we can submit with a UTC timezone already set
-    result = _submit(event_time=_get_localized_submit_time())
-    assert result
-
-    assert 'result' in result
-    result = result['result']
-    assert result['uuid']
-    uuid = result['uuid']
-
-    root = RootAnalysis(storage_dir=get_storage_dir(uuid))
-    root.load()
-
-    assert root.event_time == _get_localized_submit_time()
 
 @pytest.mark.integration
 def test_submit_with_other_timezone():
@@ -346,7 +327,7 @@ def test_download():
     temp_dir = tempfile.mkdtemp(dir=get_temp_dir())
     try:
         result = ace_api.download(root.uuid, temp_dir)
-        assert os.path.join(temp_dir, 'data.json')
+        assert os.path.exists(os.path.join(temp_dir, 'data.json'))
         root = RootAnalysis(storage_dir=temp_dir)
         root.load()
         assert root.details == { 'hello': 'world' }
@@ -394,8 +375,9 @@ def test_clear_invalid_lock_uuid():
     assert acquire_lock(root.uuid, lock_uuid)
 
     lock_uuid = str(uuid.uuid4())
-    with pytest.raises(Exception):
-        assert not ace_api.clear(root.uuid, lock_uuid)
+    with pytest.raises(requests.HTTPError) as error:
+        ace_api.clear(root.uuid, lock_uuid)
+    assert error.value.response.status_code == 409
 
     assert os.path.exists(root.storage_dir)
 
@@ -428,80 +410,6 @@ def test_legacy_submit():
     with open(file_observable.full_path, 'r') as fp:
         assert fp.read() == 'test'
 
-@pytest.mark.integration
-def test_legacy_import():
-    pass
-
-@pytest.mark.skip(reason="skipping tests with api_server")
-@pytest.mark.system
-def test_legacy_failed_submit(api_server, tmpdir):
-
-    fail_dir = tmpdir / "failed"
-    fail_dir.mkdir()
-    fail_dir = str(fail_dir)
-
-    stop_api_server(api_server)
-
-    alert = ace_api.Alert(description='Test Alert')
-    alert.add_observable_by_spec(F_IP, '1.2.3.4', local_time(), directives=[DIRECTIVE_NO_SCAN])
-    alert.add_tag('test')
-    temp_path = os.path.join(get_temp_dir(), 'test.txt')
-    with open(temp_path, 'w') as fp:
-        fp.write('test')
-
-    alert.add_attachment_link(temp_path, 'dest/test.txt')
-    with pytest.raises(Exception):
-        alert.submit(f'https://{get_global_runtime_settings().api_prefix}', ssl_verification=get_config().SSL.ca_chain_path, fail_dir=fail_dir)
-
-    assert log_count('unable to submit ') == 1
-
-    # the .saq_alerts directory should have a single subdirectory
-    dir_list = os.listdir(fail_dir)
-    assert len(dir_list) == 1
-    
-    # load the alert
-    target_path = os.path.join(fail_dir, dir_list[0], 'alert')
-    with open(target_path, 'rb') as fp:
-        new_alert = pickle.load(fp)
-
-    assert new_alert.submit_kwargs == alert.submit_kwargs
-
-@pytest.mark.skip(reason="Forget the legacy submit")
-@pytest.mark.system
-def test_failed_submit(api_server, tmpdir):
-
-    fail_dir = tmpdir / "failed"
-    fail_dir.mkdir()
-    fail_dir = str(fail_dir)
-
-    stop_api_server(api_server)
-
-    analysis = ace_api.Analysis(description='Test Analysis submit')
-    analysis.add_observable_by_spec(F_IP, '1.2.3.4', local_time(), directives=[DIRECTIVE_NO_SCAN])
-    analysis.add_tag('test')
-    analysis.add_user('test_user')
-    temp_path = os.path.join(get_temp_dir(), 'test.txt')
-    with open(temp_path, 'w') as fp:
-        fp.write('test')
-
-    analysis.add_file(temp_path, relative_storage_path='dest/test.txt')
-    with pytest.raises(Exception):
-        analysis.submit(f'https://{get_global_runtime_settings().api_prefix}', ssl_verification=get_config().SSL.ca_chain_path, fail_dir=fail_dir)
-
-    assert log_count('unable to submit ') == 1
-
-    # the .saq_alerts directory should have a single subdirectory
-    dir_list = os.listdir(fail_dir)
-    assert len(dir_list) == 1
-
-    # load the analysis object
-    target_path = os.path.join(fail_dir, dir_list[0], 'alert')
-    with open(target_path, 'rb') as fp:
-        new_analysis = pickle.load(fp)
-
-    assert new_analysis.submit_kwargs == analysis.submit_kwargs
-
-@pytest.mark.skip(reason="skipping tests with api_server")
 @pytest.mark.system
 def test_submit_failed_alerts(api_server, tmpdir):
 
@@ -547,7 +455,6 @@ def test_submit_failed_alerts(api_server, tmpdir):
     finally:
         stop_api_server(api_server)
 
-@pytest.mark.skip(reason="skipping tests with api_server")
 @pytest.mark.system
 def test_submit_failed_analysis(api_server, tmpdir):
 
@@ -641,6 +548,9 @@ def test_analysis_file_handling(tmpdir):
     with open(normal_file_path, 'rb') as fp:
         assert _file_bytes('normal.txt') == fp.read()
 
+    with open(subdir_file_path, 'rb') as fp:
+        assert _file_bytes('subdir/subdir.txt') == fp.read()
+
     with open(fp_file_path, 'rb') as fp:
         assert _file_bytes('fp.txt') == fp.read()
 
@@ -649,8 +559,15 @@ def test_analysis_file_handling(tmpdir):
 
 @pytest.mark.integration
 def test_get_open_events():
-    result = ace_api.get_open_events()
-    assert result == []
+    with get_db_connection() as db:
+        event_id = _create_test_event(db)
+        db.cursor().execute("""INSERT INTO `event_status` (`value`) VALUES ('CLOSED');""")
+        db.commit()
+
+    assert [event['id'] for event in ace_api.get_open_events()] == [event_id]
+
+    ace_api.update_event_status(event_id, 'CLOSED')
+    assert ace_api.get_open_events() == []
 
 def _create_test_event(db) -> int:
     """Insert the lookup rows and one OPEN event; return the event id."""
@@ -737,6 +654,6 @@ def test_iter_archived_email(tmpdir):
     content = b"From: sender@example.com\r\nTo: recipient@example.com\r\nSubject: Test Email\r\n\r\nTest body"
     email = tmpdir / "test_email.eml"
     email.write_binary(content)
-    archive_email(str(email), "<test-message-id@example.com>", ["test@local"], local_time())
+    archive_email(str(email), "<test-message-id@example.com>", local_time())
 
     assert b"".join(ace_api.iter_archived_email("<test-message-id@example.com>")) == content

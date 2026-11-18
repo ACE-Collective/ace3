@@ -60,8 +60,13 @@ class AlertRouter(ABC):
         self.priority = priority
 
     @abstractmethod
-    def route(self, root: "RootAnalysis", stage: RouteStage) -> Optional[RouteDecision]:
-        """Return a decision to send the alert to a queue, or None to let the next router decide."""
+    def route(self, root: "RootAnalysis", stage: RouteStage, final: bool) -> Optional[RouteDecision]:
+        """Return a decision to send the alert to a queue, or None to let the next router decide.
+
+        final is True on the alert's last analysis pass: POST_ANALYSIS with no delayed analysis
+        outstanding, or after analysis was aborted, which abandons what was delayed (the root's
+        delayed flag is stale then). It is False at PRE_INSERT: the engine analyzes every alert
+        after it is inserted."""
         raise NotImplementedError()
 
     def __repr__(self) -> str:

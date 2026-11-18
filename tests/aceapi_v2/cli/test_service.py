@@ -12,12 +12,33 @@ from datetime import datetime
 import pytest
 from sqlalchemy import select, text
 
+from aceapi_v2.auth.schemas import ApiAuthResult
 from aceapi_v2.cli import service
+from saq.sandbox.runner import LAUNCHER
 from saq.configuration.config import get_config
 from saq.database.model import CliExecution, Nodes, User
 from saq.database.pool import get_db
 from saq.environment import get_global_runtime_settings
-from tests.saq.helpers import wait_for_condition
+from saq.shutdown import DEFAULT_SHUTDOWN_DEADLINE, WATCHDOG_GRACE
+from tests.saq.helpers import certificate_verification_failure, process_is_gone, wait_for_condition
+
+
+# starts a process in a session of its own, the way a script daemonizes something, and prints its pid
+_ESCAPE = ("import subprocess, sys\n"
+           "p = subprocess.Popen(['sleep', '60'], start_new_session=True,\n"
+           "                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)\n"
+           "print('escaped', p.pid, flush=True)\n")
+
+
+def _escaped_pid(output: str) -> int:
+    return int(output.split("escaped ")[1].split()[0])
+
+
+def _kill(pid: int):
+    try:
+        os.kill(pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass  # already gone, which is what the caller wants
 
 
 #
@@ -43,7 +64,6 @@ def test_parse_command(command, expected):
     ("ace", "enter a command"),
     ("-u someone node list", "global option -u"),
     ("--config-path /tmp/x.yaml node list", "global option --config-path"),
-    ("-D node list", "global option -D"),
     ("node list 'unbalanced", "quotation"),
 ])
 def test_parse_command_rejects(command, message):
@@ -54,21 +74,30 @@ def test_parse_command_rejects(command, message):
 @pytest.mark.unit
 def test_cli_command_line_runs_the_ace_entry_point():
     argv = service.cli_command_line(["node", "list"])
+    assert argv[0] == sys.executable
+    assert argv[1].endswith("/ace")
+    assert argv[2:] == ["node", "list"]
+
+
+@pytest.mark.unit
+def test_the_command_runs_under_the_launcher():
+    argv = service.supervised_command_line(["ace", "node", "list"], 60)
     assert argv[:4] == ["setpriv", "--pdeathsig", "TERM", "--"]
-    assert argv[4] == sys.executable
-    assert argv[5].endswith("/ace")
-    assert argv[6:] == ["node", "list"]
+    assert argv[argv.index("-S") + 1] == LAUNCHER
+    assert "--deadline=90" in argv  # its timeout plus the launcher's deadline grace
+    assert f"--term-grace={service.TERM_GRACE_SECONDS}" in argv
+    assert "--unconfined" in argv
+    assert argv[argv.index("--", 4) + 1:] == ["ace", "node", "list"]
 
 
 @pytest.mark.unit
 @pytest.mark.parametrize("command", [
-    "user add bob bob@example.com --password hunter2",
-    "user add bob bob@example.com --password=hunter2",
+    # a prefix of the option's name (argparse accepts one)
     "user add bob bob@example.com --pass hunter2",
-    "enc set -p hunter2",
+    # a short option with its value attached
     "enc set -phunter2",
     "encryption test --password hunter2",
-    "enc config set vendor.api_key --value hunter2",
+    # a prefix with its value after =
     "enc config set vendor.api_key --val=hunter2",
 ])
 def test_parse_command_refuses_secrets(command):
@@ -80,7 +109,6 @@ def test_parse_command_refuses_secrets(command):
 @pytest.mark.parametrize("command", [
     # -p and --value only carry secrets under `encryption`
     "storage list-objects -p some/prefix",
-    "config -v gui.listen_port",
     "config --value gui.listen_port",
     "enc config set vendor.api_key --load-from-file /tmp/key",
     "cas verify --pool yara_qa",
@@ -92,29 +120,25 @@ def test_parse_command_allows_options_that_carry_no_secret(command):
 
 
 @pytest.mark.integration
-def test_the_child_is_stopped_when_its_parent_dies():
-    """The parent-death signal setpriv sets: a command whose API worker dies is stopped, not left to
-    run unwatched."""
-    argv = service.cli_command_line([])[:4] + [sys.executable, "-c", "import time; time.sleep(60)"]
+def test_the_run_is_stopped_when_its_parent_dies():
+    """The parent-death signal setpriv gives the launcher: a command whose API worker dies is stopped,
+    and so is what it started in a session of its own, not left to run unwatched (issue 973)."""
+    code = _ESCAPE + "import time; time.sleep(60)\n"
+    argv = service.supervised_command_line([sys.executable, "-c", code], 60)
+    # the parent prints the launcher's pid and the escaped process's, then exits without stopping it
     parent = subprocess.run(
         [sys.executable, "-c",
-         f"import subprocess; print(subprocess.Popen({argv!r}).pid, flush=True)"],
+         "import subprocess, sys\n"
+         f"p = subprocess.Popen({argv!r}, stdout=subprocess.PIPE, text=True)\n"
+         "print(p.pid, p.stdout.readline().split()[1], flush=True)\n"],
         capture_output=True, text=True, timeout=30, check=True)
-    pid = int(parent.stdout.strip())
-
-    def _gone() -> bool:
-        try:
-            with open(f"/proc/{pid}/status") as fp:
-                # a zombie has exited and only waits for whoever reaps orphans here
-                return any(line.startswith("State:") and "Z" in line for line in fp)
-        except FileNotFoundError:
-            return True
+    launcher, escaped = (int(pid) for pid in parent.stdout.split())
 
     try:
-        wait_for_condition(_gone, timeout=10)
+        wait_for_condition(lambda: process_is_gone(launcher) and process_is_gone(escaped), timeout=10)
     finally:
-        if not _gone():
-            os.kill(pid, signal.SIGKILL)
+        _kill(launcher)
+        _kill(escaped)
 
 
 @pytest.mark.unit
@@ -153,8 +177,12 @@ def _unittest_user_id() -> int:
     return get_db().execute(select(User.id).where(User.username == "unittest")).scalar_one()
 
 
+def _auth(user_id: int, username: str, key_id: int | None = None) -> ApiAuthResult:
+    return ApiAuthResult(auth_type="user", auth_name=username, auth_user_id=user_id, key_id=key_id)
+
+
 def _create(argv: list[str], node_ids, timeout_seconds: int = 60) -> list[int]:
-    return service.create_executions(_unittest_user_id(), "unittest", argv, node_ids, timeout_seconds)
+    return service.create_executions(_auth(_unittest_user_id(), "unittest"), argv, node_ids, timeout_seconds)
 
 
 def _row(execution_id: int) -> CliExecution:
@@ -174,13 +202,16 @@ def test_create_defaults_to_the_primary_node(caplog):
     primary_id = _add_node("node-b", is_primary=True)
 
     with caplog.at_level(logging.INFO):
-        (execution_id,) = _create(["node", "list"], None)
+        (execution_id,) = service.create_executions(_auth(_unittest_user_id(), "unittest", key_id=7),
+                                                    ["node", "list"], None, 60)
 
     row = _row(execution_id)
     assert row.node_id == primary_id
     assert row.status == service.STATUS_PENDING
     assert row.command == "node list"
-    assert "AUDIT: user unittest requested cli execution" in caplog.text
+    (audit,) = [r for r in caplog.records if r.getMessage().startswith("AUDIT: user unittest requested cli execution")]
+    assert (audit.actor, audit.actor_user_id, audit.actor_key_id, audit.cli_execution_id, audit.node) == (
+        "unittest", _unittest_user_id(), 7, execution_id, "node-b")
 
 
 @pytest.mark.integration
@@ -237,6 +268,9 @@ def test_execution_pages_newest_first():
     assert page[0].node_name == "node-a" and page[0].username == "unittest"
     assert cursor is not None
 
+    # a run recorded between the two requests sorts ahead of the client's position and must not
+    # move the second page
+    _create(["node", "list", "3"], [a])
     page, cursor = service.fetch_execution_page(cursor, 2)
     assert [e.id for e in page] == [ids[0]]
     assert cursor is None
@@ -251,20 +285,6 @@ def test_execution_page_rejects_a_cursor_of_another_listing():
 #
 # dispatch
 #
-
-@pytest.mark.integration
-def test_dispatch_asks_the_node_at_its_location(monkeypatch):
-    a = _add_node("node-a", location="node-a.example:443")
-    (execution_id,) = _create(["node", "list"], [a])
-    calls = []
-    monkeypatch.setattr(service.ace_api, "start_cli_execution",
-                        lambda i, **kwargs: calls.append((i, kwargs["remote_host"])))
-
-    service.dispatch_execution(execution_id)
-
-    assert calls == [(execution_id, "node-a.example:443")]
-    assert _row(execution_id).status == service.STATUS_PENDING
-
 
 @pytest.mark.integration
 def test_dispatch_translates_the_node_location(monkeypatch):
@@ -296,6 +316,25 @@ def test_dispatch_to_an_unreachable_node_fails_the_run(monkeypatch, caplog):
     assert "unable to reach node node-a at node-a.example:443" in row.error
     assert row.finished_at is not None
     assert f"starting cli execution {execution_id} on node node-a" in caplog.text
+
+
+@pytest.mark.integration
+def test_dispatch_to_a_node_whose_certificate_does_not_verify_is_reported(monkeypatch, caplog):
+    # a misconfigured certificate is not a node that is down: it gets an ERROR with its traceback
+    a = _add_node("node-a", location="node-a.example:443")
+    (execution_id,) = _create(["node", "list"], [a])
+    error = certificate_verification_failure()
+
+    def _untrusted(*args, **kwargs):
+        raise error
+
+    monkeypatch.setattr(service.ace_api, "start_cli_execution", _untrusted)
+    with caplog.at_level(logging.WARNING):
+        service.dispatch_execution(execution_id)
+
+    assert _row(execution_id).status == service.STATUS_FAILED
+    records = [r for r in caplog.records if r.getMessage().startswith(f"starting cli execution {execution_id}")]
+    assert [(r.levelno, r.exc_info is not None) for r in records] == [(logging.ERROR, True)]
 
 
 @pytest.mark.integration
@@ -353,16 +392,6 @@ def test_claim_runs_a_row_once():
 
 
 @pytest.mark.integration
-def test_claim_refuses_another_nodes_row():
-    (execution_id,) = _create(["node", "list"], [_add_node("node-a")])
-    with pytest.raises(service.HTTPException) as e:
-        service.claim_execution(execution_id)
-    assert e.value.status_code == 409
-    assert "node-a" in e.value.detail
-    assert _row(execution_id).status == service.STATUS_PENDING
-
-
-@pytest.mark.integration
 def test_claim_unknown_row():
     with pytest.raises(service.HTTPException) as e:
         service.claim_execution(999999999)
@@ -397,6 +426,25 @@ async def test_run_records_output_and_exit_code(monkeypatch):
     assert "to stdout" in row.output and "to stderr" in row.output
     assert not row.output_truncated
     assert row.finished_at is not None
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_a_run_that_exits_takes_what_it_started(monkeypatch):
+    # issue 973: only a run the API stopped was ever cleaned up, and only within its session
+    execution_id = _claimed()
+    _python(monkeypatch, _ESCAPE)
+
+    await asyncio.wait_for(service.run_execution(execution_id, ["placeholder"], 60), timeout=30)
+
+    row = _row(execution_id)
+    escaped = _escaped_pid(row.output)
+    try:
+        assert row.status == service.STATUS_COMPLETED
+        assert row.exit_code == 0
+        wait_for_condition(lambda: process_is_gone(escaped), timeout=10)
+    finally:
+        _kill(escaped)
 
 
 @pytest.mark.integration
@@ -469,7 +517,7 @@ async def test_run_shows_output_while_running(monkeypatch):
 @pytest.mark.asyncio
 async def test_run_that_cannot_start_fails(monkeypatch, caplog):
     execution_id = _claimed()
-    monkeypatch.setattr(service, "cli_command_line", lambda argv: ["/nonexistent/ace-binary"])
+    monkeypatch.setattr(service, "supervised_command_line", lambda command, timeout: ["/nonexistent/launcher"])
 
     await service.run_execution(execution_id, ["placeholder"], 60)
 
@@ -623,9 +671,129 @@ async def test_a_run_that_ignores_sigterm_is_killed(monkeypatch, caplog):
     with caplog.at_level(logging.WARNING):
         await asyncio.wait_for(service.run_execution(execution_id, ["placeholder"], 1), timeout=30)
 
-    assert _row(execution_id).status == service.STATUS_TIMED_OUT
-    assert f"cli execution {execution_id}: child" in caplog.text
-    assert "ignored SIGTERM" in caplog.text
+    row = _row(execution_id)
+    assert row.status == service.STATUS_TIMED_OUT
+    assert "did not stop within 1 seconds of SIGTERM" in row.output
+    # an engine killed this way kept its locks: the node's log says so, not only the run's output
+    [record] = [r for r in caplog.records if "killed" in r.getMessage()]
+    assert record.levelno == logging.WARNING
+    assert record.cli_execution_id == execution_id
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_a_killed_run_takes_the_process_groups_its_children_moved_to(monkeypatch):
+    # an engine's workers lead process groups of their own, which a SIGTERM of the command's group misses
+    monkeypatch.setattr(service, "TERM_GRACE_SECONDS", 1)
+    execution_id = _claimed(timeout_seconds=1)
+    _python(monkeypatch,
+            "import signal, subprocess, time\n"
+            "signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
+            "worker = subprocess.Popen(['sleep', '60'], process_group=0)\n"
+            "print('worker', worker.pid, flush=True)\n"
+            "time.sleep(60)\n")
+
+    await asyncio.wait_for(service.run_execution(execution_id, ["placeholder"], 1), timeout=30)
+
+    worker = int(_row(execution_id).output.split("worker ")[1].split()[0])
+    try:
+        wait_for_condition(lambda: process_is_gone(worker), timeout=10)
+    finally:
+        _kill(worker)
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_a_run_that_stops_still_takes_what_it_started(monkeypatch, caplog):
+    # an engine its shutdown watchdog ends has not stopped its workers, which lead groups of their own,
+    # and a process may have left the session altogether
+    execution_id = _claimed(timeout_seconds=1)
+    _python(monkeypatch,
+            _ESCAPE +
+            "import subprocess, time\n"
+            "worker = subprocess.Popen(['sleep', '60'], process_group=0, stdout=subprocess.DEVNULL)\n"
+            "print('worker', worker.pid, flush=True)\n"
+            "time.sleep(60)\n")
+
+    with caplog.at_level(logging.WARNING):
+        await asyncio.wait_for(service.run_execution(execution_id, ["placeholder"], 1), timeout=30)
+
+    row = _row(execution_id)
+    worker = int(row.output.split("worker ")[1].split()[0])
+    escaped = _escaped_pid(row.output)
+    try:
+        assert row.status == service.STATUS_TIMED_OUT
+        assert "did not stop within" not in row.output
+        assert "killed 2 processes the command left running" in row.output
+        [record] = [r for r in caplog.records if "killed" in r.getMessage()]
+        assert record.cli_execution_id == execution_id
+        wait_for_condition(lambda: process_is_gone(worker) and process_is_gone(escaped), timeout=10)
+    finally:
+        _kill(worker)
+        _kill(escaped)
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_a_run_whose_command_exited_is_not_held_open_by_what_it_started(monkeypatch):
+    # an engine whose controller died leaves workers that hold its stdout; the launcher kills them, so
+    # the run ends when the command does instead of at its timeout
+    execution_id = _claimed(timeout_seconds=60)
+    _python(monkeypatch,
+            "import subprocess\n"
+            "worker = subprocess.Popen(['sleep', '60'], process_group=0)\n"
+            "print('worker', worker.pid, flush=True)\n")
+
+    await asyncio.wait_for(service.run_execution(execution_id, ["placeholder"], 60), timeout=30)
+
+    row = _row(execution_id)
+    worker = int(row.output.split("worker ")[1].split()[0])
+    try:
+        assert row.status == service.STATUS_COMPLETED
+        assert row.exit_code == 0
+        assert process_is_gone(worker)
+    finally:
+        _kill(worker)
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_a_run_that_writes_while_it_stops_is_not_blocked_on_its_output(monkeypatch, caplog):
+    # an engine logging its shutdown to the console writes more than the pipe holds; unread, it blocks
+    # and is killed at the grace, and so does the launcher's own message after it
+    monkeypatch.setattr(service, "TERM_GRACE_SECONDS", 3)
+    monkeypatch.setattr(service, "LAUNCHER_STOP_SECONDS", 2)
+    execution_id = _claimed(timeout_seconds=1)
+    _python(monkeypatch,
+            "import signal, sys, time\n"
+            "def _term(*args):\n"
+            "    sys.stdout.write('x' * 1000000 + '\\nstopped cleanly\\n')\n"
+            "    sys.exit(0)\n"
+            "signal.signal(signal.SIGTERM, _term)\n"
+            "print('started', flush=True)\n"
+            "time.sleep(60)\n")
+
+    with caplog.at_level(logging.WARNING):
+        await asyncio.wait_for(service.run_execution(execution_id, ["placeholder"], 1), timeout=30)
+
+    row = _row(execution_id)
+    assert row.status == service.STATUS_TIMED_OUT
+    assert "did not stop within" not in row.output
+    assert row.output.endswith("stopped cleanly\nsandbox: stopped\n")
+    assert not [r for r in caplog.records if r.name == service.logger.name and r.levelno >= logging.WARNING]
+
+
+@pytest.mark.unit
+def test_a_service_stopped_here_gets_its_whole_shutdown():
+    # SIGTERM reaches only the command's group, so a service stops the rest itself, and its watchdog ends it
+    # at its deadline plus WATCHDOG_GRACE: the session SIGKILL must not come first
+    deadlines = [value.get("shutdown_deadline_seconds", DEFAULT_SHUTDOWN_DEADLINE)
+                 for key, value in get_config().raw._data.items()
+                 if key.startswith("service_") and isinstance(value, dict)]
+    assert service.TERM_GRACE_SECONDS > max(deadlines) + WATCHDOG_GRACE
+    # and a run still being stopped is not taken for one nothing watches
+    assert service.STALE_GRACE_SECONDS > (service.TERM_GRACE_SECONDS + service.LAUNCHER_STOP_SECONDS
+                                          + service.KILL_WAIT_SECONDS + service.OUTPUT_FLUSH_SECONDS)
 
 
 @pytest.mark.integration
@@ -634,10 +802,7 @@ async def test_stopping_a_child_that_already_exited_does_nothing():
     process = await asyncio.create_subprocess_exec(sys.executable, "-c", "pass", start_new_session=True)
     await process.wait()
 
-    await service._stop(1, process)
-
-    # the group is gone too, which _signal_group tolerates
-    service._signal_group(process, signal.SIGTERM)
+    await service._stop(1, process, lambda chunk: None)
 
 
 @pytest.mark.integration
@@ -669,7 +834,7 @@ def test_deleting_the_user_keeps_their_runs():
     user = User(username="leaver", email="leaver@localhost", display_name="leaver", password="pw")
     session.add(user)
     session.commit()
-    (execution_id,) = service.create_executions(user.id, "leaver", ["node", "list"], [_add_node("node-a")], 60)
+    (execution_id,) = service.create_executions(_auth(user.id, "leaver"), ["node", "list"], [_add_node("node-a")], 60)
 
     session.execute(text("DELETE FROM users WHERE id = :id"), {"id": user.id})
     session.commit()
@@ -725,27 +890,32 @@ def test_dispatch_to_a_busy_node_fails_the_run_without_an_error_report(monkeypat
 
 @pytest.mark.integration
 @pytest.mark.asyncio
-async def test_draining_a_stopped_run_is_bounded(monkeypatch):
-    """A process the command started in another session keeps the pipe open after the command is
-    stopped; the drain gives up instead of waiting for it."""
+async def test_a_launcher_that_does_not_stop_is_killed(monkeypatch, caplog):
+    """The launcher bounds itself; if it hangs anyway, the API kills it, says so at ERROR, and the drain
+    gives up on what the command left holding the pipe instead of waiting for it."""
     monkeypatch.setattr(service, "OUTPUT_FLUSH_SECONDS", 0.2)
+    monkeypatch.setattr(service, "TERM_GRACE_SECONDS", 0.5)
+    monkeypatch.setattr(service, "LAUNCHER_STOP_SECONDS", 0.5)
+    # a stand-in launcher that ignores SIGTERM and contains nothing
+    monkeypatch.setattr(service, "supervised_command_line", lambda command, timeout: command)
     execution_id = _claimed(timeout_seconds=1)
     _python(monkeypatch,
-            "import subprocess, time\n"
+            "import signal, subprocess, time\n"
+            "signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
             "p = subprocess.Popen(['sleep', '30'], start_new_session=True)\n"
             "print('holder', p.pid, flush=True)\n"
             "time.sleep(60)\n")
 
     try:
-        await asyncio.wait_for(service.run_execution(execution_id, ["placeholder"], 1), timeout=20)
-        row = _row(execution_id)
-        assert row.status == service.STATUS_TIMED_OUT
+        with caplog.at_level(logging.ERROR):
+            await asyncio.wait_for(service.run_execution(execution_id, ["placeholder"], 1), timeout=20)
+        assert _row(execution_id).status == service.STATUS_TIMED_OUT
+        [record] = [r for r in caplog.records if "did not exit" in r.getMessage()]
+        assert record.levelno == logging.ERROR
+        assert record.exc_info is not None  # what makes ErrorReportHandler write the error report
+        assert record.cli_execution_id == execution_id
     finally:
-        holder = int(_row(execution_id).output.split()[1])
-        try:
-            os.kill(holder, signal.SIGKILL)
-        except ProcessLookupError:
-            pass  # already gone
+        _kill(int(_row(execution_id).output.split()[1]))
 
 
 @pytest.mark.integration
@@ -758,8 +928,8 @@ async def test_a_failure_while_stopping_is_logged(monkeypatch, caplog):
     def _broken_record(*args):
         raise RuntimeError("database went away")
 
-    async def _broken_stop(i, process):
-        await stop(i, process)  # still stop the child, then fail
+    async def _broken_stop(i, process, append):
+        await stop(i, process, append)  # still stop the child, then fail
         raise RuntimeError("stop failed")
 
     monkeypatch.setattr(service, "_record_output", _broken_record)

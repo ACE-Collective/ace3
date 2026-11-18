@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import (
 )
 
 from saq.configuration import get_config
+from saq.database.pool import POOL_MAX_OVERFLOW, POOL_SIZE, register_sql_timing_listeners
 from saq.util import abs_path
 
 # pool settings kept in parity with the synchronous engines built in
@@ -23,7 +24,6 @@ from saq.util import abs_path
 # stale connections the same way (proactive recycle + pre-ping)
 POOL_RECYCLE_SECONDS = 60 * 10  # 10 minute connection pool recycle
 POOL_TIMEOUT_SECONDS = 30
-POOL_SIZE = 5
 
 
 def build_database_url(db_name: str = "ace") -> str:
@@ -98,6 +98,7 @@ def create_engine_for(db_name: str = "ace") -> AsyncEngine:
     pool_recycle proactively retires pooled connections before MySQL closes them
     (wait_timeout), and pool_pre_ping validates a connection on checkout and
     transparently reconnects if it has gone stale."""
+    register_sql_timing_listeners()
     return create_async_engine(
         build_database_url(db_name),
         echo=False,
@@ -105,6 +106,7 @@ def create_engine_for(db_name: str = "ace") -> AsyncEngine:
         pool_recycle=POOL_RECYCLE_SECONDS,
         pool_timeout=POOL_TIMEOUT_SECONDS,
         pool_size=POOL_SIZE,
+        max_overflow=POOL_MAX_OVERFLOW,
         pool_pre_ping=True,
         connect_args=build_connect_args(db_name),
     )

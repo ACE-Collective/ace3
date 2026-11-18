@@ -1,18 +1,32 @@
 # Testing GUI changes in a browser
 
-A development image (`BUILD_TYPE=development`, the default) ships a headless Chromium and two ways to drive it,
-so that an agent (or a person) can check a GUI change in a real browser from inside the `dev` container:
+An agent (or a person) can check a GUI change in a real browser from inside the `dev` container, in two ways:
 
-- the Python `playwright` package in `/venv`, for scripted checks
+- the Python `playwright` package in `/venv` (development images only), for scripted checks
 - the `playwright-mcp` server (`@playwright/mcp`), which gives MCP clients (Claude Code, codex, cline) browser
   tools: navigate, click, type, accessibility snapshot, screenshot, console messages, network requests
 
-Both use the same Chromium in `/opt/ms-playwright` (`PLAYWRIGHT_BROWSERS_PATH`). It lives outside `/home/ace`
-because that directory is a named volume, which hides anything the image puts there. Production images
-have none of this.
+The headless Chromium both of them drive is not in the ACE image, which every ACE service runs. It is in an
+image of its own (`docker/browser/Dockerfile`), which two compose services run:
 
-Everything below runs **inside the `dev` container**. The browser and the GUI must be in the same container:
-the browser reaches the GUI on `localhost`.
+| service | what it runs | reached from `dev` at |
+|---|---|---|
+| `browser-mcp` | `playwright-mcp` over HTTP | `http://localhost:8931/mcp` |
+| `browser-server` | `playwright run-server`, for the Python package | `ws://localhost:3000/` |
+
+Both are in the `browser` compose profile, so a plain `docker compose up` starts neither. Start them from the
+host, or add `COMPOSE_PROFILES=browser` to `.env` to start them with the rest of the stack:
+
+```bash
+docker compose --profile browser up -d --build browser-mcp browser-server
+```
+
+They share the `dev` container's network namespace (`network_mode: service:dev`): the browser reaches a GUI
+started in `dev` on `localhost`, `dev` reaches the two servers on `localhost`, and nothing is published to the
+host. They rejoin it when `dev` is recreated by compose. They mount the checkout at `/opt/ace` as `dev` does and
+run as the same user.
+
+Everything below runs **inside the `dev` container**.
 
 ## Start the GUI
 
@@ -80,7 +94,7 @@ from playwright.sync_api import sync_playwright
 BASE = "https://localhost:5050/ace"
 
 with sync_playwright() as p:
-    browser = p.chromium.launch()  # headless by default
+    browser = p.chromium.connect("ws://localhost:3000/")  # the browser-server service
     page = browser.new_context(ignore_https_errors=True, viewport={"width": 1600, "height": 1000}).new_page()
 
     # collect anything that went wrong while the page was used
@@ -114,34 +128,50 @@ that something rendered. To check what the page actually says, read it: `page.in
 
 ## Driving the browser through MCP
 
-Register the server with your agent inside the container. The registration is stored in `/home/ace`, which is
-a volume, so it survives image rebuilds.
+Register the `browser-mcp` server with your agent inside the container. The registration is stored in
+`/home/ace`, which is a volume, so it survives image rebuilds.
 
 Claude Code:
 
 ```bash
-claude mcp add playwright -- playwright-mcp --headless --browser chromium --ignore-https-errors --isolated
+claude mcp add --transport http playwright http://localhost:8931/mcp
 ```
 
 codex (`~/.codex/config.toml`):
 
 ```toml
 [mcp_servers.playwright]
-command = "playwright-mcp"
-args = ["--headless", "--browser", "chromium", "--ignore-https-errors", "--isolated"]
+url = "http://localhost:8931/mcp"
 ```
 
-- `--browser chromium` is required. The default is the Google Chrome channel, which is not installed.
-- `--isolated` keeps the browser profile in memory, so every session starts logged out.
-- Snapshots, console logs and screenshots go to `.playwright-mcp/` under the working directory, which is
-  gitignored.
+- The server's options (headless Chromium, HTTPS errors ignored, profile kept in memory) are set in its
+  compose `command`, not by the client.
+- Every client session gets a browser context of its own and starts logged out, so agents in different
+  worktrees can use the one server at the same time.
+- The server writes files under the client's *workspace*: the first MCP root the client sends, or the
+  server's own working directory, `/opt/ace`, for a client that sends none. A client in a worktree that
+  sends no roots therefore gets its files in the main checkout.
+  - Files the server names itself (snapshots, console logs, a screenshot taken without `filename`) go to
+    `.playwright-mcp/` in the workspace, which is gitignored.
+  - A relative `filename` is resolved against the workspace itself, not `.playwright-mcp/`:
+    `filename: "manage.png"` leaves an untracked `manage.png` in the checkout root. Pass
+    `.playwright-mcp/manage.png` instead.
+  - A path outside the workspace and `.playwright-mcp/` (`/tmp/manage.png`, a scratch directory) is
+    refused with `File access denied`.
+- An agent outside the `dev` container (Claude Code on the host) cannot reach the server.
 
 Then, for example: navigate to `https://localhost:5050/ace/login`, fill in analyst / analyst, open the page you
 changed, take a snapshot, and check the console messages and network requests.
 
 ## Updating the browser tooling
 
-`PLAYWRIGHT_VERSION` (pip) and `PLAYWRIGHT_MCP_VERSION` (npm) in the `Dockerfile` are pinned together. Pick the
-pair so that the `chromium` revision in the pip package's `playwright/driver/package/browsers.json` matches
-the one in `@playwright/mcp`'s bundled `playwright-core/browsers.json`. Otherwise the MCP server looks for a
-Chromium build that was never installed.
+Three pins move together:
+
+- `PLAYWRIGHT_VERSION` in `docker/browser/Dockerfile` decides the Chromium build the image installs.
+- `PLAYWRIGHT_MCP_VERSION` there must be an `@playwright/mcp` whose bundled `playwright-core` uses the same
+  Chromium revision (`browsers.json`). The image build fails when it does not, and names both revisions.
+- `PLAYWRIGHT_VERSION` in the ACE `Dockerfile` (the pip package) must have the same major.minor version as
+  the one in `docker/browser/Dockerfile`, or `connect()` is refused.
+
+After a bump, rebuild the browser image (`docker compose --profile browser build browser-mcp`) and recreate both
+services.

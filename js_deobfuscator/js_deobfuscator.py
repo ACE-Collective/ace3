@@ -4,9 +4,9 @@
 # NOTE this module runs inside the js_deobfuscator manager container and is
 # external to ACE — it must not import from the saq namespace.
 #
-# It exposes a single Celery task `deobfuscate` that takes an input file
-# path (inside the shared js-deobfuscator volume) and runs the sandbox
-# harness inside a throwaway scanner container. The scanner container is
+# Its Celery task `deobfuscate` takes an input file path (inside the shared
+# js-deobfuscator volume) and runs the sandbox harness inside a throwaway
+# scanner container; `maintain_files` ages out the job directories. The scanner container is
 # built from Dockerfile.js_deobfuscator in this same directory.
 #
 
@@ -14,6 +14,8 @@ import argparse
 import json
 import logging
 import os
+import shutil
+import time
 import uuid
 from subprocess import PIPE, Popen, TimeoutExpired
 
@@ -142,6 +144,45 @@ def deobfuscate(file_path: str, timeout: int = 30) -> str:
         json.dump(report, fp)
 
     return output_dir
+
+
+# immediate subdirectories of these are aged out by maintain_files
+JS_DEOBFUSCATOR_DATA_DIRS = ("/js-deobfuscator/input", "/js-deobfuscator/output")
+
+
+def _delete_aged_dirs(directory: str, cutoff: float) -> list:
+    """Delete immediate subdirectories of `directory` whose mtime is older than `cutoff`.
+
+    Returns the list of removed paths.
+    """
+    removed = []
+    if not os.path.isdir(directory):
+        return removed
+    for entry in os.scandir(directory):
+        if not entry.is_dir(follow_symlinks=False):
+            continue
+        try:
+            if entry.stat(follow_symlinks=False).st_mtime >= cutoff:
+                continue
+            shutil.rmtree(entry.path)
+            removed.append(entry.path)
+        except OSError as e:
+            logger.warning("maintain_files failed to remove %s: %s", entry.path, e)
+    return removed
+
+
+# The output directories are written by this manager and its scanner containers, not by ACE's
+# user, so the deleting has to happen here rather than in ACE.
+@app.task
+def maintain_files(max_file_age_days: int) -> dict:
+    """Delete js-deobfuscator input/output job directories older than max_file_age_days."""
+    cutoff = time.time() - int(max_file_age_days) * 86400
+    deleted = {}
+    for directory in JS_DEOBFUSCATOR_DATA_DIRS:
+        removed = _delete_aged_dirs(directory, cutoff)
+        logger.info("maintain_files removed %d directories from %s", len(removed), directory)
+        deleted[directory] = removed
+    return deleted
 
 
 if __name__ == "__main__":

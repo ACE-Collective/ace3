@@ -25,9 +25,9 @@ from saq.util.uuid import get_storage_dir
 from tests.saq.helpers import create_root_analysis, log_count
 
 #
-# unit tests over the budget lifetime: a RootAnalysis work item starts a fresh
-# budget, a DelayedAnalysisRequest resumption continues the one its originating
-# pass started.
+# unit tests over the budget lifetime: a DelayedAnalysisRequest resumption
+# continues the budget its originating pass started (a RootAnalysis work item
+# starting a fresh one is test_total_analysis_time_seconds_resets_for_new_work_item).
 #
 
 def _executor() -> AnalysisExecutor:
@@ -37,15 +37,6 @@ def _executor() -> AnalysisExecutor:
         delayed_analysis_interface=None,
         tracking_message_manager=NullTrackingWriter("test"),
     )
-
-@pytest.mark.unit
-def test_root_work_item_starts_a_fresh_budget(root_analysis):
-    root_analysis.state[STATE_TOTAL_ANALYSIS_TIME_SECONDS] = 500
-
-    _executor().execute(EngineExecutionContext(root_analysis))
-
-    # the run itself is timed, so the budget is the (tiny) time this pass took
-    assert 0 <= root_analysis.state[STATE_TOTAL_ANALYSIS_TIME_SECONDS] < 1
 
 @pytest.mark.unit
 def test_delayed_analysis_request_continues_the_budget(root_analysis):
@@ -84,21 +75,6 @@ def test_budget_defaults_to_zero_when_missing(root_analysis):
 # integration tests: the time actually spent analyzing is recorded, survives the
 # save/load round trip, and accumulates across delayed analysis resumptions.
 #
-
-@pytest.mark.integration
-def test_total_analysis_time_seconds_recorded():
-    root = create_root_analysis(uuid=str(uuid.uuid4()), analysis_mode='test_groups')
-    root.initialize_storage()
-    root.add_observable_by_spec(F_TEST, 'test_1')
-    root.save()
-    root.schedule()
-
-    engine = Engine()
-    engine.configuration_manager.enable_module('basic_test', 'test_groups')
-    engine.start_single_threaded(execution_mode=EngineExecutionMode.SINGLE_SHOT)
-
-    root = load_root(get_storage_dir(root.uuid))
-    assert root.state[STATE_TOTAL_ANALYSIS_TIME_SECONDS] > 0
 
 @pytest.mark.integration
 def test_total_analysis_time_seconds_accumulates_across_delayed_analysis():

@@ -20,9 +20,6 @@ from saq.permissions.user import add_user_permission
 
 pytestmark = pytest.mark.integration
 
-PAGE_VIEWS = ("signatures.signatures_hub", "signatures.yara_qa", "signatures.samples", "signatures.sample_detail",
-              "signatures.validations", "signatures.validation_detail")
-
 SHA256 = "a" * 64
 RULE_UUID = "00000000-0000-0000-0000-000000000001"
 VALIDATION_UUID = "00000000-0000-0000-0000-0000000000aa"
@@ -81,6 +78,13 @@ def signature_downloader():
 
 
 @pytest.fixture
+def signature_purger():
+    _make_user("sig_purger", [("signature", "read"), ("signature", "qa_purge")])
+    yield "sig_purger"
+    delete_user("sig_purger")
+
+
+@pytest.fixture
 def signature_actor():
     _make_user("sig_actor", [("signature", "read"), ("alert", "write"), ("svs", "admin")])
     yield "sig_actor"
@@ -88,10 +92,6 @@ def signature_actor():
 
 
 class TestSignaturesIsPagesOnly:
-    def test_page_views_exist(self, app):
-        for endpoint in PAGE_VIEWS:
-            assert endpoint in app.view_functions, endpoint
-
     def test_signatures_blueprint_serves_only_get_pages(self, app):
         offenders = []
         for rule in app.url_map.iter_rules():
@@ -139,6 +139,15 @@ class TestSignaturesPages:
         with app.test_client() as client:
             _login(client, signature_downloader)
             assert b'data-can-download="true"' in client.get(url_for("signatures.yara_qa")).data
+
+    def test_purge_controls_follow_signature_qa_purge(self, app, signature_reader, signature_purger):
+        with app.test_client() as client:
+            _login(client, signature_reader)
+            assert b'data-can-purge="false"' in client.get(url_for("signatures.yara_qa")).data
+
+        with app.test_client() as client:
+            _login(client, signature_purger)
+            assert b'data-can-purge="true"' in client.get(url_for("signatures.yara_qa")).data
 
 
 class TestSamplesPages:

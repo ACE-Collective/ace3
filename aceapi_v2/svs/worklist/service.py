@@ -17,6 +17,7 @@ from fastapi import HTTPException
 from pydantic import ValidationError
 from sqlalchemy import Select, select
 
+from aceapi_v2.auth.schemas import ApiAuthResult
 from aceapi_v2.common.listing import (
     CHANGED_SINCE_SETTLE_SECONDS,
     InvalidListingRequest,
@@ -93,7 +94,7 @@ def _usernames(rows: list[SVSTechniqueWorklist]) -> dict[int, str]:
     ids = sorted({row.resolved_by_user_id for row in rows if row.resolved_by_user_id is not None})
     if not ids:
         return {}
-    return dict(get_db().execute(select(User.id, User.username).where(User.id.in_(ids))).tuples().all())
+    return dict(get_db().execute(select(User.id, User.username).where(User.id.in_(ids))).all())
 
 
 def _technique_name(technique: str) -> Optional[str]:
@@ -188,12 +189,12 @@ def _current_row(signature_uuid: str, technique: str) -> Optional[WorklistRow]:
     return _rows([row])[0] if row is not None else None
 
 
-def set_resolution(signature_uuid: str, technique: str, body: ResolutionRequest, user_id: Optional[int],
-                   actor: Optional[str], precondition: Precondition = NONE) -> WorklistRow:
-    user_id = require_user(user_id)
+def set_resolution(signature_uuid: str, technique: str, body: ResolutionRequest, auth: ApiAuthResult,
+                   precondition: Precondition = NONE) -> WorklistRow:
+    require_user(auth.auth_user_id)
     try:
-        row = worklist.resolve(signature_uuid, technique, body.resolution, body.reason, user_id,
-                               reference=body.reference, actor=actor, precondition=precondition)
+        row = worklist.resolve(signature_uuid, technique, body.resolution, body.reason, auth,
+                               reference=body.reference, precondition=precondition)
     except (worklist.UnknownWorklistRow, worklist.WorklistConflict, worklist.InvalidResolution) as e:
         raise _errors(e)
     except StaleWrite as e:
@@ -201,22 +202,22 @@ def set_resolution(signature_uuid: str, technique: str, body: ResolutionRequest,
     return _rows([row])[0]
 
 
-def clear_resolution(signature_uuid: str, technique: str, user_id: Optional[int], actor: Optional[str],
+def clear_resolution(signature_uuid: str, technique: str, auth: ApiAuthResult,
                      precondition: Precondition = NONE) -> None:
-    user_id = require_user(user_id)
+    require_user(auth.auth_user_id)
     try:
-        worklist.reopen(signature_uuid, technique, user_id, actor=actor, precondition=precondition)
+        worklist.reopen(signature_uuid, technique, auth, precondition=precondition)
     except worklist.UnknownWorklistRow as e:
         raise _errors(e)
     except StaleWrite as e:
         raise stale_write(e, lambda: _current_row(signature_uuid, technique))
 
 
-def bulk_resolve(body: BulkResolutionRequest, user_id: Optional[int], actor: Optional[str]) -> BulkResolutionResult:
-    user_id = require_user(user_id)
+def bulk_resolve(body: BulkResolutionRequest, auth: ApiAuthResult) -> BulkResolutionResult:
+    require_user(auth.auth_user_id)
     try:
         result = worklist.resolve_many([(key.signature_uuid, key.technique) for key in body.rows], body.resolution,
-                                       body.reason, user_id, reference=body.reference, actor=actor)
+                                       body.reason, auth, reference=body.reference)
     except worklist.InvalidResolution as e:
         raise _errors(e)
     return BulkResolutionResult(

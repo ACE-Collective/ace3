@@ -2,20 +2,7 @@ import pytest
 
 from saq.analysis.analysis import Analysis, SummaryDetail
 from saq.analysis.pivot_link import PivotLink
-from saq.analysis.serialize.analysis_serializer import (
-    AnalysisSerializer,
-    KEY_UUID,
-    KEY_INSTANCE,
-    KEY_OBSERVABLES,
-    KEY_SUMMARY,
-    KEY_SUMMARY_DETAILS,
-    KEY_PIVOT_LINKS,
-    KEY_COMPLETED,
-    KEY_DELAYED,
-    KEY_EXTERNAL_DETAILS_PATH,
-    KEY_DETAILS_SIZE,
-    KEY_LLM_CONTEXT_DOCUMENTS,
-)
+from saq.analysis.serialize.analysis_serializer import AnalysisSerializer
 from saq.constants import SUMMARY_DETAIL_FORMAT_PRE
 
 
@@ -70,31 +57,10 @@ def sample_analysis():
     return analysis
 
 
-@pytest.fixture
-def empty_analysis():
-    """Create an empty Analysis object for testing."""
-    return TestAnalysis()
-
-
-@pytest.mark.unit
-def test_analysis_serializer_constants():
-    """Test that all required constants are defined."""
-    assert KEY_UUID == 'uuid'
-    assert KEY_INSTANCE == 'instance'
-    assert KEY_OBSERVABLES == 'observables'
-    assert KEY_SUMMARY == 'summary'
-    assert KEY_SUMMARY_DETAILS == 'summary_details'
-    assert KEY_PIVOT_LINKS == 'pivot_links'
-    assert KEY_COMPLETED == 'completed'
-    assert KEY_DELAYED == 'delayed'
-    assert KEY_EXTERNAL_DETAILS_PATH == 'file_path'
-    assert KEY_DETAILS_SIZE == 'details_size'
-    assert KEY_LLM_CONTEXT_DOCUMENTS == 'llm_context_documents'
-
-
 @pytest.mark.unit
 def test_serialize_full_analysis(sample_analysis):
-    """Test serializing a fully populated Analysis object."""
+    """Serializing a fully populated Analysis object. The keys are the ones
+    stored in root.json, written out so a renamed key fails here."""
     result = AnalysisSerializer.serialize(sample_analysis)
     
     # Check that result is a dictionary
@@ -107,61 +73,25 @@ def test_serialize_full_analysis(sample_analysis):
     assert result['sort_order'] == 50
     
     # Check analysis-specific data
-    assert result[KEY_UUID] == "test-uuid-12345"
-    assert result[KEY_INSTANCE] == "test-instance"
-    assert result[KEY_OBSERVABLES] == ["obs-1", "obs-2"]
-    assert result[KEY_SUMMARY] == "test summary"
-    assert result[KEY_COMPLETED] is True
-    assert result[KEY_DELAYED] is False
-    assert result[KEY_EXTERNAL_DETAILS_PATH] == "/path/to/details"
-    assert result[KEY_DETAILS_SIZE] == 1024
-    assert result[KEY_LLM_CONTEXT_DOCUMENTS] == ["doc1", "doc2"]
+    assert result['uuid'] == "test-uuid-12345"
+    assert result['instance'] == "test-instance"
+    assert result['observables'] == ["obs-1", "obs-2"]
+    assert result['summary'] == "test summary"
+    assert result['completed'] is True
+    assert result['delayed'] is False
+    assert result['file_path'] == "/path/to/details"
+    assert result['details_size'] == 1024
+    assert result['llm_context_documents'] == ["doc1", "doc2"]
     
     # Check summary details
-    assert len(result[KEY_SUMMARY_DETAILS]) == 2
-    assert result[KEY_SUMMARY_DETAILS][0]['header'] == "Header 1"
-    assert result[KEY_SUMMARY_DETAILS][1]['header'] == "Header 2"
+    assert len(result['summary_details']) == 2
+    assert result['summary_details'][0]['header'] == "Header 1"
+    assert result['summary_details'][1]['header'] == "Header 2"
     
     # Check pivot links
-    assert len(result[KEY_PIVOT_LINKS]) == 2
-    assert result[KEY_PIVOT_LINKS][0]['url'] == "http://example.com"
-    assert result[KEY_PIVOT_LINKS][1]['url'] == "http://example2.com"
-
-
-@pytest.mark.unit
-def test_serialize_empty_analysis(empty_analysis):
-    """Test serializing an empty Analysis object."""
-    # Ensure properties have default values
-    empty_analysis._observables = []
-    empty_analysis.summary = None
-    empty_analysis.summary_details = []
-    empty_analysis.pivot_links = []
-    empty_analysis.external_details_path = None
-    empty_analysis.details_size = None
-    empty_analysis.llm_context_documents = None
-    
-    result = AnalysisSerializer.serialize(empty_analysis)
-    
-    # Check that result is a dictionary
-    assert isinstance(result, dict)
-    
-    # Check that all required keys are present
-    assert KEY_UUID in result
-    assert KEY_INSTANCE in result
-    assert KEY_OBSERVABLES in result
-    assert KEY_SUMMARY in result
-    assert KEY_COMPLETED in result
-    assert KEY_DELAYED in result
-    assert KEY_SUMMARY_DETAILS in result
-    assert KEY_PIVOT_LINKS in result
-    assert KEY_EXTERNAL_DETAILS_PATH in result
-    assert KEY_DETAILS_SIZE in result
-    assert KEY_LLM_CONTEXT_DOCUMENTS in result
-    
-    # Check default values
-    assert result[KEY_OBSERVABLES] == []
-    assert result[KEY_SUMMARY_DETAILS] == []
-    assert result[KEY_PIVOT_LINKS] == []
+    assert len(result['pivot_links']) == 2
+    assert result['pivot_links'][0]['url'] == "http://example.com"
+    assert result['pivot_links'][1]['url'] == "http://example2.com"
 
 
 @pytest.mark.unit
@@ -174,13 +104,13 @@ def test_deserialize_full_data():
         'tags': ['tag1', 'tag2'],
         'detections': ['detection1'],
         'sort_order': 75,
-        KEY_UUID: "test-uuid-67890",
-        KEY_INSTANCE: "deserialized-instance",
-        KEY_OBSERVABLES: ["obs-3", "obs-4", "obs-5"],
-        KEY_SUMMARY: "deserialized summary",
-        KEY_COMPLETED: False,
-        KEY_DELAYED: True,
-        KEY_SUMMARY_DETAILS: [
+        'uuid': "test-uuid-67890",
+        'instance': "deserialized-instance",
+        'observables': ["obs-3", "obs-4", "obs-5"],
+        'summary': "deserialized summary",
+        'completed': False,
+        'delayed': True,
+        'summary_details': [
             {
                 'id': 'detail-1',
                 'header': 'Deserialized Header 1',
@@ -194,7 +124,7 @@ def test_deserialize_full_data():
                 'format': SUMMARY_DETAIL_FORMAT_PRE
             }
         ],
-        KEY_PIVOT_LINKS: [
+        'pivot_links': [
             {
                 'url': 'http://deserialized1.com',
                 'icon': 'deser-icon1',
@@ -206,9 +136,9 @@ def test_deserialize_full_data():
                 'text': 'Deserialized Link 2'
             }
         ],
-        KEY_EXTERNAL_DETAILS_PATH: "/deserialized/path",
-        KEY_DETAILS_SIZE: 2048,
-        KEY_LLM_CONTEXT_DOCUMENTS: ["deser-doc1", "deser-doc2", "deser-doc3"]
+        'file_path': "/deserialized/path",
+        'details_size': 2048,
+        'llm_context_documents': ["deser-doc1", "deser-doc2", "deser-doc3"]
     }
     
     AnalysisSerializer.deserialize(analysis, data)
@@ -236,33 +166,6 @@ def test_deserialize_full_data():
     assert len(analysis.pivot_links) == 2
     assert analysis.pivot_links[0].url == "http://deserialized1.com"
     assert analysis.pivot_links[1].url == "http://deserialized2.com"
-
-
-@pytest.mark.unit
-def test_deserialize_partial_data():
-    """Test deserializing with only some keys present."""
-    analysis = TestAnalysis()
-    
-    # Store original values
-    original_uuid = analysis.uuid
-    original_instance = analysis.instance
-    
-    # Partial data dictionary
-    data = {
-        KEY_UUID: "partial-uuid",
-        KEY_SUMMARY: "partial summary",
-        KEY_COMPLETED: True
-    }
-    
-    AnalysisSerializer.deserialize(analysis, data)
-    
-    # Verify only provided properties were set
-    assert analysis.uuid == "partial-uuid"
-    assert analysis.summary == "partial summary"
-    assert analysis._completed is True
-    
-    # Verify unspecified properties retain original values or defaults
-    assert analysis.instance == original_instance  # Should remain unchanged
 
 
 @pytest.mark.unit

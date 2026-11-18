@@ -10,8 +10,11 @@ from app.analysis.views.session.filters import filter_special_tags
 from app.auth.permissions import require_permission
 from app.blueprints import analysis
 from saq.analysis.analysis import Analysis
+from saq.analysis.module_path import SPLIT_MODULE_PATH
 from saq.analysis.observable import Observable
-from saq.analysis.presenter import create_analysis_presenter, create_observable_presenter
+from saq.analysis.presenter import create_analysis_presenter
+from saq.analysis.presenter.observable_presenter import create_observable_presenter
+import saq.gui.observable_presenters  # noqa: F401 registers the core observable types' presenters and actions
 from saq.analysis.root import RootAnalysis
 from saq.configuration.config import get_config
 from saq.constants import CLOSED_EVENT_LIMIT, DIRECTIVE_DESCRIPTIONS, F_FILE, GUI_DIRECTIVES
@@ -39,6 +42,7 @@ from saq.database.database_observable import get_observable_disposition_historie
 from saq.database.util.observable_detection import get_all_observable_detections
 from aceapi_v2.observables.service import get_interesting_observables_by_hashes
 from saq.gui.alert_actions import get_alert_actions
+from saq.modules.email.lure import build_lure_urls
 from saq.modules.phishkit_chain import build_crawl_chains
 from saq.modules.util.observable_modifier import build_modifier_rule_matches
 from saq.permissions.logic import user_has_permission
@@ -320,6 +324,29 @@ class TreeNode:
         return "TreeNode({}, {}, {})".format(self.obj, self.reference_node, self.visible)
 
 
+def build_analysis_failure_map(root: RootAnalysis) -> dict[str, list[tuple[str, str]]]:
+    """observable uuid -> [(analysis name, why)] for each module that failed on the observable without
+    leaving an analysis to show it (it raised before creating one, or its process died). A module that
+    did leave one shows its own error on it."""
+    result: dict[str, list[tuple[str, str]]] = {}
+    if not root.analysis_failures:
+        return result
+
+    for observable in root.all_observables:
+        key = f"{observable.type}:{observable.value}"
+        for module_path, failures in root.analysis_failures.items():
+            if key not in failures or isinstance(observable.get_analysis(module_path), Analysis):
+                continue
+
+            _module, name, instance = SPLIT_MODULE_PATH(module_path)
+            if instance:
+                name = f"{name}:{instance}"
+
+            result.setdefault(observable.uuid, []).append((name, failures[key] or "the analysis module failed"))
+
+    return result
+
+
 def _recurse(current_node, node_tracker=None):
     assert isinstance(current_node, TreeNode)
     assert isinstance(current_node.obj, Analysis)
@@ -400,6 +427,37 @@ def _prune(node, current_path=None):
             index += 1
 
     current_path.pop()
+
+
+def _reveal(node, uuids: set[str]):
+    """Makes the observables with these uuids, and the path to them, visible in a pruned tree."""
+    def _callback(target):
+        if target.is_analysis or target.obj.uuid not in uuids:
+            return
+        # _prune makes a path visible from the root down, so the first visible ancestor ends it
+        while target is not None and not target.visible:
+            target.visible = True
+            target = target.parent
+
+    node.walk(_callback)
+
+
+def _linked_observable_uuids(lure_urls, crawl_chains) -> set[str]:
+    """The observables the Lure URL and Crawl Chains sections link to by anchor.
+
+    Extracted URLs are volatile, so a pruned tree would leave these links nothing to jump to.
+    """
+    uuids = set()
+    for entry in lure_urls:
+        if entry.observable:
+            uuids.add(entry.observable.uuid)
+        uuids.update(candidate["observable_uuid"] for candidate in entry.runners_up)
+    for chain in crawl_chains:
+        uuids.add(chain.target.uuid)
+        if chain.screenshot:
+            uuids.add(chain.screenshot.uuid)
+        uuids.update(hop.observable.uuid for hop in chain.hops if hop.observable)
+    return uuids
 
 
 def _resolve_references(node):
@@ -584,6 +642,8 @@ def index():
     detection_chain_root_detections = build_root_detections(alert.root_analysis)
     detection_chain_count = count_merged_detections(detection_chain_merged_tree) + len(detection_chain_root_detections)
     crawl_chains = build_crawl_chains(alert.root_analysis)
+    lure_urls = build_lure_urls(alert.root_analysis)
+    lure_url_uuids = {entry.observable.uuid for entry in lure_urls if entry.observable}
     modifier_rule_matches = build_modifier_rule_matches(alert.root_analysis)
 
     # get all observable comments for the analysis tree
@@ -655,6 +715,7 @@ def index():
                 for child in display_tree.children:
                     child.visible = True
 
+            _reveal(display_tree, _linked_observable_uuids(lure_urls, crawl_chains))
             _resolve_references(display_tree)
 
     # For correlated-hunt alerts, group the Analysis Overview's top-level observables by
@@ -671,7 +732,7 @@ def index():
         # go ahead and get the list of all the users, we'll end up using it
         all_users = get_db().query(User).order_by('username').all()
     except Exception as e:
-        logging.error(f"idk why it breaks specifically right here {e}")
+        logging.exception(f"unable to list the users for alert {alert.uuid}, retrying after a rollback: {e}")
         get_db().rollback()
         all_users = get_db().query(User).order_by('username').all()
 
@@ -744,6 +805,7 @@ def index():
         'analysis/index.html',
         alert=alert,
         cache_hit_map=cache_hit_map,
+        analysis_failure_map=build_analysis_failure_map(alert.root_analysis),
         remediation_timeline_events=remediation_timeline_events,
         external_check_footer=external_check_footer,
         remediation_coverage=remediation_coverage,
@@ -757,8 +819,6 @@ def index():
         analysis=analysis,
         analysis_presenter=create_analysis_presenter(analysis) if analysis else None,
         ace_config=get_config(),
-        User=User,
-        db=get_db(),
         current_time=datetime.now(),
         directives={directive: DIRECTIVE_DESCRIPTIONS[directive] for directive in sorted(GUI_DIRECTIVES)},
         display_tree=display_tree,
@@ -777,9 +837,6 @@ def index():
         domain_list=domain_list,
         domain_summary_str=domain_summary_str,
         CONSTANTS=saq.constants,
-        observable_open_event_counts=alert.observable_open_event_counts,
-        # Skip file observables. The calculations will include their hash observables instead.
-        num_observables_in_alert=len([o for o in alert.root_analysis.observable_store.values() if o.type != F_FILE]),
         observable_detections=observable_detections,
         observable_disposition_history=observable_disposition_history,
         observable_comments=observable_comments,
@@ -794,6 +851,8 @@ def index():
         detection_chain_module_display_name=module_display_name,
         detection_chain_observable_display_value=observable_display_value,
         crawl_chains=crawl_chains,
+        lure_urls=lure_urls,
+        lure_url_uuids=lure_url_uuids,
         modifier_rule_matches=modifier_rule_matches,
         **alert_action_context(alert),
         **detection_verdict_context(alert),

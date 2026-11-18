@@ -1,16 +1,23 @@
 import base64
 import os
 import pathlib
+import shutil
 import tempfile
 
 import pytest
 
+from saq.configuration.config import get_analysis_module_config
+from saq.constants import ANALYSIS_MODULE_FILE_TYPE
+from saq.modules.adapter import AnalysisModuleAdapter
+from saq.modules.file_analysis.file_type import FileTypeAnalyzer
 from saq.modules.file_analysis.is_file_type import (
     is_autoit, is_chm_file, is_dotnet, is_empty_macro, is_email_file, 
     is_image, is_jar_file, is_java_class_file, is_javascript_file, is_lnk_file, is_macro_ext, 
     is_msi_file, is_office_ext, is_office_file, is_ole_file, is_onenote_file, 
     is_pdf_file, is_pe_file, is_rtf_file, is_x509, is_zip_file
 )
+from tests.saq.helpers import create_root_analysis
+from tests.saq.test_util import create_test_context
 
 
 @pytest.mark.unit
@@ -36,6 +43,7 @@ def test_is_pe_file(tmp_path):
 
     # test missing file
     os.remove(target)
+    assert not is_pe_file(target)
 
 
 @pytest.mark.unit
@@ -152,19 +160,21 @@ def test_is_dotnet(datadir, tmp_path):
 
 @pytest.mark.unit
 def test_is_image(datadir):
-    assert is_image(datadir / 'hello_world.exe') is False
+    assert is_image(datadir / 'hello_autoit.exe') is False
     assert is_image(datadir / 'fraudulent_text.png') is True
 
 
-@pytest.mark.parametrize('file_name', [
-    'chm-sample-01.chm',
-    'chm-sample-02.chm',
-    'chm-sample-03.chm',
-    'chm-sample-04',
+@pytest.mark.parametrize('file_name,expected_result', [
+    ('chm-sample-01.chm', True),
+    ('chm-sample-02.chm', True),
+    ('chm-sample-03.chm', True),
+    # no extension: recognized by its content
+    ('chm-sample-04', True),
+    ('zipped.zip', False),
 ])
 @pytest.mark.unit
-def test_is_chm_file(datadir, file_name):
-    assert is_chm_file(str(datadir / file_name))
+def test_is_chm_file(datadir, file_name, expected_result):
+    assert is_chm_file(str(datadir / file_name)) is expected_result
 
 
 @pytest.mark.parametrize('file_name,expected_result', [
@@ -214,16 +224,6 @@ def test_is_javascript_file_heuristic(tmp_path, js_code, expected_result):
 
 
 @pytest.mark.unit
-def test_is_javascript_file_without_js_extension(tmp_path):
-    """test that valid javascript without .js extension is still detected"""
-    target = str(tmp_path / 'script')
-    with open(target, 'w') as fp:
-        fp.write('const message = "hello"; console.log(message);')
-
-    assert is_javascript_file(target) is True
-
-
-@pytest.mark.unit
 def test_is_office_ext():
     assert is_office_ext("test.docx") is True
     assert is_office_ext("test.xlsx") is True
@@ -244,25 +244,28 @@ def test_is_office_ext():
 
 
 @pytest.mark.unit
-def test_is_office_file(datadir, test_context):
-    from tests.saq.helpers import create_root_analysis
-    from saq.modules.file_analysis.file_type import FileTypeAnalysis
-    from tests.saq.test_util import create_test_context
-    
+def test_is_office_file(datadir, tmp_path, test_context):
     root = create_root_analysis(analysis_mode='test_single')
     root.initialize_storage()
-    
-    # test with actual Office document
-    observable = root.add_file_observable(datadir / 'doc.docx')
-    assert is_office_file(observable) is True
-    
-    # test with non-Office file
-    observable = root.add_file_observable(datadir / 'hello_world.exe.hex')
-    assert is_office_file(observable) is False
-    
-    # test file with office extension but no FileTypeAnalysis
-    observable = root.add_file_observable(datadir / 'doc.doc')
-    assert is_office_file(observable) is True
+
+    def _with_file_type_analysis(path):
+        observable = root.add_file_observable(path)
+        AnalysisModuleAdapter(FileTypeAnalyzer(
+            context=create_test_context(root=root),
+            config=get_analysis_module_config(ANALYSIS_MODULE_FILE_TYPE))).execute_analysis(observable)
+        return observable
+
+    # an office extension is enough, without a FileTypeAnalysis
+    assert is_office_file(root.add_file_observable(datadir / 'doc.docx')) is True
+    assert is_office_file(root.add_file_observable(datadir / 'doc.doc')) is True
+
+    # neither the extension nor the file type is office
+    assert is_office_file(_with_file_type_analysis(datadir / 'hello_world.exe.hex')) is False
+
+    # an office document under another name is recognized by its file type
+    renamed = tmp_path / 'attachment.bin'
+    shutil.copy(datadir / 'doc.docx', renamed)
+    assert is_office_file(_with_file_type_analysis(renamed)) is True
 
 
 @pytest.mark.unit

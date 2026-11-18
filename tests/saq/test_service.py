@@ -9,7 +9,6 @@ from saq.constants import (
 from saq.service import (
     ACEServiceInterface,
     DisabledService,
-    load_service,
     load_service_by_name,
     service_valid_for_instance,
 )
@@ -111,46 +110,6 @@ class TestServiceValidForInstance:
 
         assert result is True
 
-    def test_service_valid_raises_error_for_nonexistent_service(self):
-        """test that service_valid_for_instance raises error for non-existent service"""
-        with pytest.raises(ValueError, match="service config for nonexistent_service not found"):
-            service_valid_for_instance("nonexistent_service")
-
-
-@pytest.mark.unit
-class TestLoadService:
-    """Tests for load_service function."""
-
-    def test_load_service_success(self):
-        """test that load_service successfully loads and wraps a service"""
-        service = load_service("tests.saq.test_service", "MockService")
-
-        assert service is not None
-        assert hasattr(service, "start")
-        assert hasattr(service, "stop")
-        assert hasattr(service, "wait")
-        assert hasattr(service, "wait_for_start")
-        assert hasattr(service, "start_single_threaded")
-
-    def test_load_service_wait_for_start(self):
-        """test that wait_for_start works on loaded service"""
-        service = load_service("tests.saq.test_service", "MockService")
-
-        result = service.wait_for_start(timeout=1)
-
-        assert result is True
-
-    def test_load_service_invalid_module(self):
-        """test that load_service raises error for invalid module"""
-        with pytest.raises(ModuleNotFoundError):
-            load_service("invalid.module.name", "TestClass")
-
-    def test_load_service_invalid_class(self):
-        """test that load_service raises error for invalid class"""
-        with pytest.raises(AttributeError):
-            load_service("tests.saq.test_service", "NonExistentClass")
-
-
 @pytest.mark.unit
 class TestLoadServiceByName:
     """Tests for load_service_by_name function."""
@@ -167,24 +126,7 @@ class TestLoadServiceByName:
 
         service = load_service_by_name("test_service")
 
-        assert service is not None
-        assert hasattr(service, "start")
-        assert hasattr(service, "stop")
-
-    def test_load_service_by_name_with_instance_type_validation(self):
-        """test that load_service_by_name validates instance type"""
-        config = get_config()
-        config.add_service_config("valid_service", ServiceConfig(
-            name="valid_service", 
-            description="valid service",
-            enabled=True,
-            python_module="tests.saq.test_service", 
-            python_class="MockService",
-            instance_types=[INSTANCE_TYPE_UNITTEST]))
-
-        service = load_service_by_name("valid_service")
-
-        assert service is not None
+        assert isinstance(service, MockService)
 
     def test_load_service_by_name_fails_invalid_instance_type(self):
         """test that load_service_by_name fails for invalid instance type"""

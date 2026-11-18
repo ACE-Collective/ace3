@@ -2,12 +2,13 @@ import logging
 import uuid as uuidlib
 from flask import flash, redirect, request, session, url_for
 from flask_login import current_user
-from app.auth.permissions import require_permission
+from app.auth.permissions import current_user_auth, require_permission
 from app.blueprints import analysis
 from saq.constants import REDIRECT_MAP
 from saq.database.pool import get_db
 from saq.database.util.locking import acquire_lock, release_lock
 from saq.gui.alert import GUIAlert
+from saq.logging import log_audit
 
 @analysis.route('/add_tag', methods=['POST'])
 @require_permission('alert', 'write')
@@ -38,12 +39,15 @@ def add_tag():
 
     failed_count = 0
 
-    logging.info(f"AUDIT: user {current_user} added tags {tags} to alerts {uuids}")
+    log_audit("user %s added tags %s to alerts %s", current_user.username, tags, uuids,
+              auth=current_user_auth(), alert_uuids=uuids, tags=tags)
 
     for uuid in uuids:
         logging.debug("attempting to lock alert {} for tagging".format(uuid))
-        alert = get_db().query(GUIAlert).filter(GUIAlert.uuid == uuid).one()
+        alert = get_db().query(GUIAlert).filter(GUIAlert.uuid == uuid).one_or_none()
         if alert is None:
+            # deleted since the page was loaded: the others are still tagged
+            logging.info(f"cannot change the tags of alert {uuid}: it does not exist")
             continue
 
         try:
@@ -61,7 +65,7 @@ def add_tag():
             alert.sync()
 
         except Exception as e:
-            logging.error(f"unable to add tag to {alert}: {e}")
+            logging.exception(f"unable to add tag to {alert}: {e}")
             failed_count += 1
 
         finally:
@@ -105,10 +109,15 @@ def remove_tag():
 
     failed_count = 0
 
+    log_audit("user %s removed tags %s from alerts %s", current_user.username, tags, uuids,
+              auth=current_user_auth(), alert_uuids=uuids, tags=tags)
+
     for uuid in uuids:
         logging.debug("attempting to lock alert {} for tagging".format(uuid))
-        alert = get_db().query(GUIAlert).filter(GUIAlert.uuid == uuid).one()
+        alert = get_db().query(GUIAlert).filter(GUIAlert.uuid == uuid).one_or_none()
         if alert is None:
+            # deleted since the page was loaded: the others are still tagged
+            logging.info(f"cannot change the tags of alert {uuid}: it does not exist")
             continue
 
         try:
@@ -124,10 +133,9 @@ def remove_tag():
                 alert.root_analysis.remove_tag(tag)
 
             alert.sync()
-            logging.info(f"AUDIT: user {current_user} removed tag {tag} from alert {alert}")
 
         except Exception as e:
-            logging.error(f"unable to remove tag from {alert}: {e}")
+            logging.exception(f"unable to remove tag from {alert}: {e}")
             failed_count += 1
 
         finally:

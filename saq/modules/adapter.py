@@ -149,6 +149,10 @@ class AnalysisModuleAdapter(AnalysisModuleInterface):
         """Returns True if this module can analyze the given observable."""
         return self._module.accepts(observable)
 
+    def will_retry(self, analysis: Analysis) -> bool:
+        """Returns True if this module runs again to replace the given analysis of its own."""
+        return self._module.will_retry(analysis)
+
     def custom_requirement(self, observable: Observable) -> bool:
         """Additional check evaluated by the engine as the final gate before the
         module runs. May raise WaitForAnalysisException to wait on another analysis."""
@@ -166,6 +170,10 @@ class AnalysisModuleAdapter(AnalysisModuleInterface):
     def set_context(self, context: AnalysisModuleContext) -> None:
         """Set the dependency injection context."""
         self._module.set_context(context)
+
+    def set_analysis_deadline(self, deadline: Optional[float]) -> None:
+        """Records the time.monotonic() value past which the engine stops the current call to analyze()."""
+        self._module.set_analysis_deadline(deadline)
     
     def get_root(self) -> RootAnalysisInterface:
         """Get the root analysis interface from context."""
@@ -216,10 +224,17 @@ def load_module_from_config(analysis_module_name: str) -> Optional[AnalysisModul
     """Loads an AnalysisModule by config section name with the provided context.
     Returns None on failure."""
 
+    if not get_config().has_analysis_module_config(analysis_module_name):
+        logging.error(f"analysis module config for {analysis_module_name} not found",
+                      extra={"analysis_module": analysis_module_name})
+        return None
+
     try:
         module_config = get_config().get_analysis_module_config(analysis_module_name)
-    except ValueError as e:
-        logging.error(f"analysis module config for {analysis_module_name} not found: {e}")
+    except Exception as e:
+        # a block that fails its config class's validation (an undeclared key, a bad value)
+        logging.exception(f"analysis module config for {analysis_module_name} is invalid: {e}",
+                          extra={"analysis_module": analysis_module_name})
         return None
 
     python_module_name = module_config.python_module

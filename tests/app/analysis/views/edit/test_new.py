@@ -4,17 +4,20 @@ import io
 import logging
 import os
 from datetime import UTC, datetime
-from unittest.mock import Mock, patch
+from unittest.mock import Mock
 
 import pytest
+import requests
 from flask import url_for
+from werkzeug.exceptions import BadRequestKeyError
 
-from saq.analysis.root import load_root
+from app.analysis.views.edit.new import SUBMIT_TIMEOUT
+from saq.analysis.root import KEY_ALERT_TEMPLATE, load_root
 from saq.configuration.config import get_config
-from saq.constants import F_FILE, F_IPV4, create_file_location
+from saq.constants import F_FILE, F_IPV4
 from saq.database.model import Alert, Company, Nodes
 from saq.database.pool import get_db
-from saq.environment import get_temp_dir
+from saq.environment import get_data_dir, get_temp_dir
 from saq.util.uuid import get_storage_dir
 
 
@@ -67,35 +70,117 @@ def _leftover_uploads() -> list[str]:
     return glob.glob(os.path.join(get_temp_dir(), '*.upload'))
 
 
+def _flashes(web_client) -> list[str]:
+    with web_client.session_transaction() as session:
+        return [message for _category, message in session.get('_flashes', [])]
+
+
 @pytest.mark.integration
 def test_new_alert_observable_get(web_client):
-    """Test GET request to new_alert_observable returns template with correct data."""
+    """The row for another observable carries its index and offers the observable types and the
+    directives an analyst may set."""
     response = web_client.get(url_for('analysis.new_alert_observable', index='5'))
 
     assert response.status_code == 200
-    # Template should be returned successfully
-    assert response.data is not None
+    assert b'id="new_alert_observable_5"' in response.data
+    assert b'<option value="ipv4" >ipv4</option>' in response.data
+    assert b'<option value="crawl" title=' in response.data
 
 
 @pytest.mark.integration
 def test_new_alert_observable_missing_index(web_client):
-    """Test new_alert_observable without index parameter."""
-    try:
-        response = web_client.get(url_for('analysis.new_alert_observable'))
-        # Should return 400 or 500 due to missing required parameter
-        assert response.status_code in [400, 500]
-    except Exception:
-        # URL generation may fail without required parameter
-        pass
+    """The index is required: without it the request is refused."""
+    with pytest.raises(BadRequestKeyError):
+        web_client.get(url_for('analysis.new_alert_observable'))
+
+
+LISTED_TEMPLATE = 'analysis/custom/saq_debug.html'
+
+
+@pytest.fixture
+def listed_template(monkeypatch):
+    """A template listed in custom_alerts.selectable_templates that renders any alert's details."""
+    monkeypatch.setattr(get_config().custom_alerts, 'selectable_templates', [LISTED_TEMPLATE])
+    return LISTED_TEMPLATE
 
 
 @pytest.mark.integration
-def test_file_route_get(web_client, target_node):
-    """Test GET request to file route returns analyze_file template."""
+def test_file_route_offers_alert_templates_with_automatic_selected(web_client, target_node, listed_template):
     response = web_client.get(url_for('analysis.file'))
 
     assert response.status_code == 200
-    assert f'value="{target_node}"'.encode() in response.data
+    assert b'<option value="" selected>Automatic</option>' in response.data
+    assert b'<option value="analysis/alert.html">analysis/alert.html</option>' in response.data
+    assert f'<option value="{listed_template}">{listed_template}</option>'.encode() in response.data
+    # a custom template that is only in custom_alerts.dirs is not offered
+    assert b'analysis/custom/http.html' not in response.data
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize('submit_type', ['single', 'multiple'])
+def test_new_alert_with_a_chosen_alert_template(web_client, mock_api_call, target_node, listed_template, submit_type):
+    web_client.post(url_for('analysis.new_alert'), data=_form(
+        target_node,
+        new_alert_template=listed_template,
+        observables_types_0='ipv4',
+        observables_values_0='192.168.1.1\n192.168.1.2',
+        observable_data_sep_0='multi',
+        submit_type=submit_type))
+
+    alerts = _alerts()
+    assert len(alerts) == (1 if submit_type == 'single' else 2)
+    for alert in alerts:
+        assert load_root(alert.storage_dir).extensions == {KEY_ALERT_TEMPLATE: listed_template}
+
+
+@pytest.mark.integration
+def test_alert_page_renders_with_the_chosen_alert_template(web_client, mock_api_call, target_node, listed_template):
+    response = web_client.post(url_for('analysis.new_alert'), data=_form(
+        target_node,
+        new_alert_template=listed_template,
+        observables_types_0='ipv4',
+        observables_values_0='192.168.1.1'))
+
+    page = web_client.get(url_for('analysis.index', direct=_alert_uuid(response)))
+
+    assert page.status_code == 200
+    assert b'This is a debugging alert.' in page.data
+
+
+@pytest.mark.integration
+def test_new_alert_with_automatic_alert_template_sets_none(web_client, mock_api_call, target_node):
+    response = web_client.post(url_for('analysis.new_alert'), data=_form(
+        target_node,
+        new_alert_template='',
+        observables_types_0='ipv4',
+        observables_values_0='192.168.1.1'))
+
+    root = _submitted_root(response)
+    assert KEY_ALERT_TEMPLATE not in (root.extensions or {})
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize('template', [
+    '../../etc/passwd',
+    # in custom_alerts.dirs but not listed: it reads details a manual alert does not have
+    'analysis/custom/http.html',
+])
+def test_new_alert_with_an_unknown_alert_template_is_refused(web_client, mock_api_call, target_node, analyst, caplog, template):
+    with caplog.at_level(logging.WARNING):
+        response = web_client.post(url_for('analysis.new_alert'), data=_form(
+            target_node,
+            new_alert_template=template,
+            observables_types_0='ipv4',
+            observables_values_0='192.168.1.1'))
+
+    assert response.status_code == 302
+    assert 'manage' in response.location
+    assert _alerts() == []
+    assert _flashes(web_client) == [f'unknown alert template {template}']
+    records = [r for r in caplog.records if getattr(r, 'template', None) == template]
+    assert len(records) == 1
+    assert records[0].levelno == logging.WARNING
+    assert records[0].user == 'john'
 
 
 @pytest.mark.integration
@@ -151,64 +236,46 @@ def test_new_alert_multiple_observables_multi_submit(web_client, mock_api_call, 
 
 
 @pytest.mark.integration
-def test_new_alert_invalid_timezone(web_client, mock_api_call, target_node):
-    """Test new alert creation with invalid timezone."""
-    response = web_client.post(url_for('analysis.new_alert'), data=_form(
-        target_node,
-        timezone='Invalid/Timezone'))
+def test_new_alert_invalid_timezone(web_client, mock_api_call, target_node, analyst, caplog):
+    """An unknown timezone is refused, and the refusal is logged as client input, not as a fault."""
+    with caplog.at_level(logging.WARNING):
+        response = web_client.post(url_for('analysis.new_alert'), data=_form(
+            target_node,
+            timezone='Invalid/Timezone'))
 
     # Should redirect to manage page due to timezone error
     assert response.status_code == 302
     assert 'manage' in response.location
     assert _alerts() == []
+    assert _flashes(web_client) == ["unknown timezone Invalid/Timezone"]
+    records = [r for r in caplog.records if getattr(r, 'timezone', None) == 'Invalid/Timezone']
+    assert len(records) == 1
+    assert records[0].levelno == logging.WARNING
+    assert records[0].user == 'john'
 
 
 @pytest.mark.integration
-def test_new_alert_email_conversation_observable(web_client, mock_api_call, target_node):
-    """Test creation of alert with email conversation observable."""
+@pytest.mark.parametrize('o_type,value_a,value_b,expected', [
+    ('email_conversation', 'sender@example.com', 'recipient@example.com', 'sender@example.com|recipient@example.com'),
+    ('ipv4_conversation', '192.168.1.1', '192.168.1.2', '192.168.1.1_192.168.1.2'),
+    ('file_location', 'hostname', '/path/to/file', 'hostname@/path/to/file'),
+])
+def test_new_alert_joins_the_two_values_of_a_pair_type(web_client, mock_api_call, target_node, o_type, value_a,
+                                                       value_b, expected):
+    """The observable types entered as two values become one observable value."""
     response = web_client.post(url_for('analysis.new_alert'), data=_form(
         target_node,
-        observables_types_0='email_conversation',
-        observables_values_0_A='sender@example.com',
-        observables_values_0_B='recipient@example.com'))
+        observables_types_0=o_type,
+        observables_values_0_A=value_a,
+        observables_values_0_B=value_b))
 
-    root = _submitted_root(response)
-    observable = root.get_observable_by_type('email_conversation')
-    assert observable.value == 'sender@example.com|recipient@example.com'
+    assert _submitted_root(response).get_observable_by_type(o_type).value == expected
 
 
 @pytest.mark.integration
-def test_new_alert_ipv4_conversation_observable(web_client, mock_api_call, target_node):
-    """Test creation of alert with IPv4 conversation observable."""
-    response = web_client.post(url_for('analysis.new_alert'), data=_form(
-        target_node,
-        observables_types_0='ipv4_conversation',
-        observables_values_0_A='192.168.1.1',
-        observables_values_0_B='192.168.1.2'))
-
-    root = _submitted_root(response)
-    observable = root.get_observable_by_type('ipv4_conversation')
-    assert observable.value == '192.168.1.1_192.168.1.2'
-
-
-@pytest.mark.integration
-def test_new_alert_file_location_observable(web_client, mock_api_call, target_node):
-    """Test creation of alert with file location observable."""
-    response = web_client.post(url_for('analysis.new_alert'), data=_form(
-        target_node,
-        observables_types_0='file_location',
-        observables_values_0_A='hostname',
-        observables_values_0_B='/path/to/file'))
-
-    root = _submitted_root(response)
-    observable = root.get_observable_by_type('file_location')
-    assert observable.value == create_file_location('hostname', '/path/to/file')
-
-
-@pytest.mark.integration
-def test_new_alert_file_upload(web_client, mock_api_call, target_node, caplog):
-    """A file observable posted without a file is refused."""
-    with caplog.at_level(logging.ERROR):
+def test_new_alert_file_row_without_upload_is_refused(web_client, mock_api_call, target_node, caplog):
+    """A file observable posted without a file is refused with a message, not an error report."""
+    with caplog.at_level(logging.WARNING):
         response = web_client.post(url_for('analysis.new_alert'), data=_form(
             target_node,
             observables_types_0=F_FILE,
@@ -217,22 +284,62 @@ def test_new_alert_file_upload(web_client, mock_api_call, target_node, caplog):
     assert response.status_code == 302
     assert 'manage' in response.location
     assert _alerts() == []
-    assert any(r.getMessage().startswith("unable to submit alert") for r in caplog.records)
+    assert _flashes(web_client) == ['no file uploaded for observable 0']
+    assert [r for r in caplog.records if r.levelno >= logging.WARNING] == []
 
 
 @pytest.mark.integration
-def test_new_alert_api_submission_failure(web_client, target_node):
-    """Test handling of API submission failure."""
-    # Mock API submission to raise exception
-    with patch('app.analysis.views.edit.new.ace_api.submit', side_effect=Exception("API submission failed")):
+@pytest.mark.parametrize('submit_type', ['single', 'multiple'])
+def test_new_alert_file_row_without_upload_refuses_every_observable(web_client, mock_api_call, target_node, submit_type):
+    """A file row without an upload among other observables refuses the whole submission: a single
+    alert is not created without it, no alert is created for the other observables, and the upload
+    already saved for an earlier row is removed."""
+    response = web_client.post(url_for('analysis.new_alert'), data=_form(
+        target_node,
+        observables_types_0=F_FILE,
+        observables_values_0=(io.BytesIO(b'uploaded content'), 'upload.txt'),
+        observables_types_1=F_FILE,
+        observables_values_1='not an upload',
+        observables_directives_1='',
+        observable_data_sep_1='single',
+        submit_type=submit_type),
+        content_type='multipart/form-data')
+
+    assert response.status_code == 302
+    assert 'manage' in response.location
+    assert _alerts() == []
+    assert _flashes(web_client) == ['no file uploaded for observable 1']
+    assert _leftover_uploads() == []
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize('submit_type', ['single', 'multiple'])
+def test_new_alert_submission_timeout_is_reported(web_client, target_node, monkeypatch, caplog, submit_type):
+    """A target node that stalls times the submission out instead of holding the GUI worker."""
+    post = Mock(side_effect=requests.Timeout("read timed out"))
+    # ace_api imports requests when it makes the call
+    monkeypatch.setattr("requests.post", post)
+    write_error_report = Mock()
+    monkeypatch.setattr("saq.error.reporting.write_error_report", write_error_report)
+
+    with caplog.at_level(logging.ERROR):
         response = web_client.post(url_for('analysis.new_alert'), data=_form(
             target_node,
             observables_types_0='ipv4',
-            observables_values_0='192.168.1.1'))
+            observables_values_0='192.168.1.1',
+            submit_type=submit_type))
 
-    # Should redirect to manage page with error
+    post.assert_called_once()
+    assert post.call_args.kwargs['timeout'] == SUBMIT_TIMEOUT
     assert response.status_code == 302
     assert 'manage' in response.location
+    assert _flashes(web_client) == ['unable to submit alert: read timed out']
+    records = [r for r in caplog.records if r.getMessage().startswith("unable to submit alert")]
+    assert len(records) == 1
+    assert records[0].levelno == logging.ERROR
+    assert records[0].exc_info is not None
+    write_error_report.assert_called_once()
+    assert _alerts() == []
 
 
 @pytest.mark.integration
@@ -321,38 +428,29 @@ def test_new_alert_no_observables(web_client, mock_api_call, analyst, target_nod
     assert get_db().query(Alert).filter(Alert.uuid == root.uuid).one().owner_id == analyst
 
 
-def _submit_local_file(web_client, target_node, tmp_path):
-    local_file = tmp_path / 'test_file.txt'
-    local_file.write_bytes(b'local file content')
+@pytest.mark.integration
+def test_new_alert_never_reads_a_server_path(web_client, mock_api_call, target_node, tmp_path):
+    """A file observable's value is only ever an upload: a path on this server given in its place
+    (as the removed is_local field once allowed) is not opened or attached."""
+    server_file = tmp_path / 'secret.txt'
+    server_file.write_bytes(b'server file content')
 
     response = web_client.post(url_for('analysis.new_alert'), data=_form(
         target_node,
-        new_alert_description='Local File Alert',
+        new_alert_description='Server Path Alert',
         observables_types_0=F_FILE,
-        observables_values_0=str(local_file),
+        observables_values_0=str(server_file),
         is_local='true'))
 
-    return _submitted_root(response)
-
-
-@pytest.mark.integration
-def test_new_alert_local_file_path(web_client, mock_api_call, target_node, tmp_path):
-    """Test creation of alert with a file already on this server."""
-    root = _submit_local_file(web_client, target_node, tmp_path)
-    assert root.description == 'Local File Alert (test_file.txt)'
-    observable = root.get_observable_by_type(F_FILE)
-    assert observable.sha256_hash == hashlib.sha256(b'local file content').hexdigest()
-    assert observable.has_directive('no_scan')
-    assert observable.added_by == 'john'
-
-
-# only the file name is wrong; everything else about the submission is pinned by the test above
-@pytest.mark.integration
-@pytest.mark.xfail(strict=True, reason="a local file is submitted under its sha256 as the file name, and the "
-                   "submission's file_path is ignored, so the file observable is named by its hash")
-def test_new_alert_local_file_path_keeps_file_name(web_client, mock_api_call, target_node, tmp_path):
-    root = _submit_local_file(web_client, target_node, tmp_path)
-    assert root.get_observable_by_type(F_FILE).file_name == 'test_file.txt'
+    # a file row without an upload is refused, and nothing was read from the server path
+    assert response.status_code == 302
+    assert 'direct=' not in response.location
+    assert _flashes(web_client) == ['no file uploaded for observable 0']
+    assert get_db().query(Alert).count() == 0
+    for dir_path, _, file_names in os.walk(get_data_dir()):
+        for file_name in file_names:
+            with open(os.path.join(dir_path, file_name), 'rb') as fp:
+                assert b'server file content' not in fp.read()
 
 
 @pytest.mark.integration
@@ -434,4 +532,75 @@ def test_new_alert_file_save_failure_is_reported(web_client, mock_api_call, targ
     assert _leftover_uploads() == []
     records = [r for r in caplog.records if r.getMessage().startswith("unable to save")]
     assert len(records) == 1
+    write_error_report.assert_called_once()
+
+
+def _post_file_alert(web_client, target_node):
+    return web_client.post(url_for('analysis.new_alert'), data=_form(
+        target_node,
+        new_alert_description='File Upload Alert',
+        observables_types_0=F_FILE,
+        observables_values_0=(io.BytesIO(b'uploaded content'), 'upload.txt')),
+        content_type='multipart/form-data')
+
+
+@pytest.mark.integration
+def test_new_alert_temp_file_remove_failure_is_reported(web_client, mock_api_call, target_node, monkeypatch, caplog):
+    """An upload left behind in the temp dir is reported with its traceback and path, and the
+    alert is still submitted."""
+    real_remove = os.remove
+
+    def failing_remove(path, *args, **kwargs):
+        if str(path).endswith('.upload'):
+            raise PermissionError("permission denied")
+        return real_remove(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "remove", failing_remove)
+    write_error_report = Mock()
+    monkeypatch.setattr("saq.error.reporting.write_error_report", write_error_report)
+
+    with caplog.at_level(logging.ERROR):
+        response = _post_file_alert(web_client, target_node)
+
+    monkeypatch.undo()
+    leftovers = _leftover_uploads()
+    for path in leftovers:
+        os.remove(path)
+
+    _alert_uuid(response)
+    assert len(leftovers) == 1
+    records = [r for r in caplog.records if r.getMessage().startswith("unable to remove")]
+    assert len(records) == 1
+    assert records[0].levelno == logging.ERROR
+    assert records[0].exc_info[0] is PermissionError
+    assert records[0].path == leftovers[0]
+    write_error_report.assert_called_once()
+
+
+@pytest.mark.integration
+def test_new_alert_upload_close_failure_is_reported(web_client, mock_api_call, target_node, monkeypatch, caplog):
+    """An upload whose file descriptor cannot be closed is reported with its traceback and file
+    name, and the temp file is still removed."""
+    class FailingClose(io.BufferedReader):
+        def close(self):
+            if self.closed:
+                return
+            super().close()
+            raise OSError("bad file descriptor")
+
+    monkeypatch.setattr("app.analysis.views.edit.new.open",
+                        lambda path, mode: FailingClose(io.FileIO(path, mode)), raising=False)
+    write_error_report = Mock()
+    monkeypatch.setattr("saq.error.reporting.write_error_report", write_error_report)
+
+    with caplog.at_level(logging.ERROR):
+        response = _post_file_alert(web_client, target_node)
+
+    _alert_uuid(response)
+    assert _leftover_uploads() == []
+    records = [r for r in caplog.records if r.getMessage().startswith("unable to close")]
+    assert len(records) == 1
+    assert records[0].levelno == logging.ERROR
+    assert records[0].exc_info[0] is OSError
+    assert records[0].file_name == 'upload.txt'
     write_error_report.assert_called_once()

@@ -1,13 +1,15 @@
+import base64
 from datetime import datetime
 import gc
+import json
 import logging
 import os
 import re
 import shutil
-from subprocess import PIPE, Popen
 from typing import override
 
 import distorm3
+from markupsafe import Markup, escape
 from pydantic import Field
 from saq.analysis.analysis import Analysis
 from saq.analysis.detection_point import DetectionPoint
@@ -17,23 +19,27 @@ from saq.constants import SERVICE_YARA_SCANNER, AnalysisExecutionResult, DIRECTI
 from saq.database import Observable as db_Observable, ObservableDetection as db_ObservableDetection
 from saq.database.pool import get_db
 from saq.environment import get_data_dir
+from saq.logging import utf8_safe
 from saq.modules import AnalysisModule
 from saq.modules.config import AnalysisModuleConfig
 from saq.modules.file_analysis.disassembly import disassemble
 from saq.observables.file import FileObservable
 from saq.signatures.builtin import SIGNATURE_VERSION_UNKNOWN, YARA_RULE_MATCH
+from saq.signatures.loaders.yara import attach_rule_details, compiled_rule_details
 from saq.signatures.model import SignatureType
-from saq.signatures.yara_meta import META_MODIFIERS, MODIFIER_NO_ALERT, MODIFIER_QA, meta_enabled, meta_modifiers
+from saq.signatures.yara_meta import META_MODIFIERS, MODIFIER_QA, detection_blocker, meta_enabled, meta_modifiers
 from saq.svs.marker_rule import install_marker_rule
 from saq.util.filesystem import abs_path
 from saq.yara_scanning import client as yara_client
 from saq.yara_scanning.client import YaraScanTimeout, YaraServiceUnavailable
+from saq.yara_scanning.server import scan_path
 from saq.yara_scanning.service import get_validated_git_repo_dirs
 
 import yara
 import yara_scanner
 
 from saq.util.strings import format_item_list_for_summary
+from saq.util.ui import hexdump, hexdump_line_html
 
 
 def _rule_queue(match_result: dict) -> str | None:
@@ -222,6 +228,8 @@ class YaraScanner_v3_4(AnalysisModule):
 
         # in the case where the yara scanning server is unavailable a local scanner is used
         self.scanner = None
+        # the string patterns and sources of the rules the local scanner compiled
+        self.local_rule_details = {}
 
         # we use it for N minutes defined in the configuration
         self.scanner_start_time = None
@@ -236,6 +244,7 @@ class YaraScanner_v3_4(AnalysisModule):
             signature_dir=self.signature_dir, git_repo_dirs=self.git_repo_dirs,
             default_timeout=get_service_config(SERVICE_YARA_SCANNER).default_timeout)
         self.scanner.load_rules()
+        self.local_rule_details = compiled_rule_details(self.scanner)
         self.scanner_start_time = datetime.now()
         #self.load_blacklist()
 
@@ -334,6 +343,7 @@ class YaraScanner_v3_4(AnalysisModule):
                         logging.info("releasing local yara scanner")
                         self.scanner = None
                         self.scanner_start_time = None
+                        self.local_rule_details = {}
                         gc.collect()
 
             except YaraScanTimeout as e:
@@ -347,8 +357,9 @@ class YaraScanner_v3_4(AnalysisModule):
 
                 scanned_locally = True
                 try:
-                    matches_found = self.scanner.scan(local_file_path, meta_tags=meta_tags)
+                    matches_found = scan_path(self.scanner, local_file_path, meta_tags=meta_tags)
                     result = self.scanner.scan_results
+                    attach_rule_details(result, self.local_rule_details)
                 except yara.TimeoutError as e:
                     logging.warning("local yara scanner timed out scanning file %s: %s", local_file_path, e)
                     matches_found = False
@@ -376,53 +387,35 @@ class YaraScanner_v3_4(AnalysisModule):
                 # directive=VALUE - add the given directive to the file being scanned where VALUE is the directive to add
                 # anything that matches a yara rule is considered suspect
 
-                alertable = False # initially set to False until we hit at least one rule that does NOT have the no_alert modifier
+                alertable = False # set once a rule's match makes a detection
                 for match_result in analysis.scan_results:
-                    if META_MODIFIERS in match_result['meta']:
-                        modifier_no_alert = False
-                        modifier_qa = False
+                    # a rule in QA mode, with no_alert, or tagged whitelisted (known-good content) makes no
+                    # detection of its own, but it never stops the other rules or modules from alerting.
+                    # SVS validation decides with the same function, so its "match" is a detection here
+                    if detection_blocker(match_result['meta'], match_result['tags']) is None:
+                        alertable = True
+                    else:
+                        no_alert_rules.add(match_result['rule'])
 
+                    if META_MODIFIERS in match_result['meta']:
                         modifiers = meta_modifiers(match_result['meta'])
                         logging.debug("yara rule {} has modifiers {}".format(match_result['rule'], ','.join(modifiers)))
 
+                        if MODIFIER_QA in modifiers:
+                            logging.info(f"yara rule {match_result['rule']} matched {_file} in QA mode")
+                            if scanned_locally and self.save_qa_scan_results:
+                                logging.warning(f"yara rule {match_result['rule']} matched {_file} in QA mode "
+                                                "with the local yara scanner: the match is not recorded")
+
+                            # if we're running a rule in QA mode then we don't want to apply any other directives
+                            continue
+
                         for modifier in modifiers:
-                            if modifier == MODIFIER_QA:
-                                modifier_qa = True
-                                modifier_no_alert = True
-                                no_alert_rules.add(match_result['rule'])
-
-                                logging.info(f"yara rule {match_result['rule']} matched {_file} in QA mode")
-                                if scanned_locally and self.save_qa_scan_results:
-                                    logging.warning(f"yara rule {match_result['rule']} matched {_file} in QA mode "
-                                                    "with the local yara scanner: the match is not recorded")
-
-                                continue
-
-                            if modifier == MODIFIER_NO_ALERT:
-                                modifier_no_alert = True
-                                no_alert_rules.add(match_result['rule'])
-                                continue
-
-                        # if we're running a rule in QA mode then we don't want to apply any other directives
-                        if not modifier_qa:
-                            for modifier in modifiers:
-                                if modifier.startswith('directive'):
-                                    key, modifier_directive = modifier.split('=', 1)
-                                    #if modifier_directive not in VALID_DIRECTIVES:
-                                        #logging.warning("yara rule {} attempts to add invalid directive {}".format(match_result['rule'], modifier_directive))
-                                    #else:
-                                    logging.debug("assigned directive {} to {} by modifiers on yara rule {}".format(
-                                                  modifier_directive, _file, match_result['rule']))
-                                    _file.add_directive(modifier_directive)
-
-                                    continue
-
-                        # did at least one rule NOT have the no_alert modifier?
-                        if not modifier_no_alert:
-                            alertable = True
-                    else:
-                        # no modifiers at all?
-                        alertable = True
+                            if modifier.startswith('directive'):
+                                key, modifier_directive = modifier.split('=', 1)
+                                logging.debug("assigned directive {} to {} by modifiers on yara rule {}".format(
+                                              modifier_directive, _file, match_result['rule']))
+                                _file.add_directive(modifier_directive)
 
                 # if any rule matches (that does not have the no_alert modifier) then the whole thing becomes an alert
                 if alertable:
@@ -443,6 +436,7 @@ class YaraScanner_v3_4(AnalysisModule):
                 return AnalysisExecutionResult.COMPLETED
         except Exception as e:
             logging.exception("error scanning file {}: ({}) {}".format(local_file_path, type(e), e))
+            scan_error = f"yara scan failed: {str(e) or type(e).__name__}"
             
             # we copy the files we cannot scan to a directory where we can debug it later
             if self.save_scan_failures and self.scan_failure_dir is not None:
@@ -455,7 +449,11 @@ class YaraScanner_v3_4(AnalysisModule):
                     logging.debug("copied {} to {}".format(local_file_path, dest_path))
                 except Exception as e:
                     logging.exception("unable to copy {} to {}: {}".format(local_file_path, self.scan_failure_dir, e))
-            
+
+            # the matches are listed, but the failure came before any of them became a detection
+            if analysis is not None:
+                analysis.error = scan_error
+
             return AnalysisExecutionResult.COMPLETED
 
         if not analysis:
@@ -482,12 +480,8 @@ class YaraScanner_v3_4(AnalysisModule):
                 for (position, string_name, string_value) in yara_result["strings"]:
                     yara_string_observable = analysis.add_observable_by_spec(F_YARA_STRING, create_yara_string(rule_observable.value, string_name))
 
-                try:
-                    # yara_result is a dictionary that should have a "strings" key that looks like:
-                    # 'strings': [(50, '$obsd_1', b'blah')]
-                    string_keys = set([s[1] for s in yara_result['strings']])
-                except:
-                    string_keys = []
+                # 'strings': [(50, '$obsd_1', b'blah')], checked by the service protocol (decode_matches)
+                string_keys = {s[1] for s in yara_result['strings']}
 
                 # Parse the row id out of each string key and add the corresponding type+value to
                 # this analysis.
@@ -521,7 +515,8 @@ class YaraScanner_v3_4(AnalysisModule):
                         if obs:
                             obs.add_tag(yara_result['rule'])
                     except Exception as e:
-                        logging.error(f"unable to add observable value {value}: {e}")
+                        logging.exception(f"unable to add {row.type} observable {value} of {model.__tablename__} "
+                                          f"row {row_id} matched by yara rule {yara_result['rule']}: {e}")
 
 
             # if this yara rule did not have the no_alert modifier then it becomes a detection point,
@@ -530,7 +525,8 @@ class YaraScanner_v3_4(AnalysisModule):
             if yara_result['rule'] not in no_alert_rules:
                 detection_signature_uuid, detection_signature_version = _yara_detection_signature(yara_result)
                 _file.add_detection_point(
-                    "{} matched yara rule {}".format(_file, yara_result['rule']),
+                    # MySQL rejects the lone surrogates of a name that is not UTF-8
+                    "{} matched yara rule {}".format(utf8_safe(str(_file)), yara_result['rule']),
                     details=_yara_detection_details(_file, yara_result, self.signature_dir),
                     queue=_rule_queue(yara_result),
                     signature_uuid=detection_signature_uuid,
@@ -553,69 +549,142 @@ class YaraScanner_v3_4(AnalysisModule):
 
 
             yara_result['context'] = []
-            for position, string_id, value in yara_result['strings']:
-                # we want some context around what we matched
-                start_byte = position - self.context_bytes
-                if start_byte < 0:
-                    start_byte = 0
+            # aligned with context: the bytes around each match and where in them the match is
+            yara_result['match_context'] = []
+            # a rule can match a string many times in one file, so the file is opened once per rule
+            # and the hex dump is built here rather than by a hexdump process per match
+            with open(local_file_path, 'rb') as fp:
+                for position, string_id, value in yara_result['strings']:
+                    # we want some context around what we matched
+                    start_byte = max(0, position - self.context_bytes)
+                    length = self.context_bytes + len(value) + self.context_bytes
 
-                length = self.context_bytes + len(value) + self.context_bytes
+                    fp.seek(start_byte)
+                    context_data = fp.read(length)
+                    yara_result['context'].append([position, string_id, value, hexdump(context_data)])
+                    yara_result['match_context'].append({
+                        "data": base64.b64encode(context_data).decode("ascii"),
+                        "match_offset": position - start_byte,
+                        "match_length": len(value)})
 
-                with open(local_file_path, 'rb') as fp:
-                    try:
-                        fp.seek(start_byte)
-                        context_data = fp.read(length)
-                    except Exception as e:
-                        logging.exception("unable to seek to position {} in {}: {}".format(start_byte, local_file_path, e))
-
-                    p = Popen(['hexdump', '-C'], stdin=PIPE, stdout=PIPE)
-                    p.stdin.write(context_data)
-                    stdout, _ = p.communicate()
-                    p.wait()
-                    yara_result['context'].append([position, string_id, value, stdout])
-
-                # build disassembly output if the rule specifies this
-                if 'asm' in yara_result['tags']:
-                    decoder = None
-                    if string_id.endswith('x86'):
-                        # 32-bit x86
-                        decoder = distorm3.Decode32Bits
-                    elif string_id.endswith('x64'):
-                        decoder = distorm3.Decode64Bits
-                        # 64-bit x86
-                        pass
-                    elif string_id.endswith('A32'):
-                        # 32-bit ARM
-                        pass
-                    elif string_id.endswith('A64'):
-                        #64-bit ARM
-                        pass
-                    if decoder:
-                        try:
-                            first_instr_offset = position - start_byte
-                            # Add a fifth item to the context list of the last yara_result added. app/templates/analysis/yara_analysis* will render this appropriately
-                            yara_result['context'][-1].append(disassemble(_full_path, position, first_instr_offset, len(value), context_data, decoder))
-                        except Exception:
-                            logging.exception(f"unable to disassemble {string_id} at {position} in {_full_path}")
-                            yara_result['context'][-1].append('Failed to disassemble')
+                    # build disassembly output if the rule specifies this
+                    if 'asm' in yara_result['tags']:
+                        decoder = None
+                        if string_id.endswith('x86'):
+                            # 32-bit x86
+                            decoder = distorm3.Decode32Bits
+                        elif string_id.endswith('x64'):
+                            decoder = distorm3.Decode64Bits
+                            # 64-bit x86
+                            pass
+                        elif string_id.endswith('A32'):
+                            # 32-bit ARM
+                            pass
+                        elif string_id.endswith('A64'):
+                            #64-bit ARM
+                            pass
+                        if decoder:
+                            try:
+                                first_instr_offset = position - start_byte
+                                # Add a fifth item to the context list of the last yara_result added. app/templates/analysis/yara_analysis* will render this appropriately
+                                yara_result['context'][-1].append(disassemble(_full_path, start_byte, first_instr_offset, len(value), context_data, decoder))
+                            except Exception:
+                                logging.exception(f"unable to disassemble {string_id} at {position} in {_full_path}")
+                                yara_result['context'][-1].append('Failed to disassemble')
 
             # did this rule have any tags?
             for tag in yara_result['tags']:
                 #rule_observable.add_tag(tag)
                 _file.add_tag(tag)
-                # if the yara rule is whitelisted, we need to make sure the analysis is whitelisted in ACE
-                if tag == "whitelisted":
-                    _file.whitelist()
 
         return AnalysisExecutionResult.COMPLETED
 
 
+def _visible_char(c: str) -> str | None:
+    """The symbol shown for a non-printing character, or None for one shown as is."""
+    if ord(c) < 0x20:
+        # the unicode control pictures: ␀ for 0x00 through ␟ for 0x1f, so \n is ␊ and \t is ␉
+        return chr(0x2400 + ord(c))
+    if ord(c) == 0x7f:
+        return "\u2421"
+    if not c.isprintable():
+        return f"\\x{ord(c):02x}" if ord(c) <= 0xff else f"\\u{ord(c):04x}"
+
+    return None
+
+
+def visible_match_value(value) -> Markup:
+    """A matched string value with its whitespace and non-printing characters drawn as dimmed
+    symbols, the way an editor shows whitespace, so a value of only newlines isn't blank."""
+    result = []
+    for c in str(value):
+        if c == " ":
+            # the space stays in the page, with the dot drawn over it by css, so find in page and
+            # copying still see a space
+            result.append(Markup('<span class="yara-sp"> </span>'))
+            continue
+
+        symbol = _visible_char(c)
+        result.append(escape(c) if symbol is None else Markup('<span class="yara-ws">{}</span>').format(symbol))
+
+    return Markup("").join(result)
+
+
+# a line of a rule's strings section that declares a named string: `$name = ...`
+_STRING_DECLARATION = re.compile(r"^\s*(\$[A-Za-z0-9_]+)\s*=")
+
+
+# the most string matches of one rule shown with a highlighted hex dump and visible whitespace; past
+# that, the dump is shown as it was stored and the value plainly escaped, so a rule matching
+# thousands of times doesn't slow down every render
+MAX_HIGHLIGHTED_MATCHES = 100
+
+
+def highlight_hexdump(match_context: dict) -> Markup:
+    """The hex dump of the bytes around a string match (a match_context entry), with the match
+    marked."""
+    data = base64.b64decode(match_context["data"])
+    marked = range(match_context["match_offset"], match_context["match_offset"] + match_context["match_length"])
+    lines = [hexdump_line_html(offset, data[offset:offset + 16], marked) for offset in range(0, len(data), 16)]
+    lines.append(f"{len(data):08x}")
+    return Markup("\n".join(lines))
+
+
 class YaraScanResults_v3_4_Presenter(AnalysisPresenter):
     """Presenter for YaraScanResults_v3_4."""
-    
+
     @property
     def template_path(self) -> str:
         return "analysis/yara_analysis_v3_4.html"
+
+    def visible_value(self, value, index: int) -> Markup:
+        """The index'th string match's value, with its whitespace drawn up to MAX_HIGHLIGHTED_MATCHES."""
+        if index < MAX_HIGHLIGHTED_MATCHES:
+            return visible_match_value(value)
+
+        return escape(value)
+
+    def meta_json(self, meta: dict) -> str:
+        return json.dumps(meta, indent=4, sort_keys=True, ensure_ascii=False, default=str)
+
+    def rule_source_lines(self, yara_result: dict) -> list[tuple[str, bool]]:
+        """The lines of the rule's source, each with whether it declares a string that matched."""
+        matched = {string[1] for string in yara_result.get("strings") or []}
+        result = []
+        for line in yara_result["rule_source"]["text"].splitlines():
+            declaration = _STRING_DECLARATION.match(line)
+            result.append((line, bool(declaration) and declaration.group(1) in matched))
+
+        return result
+
+    def hexdump(self, yara_result: dict, index: int) -> Markup:
+        """The hex dump of the index'th string match. Results saved before match_context existed
+        have only the plain dump."""
+        match_contexts = yara_result.get("match_context") or []
+        if index < len(match_contexts) and index < MAX_HIGHLIGHTED_MATCHES:
+            return highlight_hexdump(match_contexts[index])
+
+        return escape(yara_result["context"][index][3])
 
 
 register_analysis_presenter(YaraScanResults_v3_4, YaraScanResults_v3_4_Presenter)

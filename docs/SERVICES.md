@@ -34,7 +34,7 @@ Each service container in `docker-compose.yml` runs:
 /opt/ace/docker/startup/start.sh ace service start <name>
 ```
 
-`start.sh` waits for the database, then **execs** the `ace` CLI. The `exec` matters: without it bash stays PID 1 with the Python process as a foreground child and never forwards SIGTERM, so the process is SIGKILLed by docker instead of shutting down (see `docs/SHUTDOWN.md`).
+`start.sh` waits for the database, then **execs** the `ace` CLI. It waits only while `ace` exits with 75 (`EXIT_DATABASE_UNAVAILABLE`, the database is unreachable), and for at most `ACE_DATABASE_WAIT_SECONDS` (default 300); any other failure, such as a configuration error, exits the container so its restart policy shows it. The `dev` container (`start_nothing.sh`) stays up when the wait fails, so it can be used to fix what made it fail. The `exec` matters: without it bash stays PID 1 with the Python process as a foreground child and never forwards SIGTERM, so the process is SIGKILLed by docker instead of shutting down (see `docs/SHUTDOWN.md`).
 
 The `service start` subcommand (`saq/cli/commands/service.py`) does roughly:
 
@@ -99,15 +99,20 @@ class MyService(ACEServiceInterface):
     def get_config_class(cls) -> Type[ServiceConfig]:
         return MyServiceConfig
 
-    def start(self):
+    def _create_manager(self) -> MyManager:
         config = get_service_config(MY_SERVICE_NAME)
-        self.manager = MyManager(poll_interval_seconds=config.poll_interval_seconds)
+        return MyManager(poll_interval_seconds=config.poll_interval_seconds)
+
+    def start(self):
+        self.manager = self._create_manager()
         self.manager.start()
 
     def wait_for_start(self, timeout: float = 5) -> bool:
         return self.manager.wait_for_start(timeout)
 
     def start_single_threaded(self):
+        # --single-threaded calls this instead of start(), so it builds the manager too
+        self.manager = self._create_manager()
         self.manager.start_single_threaded()
 
     def stop(self):
@@ -116,6 +121,8 @@ class MyService(ACEServiceInterface):
     def wait(self):
         self.manager.wait()
 ```
+
+A service that works through the rows of a database table is built on `saq/queue_service.py` instead, as remediation, external remediation checks and file collection are. A `QueueCollector` thread locks the rows that are due and hands each one to the `QueueWorker` registered under its name, and the worker runs its own threads over an in-memory queue. A row is locked again once its lock times out (`lock_timeout_seconds`), unless a worker of this collector still holds it, queued or in progress (`QueueWorker.pending_ids()`): a worker that falls behind would otherwise be handed a second copy of each row it has not reached. The subclasses supply the table, which rows are due (`filter_candidates()`, `ready()`), the work item (`build_work_item()`, which finishes a row itself when there is no work for it) and what is done with it (`process_one()`). A `QueueManager` lists the workers the configuration asks for, and a `QueueService` needs only `create_manager()`. When the service stops, the manager waits for the collector, unlocks the rows still in the workers' queues (`QueueCollector.release()`, only where the row still holds the lock the collector put on it), and only then waits for the workers, so an item still being worked at the shutdown deadline does not keep the queued rows locked. A restart takes them at once instead of after `lock_timeout_seconds`. The work item carries that lock as `lock`.
 
 Add a `SERVICE_MYSERVICE = "myservice"` constant in `saq/constants.py` alongside the other `SERVICE_*` entries and use it instead of a string literal.
 
@@ -136,6 +143,8 @@ service_myservice:
 
 The `name` field is what `ace service start <name>` and `get_service_config(<name>)` look up.
 
+`get_service_config()` raises `ValueError` when there is no `service_<name>` section. Code that runs on sites without the service (a cron task, a hook another subsystem calls) uses `find_service_config(<name>)`, which returns `None` for a missing section and still raises for a section that fails to validate. Do not catch the `ValueError` instead: pydantic's `ValidationError` is a `ValueError` too, so a broken section would read as an absent one.
+
 ### 3. Add a Docker Compose service
 
 There are two compose files to update:
@@ -147,7 +156,6 @@ Add a stanza to *both* files, modeled after the existing services (e.g. the `rem
 
 ```yaml
 myservice:
-  platform: linux/amd64
   environment:
     <<: *common-env
     ACE_LOG_CONFIG_PATH: etc/logging_configs/ace_logging.yaml
@@ -174,7 +182,6 @@ The production-overlay stanzas are similar to the root file but with a few extra
 
 - **`profiles:`** — every service is gated by one or more Compose profiles (`correlation`, `email-scanner`, `file-content-scanner`, `core`, `db`, etc.). Pick the same profile(s) used by the closest equivalent service so it deploys to the right node group. A service with no profile will *not* start in production.
 - **`environment:`** uses the overlay's `*common-env` anchor (deployment-wide environment and credentials) — just `<<: *common-env` like the others; no manual edits needed.
-- The `platform: linux/amd64` line is omitted in the production-overlay file.
 - Production secrets/config come from your deployment's secret-management tooling, not from compose defaults — don't hard-code values.
 
 ### 4. Verify
@@ -202,4 +209,4 @@ docker compose logs -f myservice
 | `search_indexer`     | `saq.search.service.SearchIndexService`        | `service_search_indexer`     |
 | `svs`                | `saq.svs.service.SVSService`                   | `service_svs`                |
 
-`saq/monitoring/service.py` is a good reference for a service that itself loads a configurable set of named sub-workers; `saq/remediation/service.py` is the simplest possible "wrap a manager" pattern.
+`saq/monitoring/service.py` is a good reference for a service that itself loads a configurable set of named sub-workers; `saq/remediation/` is the smallest service built on `saq/queue_service.py`.

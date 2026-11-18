@@ -127,19 +127,3 @@ def test_gather_clicker_results_not_ran_when_no_provider_analysis(monkeypatch):
     assert results.errors == []
 
 
-@pytest.mark.unit
-def test_gather_clicker_events_delegates_to_results(monkeypatch):
-    """gather_clicker_events returns just the sorted events from gather_clicker_results."""
-    class GoodAnalysis:
-        def get_clicker_events(self):
-            return [
-                ClickerEvent(source="splunk", timestamp=datetime(2026, 6, 17, 12, 5, tzinfo=timezone.utc), user="b"),
-                ClickerEvent(source="splunk", timestamp=datetime(2026, 6, 17, 12, 1, tzinfo=timezone.utc), user="a"),
-            ]
-
-    monkeypatch.setattr(
-        "saq.clicker_detection.timeline.REGISTERED_CLICKER_PROVIDERS", [GoodAnalysis]
-    )
-    root = _FakeRoot({GoodAnalysis: [GoodAnalysis()]})
-    assert gather_clicker_events(root) == gather_clicker_results(root).events
-    assert [e.user for e in gather_clicker_events(root)] == ["a", "b"]

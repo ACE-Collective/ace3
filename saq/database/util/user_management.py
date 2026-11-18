@@ -46,6 +46,9 @@ def create_api_key(
     Exactly one of `inherit` (the key gets the owner's full permissions) or a non-empty `scope`
     (a list of (major, minor) ALLOW patterns) must be given -- there is no silent full-scope
     default. Only the sha256 is stored; the plaintext is never recoverable after this call.
+
+    The scope is stored as given: the pattern rules of the API (aceapi_v2/users/service.py) are
+    deliberately not applied to this operator path (docs/USER_PREFERENCES.md).
     """
     if inherit == bool(scope):
         raise ValueError("exactly one of inherit or a non-empty scope must be provided")

@@ -1,21 +1,23 @@
 from datetime import datetime
 import logging
 import os
+import tempfile
 from uuid import uuid4
 from flask import flash, redirect, request, url_for
 from flask_login import current_user
 from aceapi_v2.observable_comments.service import create_comment
 from aceapi_v2.sync import run_async_with_session
 from app.analysis.views.session.alert import get_current_alert
-from app.auth.permissions import require_permission
+from app.auth.permissions import current_user_auth, require_permission
 from app.blueprints import analysis
 from saq.analysis.root import RootAnalysis
 from saq.configuration.config import get_config
-from saq.constants import F_FILE
+from saq.constants import F_FILE, EventTimeSource
 from saq.database.util.alert import ALERT, AlertFrozen, ensure_not_frozen, get_alert_by_uuid
 from saq.database.util.locking import acquire_lock, release_lock
 from saq.database.util.workload import request_analyst_analysis
 from saq.environment import get_temp_dir
+from saq.logging import log_audit
 from saq.util import local_time
 
 
@@ -38,7 +40,9 @@ def _add_upload_comment(file_observable, comment: str, alert_uuid: str):
         flash("uploaded the file, but unable to save the comment")
         return
 
-    logging.info(f"AUDIT: user {current_user} added comment {comment} to observable {F_FILE} {file_observable.value} in alert {alert_uuid}")
+    log_audit("user %s added comment %s to observable %s %s in alert %s", current_user.username, comment, F_FILE,
+              file_observable.value, alert_uuid, auth=current_user_auth(), alert_uuid=alert_uuid,
+              observable_type=F_FILE, observable_value=file_observable.value)
 
 @analysis.route('/upload_file', methods=['POST'])
 @require_permission('alert', 'create')
@@ -50,16 +54,20 @@ def upload_file():
         flash("No file specified for upload.")
         return redirect(url_for('analysis.file'))
 
+    # the client's name, which the root's file manager cleans when the upload is stored
     file_name = file_path.filename
 
-    # securely save the file to a temporary location
-    from werkzeug.utils import secure_filename
+    # a temporary file of the request's own: the alert's copy is a hardlink to it, so a temporary
+    # path named after the upload would let the next upload by that name rewrite this one's bytes
+    fd, temp_path = tempfile.mkstemp(dir=get_temp_dir())
+    os.close(fd)
+    try:
+        return _store_upload(file_path, temp_path, file_name, comment, alert_uuid)
+    finally:
+        os.unlink(temp_path)
 
-    # Use secure_filename to sanitize the uploaded file name
-    safe_file_name = secure_filename(file_name)
-    temp_dir = get_temp_dir()
-    temp_path = os.path.join(temp_dir, safe_file_name)
 
+def _store_upload(file_path, temp_path: str, file_name: str, comment: str, alert_uuid: str):
     try:
         file_path.save(temp_path)
     except Exception as e:
@@ -73,7 +81,7 @@ def upload_file():
         root.tool_instance = get_config().global_settings.instance_name
         root.alert_type = 'manual_upload'
         root.description = 'Manual File upload {0}'.format(file_name)
-        root.event_time = datetime.now()
+        root.set_event_time(datetime.now(), EventTimeSource.NOW)
         root.details = {'user': current_user.username, 'comment': comment}
 
         file_observable = root.add_file_observable(temp_path, file_name)
@@ -83,7 +91,8 @@ def upload_file():
 
         alert = ALERT(root)
         alert.root_analysis.schedule()
-        logging.info(f"AUDIT: user {current_user} uploaded file {file_name} as new alert {alert.uuid}")
+        log_audit("user %s uploaded file %s as new alert %s", current_user.username, file_name, alert.uuid,
+                  auth=current_user_auth(), alert_uuid=alert.uuid, file_name=file_name)
 
     else:
         alert = get_current_alert()
@@ -126,7 +135,8 @@ def upload_file():
             return redirect(url_for('analysis.index'))
 
         alert.root_analysis.schedule()
-        logging.info(f"AUDIT: user {current_user} uploaded file {file_name} to alert {alert.uuid}")
+        log_audit("user %s uploaded file %s to alert %s", current_user.username, file_name, alert.uuid,
+                  auth=current_user_auth(), alert_uuid=alert.uuid, file_name=file_name)
 
     if file_observable:
         _add_upload_comment(file_observable, comment, alert.uuid)
@@ -151,6 +161,21 @@ def analyze_alert():
     except AlertFrozen as e:
         flash(str(e))
         return redirect(url_for('analysis.index', direct=alert.uuid))
+
+    # a module that failed before it created its analysis (root.analysis_failures) gets another
+    # chance: the analyst may be asking because the failure was transient, or the module was fixed
+    lock_uuid = str(uuid4())
+    if not acquire_lock(alert.uuid, lock_uuid):
+        # an alert someone holds (usually the engine, mid-analysis) is not queued again
+        flash("unable to lock alert {}".format(alert))
+        return redirect(url_for('analysis.index', direct=alert.uuid))
+
+    try:
+        alert.root_analysis.load()
+        alert.root_analysis.analysis_failures = {}
+        alert.sync()
+    finally:
+        release_lock(alert.uuid, lock_uuid)
 
     alert.root_analysis.schedule()
     return redirect(url_for('analysis.index', direct=alert.uuid))

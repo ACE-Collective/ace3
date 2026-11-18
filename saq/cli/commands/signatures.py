@@ -211,9 +211,13 @@ def build_signature_db(args):
         signature_path = args.signature_path
 
     try:
-        build_signature_db(signature_path)
+        built = build_signature_db(signature_path)
     except Exception as e:
-        logging.error(f"unable to rebuild suricata db: {e}")
+        logging.exception(f"unable to rebuild suricata db from {signature_path}: {e}")
+        sys.exit(1)
+
+    if built is False:
+        logging.error(f"unable to rebuild suricata db from {signature_path}: another rebuild holds the lock")
         sys.exit(1)
 
     sys.exit(0)

@@ -1,42 +1,29 @@
 import logging
 import os
-from subprocess import PIPE, Popen
 from typing import Type, override
 
 import msoffcrypto
-from pydantic import Field
-from saq.analysis.analysis import Analysis
 from saq.signatures.builtin import EMAIL_ENCRYPTED_DECRYPTED
-from saq.analysis.search import search_down
 from saq.constants import F_FILE, AnalysisExecutionResult
-from saq.cracking import crack_password, generate_wordlist
+from saq.cracking import crack_password, wordlist_from_email
 from saq.environment import get_base_dir
-from saq.modules import AnalysisModule
 from saq.modules.config import AnalysisModuleConfig
-
-from html2text import html2text
+from saq.modules.email.encryption.email_password import (
+    EmailPasswordAnalysis,
+    EmailPasswordAnalyzer,
+    EmailPasswordAnalyzerConfig,
+)
 
 from saq.observables.file import FileObservable
+from saq.sandbox.runner import sandbox_python
 
 KEY_ENCRYPTION_INFO = 'encryption_info'
-KEY_EMAIL = 'email'
-KEY_EMAIL_BODY = 'email_body'
-KEY_WORD_LIST = 'word_list'
-KEY_PASSWORD = 'password'
-KEY_ERROR = 'error'
 
 
-class MSOfficeEncryptionAnalysis(Analysis):
+class MSOfficeEncryptionAnalysis(EmailPasswordAnalysis):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.details = {
-            KEY_ENCRYPTION_INFO: None,
-            KEY_EMAIL: False,
-            KEY_EMAIL_BODY: None,
-            KEY_WORD_LIST: [],
-            KEY_PASSWORD: None,
-            KEY_ERROR: None
-        }
+        self.details[KEY_ENCRYPTION_INFO] = None
 
     @override
     @property
@@ -51,79 +38,11 @@ class MSOfficeEncryptionAnalysis(Analysis):
     def encryption_info(self, value):
         self.details[KEY_ENCRYPTION_INFO] = value
 
-    @property
-    def email(self):
-        return self.details[KEY_EMAIL]
 
-    @email.setter
-    def email(self, value):
-        self.details[KEY_EMAIL] = value
-
-    @property
-    def email_body(self):
-        return self.details[KEY_EMAIL_BODY]
-
-    @email_body.setter
-    def email_body(self, value):
-        self.details[KEY_EMAIL_BODY] = value
-
-    @property
-    def word_list(self):
-        return self.details[KEY_WORD_LIST]
-
-    @word_list.setter
-    def word_list(self, value):
-        self.details[KEY_WORD_LIST] = value
-
-    @property
-    def password(self):
-        return self.details[KEY_PASSWORD]
-
-    @password.setter
-    def password(self, value):
-        self.details[KEY_PASSWORD] = value
-
-    @property
-    def error(self):
-        return self.details[KEY_ERROR]
-
-    @error.setter
-    def error(self, value):
-        self.details[KEY_ERROR] = value
-
-    def generate_summary(self):
-        if self.details is None:
-            return None
-
-        result = self.display_name
-        if self.error:
-            return f"{result}: {self.error}"
-        elif self.password:
-            return f"{result}: password {self.password}"
-        elif not self.email:
-            return f"{result}: no associated email detected"
-        elif not self.email_body:
-            return f"{result}: email body cannot be determined"
-        elif not self.word_list:
-            return f"{result}: word list could not be created from email"
-        elif not self.password:
-            return f"{result}: password not available"
-        else:
-            return f"{result}: could not decrypt"
-
-
-class MSOfficeEncryptionAnalyzerConfig(AnalysisModuleConfig):
-    range_low: int = Field(..., description="The minimum size of the passwords to try.")
-    range_high: int = Field(..., description="The maximum size of the passwords to try.")
-    byte_limit: int = Field(..., description="How many bytes into the email do you want to look?")
-    list_limit: int = Field(..., description="The maximum size of the word list created.")
-    john_bin_path: str = Field(..., description="Full path to john the ripper binary.")
-    attempt_brute_force: bool = Field(default=True, description="Whether brute force decryption should be attempted if wordlist fails.")
-
-class MSOfficeEncryptionAnalyzer(AnalysisModule):
+class MSOfficeEncryptionAnalyzer(EmailPasswordAnalyzer):
     @classmethod
     def get_config_class(cls) -> Type[AnalysisModuleConfig]:
-        return MSOfficeEncryptionAnalyzerConfig
+        return EmailPasswordAnalyzerConfig
 
     @property
     def generated_analysis_type(self):
@@ -133,44 +52,21 @@ class MSOfficeEncryptionAnalyzer(AnalysisModule):
     def valid_observable_types(self):
         return F_FILE
 
-    @property
-    def range_low(self):
-        return self.config.range_low
-
-    @property
-    def range_high(self):
-        return self.config.range_high
-
-    @property
-    def byte_limit(self):
-        return self.config.byte_limit
-
-    @property
-    def list_limit(self):
-        return self.config.list_limit
-
-    @property
-    def john_bin_path(self):
-        return self.config.john_bin_path
-
-    @property
-    def attempt_brute_force(self):
-        return self.config.attempt_brute_force
-
     def execute_analysis(self, _file) -> AnalysisExecutionResult:
         assert isinstance(_file, FileObservable)
-        from saq.modules.email.rfc822 import EmailAnalysis
 
         # does this file exist as an attachment?
         if not _file.exists:
             return AnalysisExecutionResult.COMPLETED
+
+        analysis = None
 
         # is this an encrypted OLE document?
         try:
             with open(_file.full_path, 'rb') as office_fp:
                 try:
                     office_file = msoffcrypto.OfficeFile(office_fp)
-                except:
+                except Exception:
                     logging.debug(f"msoffcrypto unable to parse file: {_file.full_path}")
                     return AnalysisExecutionResult.COMPLETED
 
@@ -181,7 +77,7 @@ class MSOfficeEncryptionAnalyzer(AnalysisModule):
                     # msoffcrypto cannot/does not support certain types of encryption
                     if str(e) == 'Unsupported encryption method':
                         analysis = self.create_analysis(_file)
-                        analysis.error = str(e)
+                        analysis.error = str(e) or type(e).__name__
                         _file.add_tag('encrypted_msoffice')
                         return AnalysisExecutionResult.COMPLETED
 
@@ -196,17 +92,21 @@ class MSOfficeEncryptionAnalyzer(AnalysisModule):
             _file.add_tag('encrypted_msoffice')
 
             # extract the hash for cracking
-            p = Popen(['python3', os.path.join(get_base_dir(), "bin", "office2john.py"), _file.full_path], stdout=PIPE, stderr=PIPE)
-            stdout, stderr = p.communicate()
+            script = os.path.join(get_base_dir(), "bin", "office2john.py")
+            p = self.run_sandboxed_tool([sandbox_python(), '-I', script, _file.full_path], _file.full_path,
+                                        read_files=[script])
+            if p is None:
+                analysis.error = "office2john.py did not finish"
+                return AnalysisExecutionResult.COMPLETED
 
             # did we get the hash?
-            if not stdout:
-                analysis.error = f"office2john.py failed: {stderr.decode()}"
+            if not p.stdout:
+                analysis.error = f"office2john.py failed: {p.stderr}"
                 return AnalysisExecutionResult.COMPLETED
 
             hash_file = f'{_file.full_path}.hash'
-            with open(hash_file, 'wb') as fp:
-                fp.write(stdout)
+            with open(hash_file, 'w') as fp:
+                fp.write(p.stdout)
 
             # OK then we've found an office document that is encrypted
 
@@ -216,23 +116,10 @@ class MSOfficeEncryptionAnalyzer(AnalysisModule):
             analysis.word_list = ['VelvetSweatshop', '/01Hannes Ruescher/01']
 
             # we'll try to find additional passwords by looking at the plain text and html of the email, if they exist
-            email = search_down(_file, lambda obj: isinstance(obj, EmailAnalysis) and obj.email is not None)
-            if email:
-                analysis.email = True
-
-                # email needs to have a body
-                if email.body:
-
-                    # convert html to text
-                    with open(email.body.full_path, 'r', errors='ignore') as fp:
-                        logging.debug("parsing {} for html".format(email.body.value))
-                        analysis.email_body = html2text(fp.read())[:self.byte_limit]
-
-                    analysis.word_list.extend(generate_wordlist(text_content=analysis.email_body,
-                                                                range_low=self.range_low,
-                                                                range_high=self.range_high,
-                                                                byte_limit=self.byte_limit,
-                                                                list_limit=self.list_limit))
+            analysis.email, analysis.email_body, email_words = wordlist_from_email(
+                _file, range_low=self.range_low, range_high=self.range_high,
+                byte_limit=self.byte_limit, list_limit=self.list_limit)
+            analysis.word_list.extend(email_words)
 
             wordlist_path = f'{_file.full_path}.wordlist'
             with open(wordlist_path, 'w') as fp:
@@ -240,14 +127,11 @@ class MSOfficeEncryptionAnalyzer(AnalysisModule):
                     fp.write(f'{word}\n')
 
             # crack it with john the ripper using wordlist
-            analysis.password = crack_password(self.john_bin_path, hash_file, _file.full_path, f'--wordlist={wordlist_path}')
+            analysis.password = crack_password(self, self.john_bin_path, hash_file, _file.full_path,
+                                               f'--wordlist={os.path.abspath(wordlist_path)}', read_files=[wordlist_path])
 
-            # let's try brute forcing it if we didn't crack it with the email
-            if not analysis.password and self.attempt_brute_force:
-                analysis.password = crack_password(self.john_bin_path, hash_file, _file.full_path, '--incremental=DigitsCustom')
-
+            # none of the candidates was the password: the summary says so, and it is not an error
             if not analysis.password:
-                analysis.error = "could not crack password"
                 return AnalysisExecutionResult.COMPLETED
 
             # got the password!
@@ -273,5 +157,9 @@ class MSOfficeEncryptionAnalyzer(AnalysisModule):
                 logging.exception(f"decryption for {_file} failed: {e}")
 
             logging.debug(f"decryption failed for unsupported file format on file {_file}")
+
+            # an encrypted document whose cracking or decryption failed
+            if analysis is not None:
+                analysis.error = f"decryption failed: {str(e) or type(e).__name__}"
 
             return AnalysisExecutionResult.COMPLETED

@@ -152,8 +152,8 @@ crash_reporting:
   # replicate crash reports to shared object storage (see the storage: section) so that ANY node
   # can serve a report written on any other node. without this, a report is only downloadable from
   # the node whose worker crashed, and every other node answers 409.
-  # turn this on when storage.target points at storage that every node shares (a custom backend,
-  # or the local backend with base_dir on a shared filesystem)
+  # turn this on when storage.target points at storage that every node shares (s3, or the local
+  # backend with base_dir on a shared filesystem)
   replicate: false
   # keep this bucket dedicated -- it holds the file observables that crashed modules, i.e. live malware
   storage_bucket: ace-crash-reports
@@ -198,14 +198,30 @@ cas:
       shared: false
     # the YARA samples SVS captures from dispositioned alerts, and their match records
     # (docs/SVS_SAMPLES.md). live malware, so encrypted; kept for as long as a capture record holds
-    # them. backend: local is enough for a single node. a multi-node site redefines this pool in its
+    # them. backend: local is for a single-node install. a multi-node site redefines this pool in its
     # own config with a backend every node can reach and shared: true (the same one it gives
-    # yara_qa), or disables analysis_module_svs_yara_sample_capture: captures happen on whichever
-    # node owns the alert, and SVS validation reads every sample from one node.
+    # yara_qa), whether or not capture is enabled: captures happen on whichever node owns the alert,
+    # and SVS validation reads every sample from one node (docs/CAS.md, "Sharing between nodes").
     svs_samples:
       backend: local
       encryption: system
       retention: held
+      grace_seconds: 86400
+      shared: false
+    # archived emails (docs/EMAIL_ARCHIVE.md). customer mail, so encrypted, and gzip because mail
+    # compresses well. ttl: an email lives for ttl_days after the last time it was archived. archive
+    # rows go a weekly partition at a time, so a message-id can outlive its email by up to a week;
+    # it is then reported as not archived. the index is high churn, so it lives in the email archive
+    # database, not the main one. backend: local is for a single-node install; a multi-node site
+    # gives this pool a backend every node can reach (an integration's custom backend) and
+    # shared: true, or every node but the primary fills its disk (docs/CAS.md, "Sharing between nodes").
+    email_archive:
+      backend: local
+      encryption: system
+      compression: gzip
+      retention: ttl
+      ttl_days: 30
+      index_database: email_archive
       grace_seconds: 86400
       shared: false
 
@@ -213,10 +229,11 @@ cas:
 # can review them (Signatures -> Yara QA Results, /api/v2/signatures/yara-qa). docs/YARA_QA.md
 yara_qa:
   pool: yara_qa
-  # most distinct files kept per (rule uuid, rule version). the version is the commit of the rule's
-  # repository, so every commit to it starts a new version of every rule in it
+  # most distinct files kept per (rule uuid, rule version). the version is the rule's content hash,
+  # so only an edit to the rule starts a new version
   max_files_per_version: 25
-  # most distinct files kept per rule uuid across all of its versions
+  # most distinct files kept per rule uuid across all of its versions. once it is reached, files of
+  # versions that have stopped matching make room for the current version's (rollover)
   max_files_per_signature: 250
   # a stored file is kept this long after it last matched
   retention_days: 30
@@ -277,6 +294,8 @@ svs:
     max_targets: 16
     # how often service_svs moves runs whose start timeout or windows have passed
     timer_interval_seconds: 30
+    # the longest maintenance window a launcher may open on a test host (docs/SVS_RUNS.md)
+    max_maintenance_minutes: 240
   # attributing alerts to test runs by their markers (docs/SVS_RUNS.md, *Attribution*)
   attribution:
     # how long each process trusts its answer to "is any run registered or inside its attribution
@@ -420,19 +439,43 @@ phishkit:
   # age in days after which phishkit input/output job directories are deleted
   max_file_age_days: 3
 
+js_deobfuscator:
+  # age in days after which js-deobfuscator input/output job directories are deleted
+  max_file_age_days: 3
+
 storage:
-  # local or custom
+  # local, s3 or custom
   target: local
   base_dir: data/storage
   # when target is custom, the backend class is imported from python_module/python_class and
   # the config below is validated against that class's get_config_class() model -- the same
-  # plugin convention as analysis_cache.blob_store. this is how an object store (S3, ...) is
-  # used: ACE ships no client for one, so the class comes from an integration
+  # plugin convention as analysis_cache.blob_store. use this when the object store needs
+  # credentials the built-in s3 backend does not model (IAM instance roles, STS, ...)
   #backend:
   #  python_module: mypackage.my_storage
   #  python_class: MyStorage
   #  config:
   #    some_setting: value
+
+# s3:
+#   host: garagehq
+#   port: 3900
+#   access_key: file:/auth/passwords/garage-access-key
+#   secret_key: file:/auth/passwords/garage-secret-key
+#   # set to use SSL
+#   secure: false
+#   # set to validate SSL certification
+#   cert_check: false
+#   region: garage
+#   # bounds on every s3 request. botocore's own defaults are 60s/60s with legacy retries (5
+#   # attempts), which lets a black-holed endpoint hold a caller for minutes per request
+#   connect_timeout: 10
+#   # per socket read, NOT a cap on a whole transfer: transfers are multipart (8MiB parts, up to
+#   # 10 concurrent), so this detects a stalled part. lowering it imposes a per-stream throughput
+#   # floor and can break large transfers on a slow link
+#   read_timeout: 60
+#   # total attempts per request including the first, under botocore's standard retry mode
+#   max_attempts: 3
 
 # global redis settings
 redis:
@@ -443,6 +486,10 @@ redis:
   password: file:/auth/passwords/redis
   use_ssl: false
   #ssl_ca_path: /opt/ace/ssl/ca-chain.cert.pem
+  # (in seconds) without these a stalled redis blocks the caller forever; the reply timeout
+  # must be longer than the search indexer's 1 second BLPOP
+  socket_connect_timeout: 5
+  socket_timeout: 10
 
 redis-local:
   name: local
@@ -452,6 +499,8 @@ redis-local:
   password: file:/auth/passwords/redis
   use_ssl: false
   #ssl_ca_path: /opt/ace/ssl/ca-chain.cert.pem
+  socket_connect_timeout: 5
+  socket_timeout: 10
 
 qdrant:
   url: https://qdrant:6333
@@ -656,8 +705,6 @@ gui:
   # Show the total alerts resulting from the current filter.
   #  Ex: "Alert (22)" would say there are 22 alerts matching the filter.
   show_total_alert_count: true
-  # Default Matching Open Events toggle position
-  matching_open_events_collapsed: false
   # Default Alert Details toggle position
   alert_details_collapsed: false
   # Hide intel if we don't want to let people see it (public/internet ace)
@@ -779,12 +826,6 @@ wiki:
   # If you want the a wiki link next to the event names on the manage events page
   event_link_enabled: false
 
-smtp:
-  # smtp information for sending emails
-  enabled: false
-  server: localhost
-  mail_from: ace@localhost
-
 nrd:
   # kill switch for the refresh script. When false, `ace nrd refresh`
   # exits as a no-op before any DB or HTTP work, regardless of database age,
@@ -867,18 +908,83 @@ observable_types:
   # never reload.
   reload_check_interval_seconds: 60.0
 
+  # The Python class of each observable type, as "module:Class". create_observable() imports the
+  # module the first time it builds an observable of that type, so a process imports only the
+  # observable types it handles. A type without an entry is a DefaultObservable. An integration adds
+  # its own types under observable_types.classes in its etc/saq.integration.yaml, and a later file can
+  # replace a class listed here.
+  classes:
+    asset: "saq.observables.asset:AssetObservable"
+    av_streetname: "saq.observables.ids:AVStreetnameObservable"
+    aws_access_key_id: "saq.observables.cloud.aws:AWSAccessKeyIdObservable"
+    aws_account_id: "saq.observables.cloud.aws:AWSAccountObservable"
+    aws_instance_id: "saq.observables.cloud.aws:AWSInstanceID"
+    aws_principal_id: "saq.observables.cloud.aws:AWSPrincipalIdObservable"
+    aws_private_dns_name: "saq.observables.cloud.aws:AWSPrivateDNSName"
+    aws_security_group_id: "saq.observables.cloud.aws:AWSSecurityGroupID"
+    aws_username: "saq.observables.cloud.aws:AWSUsername"
+    email_address: "saq.observables.email:EmailAddressObservable"
+    email_body: "saq.observables.email:EmailBodyObservable"
+    email_conversation: "saq.observables.email:EmailConversationObservable"
+    email_delivery: "saq.observables.email:EmailDeliveryObservable"
+    email_first_hop_ip: "saq.observables.email:EmailFirstHopIPObservable"
+    email_header: "saq.observables.email:EmailHeaderObservable"
+    email_subject: "saq.observables.email:EmailSubjectObservable"
+    email_x_mailer: "saq.observables.email:EmailXMailerObservable"
+    file: "saq.observables.file:FileObservable"
+    file_location: "saq.observables.file:FileLocationObservable"
+    file_name: "saq.observables.file:FileNameObservable"
+    file_path: "saq.observables.file:FilePathObservable"
+    fqdn: "saq.observables.network.dns:FQDNObservable"
+    hostname: "saq.observables.asset:HostnameObservable"
+    ids_streetname: "saq.observables.ids:IDSStreetnameObservable"
+    indicator: "saq.observables.intel:IndicatorObservable"
+    ip: "saq.observables.network.ip:IPObservable"
+    ip_conversation: "saq.observables.network.ip:IPConversationObservable"
+    ip_full_conversation: "saq.observables.network.ip:IPFullConversationObservable"
+    ipv4: "saq.observables.network.ipv4:IPv4Observable"
+    ipv4_conversation: "saq.observables.network.ipv4:IPv4ConversationObservable"
+    ipv4_full_conversation: "saq.observables.network.ipv4:IPv4FullConversationObservable"
+    mac_address: "saq.observables.network.layer2:MacAddressObservable"
+    md5: "saq.observables.file:MD5Observable"
+    message_id: "saq.observables.email:MessageIDObservable"
+    mutex: "saq.observables.windows:MutexObservable"
+    sha1: "saq.observables.file:SHA1Observable"
+    sha256: "saq.observables.file:SHA256Observable"
+    snort_sig: "saq.observables.ids:SnortSignatureObservable"
+    string_eps: "saq.observables.string:StringEPSObservable"
+    string_html: "saq.observables.string:StringHTMLObservable"
+    string_java: "saq.observables.string:StringJavaObservable"
+    string_js: "saq.observables.string:StringJSObservable"
+    string_office: "saq.observables.string:StringOfficeObservable"
+    string_pdf: "saq.observables.string:StringPDFObservable"
+    string_pe: "saq.observables.string:StringPEObservable"
+    string_rtf: "saq.observables.string:StringRTFObservable"
+    string_swf: "saq.observables.string:StringSWFObservable"
+    string_unix_shell: "saq.observables.string:StringUnixShellObservable"
+    string_vbs: "saq.observables.string:StringVBSObservable"
+    string_windows_shell: "saq.observables.string:StringWindowsShellObservable"
+    test: "saq.observables.testing:TestObservable"
+    uri_path: "saq.observables.network.http:URIPathObservable"
+    url: "saq.observables.network.http:URLObservable"
+    user: "saq.observables.user:UserObservable"
+    user_agent: "saq.observables.network.http:UserAgentObservable"
+    windows_registry: "saq.observables.windows:WindowsRegistryObservable"
+    windows_service: "saq.observables.windows:WindowsServiceObservable"
+    yara_rule: "saq.observables.yara:YaraRuleObservable"
+    yara_string: "saq.observables.yara:YaraStringObservable"
+
 email_archive:
-  target: local # the only target
-  # if this system is archiving emails, this determines what section to use for the database config
-  # NOTE this is the name of the section without the leading database_ (legacy issue)
-  primary: email_archive
-  # days of archive and archive_index rows to keep. these tables are partitioned by week and
-  # `ace partitions maintain` drops a week once all of it is older than this
+  # the CAS pool (cas.pools) archived emails are stored in (docs/EMAIL_ARCHIVE.md)
+  pool: email_archive
+  # where the archive kept its files before it moved to the CAS (relative to DATA_DIR). only
+  # `ace email-archive migrate` reads it
+  archive_dir: archive/email
+  # days of archived_messages rows (Message-ID -> digest) to keep. the table is partitioned by week
+  # and `ace partitions maintain` drops a week once all of it is older than this. a value below the
+  # pool's ttl_days fails to load: it would lose the Message-ID of an email still in the pool
   # (docs/DATABASE_PARTITIONS.md)
   partition_retention_days: 30
-  # days of email_history rows to keep, the same way. this is who received each message-id, which
-  # remediation looks up to find the mailboxes to remediate, so it is set separately
-  email_history_retention_days: 30
 
 memcached:
   # the address of the memcached system used by ACE
@@ -1323,6 +1429,11 @@ custom_alerts:
   # ;-separated list of dirs containing all custom alert views, default = analysis/custom
   dirs: 
     - analysis/custom
+  # alert templates, by jinja name, to offer in the Manual Analysis "Alert Template" list besides
+  # analysis/alert.html; list only templates that render any alert's details (an integration
+  # appends its own here)
+  #   - myintegration/my_alert.html
+  selectable_templates: []
 
 # all deprecated custom_alert view definitions -- move old values here for full coverage
 custom_alerts_backward_compatibility:
@@ -1359,6 +1470,108 @@ analysis_module_har_extraction:
   max_file_size: 52428800
   # most response bodies extracted from one .har file, pages first, then scripts in request order
   max_extracted_files: 50
+
+# pcap/pcapng dissection with tshark in the Landlock sandbox (see docs/PCAP_ANALYSIS.md); every
+# pcap module reads these, so they are set once here
+pcap:
+  tshark_path: /usr/bin/tshark
+  # seconds one tshark run may take. Every pcap module also checks, before each run, that the run
+  # fits in what is left of its maximum_analysis_time and of the alert's analysis time for the pass
+  # (maximum_cumulative_analysis_fail_time, 900 s), and records an error on the capture instead of
+  # starting one that does not
+  tshark_timeout: 120
+  # relative to DATA_DIR
+  work_dir: var/pcap_sandbox
+  max_file_size: 1073741824
+  max_keylog_size: 10485760
+  max_table_rows: 500
+  # DNS, TLS, HTTP, DHCP and NBNS come from the first this many packets: tshark's JSON for them
+  # (about 1 kB a packet) must fit under sandbox.max_output_bytes
+  max_field_packets: 50000
+  max_extracted_files: 100
+  # per capture, counted across all its pcap nodes (hosts, DNS, TLS, HTTP, files, decryption)
+  max_observables_per_type: 50
+  excluded_fqdn_suffixes:
+    - .arpa
+    - .local
+
+# the Landlock sandbox analysis modules run the external tools that parse alert files in (gs,
+# exiftool, the archive extractors, ...; see docs/TOOL_SANDBOX.md). A tool reads only the file it
+# analyzes and writes only its own working directory and the output directory the module gives
+# it, with no network. On a node without Landlock these tools are not run at all. On a kernel
+# older than 6.7 set allowed_tcp_ports to null, or every tool fails
+tool_sandbox:
+  # relative to DATA_DIR
+  work_dir: var/tool_sandbox
+  memory_limit: 4294967296
+  file_size_limit: 1073741824
+  allowed_tcp_ports: []
+
+analysis_module_pcap_analyzer:
+  name: pcap_analyzer
+  python_module: saq.modules.file_analysis.pcap
+  python_class: PcapAnalyzer
+  enabled: true
+  default_collapsed: true
+  # capinfos (30 s at most), then two tshark runs (statistics, then fields and carved files) of up
+  # to pcap.tshark_timeout each, plus 30 s around each run
+  maximum_analysis_time: 360
+
+# one instance per category of the capture; each adds its observables under its own node
+analysis_module_pcap_dns:
+  name: pcap_dns
+  instance: dns
+  category: dns
+  python_module: saq.modules.file_analysis.pcap
+  python_class: PcapCategoryAnalyzer
+  enabled: true
+  default_collapsed: true
+
+analysis_module_pcap_tls:
+  name: pcap_tls
+  instance: tls
+  category: tls
+  python_module: saq.modules.file_analysis.pcap
+  python_class: PcapCategoryAnalyzer
+  enabled: true
+  default_collapsed: true
+
+analysis_module_pcap_http:
+  name: pcap_http
+  instance: http
+  category: http
+  python_module: saq.modules.file_analysis.pcap
+  python_class: PcapCategoryAnalyzer
+  enabled: true
+  default_collapsed: true
+
+analysis_module_pcap_files:
+  name: pcap_files
+  instance: files
+  category: files
+  python_module: saq.modules.file_analysis.pcap
+  python_class: PcapCategoryAnalyzer
+  enabled: true
+  default_collapsed: true
+
+# runs in final analysis with every TLS key log found in the tree
+analysis_module_pcap_tls_decryption:
+  name: pcap_tls_decryption
+  python_module: saq.modules.file_analysis.pcap
+  python_class: PcapTlsDecryptor
+  enabled: true
+  default_collapsed: true
+  # one tshark run of up to pcap.tshark_timeout, plus 30 s around it
+  maximum_analysis_time: 180
+
+# recognizes TLS key logs (SSLKEYLOGFILE format) by content and applies one added late
+analysis_module_tls_keylog:
+  name: tls_keylog
+  python_module: saq.modules.file_analysis.pcap
+  python_class: TlsKeylogAnalyzer
+  enabled: true
+  # one tshark run per pcap the key log has new keys for; a pcap that no longer fits in this is skipped
+  maximum_analysis_time: 600
 
 analysis_module_html_js_extraction:
   name: html_js_extraction
@@ -1425,10 +1638,9 @@ analysis_module_email_analyzer:
   python_module: saq.modules.email.rfc822
   python_class: EmailAnalyzer
   enabled: true
-  # relative path to the brotex custom whitelist file
-  whitelist_path: etc/brotex.whitelist
   # office365 journaling will cause outbound emails to also get journaled
-  # set this to no to scan outbound office365 emails
+  # set this to yes to skip the email analysis of outbound office365 emails (the other modules
+  # still analyze the email file, and a detection on it still alerts)
   scan_inbound_only: false
   # When only scanning inbound emails from office365, scan the following outbound emails
   # found in outbound_exceptions. Comma separated list!
@@ -1461,6 +1673,21 @@ analysis_module_email_analyzer:
   #   message_directionality:       # message direction, e.g. Incoming vs outbound
   #     - X-MS-Exchange-Organization-MessageDirectionality
 
+# picks the URL a phishing email lures its recipient to (docs/LURE_URL.md); in the correlation
+# module group, so only alerts are scored and have their lure crawled
+analysis_module_lure_url_analyzer:
+  name: lure_url_analyzer
+  dependencies:
+    - email_analyzer
+  python_module: saq.modules.email.lure
+  python_class: LureURLAnalyzer
+  enabled: true
+  # analyst-editable settings file (keywords, benign domains, scoring weights, max_candidates,
+  # crawl_primary); path is relative to SAQ_HOME and watched for live reload. deployments point
+  # this at their analyst_data copy (e.g. signatures/analyst_data/lure_url.yaml); blank uses the
+  # built-in defaults, which etc/lure_url.yaml repeats
+  config_path: etc/lure_url.yaml
+
 analysis_module_email_archiver:
   name: email_archiver
   dependencies:
@@ -1468,15 +1695,13 @@ analysis_module_email_archiver:
   python_module: saq.modules.email.archive
   python_class: EmailArchiveAction
   enabled: false
-  # the directory to contain the archived emails (relative to DATA_DIR)
-  archive_dir: archive/email
   # how long to keep archived emails (in days)
   expiration_days: 7
 
-analysis_module_encrypted_archive_analyzer:
-  name: encrypted_archive_analyzer
-  python_module: saq.modules.email.archive
-  python_class: EncryptedArchiveAnalyzer
+analysis_module_file_location_analysis:
+  name: file_location_analysis
+  python_module: saq.modules.file_path
+  python_class: FileLocationAnalyzer
   enabled: true
 
 analysis_module_file_path_analysis:
@@ -1507,6 +1732,12 @@ analysis_module_fqdn_analyzer:
   python_class: FQDNAnalyzer
   enabled: true
 
+analysis_module_apex_domain_analyzer:
+  name: apex_domain_analyzer
+  python_module: saq.modules.apex_domain
+  python_class: ApexDomainAnalyzer
+  enabled: true
+
 analysis_module_idna_analyzer:
   name: idna_analyzer
   python_module: saq.modules.url.idna
@@ -1515,10 +1746,14 @@ analysis_module_idna_analyzer:
 
 analysis_module_rdap_analyzer:
   name: rdap_analyzer
+  # runs on the apex observable apex_domain_analyzer adds rather than on each subdomain
+  dependencies:
+    - apex_domain_analyzer
   python_module: saq.modules.rdap
   python_class: RdapAnalyzer
   enabled: true
   cache_ttl: 604800  # 7 days
+  version: 2 # 2: subtypes of ip (email_first_hop_ip) were looked up as domains
 
 analysis_module_nrd_analyzer:
   name: nrd_analyzer
@@ -1569,6 +1804,11 @@ analysis_module_email_conversation_frequency_analyzer:
 
 analysis_module_email_conversation_attachment_analyzer:
   name: email_conversation_attachment_analyzer
+  # these tag the macros it looks for: without them it could look before they ran
+  dependencies:
+    - file_type
+    - olevba_v1_2
+    - officeparser3
   python_module: saq.modules.email.fa
   python_class: EmailConversationAttachmentAnalyzer
   enabled: true
@@ -1604,15 +1844,6 @@ analysis_module_email_thread_analyzer:
   #   ignored_domain_pairs:
   #     - [example.com, example-group.com]
   config_path: etc/email_thread_analysis.yaml
-
-analysis_module_url_email_pivot_analyzer:
-  name: url_email_pivot_analyzer
-  python_module: saq.modules.email.correlation
-  python_class: URLEmailPivotAnalyzer
-  enabled: true
-  # the maximum amount of results to download
-  # if there are more emails, only the count is recorded
-  result_limit: 35
 
 analysis_module_email_logger:
   name: email_logger
@@ -1691,15 +1922,6 @@ analysis_module_file_hash_analyzer:
   ignore_pattern_ocr: "*.ocr"
   ignore_pattern_js_deobfuscated: "*/deobfuscated-*"
 
-analysis_module_correlated_tag_analyzer:
-  name: correlated_tag_analyzer
-  python_module: saq.modules.tag
-  python_class: CorrelatedTagAnalyzer
-  enabled: false
-  # powerpoint autoexec on mouse over to powershell
-  definition_001_rule: ppt_mouse_over,ppt_program_action,ppt_powershell
-  definition_001_text: openxml office document has mouseover event leading to powershell script
-
 analysis_module_ssdeep:
   name: ssdeep
   python_module: saq.modules.file_analysis.ssdeep
@@ -1722,7 +1944,7 @@ analysis_module_archive:
   python_class: ArchiveAnalyzer
   enabled: true
   # comma separated list of excluded mime types we do not want to extract
-  excluded_mime_types: application/x-shockwave-flash,application/vnd.tcpdump.pcap,application/x-mach-binary
+  excluded_mime_types: application/x-shockwave-flash,application/x-mach-binary
   # if an archive has more than max_file_count files then we do not analyze it
   # more attacks only have a single file inside the zip; avoid archives with thousands of files
   max_file_count: 6
@@ -1827,14 +2049,12 @@ analysis_module_msoffice_encryption_analyzer:
   range_low: 4
   # and maximum size of the passwords to try
   range_high: 11
-  # how many bytes into the email do you want to look?
+  # how many characters of each email body part (html converted to text) to read for candidate passwords
   byte_limit: 1024
   # and what is the maximum size of the word list created?
   list_limit: 5000
   # full path to john the ripper binary
   john_bin_path: /opt/tools/john-1.9.0-jumbo-1/run
-  # yes/no whether brute force decryption should be attempted if wordlist fails
-  attempt_brute_force: true
 
 analysis_module_xml_binary_analyzer:
   name: xml_binary_analyzer
@@ -1876,6 +2096,25 @@ analysis_module_pdf_analyzer:
   # path to pdfparser
   pdfparser_path: bin/pdf-parser.py
 
+# the text a PDF shows under each of its links, which the lure url analyzer reads as the links' text;
+# in the correlation group, so pdftotext places the words of the PDFs of alerts only
+analysis_module_pdf_link_text:
+  name: pdf_link_text
+  python_module: saq.modules.file_analysis.pdf
+  python_class: PDFLinkTextAnalyzer
+  enabled: true
+  pdftotext_path: /usr/bin/pdftotext
+  # how many link annotations per PDF are recorded (a PDF can repeat one without limit)
+  max_links: 200
+  # only the links on the first this many pages get the text under them
+  link_text_pages: 3
+  # a page of more words than this is not placed, and its links get no text
+  max_page_words: 20000
+  # a link whose lines hold more words than this, across the page, covers a page, not a line, and gets no text
+  max_link_band_words: 500
+  # 30 days; a poppler upgrade invalidates the key via extended_version
+  cache_ttl: 2592000
+
 analysis_module_upx:
   name: upx
   python_module: saq.modules.file_analysis.upx
@@ -1899,6 +2138,9 @@ analysis_module_de4dot:
   python_module: saq.modules.file_analysis.dotnet
   python_class: De4dotAnalyzer
   enabled: true
+  # the binary itself, not the /usr/local/bin/de4dot wrapper: the sandbox makes only the
+  # binary's own directory readable
+  binary_path: /opt/de4dotEx/de4dot
 
 analysis_module_ilspy:
   name: ilspy
@@ -1976,6 +2218,8 @@ analysis_module_exif:
   enabled: true
   # 80MB file limit
   file_size_limit: 83886080
+  # seconds one exiftool run may take before the file is recorded as timed out
+  timeout: 30
 
 analysis_module_pdftotext:
   name: pdftotext
@@ -2032,6 +2276,8 @@ analysis_module_url_extraction:
     - www.w3.org
     - purl.org
     - schemas.xmlsoap.org
+    # XMP metadata namespaces in PDFs and images
+    - ns.adobe.com
   # the maximum number of urls to extract from a single file
   max_extracted_urls: 12
 
@@ -2117,20 +2363,6 @@ analysis_module_nowhitespace_analyzer:
   enabled: true
 
 # TAGGING MODULES
-analysis_module_user_tagger:
-  name: user_tagger
-  # tag people in specific groups in the organization
-  python_module: saq.modules.user
-  python_class: UserTaggingAnalyzer
-  enabled: true
-  # location of the cache (use ace user update-organization to build this file)
-  json_path: data/etc/organization.json
-  # FORMAT: group_GROUPNAME = BOSS,LEVELS_DEEP,TAG
-  # GROUPNAME = some unique name to give the group
-  # BOSS = the person at the organization leading the group
-  # LEVELS_DEEP = how far deep in direct reports to include people in the group
-  # TAG = what tag to give people in this group
-
 analysis_module_user_defined_tagging:
   name: user_defined_tagging
   # tags observables as defined by the analysts in the database
@@ -2170,7 +2402,7 @@ analysis_module_zip_encryption_analyzer:
   range_low: 4
   # and maximum size of the passwords to try
   range_high: 10
-  # how many bytes into the email do you want to look?
+  # how many characters of each email body part (html converted to text) to read for candidate passwords
   byte_limit: 1024
   # and what is the maximum size of the word list created?
   list_limit: 5000
@@ -2178,7 +2410,7 @@ analysis_module_zip_encryption_analyzer:
   john_bin_path: /opt/tools/john-1.9.0-jumbo-1/run
   # the maximum amount of time (in seconds) to wait for 7z to complete
   # 7z can go nuts and consume all system memory, so this tries to prevent that
-  timeout: 5
+  extract_timeout: 5
 
 analysis_module_rar_encryption_analyzer:
   name: rar_encryption_analyzer
@@ -2190,13 +2422,29 @@ analysis_module_rar_encryption_analyzer:
   range_low: 4
   # and maximum size of the passwords to try
   range_high: 10
-  # how many bytes into the email do you want to look?
+  # how many characters of each email body part (html converted to text) to read for candidate passwords
   byte_limit: 1024
   # and what is the maximum size of the word list created?
   list_limit: 5000
   # full path to john the ripper binary
   john_bin_path: /opt/tools/john-1.9.0-jumbo-1/run
-  attempt_brute_force: true
+
+analysis_module_pdf_encryption_analyzer:
+  name: pdf_encryption_analyzer
+  python_module: saq.modules.email.encryption.pdf
+  python_class: PDFEncryptionAnalyzer
+  enabled: true
+  # for scanning the email for wordlists
+  # what is the minimum
+  range_low: 4
+  # and maximum size of the passwords to try
+  range_high: 11
+  # how many characters of each email body part (html converted to text) to read for candidate passwords
+  byte_limit: 1024
+  # and what is the maximum size of the word list created?
+  list_limit: 5000
+  # full path to john the ripper binary
+  john_bin_path: /opt/tools/john-1.9.0-jumbo-1/run
 
 analysis_module_alert_added_to_event:
   name: alert_added_to_event
@@ -2206,7 +2454,7 @@ analysis_module_alert_added_to_event:
 
 # captures every YARA-matched file of an alert dispositioned tp or fp into the svs_samples pool, for
 # SVS to check YARA rule changes against (docs/SVS_SAMPLES.md). runs in dispositioned mode. a
-# multi-node site gives svs_samples a shared backend first, or sets enabled: false
+# multi-node site gives svs_samples a shared backend first (docs/SVS_SAMPLES.md, "Nodes")
 analysis_module_svs_yara_sample_capture:
   name: svs_yara_sample_capture
   python_module: saq.modules.svs
@@ -2245,6 +2493,10 @@ deprecated_modules:
   - saq.modules.asset.netbios:NetBIOSAnalysis
   - saq.modules.asset.active_directory:ActiveDirectoryAnalysis
   - saq.modules.pcap.sensor_extraction:PcapExtractionAnalysis
+  - saq.modules.user:UserTagAnalysis
+  # the email archive is no longer searchable (docs/EMAIL_ARCHIVE.md)
+  - saq.modules.email.correlation:URLEmailPivotAnalysis_v2
+  - saq.modules.email.archive:EncryptedArchiveAnalysis
 
 analysis_module_observable_detection:
   name: observable_detection
@@ -2388,17 +2640,19 @@ analysis_module_clicker_detection_splunk:
 module_group_correlation:
   name: correlation
   modules:
+    - apex_domain_analyzer
     - clicker_detection_splunk
     - email_thread_analyzer
     - fqdn_analyzer
     - idna_analyzer
+    - lure_url_analyzer
     - message_id_analyzer_v2
     - network_identifier
     - parse_url
+    - pdf_link_text
     - phishkit_analyzer
     - rdap_analyzer
     - snort_signature_analysis_v1
-    - url_email_pivot_analyzer
     - user_analyzer
 
 module_group_yara:
@@ -2421,6 +2675,7 @@ module_group_file:
     - extracted_ole_analyzer
     - extracted_rtf_analyzer
     - file_hash_analyzer
+    - file_location_analysis
     - file_path_analysis
     - file_type
     - har_extraction
@@ -2441,8 +2696,15 @@ module_group_file:
     - officeparser3
     - olevba_v1_2
     - onenote_extraction
+    - pcap_analyzer
+    - pcap_dns
+    - pcap_files
+    - pcap_http
+    - pcap_tls
+    - pcap_tls_decryption
     - pcodedmp
     - pdf_analyzer
+    - pdf_encryption_analyzer
     - pdftotext
     - phishkit_analyzer
     - qrcode
@@ -2450,6 +2712,7 @@ module_group_file:
     - rtfole
     - site_tagger
     - ssdeep
+    - tls_keylog
     - upx
     - url_extraction
     - vbscript_analyzer
@@ -2467,7 +2730,6 @@ module_group_email:
     - email_conversation_attachment_analyzer
     - email_conversation_frequency_analyzer
     - email_conversation_link_analyzer
-    - encrypted_archive_analyzer
     - mailbox_email_analyzer
 
 module_group_common:
@@ -2475,7 +2737,6 @@ module_group_common:
   modules:
     - command_line_analyzer
     - configuration_defined_tagging
-    - correlated_tag_analyzer
     - email_address_fqdn_analyzer
     - nrd_analyzer
     - observable_detection
@@ -2483,7 +2744,6 @@ module_group_common:
     - protected_url_analyzer
     - site_tagger
     - user_defined_tagging
-    - user_tagger
 
 # EXTERNAL REMEDIATION CHECK SERVICE
 # Background daemon that polls external systems to discover whether *they*
@@ -2695,16 +2955,22 @@ integrations: {}
 settings:
   refresh_seconds: 60
 
-# How long a new observable detection of a given type lives before it stops firing, as a time delta
-# in DD:HH:MM:SS format. Applied when a detection is created without an explicit expiration; a type
-# that is not listed here produces detections that never expire. An analyst can always override the
-# expiration on an individual detection.
+# How long a new observable detection lives before it stops firing, in DD:HH:MM:SS format.
+# Applies to every observable type unless overridden below. Set to null for no expiration.
+# Analysts can review/change the date when enabling detection from an alert, and adjust it later.
+observable_expiration_default: "90:00:00:00"
+#
+# Optional per-type overrides. A type not listed here takes the setting of its nearest ancestor
+# type that is listed (email_from takes email_address's), and otherwise observable_expiration_default.
 #
 # This is only a default for *new* detections -- it is never applied retroactively, and re-enabling
 # an existing detection does not reset its expiration.
 #
-# format: <observable_type>: "DD:HH:MM:SS"
-observable_expiration_mappings: {}
+# format: <observable_type>: "DD:HH:MM:SS", or null for detections of that type that never expire
+observable_expiration_mappings:
+  # a hash names the same content forever
+  sha256: null
+  md5: null
   #ipv4: "14:00:00:00"
 
 # Events

@@ -5,8 +5,7 @@ import sys
 import time
 
 import pymysql
-from sqlalchemy import Executable
-from sqlalchemy.exc import DBAPIError
+from pymysql.constants import SERVER_STATUS
 from saq.configuration.config import get_config
 from saq.database.pool import get_db
 
@@ -67,7 +66,13 @@ def execute_with_retry(db, cursor, sql_or_func, params=(), attempts=15, commit=F
        SQL statements, and params is a matching list of tuples of parameters.
        
        Returns the rowcount for a single statement, or a list of rowcount for multiple statements,
-       or the result of the function call."""
+       or the result of the function call.
+
+       The unit of retry is the transaction: pass all of it, as a list of statements or as a
+       function that is safe to run again from its start. A deadlock rolls back the whole
+       transaction, so when db already had uncommitted writes before this call, the deadlock is
+       raised rather than retried, and the caller's transaction has to run again. A function
+       that calls execute_with_retry inside one that does gets exactly that."""
 
     assert callable(sql_or_func) or isinstance(sql_or_func, str) or isinstance(sql_or_func, list)
     assert params is None or isinstance(params, tuple) or ( 
@@ -87,6 +92,11 @@ def execute_with_retry(db, cursor, sql_or_func, params=(), attempts=15, commit=F
         if len(sql_or_func) != len(params):
             raise ValueError("the length of sql statements does not match the length of parameter tuples: {} {}".format(
                              sql_or_func, params))
+
+    # pymysql takes the status from OK packets only, so a transaction that has only read rows is
+    # not seen here. It has no writes a retry of this call alone could lose.
+    in_transaction = bool(db.server_status & SERVER_STATUS.SERVER_STATUS_IN_TRANS)
+
     count = 1
     while True:
         try:
@@ -111,12 +121,18 @@ def execute_with_retry(db, cursor, sql_or_func, params=(), attempts=15, commit=F
         except pymysql.err.OperationalError as e:
             # see http://stackoverflow.com/questions/25026244/how-to-get-the-mysql-type-of-error-with-pymysql
             # to explain e.args[0]
+            if (e.args[0] == 1213 or e.args[0] == 1205) and in_transaction:
+                # the transaction's owner rolls back (InnoDB already has, for 1213) and runs it again
+                logging.warning("deadlock ({}) in a transaction begun before this call -- not trying again, "
+                                "the transaction has to run again from its start".format(e.args[0]))
+                raise e
+
             if (e.args[0] == 1213 or e.args[0] == 1205) and count < attempts:
                 logging.warning("deadlock detected -- trying again (attempt #{})".format(count))
                 try:
                     db.rollback()
                 except Exception as rollback_error:
-                    logging.error("rollback failed for transaction in deadlock: {}".format(rollback_error))
+                    logging.exception("rollback failed for transaction in deadlock: {}".format(rollback_error))
                     raise e
 
                 count += 1
@@ -133,13 +149,13 @@ def execute_with_retry(db, cursor, sql_or_func, params=(), attempts=15, commit=F
                     log_connection_lost(e, "database connection lost")
                     raise e
 
-                if not callable(sql_or_func):
-                    i = 0
-                    for _sql, _params in zip(sql_or_func, params):
-                        logging.warning("FAILED STATEMENT #{} ({}) SQL {} PARAMS {}".format(
-                            i, e.args[0] if e.args else "unknown", _sql,
-                            ','.join([str(_) for _ in _params])))
-                        i += 1
+                # results has a rowcount for each statement that ran before the one that failed
+                # (none failed when the commit did)
+                if not callable(sql_or_func) and len(results) < len(sql_or_func):
+                    i = len(results)
+                    logging.warning("FAILED STATEMENT #{} ({}) SQL {} PARAMS {}".format(
+                        i, e.args[0] if e.args else "unknown", sql_or_func[i],
+                        ','.join([str(_) for _ in params[i]])))
 
                     # TODO log innodb lock status
                 raise e
@@ -170,6 +186,9 @@ def retry_on_deadlock(targets, *args, attempts=15, commit=False, **kwargs):
        This rolls back the thread-shared get_db() session, and with it anything else the caller had
        in progress there. A transaction of its own (saq.database.private_session) is run again with
        run_private_transaction instead."""
+    # the ORM retries import SQLAlchemy here: execute_with_retry() runs in every process, on raw cursors
+    from sqlalchemy import Executable
+    from sqlalchemy.exc import DBAPIError
 
     if not isinstance(targets, list):
         targets = [ targets ]
@@ -219,13 +238,10 @@ def retry_function_on_deadlock(function, *args, **kwargs):
     return retry_on_deadlock(function, *args, **kwargs)
 
 def retry_sql_on_deadlock(executable, *args, **kwargs):
+    from sqlalchemy import Executable
+
     assert isinstance(executable, Executable)
     return retry_on_deadlock(executable, *args, **kwargs)
-
-def retry_multi_sql_on_deadlock(executables, *args, **kwargs):
-    assert isinstance(executables, list)
-    assert all([isinstance(_, Executable) for _ in executables])
-    return retry_on_deadlock(executables, *args, **kwargs)
 
 def retry(func, *args, **kwargs):
     """Executes the wrapped function with retry_on_deadlock."""

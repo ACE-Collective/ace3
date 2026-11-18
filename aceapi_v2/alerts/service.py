@@ -9,17 +9,17 @@ import uuid as uuidlib
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING
 
 from fastapi import HTTPException
 from pydantic import ValidationError
 from sqlalchemy import Select, and_, func, or_, select
 from sqlalchemy.orm import aliased
 
+from saq.analysis.observable import Observable
 from saq.analysis.root import load_file_observable
 from saq.clicker_detection.config import build_splunk_clicker_search_urls, load_clicker_config
 from saq.clicker_detection.timeline import REGISTERED_CLICKER_PROVIDERS
-from saq.configuration.config import get_analysis_module_config
+from saq.configuration.config import get_analysis_module_config, get_config
 from saq.constants import (
     ANALYSIS_MODE_CORRELATION,
     DIRECTIVE_CLICKER_DETECTION,
@@ -60,13 +60,17 @@ from saq.gui.filter_query import resolve_filter_list, uses_filter_sentinels
 from saq.gui.filter_screens import ALERTS_SCREEN
 from saq.gui.filter_url import FilterQueryError, decode_filter_query
 from saq.json_encoding import _JSONEncoder
+from saq.logging import log_audit
+from saq.observables.file import FileObservable
 from saq.search.query import build_listing_query
 from saq.search.tasks import submit_index_task
 from saq.search.types import SearchFilters
 from saq.svs.alert_status import alert_svs_statuses
 from saq.util import local_time
+from saq.util.ui import hexdump_lines
 from saq.util.uuid import is_uuid
 
+from aceapi_v2.auth.schemas import ApiAuthResult
 from aceapi_v2.alerts.schemas import (
     ALERT_ROW_CSV_FIELDS,
     AlertCommentRead,
@@ -87,12 +91,6 @@ from aceapi_v2.common.listing import (
     settled,
 )
 from aceapi_v2.sync import run_db_in_thread
-
-if TYPE_CHECKING:
-    # saq.observables.file imports the presenters, which import aceapi_v2, so a runtime import
-    # here is circular
-    from saq.analysis.observable import Observable
-    from saq.observables.file import FileObservable
 
 logger = logging.getLogger(__name__)
 
@@ -177,17 +175,18 @@ def get_alert_version(alert_uuid: str) -> str:
     return version
 
 
-def set_alert_owner(alert_uuids: list[str], owner_id: int | None, acting_user_id: int,
+def set_alert_owner(alert_uuids: list[str], owner_id: int | None, auth: ApiAuthResult,
                     take_owned: dict[str, int]) -> SetOwnerResult:
     """Gives the alerts to owner_id (see change_alert_owner) and reports what was left alone,
-    worded as the GUI tells the analyst."""
+    worded as the GUI tells the analyst. auth must have a user."""
+    acting_user_id = auth.auth_user_id
     new_owner = None
     if owner_id is not None:
         new_owner = get_db().get(User, owner_id)
         if new_owner is None or not new_owner.enabled:
             raise HTTPException(status_code=422, detail=f"user {owner_id} does not exist or is disabled")
 
-    ownership = change_alert_owner(alert_uuids, owner_id, acting_user_id, take_owned)
+    ownership = change_alert_owner(alert_uuids, owner_id, auth, take_owned)
 
     skipped = describe_skipped(ownership)
     message = None
@@ -253,11 +252,11 @@ def collect_alert_comments(alert: GUIAlert) -> dict:
         {
             "alert_uuid": "...",
             "alert_comments": [
-                {"insert_date": "...", "user": {...}, "comment": "..."}, ...
+                {"insert_date": "...", "edited_at": "..." or null, "user": {...}, "comment": "..."}, ...
             ],
             "observable_comments": [
                 {"observable": {"type": "...", "value": "...", "sha256": "..."},
-                 "insert_date": "...", "user": {...}, "comment": "..."}, ...
+                 "insert_date": "...", "edited_at": "..." or null, "user": {...}, "comment": "..."}, ...
             ],
         }
     """
@@ -283,6 +282,7 @@ def collect_alert_comments(alert: GUIAlert) -> dict:
         "alert_comments": [
             {
                 "insert_date": c.insert_date.isoformat(),
+                "edited_at": c.edited_at.isoformat() if c.edited_at else None,
                 "user": _serialize_user(c.user),
                 "comment": c.comment,
             }
@@ -296,6 +296,7 @@ def collect_alert_comments(alert: GUIAlert) -> dict:
                     "sha256": c.observable.sha256.hex(),
                 },
                 "insert_date": c.insert_date.isoformat(),
+                "edited_at": c.edited_at.isoformat() if c.edited_at else None,
                 "user": _serialize_user(c.user),
                 "comment": c.comment,
             }
@@ -304,12 +305,11 @@ def collect_alert_comments(alert: GUIAlert) -> dict:
     }
 
 
-def update_alert_comment(
-    alert_uuid: str, comment_id: int, comment_text: str, user_id: int | None, user_name: str | None
-) -> AlertCommentRead:
+def update_alert_comment(alert_uuid: str, comment_id: int, comment_text: str, auth: ApiAuthResult) -> AlertCommentRead:
     """Replace the text of an analyst comment on an alert. Only the comment's author may edit it.
 
     The alert's version is rotated and the alert re-indexed, as when a comment is added."""
+    user_id = auth.auth_user_id
     if user_id is None:
         raise HTTPException(status_code=401, detail="User authentication required")
 
@@ -328,12 +328,15 @@ def update_alert_comment(
     if comment.user_id != user_id:
         raise HTTPException(status_code=403, detail="Only the comment author can edit this comment")
 
-    # a comment added through the GUI's form was stored with a form submission's CRLF line breaks,
-    # while the edit modal sends a textarea's LF ones, so saving it untouched is not a change
-    if comment.comment.replace("\r\n", "\n") != comment_text.replace("\r\n", "\n"):
-        logger.info("AUDIT: user %s edited comment %s on alert %s from %r to %r",
-                    user_name, comment_id, alert_uuid, comment.comment, comment_text)
+    # a comment added through the GUI's form was stored as typed, with a form submission's CRLF line
+    # breaks, while the edit request is stripped and the modal sends a textarea's LF ones, so saving
+    # it untouched is not a change
+    if comment.comment.replace("\r\n", "\n").strip() != comment_text.replace("\r\n", "\n").strip():
+        log_audit("user %s edited comment %s on alert %s from %r to %r",
+                  auth.auth_name, comment_id, alert_uuid, comment.comment, comment_text,
+                  auth=auth, alert_uuid=alert_uuid, comment_id=comment_id)
         comment.comment = comment_text
+        comment.edited_at = func.now()
         touch_alerts([alert_uuid])
         get_db().commit()
         submit_index_task(alert_uuid)
@@ -342,6 +345,7 @@ def update_alert_comment(
         comment_id=comment.comment_id,
         alert_uuid=comment.uuid,
         insert_date=comment.insert_date,
+        edited_at=comment.edited_at,
         user_id=comment.user_id,
         user_display_name=comment.user.display_name if comment.user else "unknown",
         comment=comment.comment,
@@ -419,7 +423,7 @@ def resolve_alert_log_path(alert_uuid: str) -> str:
     return log_path
 
 
-def resolve_alert_file(alert_uuid: str, observable_uuid: str) -> "FileObservable":
+def resolve_alert_file(alert_uuid: str, observable_uuid: str) -> FileObservable:
     """A file observable of the alert whose file is on disk; 404 otherwise.
 
     Only that one observable is loaded, never the analysis tree (see load_file_observable).
@@ -449,38 +453,16 @@ def resolve_alert_image(alert_uuid: str, observable_uuid: str) -> tuple[str, str
 _HEXDUMP_BATCH_LINES = 4096
 
 
-def _hexdump_line(offset: int, chunk: bytes) -> str:
-    hex_bytes = [f"{byte:02x} " for byte in chunk]
-    hex_area = "".join(hex_bytes[:8]) + " " + "".join(hex_bytes[8:])
-    printable = "".join(chr(byte) if 0x20 <= byte < 0x7f else "." for byte in chunk)
-    return f"{offset:08x}  {hex_area:<49} |{printable}|\n"
-
-
 def hexdump(path: str) -> Iterator[str]:
-    """The file as `hexdump -C` prints it, in batches of lines: 16 bytes a line as the offset,
-    the bytes in hex and the printable ones as text, a run of lines repeating the one before it
-    as a single "*", and the length last."""
+    """The file as `hexdump -C` prints it, in batches of lines."""
     lines: list[str] = []
-    offset = 0
-    previous = None
-    squeezing = False
     with open(path, "rb") as fp:
-        while chunk := fp.read(16):
-            if chunk == previous:
-                if not squeezing:
-                    lines.append("*\n")
-                    squeezing = True
-            else:
-                lines.append(_hexdump_line(offset, chunk))
-                squeezing = False
-            previous = chunk
-            offset += len(chunk)
+        for line in hexdump_lines(iter(lambda: fp.read(16), b"")):
+            lines.append(line)
             if len(lines) >= _HEXDUMP_BATCH_LINES:
                 yield "".join(lines)
                 lines = []
 
-    if offset:
-        lines.append(f"{offset:08x}\n")
     if lines:
         yield "".join(lines)
 
@@ -505,7 +487,7 @@ CLICKER_SPLUNK_MODULE_NAME = "clicker_detection_splunk"
 
 
 def request_observable_analysis(alert_uuid: str, observable_uuid: str, valid_types: tuple[str, ...],
-                                change: Callable[["Observable"], None]) -> str:
+                                change: Callable[[Observable], None]) -> str:
     """Change one observable of the alert (add the directive an analysis module waits for), and
     queue the alert for the analysis the analyst asked for. Returns the observable as text, for
     the audit log. The observable actions of integrations use it too.
@@ -566,7 +548,7 @@ def request_crawl(alert_uuid: str, observable_uuid: str) -> str:
         lambda observable: observable.add_directive(DIRECTIVE_CRAWL))
 
 
-def _check_for_clickers(observable: "Observable") -> None:
+def _check_for_clickers(observable: Observable) -> None:
     observable.add_directive(DIRECTIVE_CLICKER_DETECTION)
     # An analyst asking again wants a fresh check. The engine skips a module whose analysis
     # already exists (saq/modules/base_module.py accepts()), so the earlier clicker analyses are
@@ -583,7 +565,7 @@ def request_clicker_check(alert_uuid: str, observable_uuid: str) -> str:
     return request_observable_analysis(alert_uuid, observable_uuid, (F_URL, F_FQDN), _check_for_clickers)
 
 
-def load_observable(alert_uuid: str, observable_uuid: str) -> "Observable":
+def load_observable(alert_uuid: str, observable_uuid: str) -> Observable:
     """One observable of the alert, for an action that reads it and changes nothing, so the alert
     is not locked. 404 for an unknown alert or observable."""
     alert = _resolve_alert(alert_uuid)
@@ -602,11 +584,12 @@ def clicker_searches(alert_uuid: str, observable_uuid: str) -> list[ClickerSearc
     an analyst can run them without the check. Empty when none is configured for its type."""
     observable = load_observable(alert_uuid, observable_uuid)
 
-    try:
-        module_config = get_analysis_module_config(CLICKER_SPLUNK_MODULE_NAME)
-    except Exception:
-        # the Splunk clicker module is not configured on this node
+    # no block means the Splunk clicker module is not configured on this node; a block that fails
+    # validation raises instead, since an empty list would read as "no searches for this observable"
+    if not get_config().has_analysis_module_config(CLICKER_SPLUNK_MODULE_NAME):
         return []
+
+    module_config = get_analysis_module_config(CLICKER_SPLUNK_MODULE_NAME)
 
     config = load_clicker_config(module_config.config_path)
     return [ClickerSearch(name=search["name"], url=search["url"])
@@ -694,17 +677,16 @@ async def bulk_add_observable(
     o_value: str,
     o_time: datetime | None,
     directives: list[str],
-    username: str,
+    auth: ApiAuthResult,
 ) -> BulkAddObservableResult:
     """Add an observable to multiple alerts.
 
     Runs sync filesystem operations in a thread pool via run_db_in_thread(),
     which resets the worker thread's sync session after each call.
     """
-    logger.info(
-        f"AUDIT: user {username} bulk-added observable "
-        f"({o_type},{o_value},{o_time}) to alerts {alert_uuids}"
-    )
+    username = auth.auth_name or "unknown"
+    log_audit("user %s bulk-added observable (%s,%s,%s) to alerts %s", username, o_type, o_value, o_time,
+              alert_uuids, auth=auth, alert_uuids=alert_uuids, observable_type=o_type, observable_value=o_value)
 
     # Validate directives
     valid_directives = [d for d in directives if d in VALID_DIRECTIVES]

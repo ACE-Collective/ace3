@@ -109,12 +109,15 @@ def delete_group_permission(
 ) -> int:
     """Revoke group permission(s). Returns number of rows deleted.
 
-    Provide either permission_id or a filter on (group_id, major, minor[, company_id, effect]).
+    Provide either permission_id (and optionally the group_id it must belong to) or a filter on
+    (group_id, major, minor[, company_id, effect]).
     """
     session = get_db()
     query = session.query(AuthGroupPermission)
     if permission_id is not None:
         query = query.filter(AuthGroupPermission.id == permission_id)
+        if group_id is not None:
+            query = query.filter(AuthGroupPermission.group_id == group_id)
     else:
         if group_id is None or major is None or minor is None:
             raise ValueError('group_id, major and minor are required when permission_id is not provided')

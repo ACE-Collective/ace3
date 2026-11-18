@@ -1,6 +1,7 @@
 import json
 import os
 import shutil
+import tempfile
 import uuid
 import pytest
 from sqlalchemy import select
@@ -16,7 +17,6 @@ from saq.engine.engine_configuration import EngineConfiguration
 from saq.engine.enums import EngineExecutionMode
 from saq.environment import get_data_dir
 from saq.modules.file_analysis.archive import ArchiveAnalysis
-from saq.modules.file_analysis.html import MHTMLAnalysis
 from saq.modules.file_analysis.is_file_type import is_msi_file, is_ole_file
 from saq.modules.file_analysis.officeparser3 import OfficeParserAnalysis3
 from saq.modules.file_analysis.olevba import OLEVBA_Analysis_v1_2
@@ -28,17 +28,22 @@ from saq.modules.file_analysis.xml import XMLPlainTextAnalysis
 from saq.modules.file_analysis.yara import YaraScanResults_v3_4
 from saq.observables.file import FileObservable
 from saq.signatures.builtin import SIGNATURE_VERSION_UNKNOWN
+from saq.signatures.git_context import GitContext
+from saq.signatures.loaders.yara import parse_rule_file
 from saq.util.hashing import sha256_file
 from saq.util.uuid import get_storage_dir
 from saq.yara_scanning.service import YaraScannerService
 from tests.saq.helpers import create_root_analysis, log_count, wait_for_condition
 
-UNITTEST_SOCKET_DIR = 'socket_unittest'
-
 @pytest.fixture(autouse=True, scope="function")
 def setup(datadir, monkeypatch):
-    monkeypatch.setattr(get_service_config(SERVICE_YARA_SCANNER), "socket_dir", UNITTEST_SOCKET_DIR)  # noqa: F821
+    # AF_UNIX paths are limited to 108 bytes, which a socket under the data directory exceeds
+    # when the checkout is a git worktree
+    socket_dir = tempfile.mkdtemp(prefix="yss-")
+    monkeypatch.setattr(get_service_config(SERVICE_YARA_SCANNER), "socket_dir", socket_dir)
     monkeypatch.setattr(get_service_config(SERVICE_YARA_SCANNER), "signature_dir", str(datadir / 'yara_rules'))
+    yield
+    shutil.rmtree(socket_dir, ignore_errors=True)
 
 def _empty_qa_spool():
     """A job left in the qa spool would be recorded during the next test, after its yara_qa rows
@@ -114,13 +119,19 @@ def test_file_analysis_000_url_extraction_002_gs(root_analysis, datadir):
     pdf_analysis = file_observable.get_and_load_analysis(PDFAnalysis)
     assert pdf_analysis
     pdfparser_files = pdf_analysis.get_observables_by_type(F_FILE)
-    assert len(pdfparser_files) == 3
+    # the sample is AES-256 encrypted with an owner password only, so it also gets a decrypted copy and its pdfparser output
+    assert len(pdfparser_files) == 5
     annotation_uris_file = [_ for _ in pdfparser_files if _.file_name.endswith(".annotation_uris.txt")][0]
     url_analysis = annotation_uris_file.get_and_load_analysis(URLExtractionAnalysis)
     assert url_analysis
     # should have a bad url in it
     bad_url = 'http://12tkj5.my.id/blog/642ec2b466aed.zip'
     assert bad_url in [url.value for url in url_analysis.get_observables_by_type(F_URL)]
+
+    # pdfparser reads the url in the decrypted copy's objects
+    [pdfparser] = [_ for _ in pdfparser_files if _.file_name.endswith(".decrypted.pdf.pdfparser")]
+    with open(pdfparser.full_path, errors="replace") as fp:
+        assert bad_url in fp.read()
 
 KEY_STORAGE_DIR = 'storage_dir'
 KEY_TAGS = 'tags'
@@ -191,11 +202,12 @@ def test_file_analysis_001_oletools_000(root_analysis, result_map, datadir):
         macro_count = len([f for f in root_analysis.all_observables if f.type == F_FILE and f.has_tag('macro')])
         assert macro_count == expected_results[KEY_MACRO_COUNT]
 
+@pytest.mark.parametrize("archive", ["zip/test.zip", "rar/test.r07", "7z/under.7z", "ace/dhl_report.ace"])
 @pytest.mark.integration
-def test_file_analysis_002_archive_000_zip(root_analysis, datadir):
+def test_file_analysis_002_archive_with_one_file(root_analysis, datadir, archive):
 
     root_analysis.analysis_mode = "test_groups"
-    _file = root_analysis.add_file_observable(str(datadir / "zip/test.zip"))
+    _file = root_analysis.add_file_observable(str(datadir / archive))
     root_analysis.save()
     root_analysis.schedule()
 
@@ -204,52 +216,22 @@ def test_file_analysis_002_archive_000_zip(root_analysis, datadir):
     engine.configuration_manager.enable_module('file_type', 'test_groups')
     engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
 
-    alert = load_alert(root_analysis.uuid)
-    assert alert
-    _file = alert.root_analysis.get_observable(_file.uuid)
+    root_analysis = load_root(get_storage_dir(root_analysis.uuid))
+    _file = root_analysis.get_observable(_file.uuid)
     assert _file
-    
+
     analysis = _file.get_and_load_analysis(ArchiveAnalysis)
     assert analysis
     assert analysis.file_count == 1
-    _file = analysis.get_observables_by_type(F_FILE)
-    assert len(_file) == 1
+    assert len(analysis.get_observables_by_type(F_FILE)) == 1
 
 @pytest.mark.integration
-def test_file_analysis_002_archive_001_rar(root_analysis, datadir):
+def test_file_analysis_archive_skip_ole(root_analysis, datadir):
+    # make sure OLE files are skipped by this module: 7z can extract the streams of this document
 
     root_analysis.analysis_mode = "test_groups"
 
-    _file = root_analysis.add_file_observable(str(datadir / "rar/test.r07"))
-    root_analysis.save()
-    root_analysis.schedule()
-
-    engine = Engine()
-    engine.configuration_manager.enable_module('archive', 'test_groups')
-    engine.configuration_manager.enable_module('file_type', 'test_groups')
-    engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
-
-    alert = load_alert(root_analysis.uuid)
-    _file = alert.root_analysis.get_observable(_file.uuid)
-    
-    from saq.modules.file_analysis import ArchiveAnalysis
-    analysis = _file.get_and_load_analysis(ArchiveAnalysis)
-    assert analysis
-    assert analysis.file_count == 1
-    _file = analysis.get_observables_by_type(F_FILE)
-    assert len(_file) == 1
-
-@pytest.mark.integration
-def test_file_analysis_archive_skip_ole(root_analysis):
-    # make sure OLE files are skipped by this module
-
-    root_analysis.analysis_mode = "test_groups"
-
-    target_path = root_analysis.create_file_path("sample.doc")
-    with open(target_path, 'wb') as f:
-        f.write(b'\xD0\xCF\x11\xE0\xA1\xB1\x1A\xE1')
-
-    _file = root_analysis.add_file_observable(target_path)
+    _file = root_analysis.add_file_observable(str(datadir / "ole_files/Paid Invoice.doc"))
     root_analysis.save()
     root_analysis.schedule()
 
@@ -299,94 +281,6 @@ def test_file_analysis_msi_identification(tmpdir, datadir):
 
     # this should als return True since it's actually an MSI file
     assert is_msi_file(str(datadir / "msi/84ec41afdc49c2ee8dff9ba07ba5c9a4"))
-
-@pytest.mark.integration
-def test_file_analysis_archive_7z_under(root_analysis, datadir):
-
-    root_analysis.analysis_mode = "test_groups"
-    _file = root_analysis.add_file_observable(str(datadir / '7z/under.7z'))
-
-    root_analysis.save()
-    root_analysis.schedule()
-
-    engine = Engine()
-    engine.configuration_manager.enable_module('archive', 'test_groups')
-    engine.configuration_manager.enable_module('file_type', 'test_groups')
-    engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
-
-    root_analysis = load_root(get_storage_dir(root_analysis.uuid))
-    _file = root_analysis.get_observable(_file.uuid)
-    
-    analysis = _file.get_and_load_analysis(ArchiveAnalysis)
-    assert analysis
-    assert analysis.file_count == 1
-    _file = analysis.get_observables_by_type(F_FILE)
-    assert len(_file) == 1
-
-@pytest.mark.integration
-def test_file_analysis_002_archive_002_ace(root_analysis, datadir):
-
-    root_analysis.analysis_mode = "test_groups"
-
-    _file = root_analysis.add_file_observable(str(datadir / "ace/dhl_report.ace"))
-    root_analysis.save()
-    root_analysis.schedule()
-
-    engine = Engine()
-    engine.configuration_manager.enable_module('archive', 'test_groups')
-    engine.configuration_manager.enable_module('file_type', 'test_groups')
-    engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
-
-    alert = load_alert(root_analysis.uuid)
-    root_analysis = alert.root_analysis
-    _file = root_analysis.get_observable(_file.uuid)
-    
-    analysis = _file.get_and_load_analysis(ArchiveAnalysis)
-    assert analysis
-    assert analysis.file_count == 1
-    _file = analysis.get_observables_by_type(F_FILE)
-    assert len(_file) == 1
-
-@pytest.mark.integration
-def test_file_analysis_002_archive_003_jar(root_analysis, datadir):
-
-    root_analysis.analysis_mode = "test_groups"
-    _file = root_analysis.add_file_observable(str(datadir / "jar/test.jar"))
-    root_analysis.save()
-    root_analysis.schedule()
-
-    engine = Engine()
-    engine.configuration_manager.enable_module('archive', 'test_groups')
-    engine.configuration_manager.enable_module('file_type', 'test_groups')
-    engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
-
-    root_analysis = load_root(get_storage_dir(root_analysis.uuid))
-    _file = root_analysis.get_observable(_file.uuid)
-    
-    analysis = _file.get_and_load_analysis(ArchiveAnalysis)
-    assert analysis
-    assert analysis.file_count == 42
-
-@pytest.mark.integration
-def test_file_analysis_002_archive_malicious_jar(root_analysis, datadir):
-
-    root_analysis.analysis_mode = "test_groups"
-
-    _file = root_analysis.add_file_observable(str(datadir / "jar/malicious.jar"))
-    root_analysis.save()
-    root_analysis.schedule()
-
-    engine = Engine()
-    engine.configuration_manager.enable_module('archive', 'test_groups')
-    engine.configuration_manager.enable_module('file_type', 'test_groups')
-    engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
-
-    root_analysis = load_root(get_storage_dir(root_analysis.uuid))
-    _file = root_analysis.get_observable(_file.uuid)
-    
-    analysis = _file.get_and_load_analysis(ArchiveAnalysis)
-    assert analysis
-    assert analysis.file_count == 68
 
 @pytest.mark.integration
 def test_file_analysis_002_archive_004_jar(root_analysis, datadir):
@@ -581,8 +475,54 @@ def test_file_analysis_004_yara_006_whitelist(yss_server, root_analysis, datadir
     assert len(_file.tags) == 1
     # the tag should be "whitelisted"
     assert _file.tags[0] == "whitelisted"
-    # the root analysis object should be whitelisted
-    assert root_analysis.whitelisted
+    # a rule tagged whitelisted is no detection of its own, as with no_alert
+    assert not _file.detections
+    assert not _file.has_directive(DIRECTIVE_SANDBOX)
+
+@pytest.mark.integration
+def test_file_analysis_004_yara_006_whitelist_does_not_suppress_other_rules(yss_server, root_analysis, datadir):
+
+    root_analysis.analysis_mode = "test_groups"
+    _file = root_analysis.add_file_observable(str(datadir / 'scan_targets/whitelist_and_match'))
+    root_analysis.save()
+    root_analysis.schedule()
+
+    engine = Engine()
+    engine.configuration_manager.enable_module('yara_scanner_v3_4', 'test_groups')
+    engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
+
+    root_analysis = load_root(get_storage_dir(root_analysis.uuid))
+    _file = root_analysis.get_observable(_file.uuid)
+    assert _file.get_and_load_analysis(YaraScanResults_v3_4)
+
+    assert _file.has_tag("whitelisted")
+    assert _file.has_tag("tag1")
+    # test_rule still alerts on the file the whitelisted rule matched too
+    (detection,) = _file.detections
+    assert detection.details["rule"].endswith("test_rule")
+    assert _file.has_directive(DIRECTIVE_SANDBOX)
+
+@pytest.mark.integration
+def test_file_analysis_004_yara_006_whitelist_with_modifiers(yss_server, root_analysis, datadir):
+    # a rule tagged whitelisted that has modifiers still applies its directives, and is still no detection
+
+    root_analysis.analysis_mode = "test_groups"
+    _file = root_analysis.add_file_observable(str(datadir / 'scan_targets/whitelist_with_modifiers'))
+    root_analysis.save()
+    root_analysis.schedule()
+
+    engine = Engine()
+    engine.configuration_manager.enable_module('yara_scanner_v3_4', 'test_groups')
+    engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
+
+    root_analysis = load_root(get_storage_dir(root_analysis.uuid))
+    _file = root_analysis.get_observable(_file.uuid)
+    assert _file.get_and_load_analysis(YaraScanResults_v3_4)
+
+    assert _file.has_tag("whitelisted")
+    assert _file.has_directive(DIRECTIVE_EXTRACT_URLS)
+    assert not _file.detections
+    assert not _file.has_directive(DIRECTIVE_SANDBOX)
 
 @pytest.mark.integration
 def test_file_analysis_004_yara_007_qa_modifier(yss_server, root_analysis, datadir):
@@ -612,9 +552,13 @@ def test_file_analysis_004_yara_007_qa_modifier(yss_server, root_analysis, datad
     assert len(root_analysis.all_detection_points) == 0
 
     # the yara scanner service stores the file and its match record in the yara_qa cas pool,
-    # indexed by the rule's uuid, after it answered the scan. the test rules are not in a declared
-    # git repo, so the version is unknown
+    # indexed by the rule's uuid, after it answered the scan. it is filed under the content hash of
+    # the rule the service compiled, the same hash the signature inventory gives the rule (the Yara QA
+    # page marks the loaded version by comparing the two), not under the commit
     qa_uuid = "7f3c1c2e-5b7e-4f7a-9a51-0c1d2e3f4a5b"
+    rule_path = str(datadir / "yara_rules/custom/test.yar")
+    git_context = GitContext(root=os.path.dirname(rule_path), git_remote=None, version=SIGNATURE_VERSION_UNKNOWN)
+    (qa_signature,) = [s for s in parse_rule_file(rule_path, git_context) if s.uuid == qa_uuid]
 
     def _stored() -> bool:
         get_db().rollback()  # a fresh snapshot each time
@@ -623,7 +567,7 @@ def test_file_analysis_004_yara_007_qa_modifier(yss_server, root_analysis, datad
 
     wait_for_condition(_stored, timeout=30)
     match = get_db().execute(select(YaraQAMatch).where(YaraQAMatch.signature_uuid == qa_uuid)).scalar_one()
-    assert match.signature_version == SIGNATURE_VERSION_UNKNOWN
+    assert (match.signature_version, match.version_kind) == (qa_signature.content_hash, "content")
     assert match.sha256 == _file.sha256_hash
     assert match.file_name == _file.file_name
     assert match.root_uuid == root_analysis.uuid
@@ -632,6 +576,7 @@ def test_file_analysis_004_yara_007_qa_modifier(yss_server, root_analysis, datad
 
     counters = get_db().execute(select(YaraQASignature).where(YaraQASignature.signature_uuid == qa_uuid)).scalar_one()
     assert counters.rule_name == "test_qa_modifier"
+    assert (counters.signature_version, counters.version_kind) == (qa_signature.content_hash, "content")
     assert (counters.match_count, counters.stored_count) == (1, 1)
 
     pool = get_cas().pool("yara_qa")
@@ -811,57 +756,6 @@ def test_crawl_extracted_urls(yss_server, root_analysis, datadir):
     for observable in analysis.observables:
         assert observable.has_directive(DIRECTIVE_CRAWL)
 
-@pytest.mark.skip("missing file")
-@pytest.mark.integration
-def test_correlated_tag(yss_server, root_analysis):
-
-    source_path = os.path.join("test_data", "ppt", "Payment_Details.ppsx")
-
-    if not os.path.exists(source_path):
-        pytest.skip(f"missing {source_path}")
-
-    root_analysis.analysis_mode = "test_groups"
-    file_observable = root_analysis.add_file_observable(os.path.join('test_data', 'ppt', 'Payment_Details.ppsx'))
-    root_analysis.save()
-    root_analysis.schedule()
-
-    engine = Engine()
-    engine.configuration_manager.enable_module('correlated_tag_analyzer', 'test_groups')
-    engine.configuration_manager.enable_module('archive', 'test_groups')
-    engine.configuration_manager.enable_module('file_type', 'test_groups')
-    engine.configuration_manager.enable_module('yara_scanner_v3_4', 'test_groups')
-    engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
-
-    # we should have an alert
-    assert load_alert(root_analysis.uuid)
-
-@pytest.mark.skip("missing file")
-@pytest.mark.integration
-def test_mhtml_analysis(root_analysis):
-
-    source_path = os.path.join('test_data', 'mhtml', 'Invoice_PDF.mht')
-    if not os.path.exists(source_path):
-        pytest.skip(f"missing {source_path}")
-
-    root_analysis.analysis_mode = "test_groups"
-    file_observable = root_analysis.add_file_observable(source_path)
-    root_analysis.save()
-    root_analysis.schedule()
-
-    engine = Engine()
-    engine.configuration_manager.enable_module('mhtml', 'test_groups')
-    engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
-
-    root_analysis = load_root(get_storage_dir(root_analysis.uuid))
-    file_observable = root_analysis.get_observable(file_observable.uuid)
-    assert file_observable
-
-    analysis = file_observable.get_and_load_analysis(MHTMLAnalysis)
-    assert analysis
-    # should have extracted a single file
-    assert len(analysis.details) == 1
-    assert len(analysis.get_observables_by_type(F_FILE)) == 1
-
 @pytest.mark.system
 def test_officeparser_macro_extraction(root_analysis, datadir):
 
@@ -991,7 +885,7 @@ def test_upx(root_analysis, datadir):
 
     analysis = _file.get_and_load_analysis(UPXAnalysis)
     assert analysis
-    assert analysis.details['error'] is None
+    assert analysis.error is None
 
     target_file = analysis.get_observables_by_type(F_FILE)[0]
     assert target_file

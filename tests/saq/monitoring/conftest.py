@@ -1,5 +1,3 @@
-import pytest
-
 from saq.monitoring.threaded_monitor import ACEThreadedMonitor
 
 
@@ -15,9 +13,4 @@ class ConcreteTestMonitor(ACEThreadedMonitor):
         self.execute_count += 1
         if self.execute_side_effect:
             raise self.execute_side_effect
-
-
-@pytest.fixture
-def concrete_monitor():
-    return ConcreteTestMonitor()
 

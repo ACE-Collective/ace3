@@ -1,7 +1,6 @@
 import logging
 import os
 import re
-from subprocess import PIPE, Popen
 from typing import Type
 from pydantic import Field
 from saq.analysis.analysis import Analysis
@@ -88,13 +87,22 @@ class SsdeepAnalyzer(AnalysisModule):
             return AnalysisExecutionResult.COMPLETED
 
         logging.debug("analyzing file {}".format(local_file_path))
-        p = Popen(['ssdeep', '-m', self.ssdeep_hashes, local_file_path], 
-            stdout=PIPE, stderr=PIPE, universal_newlines=True)
-        (stdout, stderr) = p.communicate()
-
-        if len(stderr) > 0:
-            logging.debug("ssdeep returned errors for {}".format(local_file_path))
+        p = self.run_tool(['ssdeep', '-m', self.ssdeep_hashes, local_file_path], local_file_path,
+                          capture_output=True, universal_newlines=True)
+        if p is None:
             return AnalysisExecutionResult.COMPLETED
+
+        stdout, stderr = p.stdout, p.stderr
+
+        if p.returncode != 0:
+            # a missing or unreadable hashes file fails every file, so an operator has to hear about it
+            logging.error(f"ssdeep failed on {local_file_path} with exit code {p.returncode}: {stderr.strip()}",
+                          extra={"path": local_file_path, "ssdeep_hashes": self.ssdeep_hashes})
+            return AnalysisExecutionResult.COMPLETED
+
+        if stderr:
+            # a bad line in the hashes file is only a warning: ssdeep still matched against the rest
+            logging.warning(f"ssdeep warned on {local_file_path}: {stderr.strip()}")
 
         analysis = None
 
@@ -110,12 +118,7 @@ class SsdeepAnalyzer(AnalysisModule):
                 continue
 
             matched_file = m.group(1)
-            ssdeep_score = 0
-
-            try:
-                ssdeep_score = int(m.group(2))
-            except Exception as e:
-                logging.error("unable to parse {} as integer".format(ssdeep_score))
+            ssdeep_score = int(m.group(2))
 
             if ssdeep_score >= self.ssdeep_match_threshold:
                 _file.add_tag('ssdeep')
@@ -123,6 +126,6 @@ class SsdeepAnalyzer(AnalysisModule):
                 if not analysis:
                     analysis = self.create_analysis(_file)
 
-                analysis.details['matches'].append({'file': matched_file, 'score': int(ssdeep_score)})
+                analysis.details['matches'].append({'file': matched_file, 'score': ssdeep_score})
 
         return AnalysisExecutionResult.COMPLETED

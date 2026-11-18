@@ -1,39 +1,112 @@
-from saq.modules.file_analysis.archive import ArchiveAnalysis, ArchiveAnalyzer
-from saq.modules.file_analysis.autoit import AutoItAnalysis, AutoItAnalyzer
-from saq.modules.file_analysis.binary import BinaryFileAnalysis, BinaryFileAnalyzer
-from saq.modules.file_analysis.cve import CVE_2021_30657_Analysis, CVE_2021_30657_Analyzer
-from saq.modules.file_analysis.dmg import DMGAnalysis, DMGAnalyzer
-from saq.modules.file_analysis.dotnet import De4dotAnalysis, De4dotAnalyzer
-from saq.modules.file_analysis.exif import ExifAnalysis, ExifAnalyzer
-from saq.modules.file_analysis.file_type import FileTypeAnalysis, FileTypeAnalyzer
-from saq.modules.file_analysis.hash import FileHashAnalysis, FileHashAnalyzer
-from saq.modules.file_analysis.ioc_extraction import IOCExtractionAnalysis, IOCExtractionAnalyzer
-from saq.modules.file_analysis.html import MHTMLAnalysis, MHTMLAnalysisModule, HTMLDataURLAnalysis, HTMLDataURLAnalyzer
-from saq.modules.file_analysis.java import JavaClassDecompilerAnalysis, JavaClassDecompilerAnalysisModule
-from saq.modules.file_analysis.js import JavaScriptDeobfuscationAnalysis, JavaScriptDeobfuscationAnalyzer
-from saq.modules.file_analysis.lnk_parser import LnkParseAnalysis, LnkParseAnalyzer
-from saq.modules.file_analysis.mime import ActiveMimeAnalysis, ActiveMimeAnalyzer, HiddenMIMEAnalysis, HiddenMIMEAnalyzer
-from saq.modules.file_analysis.mse import MicrosoftScriptEncodingAnalysis, MicrosoftScriptEncodingAnalyzer
-from saq.modules.file_analysis.msoffice import OfficeXMLRelationshipExternalURLAnalysis, OfficeXMLRelationshipExternalURLAnalyzer
-from saq.modules.file_analysis.ocr import OCRAnalysis, OCRAnalyzer
-from saq.modules.file_analysis.officeparser3 import OfficeParserAnalysis3, OfficeParserAnalyzer3
-from saq.modules.file_analysis.ole import ExtractedOLEAnalysis, ExtractedOLEAnalyzer
-from saq.modules.file_analysis.olevba import OLEVBA_Analysis_v1_2, OLEVBA_Analyzer_v1_2
-from saq.modules.file_analysis.one_note import OneNoteFileAnalysis, OneNoteFileAnalyzer
-from saq.modules.file_analysis.pdf import PDFAnalysis, PDFAnalyzer, PDFTextAnalysis, PDFTextAnalyzer
-from saq.modules.file_analysis.qrcode import QRCodeAnalysis, QRCodeAnalyzer
-from saq.modules.file_analysis.rtf import RTFOLEObjectAnalysis, RTFOLEObjectAnalyzer, ExtractedRTFAnalysis, ExtractedRTFAnalyzer, NoWhiteSpaceAnalysis, NoWhiteSpaceAnalyzer
-from saq.modules.file_analysis.ssdeep import SsdeepAnalysis, SsdeepAnalyzer
-from saq.modules.file_analysis.upx import UPXAnalysis, UPXAnalyzer
-from saq.modules.file_analysis.url_extraction import URLExtractionAnalysis, URLExtractionAnalyzer
-from saq.modules.file_analysis.vbs import VBScriptAnalysis, VBScriptAnalyzer, PCodeAnalysis, PCodeAnalyzer
-from saq.modules.file_analysis.xlm import XLMMacroDeobfuscatorAnalysis, XLMMacroDeobfuscatorAnalyzer
-from saq.modules.file_analysis.xml import XMLBinaryDataAnalysis, XMLBinaryDataAnalyzer, XMLPlainTextAnalysis, XMLPlainTextAnalyzer
-from saq.modules.file_analysis.yara import YaraScanner_v3_4, YaraScanResults_v3_4
-
-from saq.modules.file_analysis.is_file_type import is_office_ext, is_office_file, is_macro_ext, is_pe_file, is_ole_file, is_rtf_file, is_pdf_file, is_zip_file, is_javascript_file, is_lnk_file, is_jar_file, is_empty_macro, is_x509, is_autoit, is_dotnet, is_msi_file, is_image, is_onenote_file, is_chm_file
-
 import warnings
+
+from saq.lazy_exports import lazy_getattr
+
+# saq.modules.file_analysis imports nothing itself: importing any one file analysis module (or one name from
+# here) ran this init, and it imported all of them. These names stay importable from saq.modules.file_analysis,
+# each loaded the first time it is asked for (PEP 562).
+_EXPORTS = {
+    "ArchiveAnalysis": "saq.modules.file_analysis.archive",
+    "ArchiveAnalyzer": "saq.modules.file_analysis.archive",
+    "AutoItAnalysis": "saq.modules.file_analysis.autoit",
+    "AutoItAnalyzer": "saq.modules.file_analysis.autoit",
+    "BinaryFileAnalysis": "saq.modules.file_analysis.binary",
+    "BinaryFileAnalyzer": "saq.modules.file_analysis.binary",
+    "CVE_2021_30657_Analysis": "saq.modules.file_analysis.cve",
+    "CVE_2021_30657_Analyzer": "saq.modules.file_analysis.cve",
+    "DMGAnalysis": "saq.modules.file_analysis.dmg",
+    "DMGAnalyzer": "saq.modules.file_analysis.dmg",
+    "De4dotAnalysis": "saq.modules.file_analysis.dotnet",
+    "De4dotAnalyzer": "saq.modules.file_analysis.dotnet",
+    "ExifAnalysis": "saq.modules.file_analysis.exif",
+    "ExifAnalyzer": "saq.modules.file_analysis.exif",
+    "FileTypeAnalysis": "saq.modules.file_analysis.file_type",
+    "FileTypeAnalyzer": "saq.modules.file_analysis.file_type",
+    "FileHashAnalysis": "saq.modules.file_analysis.hash",
+    "FileHashAnalyzer": "saq.modules.file_analysis.hash",
+    "IOCExtractionAnalysis": "saq.modules.file_analysis.ioc_extraction",
+    "IOCExtractionAnalyzer": "saq.modules.file_analysis.ioc_extraction",
+    "MHTMLAnalysis": "saq.modules.file_analysis.html",
+    "MHTMLAnalysisModule": "saq.modules.file_analysis.html",
+    "HTMLDataURLAnalysis": "saq.modules.file_analysis.html",
+    "HTMLDataURLAnalyzer": "saq.modules.file_analysis.html",
+    "JavaClassDecompilerAnalysis": "saq.modules.file_analysis.java",
+    "JavaClassDecompilerAnalysisModule": "saq.modules.file_analysis.java",
+    "JavaScriptDeobfuscationAnalysis": "saq.modules.file_analysis.js",
+    "JavaScriptDeobfuscationAnalyzer": "saq.modules.file_analysis.js",
+    "LnkParseAnalysis": "saq.modules.file_analysis.lnk_parser",
+    "LnkParseAnalyzer": "saq.modules.file_analysis.lnk_parser",
+    "ActiveMimeAnalysis": "saq.modules.file_analysis.mime",
+    "ActiveMimeAnalyzer": "saq.modules.file_analysis.mime",
+    "HiddenMIMEAnalysis": "saq.modules.file_analysis.mime",
+    "HiddenMIMEAnalyzer": "saq.modules.file_analysis.mime",
+    "MicrosoftScriptEncodingAnalysis": "saq.modules.file_analysis.mse",
+    "MicrosoftScriptEncodingAnalyzer": "saq.modules.file_analysis.mse",
+    "OfficeXMLRelationshipExternalURLAnalysis": "saq.modules.file_analysis.msoffice",
+    "OfficeXMLRelationshipExternalURLAnalyzer": "saq.modules.file_analysis.msoffice",
+    "OCRAnalysis": "saq.modules.file_analysis.ocr",
+    "OCRAnalyzer": "saq.modules.file_analysis.ocr",
+    "OfficeParserAnalysis3": "saq.modules.file_analysis.officeparser3",
+    "OfficeParserAnalyzer3": "saq.modules.file_analysis.officeparser3",
+    "ExtractedOLEAnalysis": "saq.modules.file_analysis.ole",
+    "ExtractedOLEAnalyzer": "saq.modules.file_analysis.ole",
+    "OLEVBA_Analysis_v1_2": "saq.modules.file_analysis.olevba",
+    "OLEVBA_Analyzer_v1_2": "saq.modules.file_analysis.olevba",
+    "OneNoteFileAnalysis": "saq.modules.file_analysis.one_note",
+    "OneNoteFileAnalyzer": "saq.modules.file_analysis.one_note",
+    "PDFAnalysis": "saq.modules.file_analysis.pdf",
+    "PDFAnalyzer": "saq.modules.file_analysis.pdf",
+    "PDFTextAnalysis": "saq.modules.file_analysis.pdf",
+    "PDFTextAnalyzer": "saq.modules.file_analysis.pdf",
+    "QRCodeAnalysis": "saq.modules.file_analysis.qrcode",
+    "QRCodeAnalyzer": "saq.modules.file_analysis.qrcode",
+    "RTFOLEObjectAnalysis": "saq.modules.file_analysis.rtf",
+    "RTFOLEObjectAnalyzer": "saq.modules.file_analysis.rtf",
+    "ExtractedRTFAnalysis": "saq.modules.file_analysis.rtf",
+    "ExtractedRTFAnalyzer": "saq.modules.file_analysis.rtf",
+    "NoWhiteSpaceAnalysis": "saq.modules.file_analysis.rtf",
+    "NoWhiteSpaceAnalyzer": "saq.modules.file_analysis.rtf",
+    "SsdeepAnalysis": "saq.modules.file_analysis.ssdeep",
+    "SsdeepAnalyzer": "saq.modules.file_analysis.ssdeep",
+    "UPXAnalysis": "saq.modules.file_analysis.upx",
+    "UPXAnalyzer": "saq.modules.file_analysis.upx",
+    "URLExtractionAnalysis": "saq.modules.file_analysis.url_extraction",
+    "URLExtractionAnalyzer": "saq.modules.file_analysis.url_extraction",
+    "VBScriptAnalysis": "saq.modules.file_analysis.vbs",
+    "VBScriptAnalyzer": "saq.modules.file_analysis.vbs",
+    "PCodeAnalysis": "saq.modules.file_analysis.vbs",
+    "PCodeAnalyzer": "saq.modules.file_analysis.vbs",
+    "XLMMacroDeobfuscatorAnalysis": "saq.modules.file_analysis.xlm",
+    "XLMMacroDeobfuscatorAnalyzer": "saq.modules.file_analysis.xlm",
+    "XMLBinaryDataAnalysis": "saq.modules.file_analysis.xml",
+    "XMLBinaryDataAnalyzer": "saq.modules.file_analysis.xml",
+    "XMLPlainTextAnalysis": "saq.modules.file_analysis.xml",
+    "XMLPlainTextAnalyzer": "saq.modules.file_analysis.xml",
+    "YaraScanner_v3_4": "saq.modules.file_analysis.yara",
+    "YaraScanResults_v3_4": "saq.modules.file_analysis.yara",
+    "is_office_ext": "saq.modules.file_analysis.is_file_type",
+    "is_office_file": "saq.modules.file_analysis.is_file_type",
+    "is_macro_ext": "saq.modules.file_analysis.is_file_type",
+    "is_pe_file": "saq.modules.file_analysis.is_file_type",
+    "is_ole_file": "saq.modules.file_analysis.is_file_type",
+    "is_rtf_file": "saq.modules.file_analysis.is_file_type",
+    "is_pdf_file": "saq.modules.file_analysis.is_file_type",
+    "is_zip_file": "saq.modules.file_analysis.is_file_type",
+    "is_javascript_file": "saq.modules.file_analysis.is_file_type",
+    "is_lnk_file": "saq.modules.file_analysis.is_file_type",
+    "is_jar_file": "saq.modules.file_analysis.is_file_type",
+    "is_empty_macro": "saq.modules.file_analysis.is_file_type",
+    "is_x509": "saq.modules.file_analysis.is_file_type",
+    "is_autoit": "saq.modules.file_analysis.is_file_type",
+    "is_dotnet": "saq.modules.file_analysis.is_file_type",
+    "is_msi_file": "saq.modules.file_analysis.is_file_type",
+    "is_image": "saq.modules.file_analysis.is_file_type",
+    "is_onenote_file": "saq.modules.file_analysis.is_file_type",
+    "is_chm_file": "saq.modules.file_analysis.is_file_type",
+}
+
+__getattr__ = lazy_getattr(__name__, _EXPORTS)
+
 
 warnings.filterwarnings("ignore", category=UserWarning, module='bs4')
 warnings.filterwarnings("ignore", category=RuntimeWarning, module='bs4')

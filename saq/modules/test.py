@@ -9,6 +9,7 @@ import os
 import os.path
 import re
 import time
+import uuid
 from typing import Type
 
 from pydantic import Field
@@ -16,10 +17,12 @@ from pydantic import Field
 from saq.analysis import Analysis
 from saq.analysis.observable import Observable
 from saq.configuration.config import get_config
-from saq.constants import F_FILE, F_TEST, F_URL, F_USER, R_DOWNLOADED_FROM, AnalysisExecutionResult
+from saq.configuration.schema import SandboxConfig
+from saq.constants import F_FILE, F_FQDN, F_HOSTNAME, F_TEST, F_URL, F_USER, R_DOWNLOADED_FROM, AnalysisExecutionResult
 from saq.environment import get_temp_dir
 from saq.modules import AnalysisModule
 from saq.modules.config import AnalysisModuleConfig
+from saq.sandbox.runner import SandboxCancelled, build_sandbox_argv, create_workdir, run_sandboxed, sandbox_python
 from tests.saq.helpers import recv_test_message, send_test_message
 
 KEY_TEST_RESULT = 'test_result'
@@ -36,6 +39,28 @@ class TestAnalysis(Analysis):
     @property
     def test_result(self):
         return self.details[KEY_TEST_RESULT]
+
+class CacheTestAnalysis(TestAnalysis):
+    pass
+
+class CacheTestAnalyzer(AnalysisModule):
+    """Cacheable (deterministic, additive) output for the engine's analysis cache tests. Every live
+    run records a new run_id, so a replayed analysis is told from a live one by the run_id it has."""
+
+    @property
+    def generated_analysis_type(self):
+        return CacheTestAnalysis
+
+    @property
+    def valid_observable_types(self):
+        return F_TEST
+
+    def execute_analysis(self, test) -> AnalysisExecutionResult:
+        analysis = self.create_analysis(test)
+        analysis.details = {"run_id": str(uuid.uuid4())}
+        fqdn = analysis.add_observable_by_spec(F_FQDN, "cache-test.example.com")
+        fqdn.add_tag("cache_test")
+        return AnalysisExecutionResult.COMPLETED
 
 class BasicTestAnalysis(TestAnalysis):
     def __init__(self, *args, **kwargs):
@@ -109,6 +134,8 @@ class BasicTestAnalyzer(AnalysisModule):
             return self.execute_test_cancel(test)
         elif test.value == 'test_engine_signals':
             return self.execute_test_engine_signals(test)
+        elif test.value == 'test_sandbox_should_stop':
+            return self.execute_test_sandbox_should_stop(test)
         else:
             return AnalysisExecutionResult.COMPLETED
 
@@ -146,10 +173,11 @@ class BasicTestAnalyzer(AnalysisModule):
         return AnalysisExecutionResult.COMPLETED
 
     def execute_analysis_8(self, test) -> AnalysisExecutionResult:
+        # tags what it analyzed whitelisted, the way the YARA scanner and the tagging modules can
         analysis = self.create_analysis(test)
         analysis.add_detection_point('test detection')
-        test.whitelist()
-        self.get_root().whitelisted = True
+        test.add_tag('whitelisted')
+        analysis.add_observable_by_spec(F_TEST, 'test_1')
         return AnalysisExecutionResult.COMPLETED
     
     def execute_analysis_test_action_counter(self, test) -> AnalysisExecutionResult:
@@ -175,9 +203,10 @@ class BasicTestAnalyzer(AnalysisModule):
         logging.info("execute_worker_gil_hang")
 
         # catastrophic backtracking: _sre never releases the GIL, so the monitor thread is
-        # starved and only the worker manager's kill ends this. bounded (about 20 seconds on its
-        # own) so a failed kill cannot wedge the test suite
-        re.match(r"(a+)+$", "a" * 28 + "b")
+        # starved and only the worker manager's kill ends this. each extra "a" doubles the run
+        # time: 30 takes about 18 seconds on a fast native CPU, well past the kill, and is still
+        # bounded so a failed kill cannot wedge the test suite
+        re.match(r"(a+)+$", "a" * 30 + "b")
         return AnalysisExecutionResult.COMPLETED
 
     def execute_analysis_test_add_file(self, test) -> AnalysisExecutionResult:
@@ -239,6 +268,23 @@ class BasicTestAnalyzer(AnalysisModule):
         }
         analysis = self.create_analysis(test)
         analysis.details = { KEY_TEST_RESULT: True, **signals }
+        return AnalysisExecutionResult.COMPLETED
+
+    def execute_test_sandbox_should_stop(self, test) -> AnalysisExecutionResult:
+        # a command that runs until should_stop() stops it; it creates "started" in its working
+        # directory (under get_temp_dir()/test_sandbox_should_stop) so a test knows when to cancel
+        analysis = self.create_analysis(test)
+        timeout = datetime.timedelta(seconds=60)
+        with create_workdir(os.path.join(get_temp_dir(), test.value)) as workdir:
+            argv = build_sandbox_argv([sandbox_python(), "-I", "-c", "open('started', 'w'); import time; time.sleep(60)"],
+                                      workdir, SandboxConfig(allowed_tcp_ports=None), timeout)
+            try:
+                run_sandboxed(argv, None, {"PATH": "/usr/bin:/bin", "HOME": workdir, "TMPDIR": workdir}, workdir,
+                              timeout, 1024 * 1024, cancel=self.should_stop)
+                analysis.details = { KEY_TEST_RESULT: "completed" }
+            except SandboxCancelled:
+                analysis.details = { KEY_TEST_RESULT: "cancelled" }
+
         return AnalysisExecutionResult.COMPLETED
 
 class ConfigurableModuleTestAnalysis(TestAnalysis):
@@ -528,6 +574,25 @@ class SlowDelayedAnalysisTestModule(AnalysisModule):
         analysis.details[KEY_REQUEST_COUNT] += 1
         return AnalysisExecutionResult.COMPLETED
 
+class TimeLeftTestAnalysis(Analysis):
+    pass
+
+class TimeLeftTestModule(AnalysisModule):
+    """Records what time_left() returned during the engine's call to execute_analysis()."""
+
+    @property
+    def generated_analysis_type(self):
+        return TimeLeftTestAnalysis
+
+    @property
+    def valid_observable_types(self):
+        return F_TEST
+
+    def execute_analysis(self, test) -> AnalysisExecutionResult:
+        analysis = self.create_analysis(test)
+        analysis.details = {"time_left": self.time_left()}
+        return AnalysisExecutionResult.COMPLETED
+
 class EngineLockingTestAnalysis(Analysis):
     pass
 
@@ -704,6 +769,8 @@ class WaitAnalyzerModule_A(AnalysisModule):
             return self.execute_analysis_wait_for_analysis_source_delayed(test)
         elif test.value == 'test_wait_for_analysis_source_and_target_delayed':
             return self.execute_analysis_wait_for_analysis_source_and_target_delayed(test)
+        elif test.value in ('test_wait_for_analysis_target_cancelled', 'test_wait_for_analysis_target_incomplete'):
+            return self.execute_analysis_01(test)
 
     def continue_analysis(self, observable: Observable, analysis: Analysis) -> AnalysisExecutionResult:
         assert isinstance(observable, Observable)
@@ -819,8 +886,26 @@ class WaitAnalyzerModule_B(AnalysisModule):
             return self.execute_analysis_01(test)
         elif test.value == 'test_wait_for_analysis_source_and_target_delayed':
             return self.execute_analysis_wait_for_analysis_source_and_target_delayed(test)
+        elif test.value == 'test_wait_for_analysis_target_cancelled':
+            return self.execute_analysis_target_cancelled(test)
+        elif test.value == 'test_wait_for_analysis_target_incomplete':
+            return AnalysisExecutionResult.INCOMPLETE
 
     def execute_analysis_01(self, test) -> AnalysisExecutionResult:
+        self.create_analysis(test)
+        return AnalysisExecutionResult.COMPLETED
+
+    def execute_analysis_target_cancelled(self, test) -> AnalysisExecutionResult:
+        # run 1 is the plain pass over the observable, run 2 resolves A's dependency and is
+        # stopped the way shutdown stops one, run 3 is the requeued pass and answers
+        root = self.get_root()
+        runs = root.state["test_wait_b_runs"] = root.state.get("test_wait_b_runs", 0) + 1
+        if runs == 1:
+            return AnalysisExecutionResult.INCOMPLETE
+        if runs == 2:
+            self.cancel_analysis()
+            return AnalysisExecutionResult.INCOMPLETE
+
         self.create_analysis(test)
         return AnalysisExecutionResult.COMPLETED
 
@@ -982,6 +1067,85 @@ class DeclaredDepOnNoProduceModule(AnalysisModule):
     def execute_analysis(self, test) -> AnalysisExecutionResult:
         # declared dependency produces no analysis, but we must still run
         self.create_analysis(test)
+        return AnalysisExecutionResult.COMPLETED
+
+class RetryOnFailureAnalysis(Analysis):
+    pass
+
+class RetryOnFailureModule(AnalysisModule):
+    """fails on its first two runs, succeeds on the third, and allows reanalysis on failure.
+    each run numbers itself and adds an observable of its own, so a test can tell which
+    run's analysis is in the tree and whether a replaced run's observable was cleaned up."""
+    @property
+    def generated_analysis_type(self):
+        return RetryOnFailureAnalysis
+
+    @property
+    def valid_observable_types(self):
+        return F_TEST
+
+    @property
+    def allow_reanalysis_on_failure(self):
+        return True
+
+    def should_analyze(self, observable) -> bool:
+        return observable.value == "retry_test"
+
+    def execute_analysis(self, test) -> AnalysisExecutionResult:
+        self.initialize_state({"runs": 0})
+        state = self.state
+        state["runs"] += 1
+        self.state = state
+
+        analysis = self.create_analysis(test)
+        analysis.details = {"run": state["runs"]}
+        analysis.add_observable_by_spec(F_USER, f"retry_run_{state['runs']}")
+        if state["runs"] < 3:
+            analysis.error = f"run {state['runs']} failed"
+        return AnalysisExecutionResult.COMPLETED
+
+class RetryChildAnalysis(Analysis):
+    pass
+
+class RetryChildModule(AnalysisModule):
+    """adds a hostname under each user observable a retry_on_failure run added, so a test can
+    tell whether a module ran on an observable after a retry removed it from the tree."""
+    @property
+    def generated_analysis_type(self):
+        return RetryChildAnalysis
+
+    @property
+    def valid_observable_types(self):
+        return F_USER
+
+    def should_analyze(self, observable) -> bool:
+        return observable.value.startswith("retry_run_")
+
+    def execute_analysis(self, user) -> AnalysisExecutionResult:
+        analysis = self.create_analysis(user)
+        analysis.add_observable_by_spec(F_HOSTNAME, f"child_of_{user.value}")
+        return AnalysisExecutionResult.COMPLETED
+
+class DependsOnRetryAnalysis(Analysis):
+    pass
+
+class DependsOnRetryModule(AnalysisModule):
+    """declares a dependency on retry_on_failure and records which run of it it saw."""
+    @property
+    def generated_analysis_type(self):
+        return DependsOnRetryAnalysis
+
+    @property
+    def valid_observable_types(self):
+        return F_TEST
+
+    def should_analyze(self, observable) -> bool:
+        return observable.value == "retry_test"
+
+    def execute_analysis(self, test) -> AnalysisExecutionResult:
+        dependency = test.get_and_load_analysis(RetryOnFailureAnalysis)
+        analysis = self.create_analysis(test)
+        analysis.details = {"saw_dependency_run": dependency.details["run"] if dependency else None}
         return AnalysisExecutionResult.COMPLETED
 
 class DeclaredCycleAnalysis_X(Analysis):

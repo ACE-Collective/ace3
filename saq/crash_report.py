@@ -73,6 +73,7 @@ from saq.configuration.config import get_config
 from saq.constants import F_FILE, HARDCOPY_SUBDIR
 from saq.environment import get_data_dir, get_global_runtime_settings
 from saq.error.formatter import ExceptionFormatter
+from saq.logging import utf8_safe
 from saq.monitor import emit_monitor
 from saq.monitor_definitions import MONITOR_MODULE_CRASH
 
@@ -347,7 +348,8 @@ def _relative_report_dir(crash_dir: str) -> str:
 def _write_atomic(path: str, content: str):
     """Write via a temp sibling and rename, so a reader never sees a half written file."""
     temp_path = f"{path}.tmp"
-    with open(temp_path, "w") as fp:
+    # a traceback can name a file whose name is not UTF-8; escape it the way utf8_safe() does
+    with open(temp_path, "w", errors="backslashreplace") as fp:
         fp.write(content)
 
     os.replace(temp_path, path)
@@ -594,6 +596,10 @@ def prune_stale_hang_stacks(min_age_seconds: float = HANG_STACKS_PRUNE_MIN_AGE_S
     ``min_age_seconds``: when several workers are killed at once, their replacements start in
     some order, and the age guard keeps the first one from deleting a file the others have yet
     to collect.
+
+    Only call this from the PID namespace of the engine that owns the files. Anywhere else
+    (the cron container shares the node name and the data volume) every live worker's pid looks
+    gone, and an idle worker's open dump file would be unlinked out from under it.
     """
     removed = 0
     try:
@@ -940,9 +946,10 @@ def _index_crash_report(metadata: CrashReportMetadata, report_dir: str,
             root_uuid=metadata.root_uuid,
             observable_uuid=metadata.observable_uuid,
             observable_type=metadata.observable_type,
-            observable_value=metadata.observable_value,
+            # MySQL rejects the lone surrogates of a name that is not UTF-8
+            observable_value=utf8_safe(metadata.observable_value),
             exception_type=metadata.exception_type,
-            exception_message=metadata.exception_message,
+            exception_message=utf8_safe(metadata.exception_message),
             has_file=metadata.file_name is not None,
         )
         if insert_date is not None:

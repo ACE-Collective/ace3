@@ -1,30 +1,34 @@
 import copy
 from contextlib import contextmanager
+import ctypes
 from datetime import datetime, timedelta
+import json
 import logging
-from multiprocessing import Manager, Pipe, Process, RLock
+from multiprocessing import Pipe, Process, RLock
+from multiprocessing.managers import SyncManager
 import multiprocessing.util
 import os
-import secrets
+import socket
+import ssl
+import subprocess
+import sys
+import threading
 
 import time
-from typing import List, Union
+from typing import Union
 import uuid
 
 
+from aceapi_v2.auth.utils import API_AUTH_TYPE_USER, API_CREDENTIAL_USER_KEY
 from saq.analysis.io_tracking import _disable_io_tracker, _enable_io_tracker
 from saq.analysis.root import RootAnalysis, Submission
+from saq.auth import ApiAuthResult
 from saq.configuration import config as config_module
 from saq.configuration.config import get_config
 from saq.constants import (
     ANALYSIS_MODE_ANALYSIS,
-    DISPOSITION_FALSE_POSITIVE,
     DISPOSITION_SIMULATED,
-    F_FILE,
-    F_FILE_NAME,
     F_FQDN,
-    F_HOSTNAME,
-    F_URL,
 )
 from saq.database.model import Alert, Workload, load_alert
 from saq.database.pool import get_db
@@ -35,11 +39,17 @@ from saq.engine.engine_configuration import EngineConfiguration
 from saq.engine.node_manager.node_manager_factory import create_node_manager
 from saq.engine.worker import Worker
 from saq.environment import ACE_MP_CONTEXT, get_base_dir, get_global_runtime_settings
+from saq.sandbox.launcher import set_child_subreaper
 from tests import unittest_session
-from saq.modules.email import EmailAnalysis
 from saq.util.uuid import get_storage_dir, workload_storage_dir
 
+import certifi
+import msgpack
+import psutil
+import pymysql
+import pymysql.cursors
 import pytest
+import requests
 from sqlalchemy import event
 from sqlalchemy.engine import Engine
 
@@ -82,255 +92,6 @@ def restore_integration_configurations(snapshot: IntegrationConfigurationSnapsho
     config_module.REGISTERED_INTEGRATION_CONFIGURATIONS.update(registered)
     config_module.INTEGRATION_CONFIGURATIONS.clear()
     config_module.INTEGRATION_CONFIGURATIONS.update(resolved)
-
-class MockObservable:
-    def __init__(self, type: str, observable_value: str, faqueue_hits: Union[int, None]):
-        self.type = type
-        self.value = observable_value
-        self.all_analysis: List['MockAnalysis'] = []
-        self.tags = []
-        self.faqueue_hits = faqueue_hits
-
-    def get_analysis(self, analysis_class) -> Union['MockAnalysis', None]:
-        return next((a for a in self.all_analysis if isinstance(a, analysis_class)), None)
-
-    def has_tag(self, tag_value):
-        return True
-
-
-class MockFileObservable(MockObservable):
-    def __init__(self, type: str, observable_value: str, faqueue_hits: Union[int, None]):
-        super().__init__(type, observable_value, faqueue_hits)
-        self.path = observable_value
-        self.md5_hash = secrets.token_hex(nbytes=16)
-        self.sha1_hash = secrets.token_hex(nbytes=160)
-        self.sha256_hash = secrets.token_hex(nbytes=256)
-        self.size = 100
-        self.mime_type = 'text/plain'
-
-
-class MockAnalysis:
-    pass
-
-class MockEmailAnalysis(MockAnalysis, EmailAnalysis):
-    @property
-    def observables(self):
-        return []
-
-    @property
-    def mail_from_address(self):
-        return 'from@bad.com'
-
-    @property
-    def x_auth_id(self):
-        return 'xauthid@bad.com'
-
-    @property
-    def x_original_sender(self):
-        return 'xoriginalsender@bad.com'
-
-    @property
-    def x_sender(self):
-        return 'xsender@bad.com'
-
-    @property
-    def x_sender_id(self):
-        return 'xsenderid@bad.com'
-
-    @property
-    def mail_to_addresses(self):
-        return ['to@company.com']
-
-    @property
-    def cc(self):
-        return ['cc@company.com']
-
-    @property
-    def reply_to_address(self):
-        return 'replyto@bad.com'
-
-    @property
-    def return_path(self):
-        return 'returnpath@bad.com'
-
-    @property
-    def subject(self):
-        return 'Subject'
-
-    @property
-    def originating_ip(self):
-        return '192.168.1.1'
-
-    @property
-    def x_sender_ip(self):
-        return '192.168.1.2'
-
-    @property
-    def user_agent(self):
-        return 'User Agent'
-
-    @property
-    def x_mailer(self):
-        return 'X Mailer'
-
-    @property
-    def message_id(self):
-        return '<email@bad.com>'
-
-    @property
-    def attachments(self):
-        return [MockFileObservable(F_FILE, 'attachment.jpg', None)]
-
-
-class MockEvent:
-    def __init__(self):
-        self.uuid = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'
-
-        email_file_observable = MockFileObservable(F_FILE, 'email.rfc822', None)
-
-        email_analysis = MockEmailAnalysis()
-        email_file_observable.all_analysis.append(email_analysis)
-
-        self.all_email_file_observables = [email_file_observable]
-        self.all_file_observables = [MockFileObservable(F_FILE, 'test.exe', None)]
-        self.all_sandbox_reports = [
-            {
-                'contacted_hosts': [
-                    {
-                        'ip': '192.168.1.99',
-                        'port': '1332',
-                        'protocol': 'TCP',
-                        'location': 'US',
-                        'associated_domains': []
-                    },
-                    {
-                        'ip': '8.8.8.8',
-                        'port': '53',
-                        'protocol': 'UDP',
-                        'location': 'US',
-                        'associated_domains': []
-                    },
-                ],
-                'created_services': [],
-                'dns_requests': [
-                    {
-                        'request': 'test3.com',
-                        'type': 'A',
-                        'answer': '23.215.102.10',
-                        'answer_type': ''
-                    },
-                    {
-                        'request': 'ctldl.windowsupdate.com',
-                        'type': 'A',
-                        'answer': '23.37.124.8',
-                        'answer_type': ''
-                    },
-                    {
-                        'request': 'google.com',
-                        'type': 'A',
-                        'answer': '172.217.6.78',
-                        'answer_type': ''
-                    }
-                ],
-                'dropped_files': [
-                    {
-                        'filename': 'MSForms.exd',
-                        'path': 'C:\\Users\\ADMINI~1\\AppData\\Local\\Temp\\VBE\\MSForms.exd',
-                        'size': '147284',
-                        'type': 'unknown',
-                        'md5': '50db97ae80d573d9145a735e39717f84',
-                        'sha1': '75438b1010eb5fd38949e530eea2585c87bd1cf9',
-                        'sha256': 'bf08f9d40ace59aa596733f2371e0eaf74fa424de5ddbf9011aeb6d84b612ab5',
-                        'sha512': '',
-                        'ssdeep': ''
-                    },
-                    {
-                        'filename': 'MSForms.exd',
-                        'path': '%TEMP%\\VBE\\MSForms.exd',
-                        'size': '147284',
-                        'type': 'data',
-                        'md5': 'e9240cda4d5e1fc3bafbf9a02904cb98',
-                        'sha1': '617f88173d3d2e848c38b55906cf03c3989d76d0',
-                        'sha256': 'f99a9f6e38a76415f0d95f894ebff36ab249c145e36427ee874a5d73d47e3d64',
-                        'sha512': 'f72b84997cffa6a4113e3b2e11f84e925bb005a99cf77674409e0e7715f5f1b29b10b12b5f7875fa0a567103d6e14f5e0e0e3c5611311388e77d8416e9a0adb7',
-                        'ssdeep': ''
-                    }
-                ],
-                'filename': 'sample.xls',
-                'http_requests': [
-                    {
-                        'host': 'domain2.com',
-                        'port': '80',
-                        'uri': '/index.php',
-                        'url': 'http://domain2.com/index.php',
-                        'method': 'GET',
-                        'user_agent': 'User Agent'
-                    },
-                    {
-                        'host': 'google.com',
-                        'port': '80',
-                        'uri': '/about',
-                        'url': 'http://google.com/about',
-                        'method': 'GET',
-                        'user_agent': 'User Agent'
-                    }
-                ],
-                'malware_family': '',
-                'md5': 'c6f4b263a35cd192a77ecfaf25f44f0a',
-                'memory_strings': [],
-                'memory_urls': [],
-                'mutexes': [
-                    'asdf',
-                    'abcd',
-                    '1234',
-                ],
-                'process_tree_urls': [],
-                'process_trees': [],
-                'process_trees_decoded': [],
-                'processes': [
-                    {
-                        'command': 'test.exe',
-                        'decoded_command': 'test.exe',
-                        'pid': '1',
-                        'parent_pid': '0',
-                        'urls': [
-                            'http://domain3.com',
-                            'http://test2.com/index',
-                        ]
-                    }
-                ],
-                'registry_keys': [
-                    'HKEY_CURRENT_USER\\Software\\Microsoft\\Office\\12.0\\Excel'
-                ],
-                'resolved_apis': [],
-                'sandbox_urls': [],
-                'sha1': 'b0ca80e9b0538d72660234556e1c7fa0469b803a',
-                'sha256': '7b8cd5e6a4123d39378cf7fe2a1e262ecabcb815285243603025f76b0fc3d38f',
-                'sha512': 'a3704171980cc64333c65c1bf03be0dc6e261e6957baafa012340cff7204c97a6ce88fb43814c07ae74d7b447edb18a1bc16d08f8d5f9c4ddab9175ac5acdcab',
-                'ssdeep': '',
-                'started_services': [],
-                'strings_urls': [],
-                'suricata_alerts': []
-            }
-        ]
-        self.all_sandbox_samples = []
-        self.all_urls = ['http://www.domain.com']
-        self.all_observables_sorted = [
-            MockObservable('fqdn', 'domain.com', 1000),
-            MockObservable('fqdn', 'fastapi.tiangolo.com', 0),
-            MockObservable('ipv4', '8.8.8.8', 1000),
-            MockObservable('md5', 'c6f4b263a35cd192a77ecfaf25f44f0a', None),
-            MockObservable('fqdn', 'ctldl.windowsupdate.com', 1000),
-            MockObservable('fqdn', 'crl.microsoft.com', 1000),
-            MockObservable('mutex', '1234', 1000),
-            MockObservable('url', 'http://test2.com/index', 1000),
-        ]
-        self.all_fqdns = [
-            'domain.com',
-            'domain3.com',
-            'fastapi.tiangolo.com',
-            'google.com',
-        ]
 
 def create_root_analysis(tool=None, tool_instance=None, alert_type=None, desc=None, event_time=None,
                          action_counts=None, details=None, name=None, remediation=None, state=None,
@@ -386,29 +147,126 @@ def track_io(target_function):
             _disable_io_tracker()
     return wrapper
 
-def add_fp_alert():
-    root = create_root_analysis(uuid=str(uuid.uuid4()))
-    root.initialize_storage()
-
-    root.add_observable_by_spec(F_FQDN, 'microsoft.com')
-    root.add_observable_by_spec(F_URL, 'https://google.com')
-    root.add_observable_by_spec(F_FILE_NAME, 'calc.exe')
-    root.add_observable_by_spec(F_HOSTNAME, 'localhost')
-
-    root.save()
-
-    alert = ALERT(root)
-
-    #alert = Alert(storage_dir=root.storage_dir)
-    #alert.load()
-
-    alert.disposition = DISPOSITION_FALSE_POSITIVE
-    alert.disposition_time = datetime.now()
-
-    alert.sync()
-
 class WaitTimedOutError(Exception):
     pass
+
+def run_python(code: str, timeout: int = 120) -> subprocess.CompletedProcess:
+    """Runs code in a fresh interpreter from the base dir and fails the test if it fails. Import tests run
+    this way because the test process has imported nearly everything before a test starts, which hides an
+    import cycle or a heavy import."""
+    result = subprocess.run([sys.executable, "-c", code], cwd=get_base_dir(), capture_output=True, text=True,
+                            timeout=timeout)
+    assert result.returncode == 0, result.stderr[-4000:]
+    return result
+
+
+# every ACE process imports an integration's package; only the API and the GUI load these
+_LOADED_ONLY_BY_THE_APPS = ["flask", "werkzeug", "fastapi", "app", "aceapi_v2", "saq.gui",
+                            "saq.analysis.presenter.observable_presenter"]
+
+
+def load_integration_hooks(integration_dir: str, block: str) -> dict:
+    """Does in a fresh interpreter what ACE does with the integration in integration_dir: imports the python_module
+    of its integration_<block>: block, as every process does, then loads its api_router, as the API does, and calls
+    its gui_blueprint with a Flask app, as the GUI does. Returns what that loaded, for the caller to assert on:
+    name, loaded_by_package (the modules of _LOADED_ONLY_BY_THE_APPS the package import loaded), api_router (the
+    type name of what api_router names, or None), blueprints and view_functions of the Flask app, and the class
+    names of the observable actions (by observable type) and the alert actions registered."""
+    src = os.path.join(integration_dir, "src")
+    config_path = os.path.join(integration_dir, "etc", "saq.integration.yaml")
+    result = run_python(
+        "import importlib, json, sys, yaml\n"
+        f"sys.path.insert(0, {src!r})\n"
+        "from saq.configuration.schema import IntegrationConfig\n"
+        f"with open({config_path!r}) as fp:\n"
+        f"    config = IntegrationConfig.model_validate(yaml.safe_load(fp)['integration_{block}'])\n"
+        "importlib.import_module(config.python_module)\n"
+        f"loaded_by_package = [name for name in {_LOADED_ONLY_BY_THE_APPS!r} if name in sys.modules]\n"
+        "def load(target):\n"
+        "    module_name, attribute = target.split(':')\n"
+        "    return getattr(importlib.import_module(module_name), attribute)\n"
+        "api_router = type(load(config.api_router)).__name__ if config.api_router else None\n"
+        "from flask import Flask\n"
+        "flask_app = Flask('test')\n"
+        "if config.gui_blueprint:\n"
+        "    load(config.gui_blueprint)(flask_app)\n"
+        "from saq.analysis.presenter.observable_presenter import _OBSERVABLE_ACTION_REGISTRY\n"
+        "from saq.gui.alert_actions import _ALERT_ACTION_REGISTRY\n"
+        "print(json.dumps({\n"
+        "    'name': config.name,\n"
+        "    'loaded_by_package': loaded_by_package,\n"
+        "    'api_router': api_router,\n"
+        "    'blueprints': sorted(flask_app.blueprints),\n"
+        "    'view_functions': sorted(flask_app.view_functions),\n"
+        "    'observable_actions': {observable_type: [action.__name__ for action in actions]\n"
+        "                           for observable_type, actions in _OBSERVABLE_ACTION_REGISTRY.items()},\n"
+        "    'alert_actions': [action.__name__ for action in _ALERT_ACTION_REGISTRY],\n"
+        "}))\n")
+    # the last line: what the integration's modules log goes to stderr
+    return json.loads(result.stdout.splitlines()[-1])
+
+def process_is_gone(pid: int) -> bool:
+    """True once pid has exited: a zombie has, and only waits for whoever reaps it."""
+    try:
+        return psutil.Process(pid).status() == psutil.STATUS_ZOMBIE
+    except psutil.NoSuchProcess:
+        return True
+
+
+_PR_GET_CHILD_SUBREAPER = 37
+
+
+def is_child_subreaper() -> bool:
+    """True while this process adopts the orphans of its descendants (PR_SET_CHILD_SUBREAPER)."""
+    value = ctypes.c_int()
+    assert ctypes.CDLL(None, use_errno=True).prctl(_PR_GET_CHILD_SUBREAPER, ctypes.byref(value), 0, 0, 0) == 0
+    return value.value == 1
+
+
+def stop_adopting(test_name: str):
+    """Stop this process being the child subreaper a finished test left it, and reap what it adopted and has
+    exited. WorkerManager.start_workers() makes its caller one and only supervise_shutdown() stops it, and a
+    test that never shuts its manager down would leave every later orphan in the session a zombie of this
+    process: alive to psutil.pid_exists(). By pid, and not multiprocessing's children, whose exit codes it
+    reads itself."""
+    if not is_child_subreaper():
+        return
+
+    logging.info("test %s left this process a child subreaper - stopping it", test_name)
+    set_child_subreaper(False)
+    multiprocessing_children = {process.pid for process in multiprocessing.active_children()}
+    for child in psutil.Process().children():
+        if child.pid in multiprocessing_children:
+            continue
+
+        try:
+            if child.status() == psutil.STATUS_ZOMBIE:
+                os.waitpid(child.pid, os.WNOHANG)
+        except (psutil.NoSuchProcess, ChildProcessError):
+            pass  # reaped since the listing
+
+
+def inject_deadlock(monkeypatch: pytest.MonkeyPatch, sql_fragment: str, skip: int = 0) -> list[str]:
+    """Fails one raw cursor statement containing sql_fragment, after letting the first skip of them
+    run, the way InnoDB fails a deadlock victim: the whole transaction is rolled back and 1213 is
+    raised. Returns the list the failed statement is appended to."""
+    failed = []
+    seen = 0
+    execute = pymysql.cursors.Cursor.execute
+
+    def deadlocking_execute(cursor, query, args=None):
+        nonlocal seen
+        if sql_fragment in query and not failed:
+            seen += 1
+            if seen > skip:
+                failed.append(query)
+                cursor.connection.rollback()
+                raise pymysql.err.OperationalError(1213, "Deadlock found when trying to get lock; try restarting transaction")
+
+        return execute(cursor, query, args)
+
+    monkeypatch.setattr(pymysql.cursors.Cursor, "execute", deadlocking_execute)
+    return failed
 
 def wait_for_condition(condition, timeout=5, delay=0.1):
     """Waits for condition to return True. 
@@ -478,12 +336,12 @@ def execute_api_server(listen_address=None, listen_port=None, ssl_cert=None, ssl
     # Serve the v2 app at /api/v2, where nginx puts it on a node: `ace_api` builds every URL
     # as https://host/api/v2/...
 
-    import aceapi_v2
+    # local: this runs in the API server's own process, and most tests import this module without needing the API
+    from aceapi_v2.serving import serve_under
+    import aceapi_v2.application
     import uvicorn
-    from fastapi import FastAPI
 
-    root = FastAPI()
-    root.mount('/api/v2', aceapi_v2.create_app())
+    root = serve_under('/api/v2', aceapi_v2.application.create_app())
 
     if listen_address is None:
         listen_address = get_config().api.listen_address
@@ -635,8 +493,8 @@ def initialize_unittest_logging():
     global memory_log_handler
 
     test_log_sync = RLock()
-    test_log_manager = Manager()
-    #atexit.register(_atexit_callback)
+    test_log_manager = SyncManager()
+    test_log_manager.start(unittest_session.exit_with, (os.getpid(),))
     test_log_messages = test_log_manager.list()
 
     log_format = logging.Formatter(datefmt='%(asctime)s')
@@ -654,20 +512,49 @@ def reset_unittest_logging():
 
     memory_log_handler.clear()
 
-def stop_unittest_logging():
+@contextmanager
+def unconfigured_logging():
+    """The root logger as a process starts with it: no handlers and level WARNING. The handlers
+    list is emptied and refilled in place, because pytest removes the capture handler it added
+    from that list at the end of the test phase."""
+    root_logger = logging.getLogger()
+    handlers, level = root_logger.handlers[:], root_logger.level
+    root_logger.handlers.clear()
+    root_logger.setLevel(logging.WARNING)
+    try:
+        yield root_logger
+    finally:
+        root_logger.handlers[:] = handlers
+        root_logger.setLevel(level)
 
-    global test_log_manager
-    global test_log_sync
-    global test_log_messages
-    global memory_log_handler
+@contextmanager
+def fluent_receiver():
+    """A local socket standing in for fluent-bit. Yields ``(port, receive)``; ``receive()`` returns
+    the data dict of the next record a fluent sender delivered to the port. A sender connects on
+    its first send, which the listen backlog accepts before ``receive()`` does."""
+    server = socket.create_server(("127.0.0.1", 0))
+    server.settimeout(5)
+    connections = []
+    unpacker = msgpack.Unpacker(raw=False)
 
-    if memory_log_handler is not None:
-        logging.getLogger().removeHandler(memory_log_handler)
+    def receive() -> dict:
+        if not connections:
+            connection, _ = server.accept()
+            connection.settimeout(5)
+            connections.append(connection)
+        while True:
+            for _tag, _time, data in unpacker:
+                return data
+            chunk = connections[0].recv(65536)
+            assert chunk, "the fluent sender closed the connection without sending a record"
+            unpacker.feed(chunk)
 
-    test_log_manager = None
-    test_log_sync = None
-    test_log_messages = None
-    memory_log_handler = None
+    try:
+        yield server.getsockname()[1], receive
+    finally:
+        for connection in connections:
+            connection.close()
+        server.close()
 
 # test comms pipe is used to communicate between test process and child processes
 test_comms_p = None
@@ -725,12 +612,16 @@ def insert_alert():
     assert alert.id is not None
     return alert
 
+def person(user_id: int | None, name: str = "unittest", key_id: int | None = None) -> ApiAuthResult:
+    """A user calling the API with one of their keys, as the routes pass the caller to a write."""
+    return ApiAuthResult(auth_type=API_AUTH_TYPE_USER, auth_name=name, auth_user_id=user_id, key_id=key_id,
+                         key_name=f"key-{key_id}" if key_id is not None else None, credential=API_CREDENTIAL_USER_KEY)
+
 def make_simulated(alert: Alert) -> None:
     """Gives the alert the disposition SVS sets on a test-run alert (SIMULATED), through the
     system path, and drops the workload entry that queued, so a test sees only what the code
     under test schedules."""
-    set_dispositions([alert.uuid], DISPOSITION_SIMULATED, get_config().global_settings.automation_user_id,
-                     system=True)
+    set_dispositions([alert.uuid], DISPOSITION_SIMULATED, ApiAuthResult.system("svs"), system=True)
     db = get_db()
     db.query(Workload).filter(Workload.uuid == alert.uuid).delete()
     db.commit()
@@ -853,3 +744,81 @@ def create_test_worker(name: str = "test") -> Worker:
 def create_test_orchestrator() -> AnalysisOrchestrator:
     """A real AnalysisOrchestrator, built the way a single threaded engine worker builds it."""
     return create_test_worker().analysis_orchestrator
+
+
+def audit_record(caplog: pytest.LogCaptureFixture, prefix: str) -> logging.LogRecord:
+    """The one AUDIT record whose message starts with "AUDIT: <prefix>"."""
+    (record,) = [r for r in caplog.records if r.getMessage().startswith(f"AUDIT: {prefix}")]
+    return record
+
+
+def audit_actor_of(record: logging.LogRecord) -> tuple:
+    """(actor, actor_user_id, actor_key_id, auth_type) of a saq.logging.log_audit() record."""
+    return record.actor, record.actor_user_id, record.actor_key_id, record.auth_type
+
+
+def audit_actors(caplog: pytest.LogCaptureFixture, prefix: str) -> list[tuple]:
+    """audit_actor_of() every AUDIT record whose message starts with "AUDIT: <prefix>", in order."""
+    return [audit_actor_of(r) for r in caplog.records if r.getMessage().startswith(f"AUDIT: {prefix}")]
+
+
+def logged_with(caplog: pytest.LogCaptureFixture, level: int, **fields) -> list[logging.LogRecord]:
+    """The records caplog captured at level whose extra={} fields include fields."""
+    return [r for r in caplog.records
+            if r.levelno == level and all(getattr(r, key, None) == value for key, value in fields.items())]
+
+
+def the_error_with_traceback(caplog: pytest.LogCaptureFixture, **fields) -> logging.LogRecord:
+    """The one ERROR record with fields in its extra={}, which carries a traceback, as an error report needs."""
+    (record,) = logged_with(caplog, logging.ERROR, **fields)
+    assert record.exc_info is not None and record.exc_info[0] is not None
+    return record
+
+
+def _requests_error_from_local_server(handle) -> requests.exceptions.RequestException:
+    """The exception requests raises over HTTPS to a one-connection local server that runs handle(conn)."""
+    with socket.create_server(("127.0.0.1", 0)) as server:
+        # bounds accept(): the request below connects at once or not at all
+        server.settimeout(10)
+
+        def _serve():
+            try:
+                conn, _ = server.accept()
+            except OSError:
+                return  # nothing connected, and the request below says why
+            with conn:
+                conn.settimeout(10)
+                try:
+                    handle(conn)
+                except OSError:
+                    pass  # the client gave up on the handshake, which is the failure the caller wants
+
+        thread = threading.Thread(target=_serve, daemon=True)
+        thread.start()
+        try:
+            requests.get(f"https://localhost:{server.getsockname()[1]}/", verify=certifi.where(), timeout=10)
+        except requests.exceptions.RequestException as e:
+            return e
+        finally:
+            thread.join(10)
+
+    raise AssertionError("an HTTPS request to the local server succeeded")
+
+
+def certificate_verification_failure() -> requests.exceptions.RequestException:
+    """requests' exception for a server whose certificate does not verify: ACE's test certificate,
+    checked against certifi's bundle, which lacks the CA that signed it."""
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    context.load_cert_chain(os.path.join(get_base_dir(), get_config().api.ssl_cert),
+                            os.path.join(get_base_dir(), get_config().api.ssl_key))
+    return _requests_error_from_local_server(lambda conn: context.wrap_socket(conn, server_side=True))
+
+
+def tls_handshake_failure() -> requests.exceptions.RequestException:
+    """requests' exception for a TLS handshake that fails before any certificate is checked: the
+    server answers the ClientHello with plain HTTP."""
+    def _answer_in_plain_http(conn):
+        conn.recv(4096)
+        conn.sendall(b"HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\n\r\n")
+
+    return _requests_error_from_local_server(_answer_in_plain_http)

@@ -112,10 +112,14 @@ class OfficeXMLRelationshipExternalURLAnalyzer(AnalysisModule):
             etree.parse(local_file_path, parser)
         except Exception as e:
             logging.warning("unable to parse XML file {}: {}".format(_file, e))
+            # the targets read before the error are still added
+            analysis.error = f"unable to parse {os.path.basename(local_file_path)}: {str(e) or type(e).__name__}"
 
         for url in parser_target.urls:
             url = analysis.add_observable_by_spec(F_URL, url)
-            url.add_directive(DIRECTIVE_FORCE_DOWNLOAD)
+            # a target that is not a valid URL ("https:..") adds no observable, but the external link still alerts
+            if url is not None:
+                url.add_directive(DIRECTIVE_FORCE_DOWNLOAD)
             _file.add_detection_point('{} contains a link to an external oleobject'.format(_file), signature_uuid=OFFICE_EXTERNAL_OLEOBJECT.uuid)
 
         analysis.urls = parser_target.urls

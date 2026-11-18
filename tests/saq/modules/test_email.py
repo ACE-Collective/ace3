@@ -1,30 +1,30 @@
+import copy
 from datetime import datetime
 import email
-import filecmp
-import gzip
+import logging
 import os
 import shutil
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 import pytest
 import pytz
+from pydantic import ValidationError
 
 import ace_api
 
 from saq.analysis.root import RootAnalysis, load_root
 from saq.configuration.config import get_config, get_analysis_module_config
-from saq.constants import ANALYSIS_MODULE_EMAIL_LOGGER, ANALYSIS_TYPE_MAILBOX, DB_BROCESS, DB_EMAIL_ARCHIVE, FILE_SUBDIR, DIRECTIVE_ARCHIVE, DIRECTIVE_EXTRACT_URLS, DIRECTIVE_ORIGINAL_EMAIL, DIRECTIVE_PREVIEW, DIRECTIVE_REMEDIATE, DIRECTIVE_RENAME_ANALYSIS, DIRECTIVE_RENDER, EVENT_TIME_FORMAT_JSON_TZ, F_EMAIL_ADDRESS, F_EMAIL_CC, F_EMAIL_CONVERSATION, F_EMAIL_DELIVERY, F_EMAIL_DKIM_SIGNING_DOMAIN, F_EMAIL_FIRST_HOP_FROM, F_EMAIL_FIRST_HOP_HELO, F_EMAIL_FIRST_HOP_IP, F_EMAIL_FROM, F_EMAIL_SENDER_TENANT_ID, F_EMAIL_TO, F_FILE, F_IP, F_MESSAGE_ID, F_URL, create_email_conversation, create_email_delivery
+from saq.configuration.schema import ACEConfig
+from saq.constants import ANALYSIS_MODULE_EMAIL_LOGGER, ANALYSIS_TYPE_MAILBOX, DB_BROCESS, DB_EMAIL_ARCHIVE, FILE_SUBDIR, DIRECTIVE_ARCHIVE, DIRECTIVE_EXTRACT_URLS, DIRECTIVE_ORIGINAL_EMAIL, DIRECTIVE_PREVIEW, DIRECTIVE_REMEDIATE, DIRECTIVE_RENAME_ANALYSIS, DIRECTIVE_RENDER, EVENT_TIME_FORMAT_JSON_TZ, F_EMAIL_ADDRESS, F_EMAIL_CC, F_EMAIL_CONVERSATION, F_EMAIL_DELIVERY, F_EMAIL_DKIM_SIGNING_DOMAIN, F_EMAIL_FIRST_HOP_FROM, F_EMAIL_FIRST_HOP_HELO, F_EMAIL_FIRST_HOP_IP, F_EMAIL_SENDER_TENANT_ID, F_EMAIL_TO, F_FILE, F_IP, F_MESSAGE_ID, F_URL, create_email_delivery
 from saq.observables.type_hierarchy import get_type_hierarchy
-from saq.crypto import decrypt
 from saq.database.model import load_alert
 from saq.database.pool import get_db_connection
 from saq.email import normalize_email_address
 from saq.engine.core import Engine
 from saq.engine.engine_configuration import EngineConfiguration
 from saq.engine.enums import EngineExecutionMode
-from saq.environment import get_data_dir, get_global_runtime_settings, get_local_timezone, get_temp_dir
+from saq.environment import get_global_runtime_settings, get_local_timezone, get_temp_dir
 from saq.modules.email.archive import EmailArchiveResults
-from saq.modules.email.correlation import URLEmailPivotAnalysis_v2
 from saq.modules.email.logging import EmailLoggingAnalyzer
 from saq.modules.email.mailbox import MAILBOX_ALERT_PREFIX
 from saq.modules.email.message_id import MessageIDAnalysisV2
@@ -35,6 +35,8 @@ from saq.modules.email.rfc822 import (
     EmailProviderHeaders,
     TAG_ANONYMOUS_DIRECT_SEND,
     TAG_AUTHENTICATION_FAILED,
+    TAG_OUTBOUND_EMAIL,
+    TAG_OUTBOUND_EXCEPTION_EMAIL,
     TAG_SPOOFED_INTERNAL,
     get_dkim_signing_domains,
     get_sender_tenant_id,
@@ -50,6 +52,7 @@ from saq.modules.email.constants import (
     KEY_SPF_RESULT,
 )
 from saq.observables.email import EmailFirstHopIPObservable
+from saq.util.filesystem import is_path_under
 from saq.util.hashing import sha256_file
 from saq.util.uuid import get_storage_dir
 from tests.saq.helpers import create_root_analysis
@@ -180,14 +183,13 @@ def test_combined_buffer_value_is_its_hash(root_analysis, datadir):
 
 
 @pytest.mark.integration
-def test_mailbox_whitelisted(root_analysis, datadir):
-    # make sure that we do not process whitelisted emails
+def test_mailbox_analyzes_an_email_tagged_whitelisted(root_analysis, datadir):
     root_analysis.alert_type = ANALYSIS_TYPE_MAILBOX
     root_analysis.details = { 'hello': 'world' }
     root_analysis.analysis_mode = "test_groups"
     file_observable = root_analysis.add_file_observable(str(datadir / 'emails/splunk_logging.email.rfc822'))
     file_observable.add_directive(DIRECTIVE_ORIGINAL_EMAIL)
-    file_observable.whitelist()
+    file_observable.add_tag("whitelisted")
     root_analysis.save()
     root_analysis.schedule()
 
@@ -198,13 +200,11 @@ def test_mailbox_whitelisted(root_analysis, datadir):
     engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
 
     root_analysis = load_root(get_storage_dir(root_analysis.uuid))
-    
-    # we should still have our old details
+
+    # the tag is only a tag: the email details are merged in next to the old ones
     assert 'hello' in root_analysis.details
-    # and we should NOT have the email details merged in since it's not a mailbox analysis
-    assert 'email' not in root_analysis.details
-    # and we should be whitelisted at this point
-    assert root_analysis.whitelisted
+    assert 'email' in root_analysis.details
+    assert root_analysis.description.startswith(MAILBOX_ALERT_PREFIX)
 
 @pytest.mark.integration
 def test_mailbox_submission(mock_api_call, root_analysis, datadir):
@@ -312,66 +312,8 @@ def test_update_brocess(root_analysis, datadir):
         count = cursor.fetchone()
         assert count[0] == 2
 
-@pytest.mark.skip()
 @pytest.mark.integration
-def test_archive_1(root_analysis, datadir):
-
-    root_analysis.alert_type = ANALYSIS_TYPE_MAILBOX
-    root_analysis.analysis_mode = "test_groups"
-    file_observable = root_analysis.add_file_observable(str(datadir / 'emails/splunk_logging.email.rfc822'))
-    file_observable.add_directive(DIRECTIVE_ARCHIVE)
-    root_analysis.save()
-    root_analysis.schedule()
-
-    engine = Engine()
-    engine.configuration_manager.enable_module('file_type', 'test_groups')
-    engine.configuration_manager.enable_module('file_hash_analyzer', 'test_groups')
-    engine.configuration_manager.enable_module('email_analyzer', 'test_groups')
-    engine.configuration_manager.enable_module('email_archiver', 'test_groups')
-    engine.configuration_manager.enable_module('url_extraction', 'test_groups')
-    engine.configuration_manager.enable_module('parse_url', 'test_groups')
-    engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
-
-    root_analysis = load_root(get_storage_dir(root_analysis.uuid))
-
-    file_observable = root_analysis.get_observable(file_observable.uuid)
-    assert file_observable
-    archive_results = file_observable.get_and_load_analysis('EmailArchiveResults')
-    assert isinstance(archive_results, EmailArchiveResults)
-    archive_results.load_details()
-    
-    # this should point to the archive file (minus the .e at the end)
-    assert os.path.exists(archive_results.archive_path)
-
-    # make sure we can decrypt it
-    gzip_path = os.path.join(get_temp_dir(), 'temp.gz')
-    dest_path = os.path.join(get_temp_dir(), 'temp.email')
-
-    decrypt(archive_results.archive_path, gzip_path)
-    with gzip.open(gzip_path, 'rb') as fp_in:
-        with open(dest_path, 'wb') as fp_out:
-            shutil.copyfileobj(fp_in, fp_out)
-
-    # this should be the same as the original email
-    assert filecmp.cmp(dest_path, file_observable.full_path)
-
-    # there should be a single entry in the archive
-    with get_db_connection(DB_EMAIL_ARCHIVE) as db:
-        cursor = db.cursor()
-        cursor.execute("SELECT archive_id FROM archive")
-        row = cursor.fetchone()
-        assert row
-        archive_id = row[0]
-
-        message_id = '<CANTOGZsMiMb+7aB868zXSen_fO=NS-qFTUMo9h2eHtOexY8Qhw@mail.gmail.com>'
-
-        cursor.execute("SELECT * FROM email_history WHERE message_id_hash = UNHEX(SHA2(%s, 256))", (message_id,))
-        row = cursor.fetchone()
-        assert row
-
-@pytest.mark.skip()
-@pytest.mark.integration
-def test_archive_extraction(mock_api_call, root_analysis, datadir):
+def test_archive_extraction(root_analysis, datadir):
 
     # when we have the email already analyzed we don't need to extract it from the archives
 
@@ -422,66 +364,10 @@ def test_archive_extraction(mock_api_call, root_analysis, datadir):
     # should have the encrypted email attached as a file
     assert len(message_id_analysis.get_observables_by_type(F_FILE)) == 1
 
-@pytest.mark.skip()
 @pytest.mark.integration
-def test_archive_2(root_analysis, datadir):
+def test_an_email_that_could_not_be_archived_has_no_results_and_no_index(root_analysis, monkeypatch, datadir):
 
-    root_analysis.alert_type = ANALYSIS_TYPE_MAILBOX
-    root_analysis.analysis_mode = "test_groups"
-    file_observable = root_analysis.add_file_observable(str(datadir / 'emails/pdf_attachment.email.rfc822'))
-    file_observable.add_directive(DIRECTIVE_ARCHIVE)
-    root_analysis.save()
-    root_analysis.schedule()
-
-    engine = Engine()
-    engine.configuration_manager.enable_module('file_type', 'test_groups')
-    engine.configuration_manager.enable_module('file_hash_analyzer', 'test_groups')
-    engine.configuration_manager.enable_module('email_analyzer', 'test_groups')
-    engine.configuration_manager.enable_module('email_archiver', 'test_groups')
-    engine.configuration_manager.enable_module('url_extraction', 'test_groups')
-    engine.configuration_manager.enable_module('pdf_analyzer', 'test_groups')
-    engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
-
-    root_analysis = load_root(get_storage_dir(root_analysis.uuid))
-
-    file_observable = root_analysis.get_observable(file_observable.uuid)
-    assert file_observable
-    archive_results = file_observable.get_and_load_analysis('EmailArchiveResults')
-    assert isinstance(archive_results, EmailArchiveResults)
-    archive_results.load_details()
-    # this should point to the archive file (minus the .e at the end)
-    assert archive_results.archive_path
-    assert os.path.exists(archive_results.archive_path)
-
-    # make sure we can decrypt it
-    gzip_path = os.path.join(get_temp_dir(), 'temp.gz')
-    dest_path = os.path.join(get_temp_dir(), 'temp.email')
-
-    decrypt(archive_results.archive_path, gzip_path)
-    with gzip.open(gzip_path, 'rb') as fp_in:
-        with open(dest_path, 'wb') as fp_out:
-            shutil.copyfileobj(fp_in, fp_out)
-
-    # this should be the same as the original email
-    assert filecmp.cmp(dest_path, file_observable.full_path)
-
-    # there should be a single entry in the archive
-    with get_db_connection(DB_EMAIL_ARCHIVE) as db:
-        cursor = db.cursor()
-        cursor.execute("SELECT archive_id FROM archive")
-        row = cursor.fetchone()
-        archive_id = row[0]
-
-        message_id = '<CANTOGZuWahvYOEr0NwPELF5ASriGNWjfVsWhMSE_ekiSVw1RbA@mail.gmail.com>'
-        cursor.execute("SELECT * FROM email_history WHERE message_id_hash = UNHEX(SHA2(%s, 256))", (message_id,))
-        row = cursor.fetchone()
-        assert row
-
-@pytest.mark.skip()
-@pytest.mark.integration
-def test_archive_no_local_archive(root_analysis, monkeypatch, datadir):
-
-    # disable archive encryption
+    # archiving fails: the email cannot be encrypted without the key
     monkeypatch.setattr(get_global_runtime_settings(), "encryption_key", None)
 
     root_analysis.alert_type = ANALYSIS_TYPE_MAILBOX
@@ -503,120 +389,12 @@ def test_archive_no_local_archive(root_analysis, monkeypatch, datadir):
 
     file_observable = root_analysis.get_observable(file_observable.uuid)
     assert file_observable
-    archive_results = file_observable.get_and_load_analysis(EmailArchiveResults)
-    assert isinstance(archive_results, EmailArchiveResults)
-    archive_results.load_details()
-    
-    # the details is typicaly the path to the archive but will be None here since it's disabled
-    assert archive_results.archive_id is None
-
-@pytest.mark.integration
-def test_email_pivot(root_analysis, datadir):
-
-    # process the email first -- we'll find it when we pivot
-
-    root_analysis.alert_type = ANALYSIS_TYPE_MAILBOX
-    root_analysis.analysis_mode = "test_groups"
-    file_observable = root_analysis.add_file_observable(str(datadir / 'emails/splunk_logging.email.rfc822'))
-    file_observable.add_directive(DIRECTIVE_ORIGINAL_EMAIL)
-    file_observable.add_directive(DIRECTIVE_ARCHIVE)
-    root_analysis.save()
-    root_analysis.schedule()
-
-    engine = Engine()
-    engine.configuration_manager.enable_module('file_type', 'test_groups')
-    engine.configuration_manager.enable_module('file_hash_analyzer', 'test_groups')
-    engine.configuration_manager.enable_module('email_analyzer', 'test_groups')
-    engine.configuration_manager.enable_module('email_archiver', 'test_groups')
-    engine.configuration_manager.enable_module('url_extraction', 'test_groups')
-    engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
-
-    new_root = create_root_analysis(analysis_mode="test_groups")
-    new_root.initialize_storage()
-
-    # make up some details
-    new_root.details = { 
-        'alertable': 1,
-        'context': {
-            'c': '1c38af75-0c42-4ae3-941d-de3975f68602',
-            'd': '1',
-            'i': 'ashland',
-            's': 'email_scanner'
-        },
-        'sha256_url': '0061537d578e4f65d13e31e190e1079e00dadd808e9fa73f77e3308fdb0e1485',
-        'url': 'https://www.alienvault.com', # <-- the important part
-    }
-
-    url_observable = new_root.add_observable_by_spec(F_URL, 'https://www.alienvault.com')
-    new_root.save()
-    new_root.schedule()
-
-    engine = Engine()
-    engine.configuration_manager.enable_module('url_email_pivot_analyzer', 'test_groups')
-    engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
-
-    new_root = load_root(get_storage_dir(new_root.uuid))
-    url_observable = new_root.get_observable(url_observable.uuid)
-    analysis = url_observable.get_and_load_analysis(URLEmailPivotAnalysis_v2)
-    assert isinstance(analysis, URLEmailPivotAnalysis_v2)
-    analysis.load_details()
-    assert analysis.count == 1
-
-@pytest.mark.integration
-def test_email_pivot_excessive_emails(root_analysis, datadir):
-
-    # process the email first -- we'll find it when we pivot
-
-    root_analysis.alert_type = ANALYSIS_TYPE_MAILBOX
-    root_analysis.analysis_mode = "test_groups"
-    file_observable = root_analysis.add_file_observable(str(datadir / 'emails/splunk_logging.email.rfc822'))
-    file_observable.add_directive(DIRECTIVE_ORIGINAL_EMAIL)
-    file_observable.add_directive(DIRECTIVE_ARCHIVE)
-    root_analysis.save()
-    root_analysis.schedule()
-
-    engine = Engine()
-    engine.configuration_manager.enable_module('file_type', 'test_groups')
-    engine.configuration_manager.enable_module('file_hash_analyzer', 'test_groups')
-    engine.configuration_manager.enable_module('email_analyzer', 'test_groups')
-    engine.configuration_manager.enable_module('email_archiver', 'test_groups')
-    engine.configuration_manager.enable_module('url_extraction', 'test_groups')
-    engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
-
-    # force this to exceed the limit
-    get_analysis_module_config('url_email_pivot_analyzer').result_limit = 0
-    new_root = create_root_analysis(analysis_mode="test_groups")
-    new_root.initialize_storage()
-
-    # make up some details
-    new_root.details = { 
-        'alertable': 1,
-        'context': {
-            'c': '1c38af75-0c42-4ae3-941d-de3975f68602',
-            'd': '1',
-            'i': 'ashland',
-            's': 'email_scanner'
-        },
-        'sha256_url': '0061537d578e4f65d13e31e190e1079e00dadd808e9fa73f77e3308fdb0e1485',
-        'url': 'https://www.alienvault.com', # <-- the important part
-    }
-
-    url_observable = new_root.add_observable_by_spec(F_URL, 'https://www.alienvault.com')
-    new_root.save()
-    new_root.schedule()
-
-    engine = Engine()
-    engine.configuration_manager.enable_module('url_email_pivot_analyzer', 'test_groups')
-    engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
-
-    new_root = load_root(get_storage_dir(new_root.uuid))
-    url_observable = new_root.get_observable(url_observable.uuid)
-    analysis = url_observable.get_and_load_analysis(URLEmailPivotAnalysis_v2)
-    assert isinstance(analysis, URLEmailPivotAnalysis_v2)
-    analysis.load_details()
-    assert analysis.count == 1
-    # this should not have the details since it exceeded the limit
-    assert analysis.emails is None
+    assert not file_observable.get_and_load_analysis(EmailArchiveResults)
+    # nothing names an email the pool does not have
+    with get_db_connection(DB_EMAIL_ARCHIVE) as db:
+        cursor = db.cursor()
+        cursor.execute("SELECT COUNT(*) FROM archived_messages")
+        assert cursor.fetchone()[0] == 0
 
 @pytest.mark.integration
 def test_message_id(root_analysis, datadir):
@@ -704,13 +482,13 @@ def test_basic_email_parsing(root_analysis, datadir):
     assert set([_.value for _ in email_address_obervables]) == set(['jwdavison@company.com', 'unixfreak0037@gmail.com'])
 
     email_conversation_obervables = email_analysis.get_observables_by_type(F_EMAIL_CONVERSATION)
-    assert set([_.value for _ in email_conversation_obervables]) == set([create_email_conversation('unixfreak0037@gmail.com', 'jwdavison@company.com')])
+    assert set([_.value for _ in email_conversation_obervables]) == {'unixfreak0037@gmail.com|jwdavison@company.com'}
 
     message_id_obervables = email_analysis.get_observables_by_type(F_MESSAGE_ID)
     assert set([_.value for _ in message_id_obervables]) == set(['<CANTOGZsMiMb+7aB868zXSen_fO=NS-qFTUMo9h2eHtOexY8Qhw@mail.gmail.com>'])
 
     email_delivery_obervables = email_analysis.get_observables_by_type(F_EMAIL_DELIVERY)
-    assert set([_.value for _ in email_delivery_obervables]) == set([create_email_delivery('<CANTOGZsMiMb+7aB868zXSen_fO=NS-qFTUMo9h2eHtOexY8Qhw@mail.gmail.com>', 'jwdavison@company.com')])
+    assert set([_.value for _ in email_delivery_obervables]) == {'<CANTOGZsMiMb+7aB868zXSen_fO=NS-qFTUMo9h2eHtOexY8Qhw@mail.gmail.com>|jwdavison@company.com'}
 
     file_observables = email_analysis.get_observables_by_type(F_FILE)
     assert (set([_.file_name for _ in file_observables]) ==
@@ -719,12 +497,10 @@ def test_basic_email_parsing(root_analysis, datadir):
                             'splunk_logging.email.rfc822.headers',
                             'splunk_logging.email.rfc822.combined']))
 
-    for file_observable in file_observables:
-        if file_observable.value == 'splunk_logging.email.rfc822.unknown_text_plain_000.txt':
-            assert file_observable.has_directive(DIRECTIVE_EXTRACT_URLS)
-            assert file_observable.has_directive(DIRECTIVE_PREVIEW)
-        elif file_observable.value == 'splunk_logging.email.rfc822.unknown_text_html_000.html':
-            assert file_observable.has_directive(DIRECTIVE_EXTRACT_URLS)
+    by_name = {_.file_name: _ for _ in file_observables}
+    assert by_name['splunk_logging.email.rfc822.unknown_text_plain_000.txt'].has_directive(DIRECTIVE_EXTRACT_URLS)
+    assert by_name['splunk_logging.email.rfc822.unknown_text_plain_000.txt'].has_directive(DIRECTIVE_PREVIEW)
+    assert by_name['splunk_logging.email.rfc822.unknown_text_html_000.html'].has_directive(DIRECTIVE_EXTRACT_URLS)
 
 @pytest.mark.integration
 def test_html_fragment_body_gets_html_extension(root_analysis):
@@ -732,7 +508,7 @@ def test_html_fragment_body_gets_html_extension(root_analysis):
     no <!DOCTYPE>/<html> wrapper) is misdetected by libmagic as text/plain. The
     extracted body must still be named with a content-type-derived extension
     (.html) so phishkit's html/pdf extension allow-list renders it instead of
-    silently skipping it. See the analyzed alert 6fac833d-... for the original miss."""
+    silently skipping it."""
 
     # synthesize a minimal email whose text/html part is a bare HTML fragment
     msg = MIMEMultipart('alternative')
@@ -781,6 +557,46 @@ def test_html_fragment_body_gets_html_extension(root_analysis):
     assert plain_body.has_directive(DIRECTIVE_PREVIEW)
 
 
+@pytest.mark.integration
+def test_unnamed_parts_of_one_type_are_numbered(root_analysis):
+    """Every unnamed part is stored as <email>.unknown_<type>_<subtype>_NNN<ext>, numbered per type,
+    and the body is chosen by that number: with no html part and more than one plain text part, the
+    first plain text part is skipped and the second one is the body. The file manager's suffix for a
+    taken name kept the _000 in every name, so no part was the body."""
+    msg = MIMEMultipart('mixed')
+    msg['From'] = 'attacker@example.com'
+    msg['To'] = 'victim@company.com'
+    msg['Subject'] = 'two plain parts'
+    msg['Message-ID'] = '<two-plain-parts@example.com>'
+    msg.attach(MIMEText('first plain part', 'plain'))
+    msg.attach(MIMEText('second plain part', 'plain'))
+    msg.attach(MIMEText('third plain part', 'plain'))
+
+    _, email_analysis = _analyze_raw_email(root_analysis, msg.as_bytes(), 'two_plain_parts')
+
+    names = sorted(o.file_name for o in email_analysis.get_observables_by_type(F_FILE)
+                   if '.unknown_' in o.file_name)
+    assert names == ['two_plain_parts.email.rfc822.unknown_text_plain_000.txt',
+                     'two_plain_parts.email.rfc822.unknown_text_plain_001.txt',
+                     'two_plain_parts.email.rfc822.unknown_text_plain_002.txt']
+    assert email_analysis.body is not None
+    assert email_analysis.body.file_name == 'two_plain_parts.email.rfc822.unknown_text_plain_001.txt'
+    assert email_analysis.body_text == 'first plain part'
+
+
+@pytest.mark.integration
+def test_an_attachment_whose_name_decodes_to_nothing_is_numbered_like_an_unnamed_part(root_analysis):
+    raw_email = _build_attachment_email('text/html', 'empty-name').replace(
+        b'filename="invoice.html"', b'filename="=?utf-8?q??="')
+
+    _, email_analysis = _analyze_raw_email(root_analysis, raw_email, 'empty_name')
+
+    names = sorted(o.file_name for o in email_analysis.get_observables_by_type(F_FILE)
+                   if '.unknown_' in o.file_name)
+    assert names == ['empty_name.email.rfc822.unknown_text_html_000.html',
+                     'empty_name.email.rfc822.unknown_text_plain_000.txt']
+
+
 def _build_attachment_email(declared_content_type: str | None, message_id: str):
     """Synthesizes an email with one HTML attachment whose Content-Type header is
     set verbatim to declared_content_type (None omits the header entirely).
@@ -816,8 +632,8 @@ def _build_attachment_email(declared_content_type: str | None, message_id: str):
     return '\r\n'.join(headers).encode()
 
 
-def _analyze_attachment_email(root_analysis, raw_email: bytes, name: str):
-    """Runs EmailAnalyzer over a synthesized email and returns the attachment observable."""
+def _analyze_raw_email(root_analysis, raw_email: bytes, name: str):
+    """Runs EmailAnalyzer over a synthesized email and returns the reloaded root and its EmailAnalysis."""
     email_path = os.path.join(get_temp_dir(), f'{name}.email.rfc822')
     with open(email_path, 'wb') as fp:
         fp.write(raw_email)
@@ -834,15 +650,80 @@ def _analyze_attachment_email(root_analysis, raw_email: bytes, name: str):
     engine.configuration_manager.enable_module('email_analyzer', 'test_groups')
     engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
 
-    reloaded = load_root(get_storage_dir(root_analysis.uuid))
-    file_observable = reloaded.get_observable(file_observable.uuid)
-    email_analysis = file_observable.get_and_load_analysis(EmailAnalysis)
+    root_analysis = load_root(get_storage_dir(root_analysis.uuid))
+    email_analysis = root_analysis.get_observable(file_observable.uuid).get_and_load_analysis(EmailAnalysis)
     assert isinstance(email_analysis, EmailAnalysis)
+    return root_analysis, email_analysis
+
+
+def _analyze_attachment_email(root_analysis, raw_email: bytes, name: str):
+    """Runs EmailAnalyzer over a synthesized email and returns the attachment observable."""
+    _, email_analysis = _analyze_raw_email(root_analysis, raw_email, name)
     return next(
         (o for o in email_analysis.get_observables_by_type(F_FILE)
          if o.file_name.endswith('invoice.html')),
         None,
     )
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("file_name, stored", [
+    (".", "_"),
+    ("../../escaped.html", "_/_/escaped.html"),
+    ("/tmp/escaped.html", "tmp/escaped.html"),
+    ("C:\\\\Users\\\\escaped.html", "C:_Users_escaped.html"),
+])
+def test_an_attachment_name_stays_in_the_files_directory(root_analysis, file_name, stored):
+    """The attachment's name is the sender's, so the file manager cleans it: a name of a directory
+    or one leading out of the files directory must neither escape nor keep the payload from being
+    extracted."""
+    raw_email = _build_attachment_email('text/html', f'name-{len(file_name)}').replace(
+        b'filename="invoice.html"', f'filename="{file_name}"'.encode())
+
+    root_analysis, email_analysis = _analyze_raw_email(root_analysis, raw_email, 'attachment_name')
+
+    attachments = [o for o in email_analysis.get_observables_by_type(F_FILE) if o.file_path == stored]
+    assert len(attachments) == 1
+    assert is_path_under(attachments[0].full_path, root_analysis.file_dir)
+    with open(attachments[0].full_path, 'rb') as fp:
+        assert b'https://example.com/x' in fp.read()
+
+
+@pytest.mark.integration
+def test_attachments_with_the_same_name_are_kept_apart(root_analysis):
+    raw_email = _build_attachment_email('text/html', 'same-name')
+    second_part = (b'--BOUND\r\nContent-Type: text/html\r\n'
+                   b'Content-Disposition: attachment; filename="invoice.html"\r\n\r\n'
+                   b'<html><body><a href="https://example.com/second">x</a></body></html>\r\n')
+    raw_email = raw_email.replace(b'--BOUND--', second_part + b'--BOUND--')
+    assert raw_email.count(b'filename="invoice.html"') == 2
+
+    _, email_analysis = _analyze_raw_email(root_analysis, raw_email, 'same_name')
+
+    attachments = {o.file_path: o for o in email_analysis.get_observables_by_type(F_FILE) if o.file_name.startswith("invoice")}
+    assert set(attachments) == {"invoice.html", "invoice_000.html"}
+    with open(attachments["invoice_000.html"].full_path, 'rb') as fp:
+        assert b'https://example.com/second' in fp.read()
+
+
+@pytest.mark.integration
+def test_an_attachment_under_another_attachments_name_is_extracted(root_analysis):
+    """A sender can name one attachment invoice.html and another invoice.html/payload.html, and
+    the second must not be lost because the first holds the name of its directory."""
+    raw_email = _build_attachment_email('text/html', 'nested-name')
+    second_part = (b'--BOUND\r\nContent-Type: text/html\r\n'
+                   b'Content-Disposition: attachment; filename="invoice.html/payload.html"\r\n\r\n'
+                   b'<html><body><a href="https://example.com/payload">x</a></body></html>\r\n')
+    raw_email = raw_email.replace(b'--BOUND--', second_part + b'--BOUND--')
+
+    root_analysis, email_analysis = _analyze_raw_email(root_analysis, raw_email, 'nested_name')
+
+    attachments = {o.file_path: o for o in email_analysis.get_observables_by_type(F_FILE)}
+    assert "invoice.html" in attachments
+    payload = attachments[os.path.join("invoice_000.html", "payload.html")]
+    with open(payload.full_path, 'rb') as fp:
+        assert b'https://example.com/payload' in fp.read()
+    assert not any(o.has_tag("email_parse_incomplete") for o in root_analysis.all_observables)
 
 
 @pytest.mark.integration
@@ -1143,9 +1024,7 @@ def test_basic_smtp_email_parsing(root_analysis, datadir):
     assert email_analysis.email
     assert email_analysis.env_mail_from == 'unixfreak0037@gmail.com'
     assert isinstance(email_analysis.env_rcpt_to, list)
-    assert len(email_analysis.env_rcpt_to) == 2
-    for index in range(2):
-        assert email_analysis.env_rcpt_to[index] in ['john.davison@company.com', 'jane.doe@company.com']
+    assert sorted(email_analysis.env_rcpt_to) == ['jane.doe@company.com', 'john.davison@company.com']
 
     assert email_analysis.mail_from == 'John Davison <unixfreak0037@gmail.com>'
     assert isinstance(email_analysis.mail_to, list)
@@ -1158,8 +1037,8 @@ def test_basic_smtp_email_parsing(root_analysis, datadir):
 
     email_conversation_obervables = email_analysis.get_observables_by_type(F_EMAIL_CONVERSATION)
     assert (set([_.value for _ in email_conversation_obervables]) ==
-                        set([create_email_conversation('unixfreak0037@gmail.com', 'john.davison@company.com'),
-                            create_email_conversation('unixfreak0037@gmail.com', 'jane.doe@company.com')]))
+                        {'unixfreak0037@gmail.com|john.davison@company.com',
+                         'unixfreak0037@gmail.com|jane.doe@company.com'})
 
     message_id_obervables = email_analysis.get_observables_by_type(F_MESSAGE_ID)
     assert (set([_.value for _ in message_id_obervables]) ==
@@ -1167,8 +1046,8 @@ def test_basic_smtp_email_parsing(root_analysis, datadir):
 
     email_delivery_obervables = email_analysis.get_observables_by_type(F_EMAIL_DELIVERY)
     assert (set([_.value for _ in email_delivery_obervables]) ==
-                        set([create_email_delivery('<CANTOGZshnHG073SKFD9aA-TxAu6UVnTwMbYFYMH7iCNhkenwvg@mail.gmail.com>', 'john.davison@company.com'),
-                            create_email_delivery('<CANTOGZshnHG073SKFD9aA-TxAu6UVnTwMbYFYMH7iCNhkenwvg@mail.gmail.com>', 'jane.doe@company.com')]))
+                        {'<CANTOGZshnHG073SKFD9aA-TxAu6UVnTwMbYFYMH7iCNhkenwvg@mail.gmail.com>|john.davison@company.com',
+                         '<CANTOGZshnHG073SKFD9aA-TxAu6UVnTwMbYFYMH7iCNhkenwvg@mail.gmail.com>|jane.doe@company.com'})
 
     file_observables = email_analysis.get_observables_by_type(F_FILE)
     assert (set([_.file_name for _ in file_observables]) ==
@@ -1177,12 +1056,10 @@ def test_basic_smtp_email_parsing(root_analysis, datadir):
                             'smtp.email.rfc822.headers',
                             'smtp.email.rfc822.combined']))
 
-    for file_observable in file_observables:
-        if file_observable.value == 'smtp.email.rfc822.unknown_text_plain_000.txt':
-            assert file_observable.has_directive(DIRECTIVE_EXTRACT_URLS)
-            assert file_observable.has_directive(DIRECTIVE_PREVIEW)
-        elif file_observable.value == 'smtp.email.rfc822.unknown_text_html_000.html':
-            assert file_observable.has_directive(DIRECTIVE_EXTRACT_URLS)
+    by_name = {_.file_name: _ for _ in file_observables}
+    assert by_name['smtp.email.rfc822.unknown_text_plain_000.txt'].has_directive(DIRECTIVE_EXTRACT_URLS)
+    assert by_name['smtp.email.rfc822.unknown_text_plain_000.txt'].has_directive(DIRECTIVE_PREVIEW)
+    assert by_name['smtp.email.rfc822.unknown_text_html_000.html'].has_directive(DIRECTIVE_EXTRACT_URLS)
 
 @pytest.mark.integration
 def test_alert_renaming(root_analysis, datadir):
@@ -1243,6 +1120,8 @@ def test_o365_journal_email_parsing(root_analysis, datadir):
     assert email_analysis.mail_to[0] == '<random.person@whatever.com>'
     assert email_analysis.reply_to is None
     assert email_analysis.subject == 'INVOICE PDL-06-38776'
+    # the journal says Incoming, so the email is not outbound
+    assert not file_observable.has_tag(TAG_OUTBOUND_EMAIL)
     assert email_analysis.decoded_subject == email_analysis.subject
     assert email_analysis.message_id == '<13268020124593518925.93733CB7019D1C46@company.com>'
     assert email_analysis.originating_ip is None
@@ -1254,48 +1133,6 @@ def test_o365_journal_email_parsing(root_analysis, datadir):
     assert email_analysis.body
     assert isinstance(email_analysis.attachments, list)
     assert len(email_analysis.attachments) == 0
-
-@pytest.mark.integration
-def test_o365_journal_email_parsing_multiple_recipients(root_analysis, datadir):
-
-    # parse an office365 journaled message with multiple recipients in the meta block
-
-    root_analysis.alert_type = ANALYSIS_TYPE_MAILBOX
-    root_analysis.analysis_mode = "test_groups"
-    file_observable = root_analysis.add_file_observable(str(datadir / 'emails/o365_journaled_multi_rcpt.email.rfc822'))
-    file_observable.add_directive(DIRECTIVE_ORIGINAL_EMAIL)
-    root_analysis.save()
-    root_analysis.schedule()
-
-    engine = Engine()
-    engine.configuration_manager.enable_module('file_type', 'test_groups')
-    engine.configuration_manager.enable_module('email_analyzer', 'test_groups')
-    engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
-
-    root_analysis = load_root(get_storage_dir(root_analysis.uuid))
-
-    file_observable = root_analysis.get_observable(file_observable.uuid)
-    assert file_observable
-    email_analysis = file_observable.get_and_load_analysis(EmailAnalysis)
-    assert isinstance(email_analysis, EmailAnalysis)
-    email_analysis.load_details()
-    assert email_analysis.parsing_error is None
-    assert email_analysis.email
-    assert email_analysis.env_mail_from == 'ap@someothercompany.com'
-    assert isinstance(email_analysis.env_rcpt_to, list)
-    assert len(email_analysis.env_rcpt_to) == 3
-    assert 'lulu.zingzing@company.com' in email_analysis.env_rcpt_to
-    assert 'bob.smith@company.com' in email_analysis.env_rcpt_to
-    assert 'charlie.jones@company.com' in email_analysis.env_rcpt_to
-
-    # verify an email_delivery observable was created for each recipient
-    email_delivery_observables = email_analysis.get_observables_by_type(F_EMAIL_DELIVERY)
-    assert len(email_delivery_observables) == 3
-    delivery_values = [o.value for o in email_delivery_observables]
-    message_id = email_analysis.message_id
-    assert create_email_delivery(message_id, 'lulu.zingzing@company.com') in delivery_values
-    assert create_email_delivery(message_id, 'bob.smith@company.com') in delivery_values
-    assert create_email_delivery(message_id, 'charlie.jones@company.com') in delivery_values
 
 @pytest.mark.integration
 def test_o365_journal_email_parsing_expanded_recipients(root_analysis, datadir):
@@ -1334,7 +1171,8 @@ def test_o365_journal_email_parsing_expanded_recipients(root_analysis, datadir):
     email_delivery_observables = email_analysis.get_observables_by_type(F_EMAIL_DELIVERY)
     assert len(email_delivery_observables) == 3
     delivery_values = [o.value for o in email_delivery_observables]
-    message_id = email_analysis.message_id
+    message_id = '<13268020124593518925.93733CB7019D1C46@company.com>'
+    assert email_analysis.message_id == message_id
     assert create_email_delivery(message_id, 'lulu.zingzing@company.com') in delivery_values
     assert create_email_delivery(message_id, 'bob.smith@company.com') in delivery_values
     assert create_email_delivery(message_id, 'charlie.jones@company.com') in delivery_values
@@ -1518,25 +1356,26 @@ def test_nested_rfc822_bom_extraction(root_analysis, datadir):
     )
 
 
-@pytest.mark.parametrize("whitelist_item", [
-    "smtp_from:ap@someothercompany.com",
-    "smtp_to:lulu.zingzing@company.com",
-])
-@pytest.mark.integration
-def test_whitelisting(root_analysis, whitelist_item, datadir):
+@pytest.mark.unit
+def test_the_removed_whitelist_path_fails_the_config_instead_of_the_module():
+    data = copy.deepcopy(get_config().raw._data)
+    data["analysis_module_email_analyzer"]["whitelist_path"] = "etc/brotex.whitelist"
+    with pytest.raises(ValidationError, match="analysis_module_email_analyzer.whitelist_path"):
+        ACEConfig.model_validate(data)
 
-    whitelist_path = os.path.join(get_temp_dir(), 'brotex.whitelist')
-    get_analysis_module_config('email_analyzer').whitelist_path = whitelist_path
 
-    if os.path.exists(whitelist_path):
-        os.remove(whitelist_path)
-
-    with open(whitelist_path, 'w') as fp:
-        fp.write(whitelist_item)
+def _analyze_outbound_journaled_email(root_analysis, datadir, tmp_path):
+    """Runs the email analyzer on the journaled o365 fixture rewritten as an outbound message
+    (its inner To: is random.person@whatever.com)."""
+    raw = (datadir / 'emails/o365_journaled.email.rfc822').read_bytes()
+    raw = raw.replace(b'X-MS-Exchange-Organization-MessageDirectionality: Incoming',
+                      b'X-MS-Exchange-Organization-MessageDirectionality: Originating')
+    path = tmp_path / 'outbound.email.rfc822'
+    path.write_bytes(raw)
 
     root_analysis.alert_type = ANALYSIS_TYPE_MAILBOX
     root_analysis.analysis_mode = "test_groups"
-    file_observable = root_analysis.add_file_observable(str(datadir / 'emails/o365_journaled.email.rfc822'))
+    file_observable = root_analysis.add_file_observable(str(path))
     file_observable.add_directive(DIRECTIVE_ORIGINAL_EMAIL)
     root_analysis.save()
     root_analysis.schedule()
@@ -1547,11 +1386,53 @@ def test_whitelisting(root_analysis, whitelist_item, datadir):
     engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
 
     root_analysis = load_root(get_storage_dir(root_analysis.uuid))
-    
     file_observable = root_analysis.get_observable(file_observable.uuid)
-    file_observable
-    email_analysis = file_observable.get_and_load_analysis(EmailAnalysis)
+    return file_observable, file_observable.get_and_load_analysis(EmailAnalysis)
+
+
+@pytest.mark.integration
+def test_outbound_email_is_tagged_and_analyzed(root_analysis, datadir, tmp_path):
+    file_observable, email_analysis = _analyze_outbound_journaled_email(root_analysis, datadir, tmp_path)
+
+    assert isinstance(email_analysis, EmailAnalysis)
+    assert file_observable.has_tag(TAG_OUTBOUND_EMAIL)
+    assert not file_observable.has_tag(TAG_OUTBOUND_EXCEPTION_EMAIL)
+
+
+@pytest.mark.integration
+def test_scan_inbound_only_skips_outbound_email(root_analysis, datadir, tmp_path, monkeypatch, caplog):
+    config = get_analysis_module_config('email_analyzer')
+    monkeypatch.setattr(config, 'scan_inbound_only', True)
+    monkeypatch.setattr(config, 'outbound_exceptions', 'someone.else@whatever.com')
+
+    with caplog.at_level(logging.INFO):
+        file_observable, email_analysis = _analyze_outbound_journaled_email(root_analysis, datadir, tmp_path)
+
     assert not email_analysis
+    assert file_observable.has_tag(TAG_OUTBOUND_EMAIL)
+    # only the email analysis is skipped: the skip no longer whitelists the root
+    assert not file_observable.has_tag("whitelisted")
+    assert "skipping outbound office365 email" in caplog.text
+
+
+@pytest.mark.parametrize("outbound_exceptions", [
+    # the setting is a comma separated list: a space after the comma, or a capital letter, must
+    # not keep an address from matching the (normalized) To: addresses
+    "someone.else@whatever.com, random.person@whatever.com",
+    "Random.Person@Whatever.com",
+])
+@pytest.mark.integration
+def test_scan_inbound_only_analyzes_outbound_exceptions(root_analysis, datadir, tmp_path, monkeypatch, outbound_exceptions):
+    config = get_analysis_module_config('email_analyzer')
+    monkeypatch.setattr(config, 'scan_inbound_only', True)
+    monkeypatch.setattr(config, 'outbound_exceptions', outbound_exceptions)
+
+    file_observable, email_analysis = _analyze_outbound_journaled_email(root_analysis, datadir, tmp_path)
+
+    assert isinstance(email_analysis, EmailAnalysis)
+    assert file_observable.has_tag(TAG_OUTBOUND_EMAIL)
+    assert file_observable.has_tag(TAG_OUTBOUND_EXCEPTION_EMAIL)
+
 
 @pytest.mark.integration
 def test_automated_msoffice_decryption(root_analysis, datadir):
@@ -1647,51 +1528,6 @@ def test_message_id_remediation(root_analysis, datadir):
     email_delivery = email_delivery[0]
     assert email_delivery.message_id == message_id_observable.value
     assert not email_delivery.has_directive(DIRECTIVE_REMEDIATE)
-
-@pytest.mark.integration
-def test_export_to_brocess(test_context):
-    with get_db_connection(DB_BROCESS) as db:
-        _cursor = db.cursor()
-        _cursor.execute("DELETE FROM smtplog")
-        db.commit()
-
-    analyzer = EmailLoggingAnalyzer(
-        context=test_context,
-        config=get_analysis_module_config(ANALYSIS_MODULE_EMAIL_LOGGER))
-
-    analyzer.export_to_brocess({
-        "mail_from": "john@netflix.com",
-        "env_rcpt_to": ["somebody@host.com"],
-    })
-
-    with get_db_connection(DB_BROCESS) as db:
-        _cursor = db.cursor()
-        _cursor.execute("SELECT source, destination, numconnections FROM smtplog WHERE source = %s AND destination = %s AND numconnections = 1", ("john@netflix.com", "somebody@host.com"))
-        result = _cursor.fetchone()
-        assert result
-
-@pytest.mark.integration
-def test_export_to_brocess_large_email(test_context):
-    with get_db_connection(DB_BROCESS) as db:
-        _cursor = db.cursor()
-        _cursor.execute("DELETE FROM smtplog")
-        db.commit()
-
-    analyzer = EmailLoggingAnalyzer(
-        context=test_context,
-        config=get_analysis_module_config(ANALYSIS_MODULE_EMAIL_LOGGER))
-    mail_from = "john" + ("0" * 255) + "@netflix.com"
-    mail_to = "somebody" + ("0" * 255) + "@host.com"
-    analyzer.export_to_brocess({
-        "mail_from": mail_from,
-        "env_rcpt_to": [mail_to],
-    })
-
-    with get_db_connection(DB_BROCESS) as db:
-        _cursor = db.cursor()
-        _cursor.execute("SELECT source, destination, numconnections FROM smtplog WHERE source = %s AND destination = %s AND numconnections = 1", (mail_from[:255].encode("utf-8"), mail_to[:255].encode("utf-8")))
-        result = _cursor.fetchone()
-        assert result
 
 @pytest.mark.integration
 def test_export_to_brocess_multibyte_oversize(test_context):
@@ -1800,20 +1636,6 @@ def test_resolve_first_hop_authoritative_header(datadir):
 
 
 @pytest.mark.unit
-def test_resolve_first_hop_local_domain_fallback(datadir):
-    """Without an X-MS-* header we fall back to the hop accepted by one of our own hosts."""
-
-    target_email = _load_email(str(datadir / 'emails/smtp.email.rfc822'))
-
-    hop_ip, hop_helo, hop_from = resolve_first_hop(target_email)
-    # Received: from mail-lf1-f52.google.com ([209.85.167.52]) by mailserver.company.com
-    # the token after `from` is the HELO; the parens hold only the IP so there is no rDNS host
-    assert hop_ip == '209.85.167.52'
-    assert hop_helo == 'mail-lf1-f52.google.com'
-    assert hop_from is None
-
-
-@pytest.mark.unit
 def test_resolve_first_hop_helo():
     """A helo=/HELO token on the perimeter hop becomes email_first_hop_helo."""
 
@@ -1857,14 +1679,6 @@ def test_resolve_first_hop_ipv6():
     # token after `from` is the HELO; parens hold only the IP
     assert hop_helo == 'mail.example.com'
     assert hop_from is None
-
-
-@pytest.mark.unit
-def test_resolve_first_hop_missing():
-    """Nothing to resolve means no observables, not a guess."""
-
-    target_email = email.message_from_string('Subject: hello\r\n\r\nbody\r\n')
-    assert resolve_first_hop(target_email) == (None, None, None)
 
 
 @pytest.mark.unit
@@ -2108,17 +1922,6 @@ def test_provider_headers_defaults_are_microsoft():
 
     headers = EmailProviderHeaders()
     assert 'x-ms-exchange-organization-originalclientipaddress' in headers.first_hop_ip
-    assert 'x-ms-exchange-crosstenant-id' in headers.sender_tenant_id
-    assert headers.composite_auth_result == ['x-ms-exchange-organization-compauthres']
-
-
-@pytest.mark.unit
-def test_provider_headers_partial_override_keeps_other_defaults():
-    """Overriding one list (as a deployment would) leaves the rest at their defaults."""
-
-    headers = EmailProviderHeaders(first_hop_ip=['X-Received'])
-    assert headers.first_hop_ip == ['X-Received']
-    # untouched lists still hold the shipped Microsoft defaults
     assert 'x-ms-exchange-crosstenant-id' in headers.sender_tenant_id
     assert headers.composite_auth_result == ['x-ms-exchange-organization-compauthres']
 

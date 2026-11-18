@@ -41,10 +41,17 @@ from dataclasses import dataclass
 from typing import Callable, Optional
 
 import yara
-from yara_scanner import YaraScanner
+from yara_scanner import RulesNotLoadedError, YaraScanner
 
 from saq.environment import ACE_MP_CONTEXT
 from saq.error.reporting import log_loop_exception
+from saq.logging import utf8_safe
+from saq.util.filesystem import utf8_path
+from saq.signatures.loaders.yara import (
+    CompiledRuleDetails,
+    attach_rule_details,
+    compiled_rule_details,
+)
 from saq.yara_scanning import protocol
 from saq.yara_scanning.qa import QASpooler, run_recorder
 
@@ -172,14 +179,43 @@ def _reap() -> list[tuple[int, int]]:
 # worker
 #
 
-def _scan(scanner: YaraScanner, settings: ScannerSettings, request: dict, data: Optional[bytes]) -> dict:
+def scan_path(scanner: YaraScanner, path: str, external_vars: Optional[dict] = None, timeout: Optional[int] = None,
+              meta_tags: Optional[list] = None) -> bool:
+    """scanner.scan(path), also for a file whose name is not UTF-8, which yara-python takes neither as a
+    path nor in a variable. Such a file is matched through utf8_path, the variables scan derives from
+    the path (filename, filepath, extension) are derived from its utf8_safe form, and the meta filters
+    and each match's target still get the path itself."""
+    external_vars = external_vars or {}
+    with utf8_path(path) as yara_path:
+        if yara_path == path:
+            return scanner.scan(path, external_vars=external_vars, timeout=timeout, meta_tags=meta_tags)
+
+        if scanner.rules is None:
+            raise RulesNotLoadedError()
+
+        escaped = utf8_safe(path)
+        externals = {
+            "filename": os.path.basename(escaped),
+            "filepath": escaped,
+            "filetype": "",
+            "extension": escaped.rsplit(".", maxsplit=1)[1] if "." in escaped else "",
+            **external_vars,
+        }
+        # a timeout of 0 is no timeout, as in scan
+        yara_matches = scanner.rules.match(yara_path, externals=externals, timeout=timeout or scanner.default_timeout)
+
+    return scanner.filter_scan_results(path, None, yara_matches, external_vars=external_vars, meta_tags=meta_tags)
+
+
+def _scan(scanner: YaraScanner, settings: ScannerSettings, rule_details: CompiledRuleDetails, request: dict,
+          data: Optional[bytes]) -> dict:
     timeout = request.get("timeout") or settings.default_timeout
     ext_vars = request.get("ext_vars") or {}
     meta_tags = request.get("meta_tags")
 
     try:
         if request["op"] == protocol.OP_SCAN_FILE:
-            matched = scanner.scan(request["path"], external_vars=ext_vars, timeout=timeout, meta_tags=meta_tags)
+            matched = scan_path(scanner, request["path"], external_vars=ext_vars, timeout=timeout, meta_tags=meta_tags)
         else:
             matched = scanner.scan_data(data, external_vars=ext_vars, timeout=timeout, meta_tags=meta_tags)
 
@@ -191,10 +227,12 @@ def _scan(scanner: YaraScanner, settings: ScannerSettings, request: dict, data: 
         return {"status": protocol.STATUS_ERROR, "error": {"type": type(e).__name__, "message": str(e)}}
 
     matches = scanner.scan_results if matched else []
+    attach_rule_details(matches, rule_details)
     return {"status": protocol.STATUS_OK, "matches": protocol.encode_matches(matches)}
 
 
-def _serve_connection(conn: socket.socket, scanner: YaraScanner, settings: ScannerSettings, spooler: Optional[QASpooler]):
+def _serve_connection(conn: socket.socket, scanner: YaraScanner, rule_details: CompiledRuleDetails,
+                      settings: ScannerSettings, spooler: Optional[QASpooler]):
     # a connection accepted from a non-blocking listener comes back blocking; without a timeout
     # a client that stalls would hold this worker forever
     conn.settimeout(settings.io_timeout)
@@ -213,7 +251,7 @@ def _serve_connection(conn: socket.socket, scanner: YaraScanner, settings: Scann
         if request["op"] == protocol.OP_SCAN_DATA:
             data = protocol.recv_frame(conn, settings.max_data_bytes)
 
-        response = _scan(scanner, settings, request, data)
+        response = _scan(scanner, settings, rule_details, request, data)
 
         # the scanned file is pinned before the client has its answer and may delete it; the job is
         # written after, so writing it costs the client nothing
@@ -229,7 +267,8 @@ def _serve_connection(conn: socket.socket, scanner: YaraScanner, settings: Scann
         logging.warning("yara scanner connection failed: %s", e)
 
 
-def _run_worker(settings: ScannerSettings, scanner: YaraScanner, listen_sock: socket.socket, ctl_r: int) -> int:
+def _run_worker(settings: ScannerSettings, scanner: YaraScanner, rule_details: CompiledRuleDetails,
+                listen_sock: socket.socket, ctl_r: int) -> int:
     selector = selectors.DefaultSelector()
     selector.register(ctl_r, selectors.EVENT_READ)
     selector.register(listen_sock, selectors.EVENT_READ)
@@ -252,7 +291,7 @@ def _run_worker(settings: ScannerSettings, scanner: YaraScanner, listen_sock: so
             continue
 
         with conn:
-            _serve_connection(conn, scanner, settings, spooler)
+            _serve_connection(conn, scanner, rule_details, settings, spooler)
 
         handled += 1
         if settings.max_requests_per_worker and handled >= settings.max_requests_per_worker:
@@ -275,6 +314,7 @@ class _Generation:
         self.ctl_r = ctl_r
         self.ready_w: Optional[int] = ready_w
         self.scanner: Optional[YaraScanner] = None
+        self.rule_details: CompiledRuleDetails = {}
 
         # the workers hold the read end; closing the write end stops them
         self.worker_ctl_r: Optional[int] = None
@@ -298,7 +338,7 @@ class _Generation:
                 git_repo_dirs=list(self.settings.git_repo_dirs),
                 default_timeout=self.settings.default_timeout)
 
-            # a rule file that does not compile is logged and left out; the rest are loaded
+            # a rule file that cannot be read or does not compile is logged and left out; the rest are loaded
             self.scanner.load_rules()
         except Exception as e:
             self._report(b"E" + str(e).encode(errors="replace")[:4096])
@@ -307,6 +347,8 @@ class _Generation:
         if self.scanner.rules is None:
             self._report(b"Eno yara rules could be loaded")
             return 1
+
+        self.rule_details = compiled_rule_details(self.scanner)
 
         logging.info("yara scanner generation %d compiled its rules in %.1f seconds",
                      self.generation_id, time.monotonic() - start)
@@ -334,8 +376,9 @@ class _Generation:
 
     def _start_worker(self, slot: int):
         settings, scanner, listen_sock, worker_ctl_r = self.settings, self.scanner, self.listen_sock, self.worker_ctl_r
+        rule_details = self.rule_details
         pid = _fork([self.ctl_r, self.ready_w, self.worker_ctl_w],
-                    lambda: _run_worker(settings, scanner, listen_sock, worker_ctl_r))
+                    lambda: _run_worker(settings, scanner, rule_details, listen_sock, worker_ctl_r))
         self.workers[pid] = slot
         self.worker_started[slot] = time.monotonic()
 
