@@ -5,7 +5,7 @@ from typing import Optional
 from sqlalchemy import text
 from sqlalchemy.sql import func
 
-from saq.database.model import Alert, FileCollection
+from saq.database.model import Alert, FileCollection, FileCollectionWaiter
 from saq.database.pool import get_db
 from saq.file_collection.storage import unattached_storage_dir
 from saq.file_collection.types import FileCollectionStatus, FileCollectionWorkItem, FileCollectorStatus
@@ -36,6 +36,38 @@ def give_up(file_collection: FileCollection, message: str, *conditions) -> bool:
     return True
 
 
+def hand_over(file_collection: FileCollection) -> Optional[Alert]:
+    """Gives a collection this collector has locked, whose alert no longer exists, to the alert
+    that has waited on it longest and still exists (saq.file_collection.database
+    wait_on_file_collection), and returns that alert. Returns None when no waiting alert is left,
+    or when the collection is no longer locked by this collector. QueueCollector.collect_work_items
+    commits the update."""
+    alert = (
+        get_db()
+        .query(Alert)
+        .join(FileCollectionWaiter, FileCollectionWaiter.alert_uuid == Alert.uuid)
+        .filter(FileCollectionWaiter.file_collection_id == file_collection.id)
+        .order_by(FileCollectionWaiter.id.asc())
+        .first()
+    )
+    if alert is None:
+        return None
+
+    update = FileCollection.__table__.update()
+    update = update.values(alert_uuid=alert.uuid)
+    update = update.where(FileCollection.id == file_collection.id, FileCollection.lock == file_collection.lock)
+    if get_db().execute(update).rowcount == 0:
+        return None
+
+    logging.info(
+        f"file collection {file_collection.id} for {file_collection.type} {file_collection.key} "
+        f"moved from deleted alert {file_collection.alert_uuid} to alert {alert.uuid}, which waits on it",
+        extra={"file_collection_id": file_collection.id, "alert_uuid": alert.uuid,
+               "previous_alert_uuid": file_collection.alert_uuid},
+    )
+    return alert
+
+
 def create_file_collection_work_item(
     file_collection: FileCollection, max_collection_time_seconds: int
 ) -> Optional[FileCollectionWorkItem]:
@@ -43,9 +75,11 @@ def create_file_collection_work_item(
 
     The collected file goes in the alert's storage directory, or for a collection no alert asked
     for, in this node's directory for it (saq.file_collection.storage). Deleting an alert leaves
-    its collections behind. A collection with no work left is marked completed and failed, its
+    its collections behind, and one of them that another alert still waits on is handed to that
+    alert (hand_over()). A collection with no work left is marked completed and failed, its
     lock is released and None is returned: one older than max_collection_time_seconds, which is
-    no longer collected, and one whose alert no longer exists, which has nowhere to put its file.
+    no longer collected, and one whose alert no longer exists and that no existing alert waits
+    on, which has nowhere to put its file.
     Left pending, a collection is what every later request for the same file attaches to
     (saq.file_collection.database).
     """
@@ -56,13 +90,17 @@ def create_file_collection_work_item(
     if give_up(file_collection, f"gave up: not collected within {timedelta(seconds=max_collection_time_seconds)}", expired):
         return None
 
-    if file_collection.alert_uuid is None:
+    alert_uuid = file_collection.alert_uuid
+    if alert_uuid is None:
         storage_dir = unattached_storage_dir(file_collection.id)
     else:
-        alert = get_db().query(Alert).filter(Alert.uuid == file_collection.alert_uuid).first()
+        alert = get_db().query(Alert).filter(Alert.uuid == alert_uuid).first()
         if alert is None:
-            give_up(file_collection, f"alert {file_collection.alert_uuid} no longer exists")
-            return None
+            alert = hand_over(file_collection)
+            if alert is None:
+                give_up(file_collection, f"alert {alert_uuid} no longer exists and no alert waiting on it does")
+                return None
+            alert_uuid = alert.uuid
         storage_dir = alert.storage_dir
 
     return FileCollectionWorkItem(
@@ -70,7 +108,7 @@ def create_file_collection_work_item(
         name=file_collection.name,
         type=file_collection.type,
         key=file_collection.key,
-        alert_uuid=file_collection.alert_uuid,
+        alert_uuid=alert_uuid,
         storage_dir=storage_dir,
         retry_count=file_collection.retry_count,
         max_retries=file_collection.max_retries,

@@ -3440,6 +3440,34 @@ class FileCollectionHistory(Base):
         default='NEW')
 
 
+class FileCollectionWaiter(Base):
+    """An alert waiting on a file collection another alert queued, so that the collection can go to
+    it if the alert that queued it is deleted (saq.file_collection.collector)."""
+
+    __tablename__ = 'file_collection_waiters'
+    __table_args__ = (
+        UniqueConstraint('file_collection_id', 'alert_uuid', name='uq_file_collection_waiters'),
+    )
+
+    id: Mapped[int] = mapped_column(
+        Integer,
+        primary_key=True)
+
+    file_collection_id: Mapped[int] = mapped_column(
+        Integer,
+        ForeignKey('file_collection.id', ondelete='CASCADE', onupdate='CASCADE'),
+        nullable=False)
+
+    alert_uuid: Mapped[str] = mapped_column(
+        String(36),
+        nullable=False)
+
+    insert_date: Mapped[datetime] = mapped_column(
+        TIMESTAMP,
+        nullable=False,
+        server_default=text('CURRENT_TIMESTAMP'))
+
+
 class ExternalRemediationCheck(Base):
     """Tracks recurring background polls against an external system to discover
     whether *that system* has remediated a target observable (e.g. an email
