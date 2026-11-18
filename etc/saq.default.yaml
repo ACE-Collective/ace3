@@ -429,12 +429,6 @@ monitor:
       suppression_duration: 10
       dedup: true
 
-rabbitmq:
-  username: ace3
-  password: file:/auth/passwords/rabbitmq
-  host: rabbitmq
-  port: 5672
-
 phishkit:
   # age in days after which phishkit input/output job directories are deleted
   max_file_age_days: 3

@@ -44,6 +44,11 @@
 # REDIS_HOSTNAME
 # QDRANT_HOSTNAME
 #
+# the celery broker (phishkit, js-deobfuscator), for ACE and the managers alike
+# ACE_RABBITMQ_HOST (default: rabbitmq)
+# ACE_RABBITMQ_PORT (default: 5672)
+# ACE_RABBITMQ_USER (default: ace3)
+#
 # configuration options
 # SAQ_CONFIG_PATHS
 # SAQ_USER_ID
@@ -65,7 +70,15 @@
 # compose project name (do not set COMPOSE_PROJECT_NAME; see docs/MULTI_INSTANCE.md)
 name: ${ACE_STACK:-ace}
 
+# the broker of the phishkit and js-deobfuscator celery apps. the manager containers build their app
+# from these, and so do ACE's containers, whose clients send tasks through the managers' modules
+x-rabbitmq-env: &rabbitmq-env
+  ACE_RABBITMQ_HOST: ${ACE_RABBITMQ_HOST:-rabbitmq}
+  ACE_RABBITMQ_PORT: ${ACE_RABBITMQ_PORT:-5672}
+  ACE_RABBITMQ_USER: ${ACE_RABBITMQ_USER:-ace3}
+
 x-common-env: &common-env
+  <<: *rabbitmq-env
   PYTHONUTF8: "1"
   LANG: C.UTF-8
   SAQ_ENC: ${SAQ_ENC:-test}
@@ -803,7 +816,7 @@ services:
     # support it (erlang/otp#10355). The minor version is pinned so a rebuild picks up patch
     # releases only, never a new RabbitMQ release line or Erlang/OTP major unannounced.
     environment:
-      RABBITMQ_DEFAULT_USER: "ace3"
+      RABBITMQ_DEFAULT_USER: ${ACE_RABBITMQ_USER:-ace3}
     image: ${DOCKER_IMAGE_PREFIX:-docker.io}/library/rabbitmq:4.4
     ports:
       - "${ACE_BIND_ADDRESS:-127.0.0.1}::5672"
@@ -851,6 +864,7 @@ services:
 
   phishkit:
     environment:
+      <<: *rabbitmq-env
       ACE3_PHISHKIT_IMAGE_URL: ${ACE3_PHISHKIT_IMAGE_URL:-phishkit:latest}
       # this container shells out to `docker run` on the host daemon, so it has to be told the
       # real (project-prefixed) name of the volume it shares with the scanners it spawns, and
@@ -906,6 +920,7 @@ services:
 
   js-deobfuscator:
     environment:
+      <<: *rabbitmq-env
       ACE3_JS_DEOBFUSCATOR_IMAGE_URL: ${ACE3_JS_DEOBFUSCATOR_IMAGE_URL:-js-deobfuscator:latest}
       # as with phishkit: spawns sibling containers, so it needs the real volume name
       ACE_STACK: ${ACE_STACK:-ace}

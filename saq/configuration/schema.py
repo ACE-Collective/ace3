@@ -139,12 +139,6 @@ class MonitorConfig(BaseModel):
     fluent_bit: Optional[FluentBitMonitoringConfig] = Field(default=None, description="fluent-bit monitoring configuration")
     definitions: list[MonitorDefinitionConfig] = Field(default=[], description="monitor definitions")
 
-class RabbitMQConfig(BaseModel):
-    username: str = Field(..., description="rabbitmq username")
-    password: str = Field(..., description="rabbitmq password")
-    host: str = Field(..., description="rabbitmq host")
-    port: int = Field(..., description="rabbitmq port")
-
 class PhishkitConfig(BaseModel):
     max_file_age_days: int = Field(default=3, description="age in days after which phishkit input/output job directories are deleted")
 
@@ -988,7 +982,6 @@ class ACEConfig(BaseModel):
     fixed_directives: list[str] = Field(default_factory=list, description="Directives that cannot be copied between observables via copy_directives_to.")
     search: SearchConfig = Field(default_factory=SearchConfig)
     monitor: Optional[MonitorConfig] = None
-    rabbitmq: Optional[RabbitMQConfig] = None
     phishkit: PhishkitConfig = Field(default_factory=PhishkitConfig, description="phishkit subsystem configuration")
     js_deobfuscator: JsDeobfuscatorConfig = Field(default_factory=JsDeobfuscatorConfig, description="js-deobfuscator subsystem configuration")
     pcap: PcapConfig = Field(default_factory=PcapConfig, description="pcap/pcapng dissection shared by every pcap analysis module")
@@ -1082,6 +1075,16 @@ class ACEConfig(BaseModel):
                     f"{', '.join(removed)}: replaced by the dispositions: block (one entry per "
                     f"disposition with rank, css, show_save_to_event, analyst_selectable) and "
                     f"disposition_classification:; see etc/saq.default.yaml")
+        return data
+
+    @model_validator(mode="before")
+    @classmethod
+    def _reject_removed_rabbitmq(cls, data):
+        # the managers never read it, so a site that moved its broker here would move only ACE's side
+        if isinstance(data, dict) and "rabbitmq" in data:
+            raise ValueError("rabbitmq: was removed: the phishkit and js-deobfuscator brokers come from the "
+                             "ACE_RABBITMQ_HOST, ACE_RABBITMQ_PORT and ACE_RABBITMQ_USER environment variables, "
+                             "which docker-compose.yml gives the managers and ACE alike; see .env.example")
         return data
 
     @model_validator(mode="before")

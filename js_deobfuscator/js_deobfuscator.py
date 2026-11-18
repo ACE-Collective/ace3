@@ -88,10 +88,17 @@ if os.path.exists("/auth/passwords/rabbitmq"):
 else:
     rabbitmq_password = ""
 
+# The broker comes from the environment. Compose gives this container and every ACE container
+# the same ACE_RABBITMQ_* variables, and ACE's client sends tasks through this module's app, so the
+# two sides build the same URL. The defaults are the stack's own rabbitmq.
+rabbitmq_user = os.environ.get("ACE_RABBITMQ_USER", "ace3")
+rabbitmq_host = os.environ.get("ACE_RABBITMQ_HOST", "rabbitmq")
+rabbitmq_port = os.environ.get("ACE_RABBITMQ_PORT", "5672")
+
 app = Celery(
     "js_deobfuscator",
     backend=f"redis://ace3:{redis_password}@redis:6379/8",
-    broker=f"pyamqp://ace3:{rabbitmq_password}@rabbitmq//",
+    broker=f"pyamqp://{rabbitmq_user}:{rabbitmq_password}@{rabbitmq_host}:{rabbitmq_port}//",
 )
 
 app.conf.broker_transport_options = {"global_keyprefix": "js_deobfuscator"}
