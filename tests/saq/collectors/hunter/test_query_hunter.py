@@ -1875,6 +1875,30 @@ def test_grouped_alert_original_events_hold_only_its_own_group(monkeypatch, hunt
 
 
 @pytest.mark.unit
+def test_grouped_alert_original_events_include_a_filtered_event_of_each_of_its_list_groups(monkeypatch, hunt_manager):
+    """An event whose group_by value is a list belongs to the group of each of its values, filtered
+    or not, as process_query_results groups it."""
+    monkeypatch.setattr(query_hunter_module, "local_time", mock_local_time)
+    hunt = default_hunt(
+        manager=hunt_manager,
+        name="original_events_list_group",
+        analysis_mode=ANALYSIS_MODE_CORRELATION,
+        group_by="incident_id",
+        observable_mapping=[ObservableMapping(fields=["src"], type="ip")],
+        correlate=CorrelateConfig.model_validate(CORRELATE_DROP_TAGGED),
+    )
+    submissions = hunt.process_query_results([
+        {"incident_id": "A", "src": "1.1.1.1", "tag": "keep"},
+        {"incident_id": "B", "src": "2.2.2.2", "tag": "keep"},
+        {"incident_id": ["A", "B"], "src": "3.3.3.3", "tag": "drop"},
+        {"incident_id": "C", "src": "4.4.4.4", "tag": "keep"},
+    ])
+
+    original = {s.group_value: [e["src"] for e in s.root.details["original_events"]] for s in submissions}
+    assert original == {"A": ["1.1.1.1", "3.3.3.3"], "B": ["2.2.2.2", "3.3.3.3"], "C": ["4.4.4.4"]}
+
+
+@pytest.mark.unit
 def test_group_by_all_alert_original_events_hold_every_event(monkeypatch, hunt_manager):
     monkeypatch.setattr(query_hunter_module, "local_time", mock_local_time)
     hunt = default_hunt(
