@@ -61,10 +61,3 @@ DELIVERY_TAGS = {
     DELIVERY_NOT_JOURNALED: 'delivery_not_journaled',
 }
 DELIVERY_TAG_REASONS = {tag: reason for reason, tag in DELIVERY_TAGS.items()}
-
-# what a removal at such an address means, shown in the remediation timeline and coverage
-UNDELIVERED_NOTES = {
-    DELIVERY_FORWARDED: 'not delivered to this address; forwarded to another mailbox',
-    DELIVERY_EXPANDED: "distribution list; its members' copies are their own deliveries",
-    DELIVERY_NOT_JOURNALED: 'not delivered to this address (no journal record of it)',
-}

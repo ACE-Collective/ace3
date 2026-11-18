@@ -50,6 +50,7 @@ from saq.constants import (
     F_IP,
     F_MESSAGE_ID,
     F_USER_AGENT,
+    R_DELIVERED_TO,
     AnalysisExecutionResult,
     create_email_conversation,
     create_email_delivery,
@@ -58,6 +59,7 @@ from saq.configuration.config import get_config
 from saq.observables.type_hierarchy import get_type_hierarchy
 from saq.email import (
     decode_rfc2822,
+    describe_undelivered,
     is_local_email_domain,
     normalize_email_address,
     normalize_message_id,
@@ -619,21 +621,6 @@ def parse_journal_deliveries(recipient_lines: list[str], header_addresses: list[
     return deliveries
 
 
-def describe_delivery(entry: dict) -> Optional[str]:
-    """What happened to mail sent to an address the journal did not deliver to under that
-    address, or None when it did."""
-    mailboxes = entry.get("mailboxes") or []
-    shown = ", ".join(mailboxes[:3]) + (f" and {len(mailboxes) - 3} more" if len(mailboxes) > 3 else "")
-    reason = entry.get("reason")
-    if reason == DELIVERY_DELIVERED:
-        return None
-    if reason == DELIVERY_FORWARDED and shown:
-        return f"not delivered to this address; forwarded to {shown}"
-    if reason == DELIVERY_EXPANDED and shown:
-        return f"distribution list; delivered to {shown}"
-    return "not delivered to this address (no journal record of it)"
-
-
 # the email body parts are the unnamed text parts EmailAnalyzer extracts
 HTML_BODY_PART_MARKER = ".unknown_text_html"
 BODY_PART_MARKERS = (HTML_BODY_PART_MARKER, ".unknown_text_plain")
@@ -729,8 +716,8 @@ class EmailAnalysis(Analysis):
     def delivery_notes(self) -> list[tuple[str, str]]:
         """(address, what happened to its mail) for each recipient the journal did not deliver to
         under that address."""
-        return [(address, note) for address, entry in self.deliveries.items()
-                if (note := describe_delivery(entry)) is not None]
+        return [(address, describe_undelivered(entry["reason"], entry["mailboxes"]))
+                for address, entry in self.deliveries.items() if entry["reason"] != DELIVERY_DELIVERED]
 
     @property
     def mail_from(self):
@@ -1412,9 +1399,12 @@ class EmailAnalyzer(AnalysisModule):
             if o365_meta_part:
                 deliveries = email_details[KEY_DELIVERIES] = parse_journal_deliveries(o365_meta_recipients, delivery_recipients)
 
+            delivery_observables = {}
             for recipient in delivery_recipients:
                 email_delivery_observable = analysis.add_observable_by_spec(F_EMAIL_DELIVERY,
                                             create_email_delivery(email_details[KEY_MESSAGE_ID], recipient))
+                if email_delivery_observable:
+                    delivery_observables[recipient] = email_delivery_observable
                 # still remediated, but a removal that finds nothing there is not a failure
                 tag = DELIVERY_TAGS.get(deliveries.get(recipient, {}).get("reason"))
                 if email_delivery_observable and tag:
@@ -1423,6 +1413,13 @@ class EmailAnalyzer(AnalysisModule):
                     logging.info(f"copying directive {DIRECTIVE_REMEDIATE} from message-id "
                                  f"{message_id_observable.value} to {email_delivery_observable.value}")
                     email_delivery_observable.add_directive(DIRECTIVE_REMEDIATE)
+
+            # a forwarded or expanded address points at the deliveries of the mailboxes that got
+            # its mail, so the remediation timeline can name them from the tree
+            for recipient, observable in delivery_observables.items():
+                for mailbox in deliveries.get(recipient, {}).get("mailboxes", []):
+                    if mailbox != recipient and mailbox in delivery_observables:
+                        observable.add_relationship(R_DELIVERED_TO, delivery_observables[mailbox])
 
         if 'x-sender' in target_email:
             address = normalize_email_address(decode_rfc2822(target_email['x-sender']))

@@ -41,7 +41,8 @@ from saq.database.model import (
     Tag,
 )
 from saq.database.pool import get_db
-from saq.modules.email.constants import DELIVERY_NOT_JOURNALED, DELIVERY_TAG_REASONS, UNDELIVERED_NOTES
+from saq.email import describe_undelivered
+from saq.modules.email.constants import DELIVERY_EXPANDED, DELIVERY_NOT_JOURNALED, DELIVERY_TAG_REASONS
 from saq.remediation.external.database import superseding_source_from_reason
 from saq.remediation.external.events import events_from_check
 from saq.remediation.external.types import CheckResult, CheckStatus
@@ -123,7 +124,7 @@ class TargetCoverage:
         if self.remediated:
             return ", ".join(sorted(self.sources))
         if self.not_delivered:
-            return UNDELIVERED_NOTES[self.undelivered]
+            return describe_undelivered(self.undelivered)
         if self.failed:
             return "failed"
         if self.not_found:
@@ -342,15 +343,22 @@ def get_remediation_coverage(alerts: Iterable) -> dict[str, RemediationCoverage]
 
 def journal_explains(reason: Optional[str], result: Optional[str]) -> bool:
     """Whether the journal's account of an address explains ACE's finished removal there
-    finding nothing to remove. A forwarded or expanded address is not where the copy went, so
-    any unsuccessful result is expected. An address the journal does not name only explains
-    NOT_FOUND: one message can be split across several journal reports, so a failure there may
-    be a real mailbox that still holds it."""
-    if reason is None or result == RemediatorStatus.SUCCESS.value:
+    finding nothing to remove.
+
+    - expanded: a distribution list holds no mail, so any unsuccessful result is expected.
+    - forwarded: NOT_FOUND or FAILED (the address is not a mailbox) is expected. ERROR is not:
+      it says nothing about the address, and a mailbox that keeps a copy and forwards can have
+      its own Recipient: line in another journal report.
+    - not_journaled: only NOT_FOUND, for the same reason: another report may name the address.
+    """
+    if reason is None:
         return False
-    if reason == DELIVERY_NOT_JOURNALED:
-        return result == RemediatorStatus.NOT_FOUND.value
-    return result in (RemediatorStatus.NOT_FOUND.value, RemediatorStatus.FAILED.value, RemediatorStatus.ERROR.value)
+    explained = {RemediatorStatus.NOT_FOUND.value}
+    if reason != DELIVERY_NOT_JOURNALED:
+        explained.add(RemediatorStatus.FAILED.value)
+    if reason == DELIVERY_EXPANDED:
+        explained.add(RemediatorStatus.ERROR.value)
+    return result in explained
 
 
 def assemble_coverage(

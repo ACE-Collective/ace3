@@ -5,6 +5,7 @@ import logging
 from email.utils import parseaddr
 from email.header import decode_header
 from saq.configuration import get_config
+from saq.modules.email.constants import DELIVERY_EXPANDED, DELIVERY_FORWARDED
 from saq.util import is_subdomain
 
 def normalize_email_address(email_address):
@@ -98,3 +99,13 @@ def normalize_message_id(message_id):
     if not message_id.endswith(">"):
         message_id = f"{message_id}>"
     return message_id
+
+def describe_undelivered(reason: str, mailboxes: list[str] = ()) -> str:
+    """What a journal reason (DELIVERY_*) says about mail sent to an address that did not
+    receive its own copy, naming the mailboxes that did when they are known."""
+    shown = ", ".join(mailboxes[:3]) + (f" and {len(mailboxes) - 3} more" if len(mailboxes) > 3 else "")
+    if reason == DELIVERY_FORWARDED:
+        return f"not delivered to this address; forwarded to {shown or 'another mailbox'}"
+    if reason == DELIVERY_EXPANDED:
+        return "distribution list; its members' copies are their own deliveries" + (f": {shown}" if shown else "")
+    return "no journal record of a copy delivered to this address"

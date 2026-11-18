@@ -24,8 +24,9 @@ from datetime import datetime, timedelta, timezone
 import logging
 from typing import TYPE_CHECKING, Optional, Protocol, runtime_checkable
 
-from saq.constants import F_EMAIL_DELIVERY, parse_email_delivery
-from saq.modules.email.constants import DELIVERY_TAG_REASONS, UNDELIVERED_NOTES
+from saq.constants import F_EMAIL_DELIVERY, R_DELIVERED_TO, parse_email_delivery
+from saq.email import describe_undelivered
+from saq.modules.email.constants import DELIVERY_TAG_REASONS
 from saq.remediation.types import RemediationAction, RemediationStatus
 
 if TYPE_CHECKING:
@@ -325,6 +326,11 @@ def _gather_ace_email_remediation_events(
         for tag, reason in DELIVERY_TAG_REASONS.items()
         if obs.has_tag(tag)
     }
+    # ... and the mailboxes that got its mail, which EmailAnalyzer linked it to
+    delivered_to = {
+        obs.value: [_recipient(r.target.value) for r in obs.get_relationships_by_type(R_DELIVERED_TO)]
+        for obs in deliveries if obs.value in undelivered
+    }
 
     db = get_db()
 
@@ -377,7 +383,8 @@ def _gather_ace_email_remediation_events(
               and journal_explains(undelivered.get(rem.key), result)):
             # the journal says this address did not get its own copy, so this is not a
             # failed remediation
-            description = f"{action.capitalize()} ({UNDELIVERED_NOTES[undelivered[rem.key]]})"
+            note = describe_undelivered(undelivered[rem.key], delivered_to.get(rem.key, []))
+            description = f"{action.capitalize()} ({note})"
 
         events.append(RemediationEvent(
             source="ACE",
@@ -398,6 +405,13 @@ def _gather_ace_email_remediation_events(
         ))
 
     return events
+
+
+def _recipient(email_delivery: str) -> str:
+    try:
+        return parse_email_delivery(email_delivery)[1] or email_delivery
+    except ValueError:
+        return email_delivery
 
 
 def _gather_external_check_events(root: "RootAnalysis") -> list[RemediationEvent]:

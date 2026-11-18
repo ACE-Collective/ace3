@@ -360,8 +360,12 @@ DL = create_email_delivery("<msg-1@example.com>", "dl@example.com")
     (None, "NOT_FOUND", False),
     (DELIVERY_EXPANDED, "SUCCESS", False),
     (DELIVERY_EXPANDED, "FAILED", True),
-    (DELIVERY_FORWARDED, "ERROR", True),
+    (DELIVERY_EXPANDED, "ERROR", True),
+    (DELIVERY_FORWARDED, "FAILED", True),
     (DELIVERY_FORWARDED, "NOT_FOUND", True),
+    # an ERROR says nothing about the address, and a forwarding mailbox may keep a copy that
+    # another journal report records
+    (DELIVERY_FORWARDED, "ERROR", False),
     (DELIVERY_NOT_JOURNALED, "NOT_FOUND", True),
     # the copy may be in a real mailbox another journal report names, so a failure there stays one
     (DELIVERY_NOT_JOURNALED, "FAILED", False),

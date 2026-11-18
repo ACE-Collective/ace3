@@ -15,11 +15,11 @@ import ace_api
 from saq.analysis.root import RootAnalysis, load_root
 from saq.configuration.config import get_config, get_analysis_module_config
 from saq.configuration.schema import ACEConfig
-from saq.constants import ANALYSIS_MODULE_EMAIL_LOGGER, ANALYSIS_TYPE_MAILBOX, DB_BROCESS, DB_EMAIL_ARCHIVE, FILE_SUBDIR, DIRECTIVE_ARCHIVE, DIRECTIVE_EXTRACT_URLS, DIRECTIVE_ORIGINAL_EMAIL, DIRECTIVE_PREVIEW, DIRECTIVE_REMEDIATE, DIRECTIVE_RENAME_ANALYSIS, DIRECTIVE_RENDER, EVENT_TIME_FORMAT_JSON_TZ, F_EMAIL_ADDRESS, F_EMAIL_CC, F_EMAIL_CONVERSATION, F_EMAIL_DELIVERY, F_EMAIL_DKIM_SIGNING_DOMAIN, F_EMAIL_FIRST_HOP_FROM, F_EMAIL_FIRST_HOP_HELO, F_EMAIL_FIRST_HOP_IP, F_EMAIL_SENDER_TENANT_ID, F_EMAIL_TO, F_FILE, F_IP, F_MESSAGE_ID, F_URL, create_email_delivery
+from saq.constants import ANALYSIS_MODULE_EMAIL_LOGGER, ANALYSIS_TYPE_MAILBOX, DB_BROCESS, DB_EMAIL_ARCHIVE, FILE_SUBDIR, DIRECTIVE_ARCHIVE, DIRECTIVE_EXTRACT_URLS, DIRECTIVE_ORIGINAL_EMAIL, DIRECTIVE_PREVIEW, DIRECTIVE_REMEDIATE, DIRECTIVE_RENAME_ANALYSIS, DIRECTIVE_RENDER, EVENT_TIME_FORMAT_JSON_TZ, F_EMAIL_ADDRESS, F_EMAIL_CC, F_EMAIL_CONVERSATION, F_EMAIL_DELIVERY, F_EMAIL_DKIM_SIGNING_DOMAIN, F_EMAIL_FIRST_HOP_FROM, F_EMAIL_FIRST_HOP_HELO, F_EMAIL_FIRST_HOP_IP, F_EMAIL_SENDER_TENANT_ID, F_EMAIL_TO, F_FILE, F_IP, F_MESSAGE_ID, F_URL, R_DELIVERED_TO, create_email_delivery
 from saq.observables.type_hierarchy import get_type_hierarchy
 from saq.database.model import load_alert
 from saq.database.pool import get_db_connection
-from saq.email import normalize_email_address
+from saq.email import describe_undelivered, normalize_email_address
 from saq.engine.core import Engine
 from saq.engine.engine_configuration import EngineConfiguration
 from saq.engine.enums import EngineExecutionMode
@@ -38,7 +38,6 @@ from saq.modules.email.rfc822 import (
     TAG_OUTBOUND_EMAIL,
     TAG_OUTBOUND_EXCEPTION_EMAIL,
     TAG_SPOOFED_INTERNAL,
-    describe_delivery,
     get_dkim_signing_domains,
     get_sender_tenant_id,
     normalize_ip_header_value,
@@ -2100,7 +2099,8 @@ def test_journal_records_where_a_header_recipient_went(root_analysis, datadir, f
     assert email_analysis.delivered_mailboxes == ['manager.person@company.com']
     [(address, note)] = email_analysis.delivery_notes
     assert address == 'former.employee@company.com'
-    assert note == describe_delivery(email_analysis.deliveries[address])
+    entry = email_analysis.deliveries[address]
+    assert note == describe_undelivered(entry['reason'], entry['mailboxes'])
 
     # a header recipient the journal did not deliver to is still remediated: the message can
     # be split across journal reports, so its absence here proves nothing
@@ -2116,6 +2116,9 @@ def test_journal_records_where_a_header_recipient_went(root_analysis, datadir, f
     manager = deliveries[create_email_delivery(JOURNAL_MESSAGE_ID, 'manager.person@company.com')]
     assert former.has_tag(DELIVERY_TAGS[reason])
     assert not any(manager.has_tag(tag) for tag in DELIVERY_TAGS.values())
+    # a forward points at the mailbox that got the mail, so the timeline can name it
+    assert [r.target.value for r in former.get_relationships_by_type(R_DELIVERED_TO)] == (
+        [manager.value] if mailboxes else [])
 
 
 @pytest.mark.integration
@@ -2187,12 +2190,13 @@ def test_parse_journal_deliveries_logs_an_unknown_annotation(caplog):
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize("entry, expected", [
-    ({'reason': DELIVERY_DELIVERED, 'mailboxes': ['a@x.com']}, None),
-    ({'reason': DELIVERY_FORWARDED, 'mailboxes': ['b@x.com']}, "not delivered to this address; forwarded to b@x.com"),
-    ({'reason': DELIVERY_EXPANDED, 'mailboxes': ['a@x.com', 'b@x.com', 'c@x.com', 'd@x.com', 'e@x.com']},
-     "distribution list; delivered to a@x.com, b@x.com, c@x.com and 2 more"),
-    ({'reason': DELIVERY_NOT_JOURNALED, 'mailboxes': []}, "not delivered to this address (no journal record of it)"),
+@pytest.mark.parametrize("reason, mailboxes, expected", [
+    (DELIVERY_FORWARDED, ['b@x.com'], "not delivered to this address; forwarded to b@x.com"),
+    (DELIVERY_FORWARDED, [], "not delivered to this address; forwarded to another mailbox"),
+    (DELIVERY_EXPANDED, ['a@x.com', 'b@x.com', 'c@x.com', 'd@x.com', 'e@x.com'],
+     "distribution list; its members' copies are their own deliveries: a@x.com, b@x.com, c@x.com and 2 more"),
+    (DELIVERY_EXPANDED, [], "distribution list; its members' copies are their own deliveries"),
+    (DELIVERY_NOT_JOURNALED, [], "no journal record of a copy delivered to this address"),
 ])
-def test_describe_delivery(entry, expected):
-    assert describe_delivery(entry) == expected
+def test_describe_undelivered(reason, mailboxes, expected):
+    assert describe_undelivered(reason, mailboxes) == expected
