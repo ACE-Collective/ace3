@@ -818,7 +818,7 @@ class SVSSamplesConfig(BaseModel):
     """The YARA samples SVS captures from dispositioned alerts (docs/SVS_SAMPLES.md): every file a
     YARA rule matched on an alert whose disposition classifies tp or fp, with its match record."""
     model_config = ConfigDict(extra="forbid")
-    pool: str = Field(default="svs_samples", description="the CAS pool (cas.pools.<name>) that holds the captured files and match records. A multi-node site redefines this pool with a shared backend, or disables analysis_module_svs_yara_sample_capture")
+    pool: str = Field(default="svs_samples", description="the CAS pool (cas.pools.<name>) that holds the captured files and match records. A multi-node site redefines this pool with a shared backend, whether or not capture runs")
     max_bulk_download_files: int = Field(default=500, ge=1, description="most files one bulk sample download may contain")
     max_bulk_download_bytes: int = Field(default=1024 * 1024 * 1024, ge=1, description="most plaintext bytes one bulk sample download may contain")
     inventory_refresh_seconds: int = Field(default=300, ge=0, description="how old a YARA rule inventory capture accepts when it records a rule's content hash. Each engine process caches its own and parses only changed rule files again")

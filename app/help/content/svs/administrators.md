@@ -637,15 +637,12 @@ The catalog, the runs, coverage and the validation queue are shared state in the
 2. Run the `svs` container everywhere if you like; off the primary it logs that it stays idle.
 3. Attribution needs nothing extra: the router runs in every node's engine and reads the runs from the database.
 
-Samples need a decision before you rely on them. The default `svs_samples` pool uses the `local` backend, so the bytes stay on the node that owns the alert. On a multi-node site:
+Samples need a shared backend on a multi-node site. The default `svs_samples` pool uses the `local` backend, so the bytes stay on the node that owns the alert. On a multi-node site:
 
 - the API serves bytes only from the node that has them (409 `wrong_node` elsewhere);
 - a validation skips samples stored on another node and counts them as `wrong_node`.
 
-Do one of two things:
-
-- Redefine the pool with a backend every node can reach and `shared: true`. ACE has no S3 backend yet, so this is a `custom` backend class; a shared pool refuses a node-local backend at validation. Give `yara_qa` the same treatment.
-- Or disable capture until you have one: `analysis_module_svs_yara_sample_capture.enabled: false`.
+Redefine the pool with a backend every node can reach and `shared: true`, whether or not capture runs: a node-local pool means a single-node install, and the `cas.pool` monitor logs an ERROR for one while more than one node is live. ACE ships no object-store backend, so this is a `custom` backend class; a shared pool refuses a node-local backend at validation. Give `yara_qa` and `email_archive` the same treatment.
 
 ```yaml
 cas:
@@ -786,7 +783,7 @@ Compare each started run's `observation_ends_at` with the current time: a run pa
 - **A harmless 404 on the test page.** A test's page always requests `/api/v2/svs/tests/{guid}/settings`, which answers 404 when no observation-window override is set, the normal state. The browser console shows an error; nothing is wrong.
 - **Local log files lose the fields.** `data/logs/ace-*` keep only the message text, so `svs_run=` searches and AUDIT actors need a structured log output.
 - **nginx doesn't re-resolve its upstreams.** After an API container restarts with a new address, restart `ace-http` and `ace-http-external`.
-- **No shared CAS backend ships.** A multi-node site writes a `custom` backend for `svs_samples` and `yara_qa`, or disables capture.
+- **No shared CAS backend ships.** A multi-node site writes a `custom` backend for `svs_samples`, `yara_qa` and `email_archive`.
 - **No CLI for runs or test hosts.** Use the GUI or `/api/v2/svs/runs` and `/api/v2/svs/test-hosts`.
 - **Paging samples by a changing value can skip a row.** The Samples list pages by keyset; sorted by capture count, label or capture time while captures are being added, a page boundary can move past a row. For a complete export, sort by sha256.
 
