@@ -31,7 +31,7 @@ from saq.database.pool import get_db
 from saq.database.util.alert import set_dispositions
 from saq.database.util.locking import acquire_lock, release_lock
 from saq.database.util.user_management import add_user, delete_user
-from tests.saq.helpers import audit_actor_of, audit_actors, audit_record, insert_alert, make_simulated, person
+from tests.saq.helpers import audit_actor_of, audit_actors, audit_record, audit_records, insert_alert, make_simulated, person
 
 pytestmark = pytest.mark.integration
 
@@ -443,22 +443,25 @@ def test_bulk_tag_actions_need_tags(web_client, endpoint, message):
 
 
 @pytest.mark.parametrize("endpoint", ["events.bulk_add_tag", "events.bulk_remove_tag"])
-def test_bulk_tag_skips_an_alert_being_analyzed(web_client, endpoint):
+def test_bulk_tag_skips_an_alert_being_analyzed(web_client, caplog, endpoint):
     adding = endpoint == "events.bulk_add_tag"
     locked, unlocked = insert_alert(), insert_alert()
     if not adding:
         # a tag to remove, so that leaving the locked alert alone shows
         web_client.post(url_for("events.bulk_add_tag"), data={
             "event_id": EVENT_ID, "alert_uuids": f"{locked.uuid},{unlocked.uuid}", "tag": "bulk_tag"})
+    missing = str(uuid.uuid4())
     engine_lock = str(uuid.uuid4())
     assert acquire_lock(locked.uuid, engine_lock)
+    caplog.clear()
     try:
-        web_client.post(url_for(endpoint), data={
-            "event_id": EVENT_ID,
-            # an alert that no longer exists is skipped silently
-            "alert_uuids": f"{locked.uuid},{uuid.uuid4()},{unlocked.uuid}",
-            "tag": "bulk_tag",
-        })
+        with caplog.at_level(logging.INFO):
+            web_client.post(url_for(endpoint), data={
+                "event_id": EVENT_ID,
+                # an alert that no longer exists is skipped silently
+                "alert_uuids": f"{locked.uuid},{missing},{unlocked.uuid}",
+                "tag": "bulk_tag",
+            })
     finally:
         release_lock(locked.uuid, engine_lock)
 
@@ -466,6 +469,10 @@ def test_bulk_tag_skips_an_alert_being_analyzed(web_client, endpoint):
     # the locked alert is left as it was, and the other one changed
     assert _reloaded_root(locked).has_tag("bulk_tag") == (not adding)
     assert _reloaded_root(unlocked).has_tag("bulk_tag") == adding
+    # the AUDIT record names only the alert that changed
+    [audit] = audit_records(caplog)
+    assert audit.alert_uuids == [unlocked.uuid]
+    assert locked.uuid not in audit.getMessage() and missing not in audit.getMessage()
 
 
 def test_bulk_tag_failure_is_logged_with_its_traceback(web_client, monkeypatch, caplog):
@@ -476,13 +483,15 @@ def test_bulk_tag_failure_is_logged_with_its_traceback(web_client, monkeypatch, 
 
     monkeypatch.setattr("saq.gui.alert.GUIAlert.sync", broken_sync)
 
-    with caplog.at_level(logging.ERROR):
+    with caplog.at_level(logging.INFO):
         web_client.post(url_for("events.bulk_add_tag"), data={
             "event_id": EVENT_ID, "alert_uuids": alert.uuid, "tag": "bulk_tag"})
 
     [record] = [r for r in caplog.records if "unable to modify tags on" in r.getMessage()]
     assert record.levelno == logging.ERROR
     assert record.exc_info is not None
+    # nothing changed, so nothing is audited
+    assert audit_records(caplog) == []
     assert _flashes(web_client) == ["unable to modify some alerts: alert is currently being analyzed"]
     # the lock was released on the way out, so the next attempt can take it
     lock = str(uuid.uuid4())

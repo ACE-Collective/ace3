@@ -746,9 +746,14 @@ def create_test_orchestrator() -> AnalysisOrchestrator:
     return create_test_worker().analysis_orchestrator
 
 
+def audit_records(caplog: pytest.LogCaptureFixture, prefix: str = "") -> list[logging.LogRecord]:
+    """Every AUDIT record whose message starts with "AUDIT: <prefix>", in order."""
+    return [r for r in caplog.records if r.getMessage().startswith(f"AUDIT: {prefix}")]
+
+
 def audit_record(caplog: pytest.LogCaptureFixture, prefix: str) -> logging.LogRecord:
     """The one AUDIT record whose message starts with "AUDIT: <prefix>"."""
-    (record,) = [r for r in caplog.records if r.getMessage().startswith(f"AUDIT: {prefix}")]
+    (record,) = audit_records(caplog, prefix)
     return record
 
 
@@ -759,7 +764,7 @@ def audit_actor_of(record: logging.LogRecord) -> tuple:
 
 def audit_actors(caplog: pytest.LogCaptureFixture, prefix: str) -> list[tuple]:
     """audit_actor_of() every AUDIT record whose message starts with "AUDIT: <prefix>", in order."""
-    return [audit_actor_of(r) for r in caplog.records if r.getMessage().startswith(f"AUDIT: {prefix}")]
+    return [audit_actor_of(r) for r in audit_records(caplog, prefix)]
 
 
 def logged_with(caplog: pytest.LogCaptureFixture, level: int, **fields) -> list[logging.LogRecord]:
