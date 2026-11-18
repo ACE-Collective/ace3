@@ -589,6 +589,8 @@ R_EXTRACTED_FROM = 'extracted_from'
 R_IS_HASH_OF = 'is_hash_of'
 R_LOGGED_INTO = 'logged_into'
 R_REDIRECTED_FROM = 'redirected_from'
+# mail to this address went to that mailbox instead (a forward or a list expansion)
+R_DELIVERED_TO = 'delivered_to'
 
 VALID_RELATIONSHIP_TYPES = [
     R_RELATED_TO,
@@ -598,6 +600,7 @@ VALID_RELATIONSHIP_TYPES = [
     R_IS_HASH_OF,
     R_LOGGED_INTO,
     R_REDIRECTED_FROM,
+    R_DELIVERED_TO,
 ]
 
 TARGET_EMAIL_RECEIVED = 'email.received'

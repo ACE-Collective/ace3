@@ -36,9 +36,13 @@ from saq.database.model import (
     Observable,
     ObservableMapping,
     ObservableRemediationMapping,
+    ObservableTagIndex,
     Remediation,
+    Tag,
 )
 from saq.database.pool import get_db
+from saq.email import describe_undelivered
+from saq.modules.email.constants import DELIVERY_EXPANDED, DELIVERY_NOT_JOURNALED, DELIVERY_TAG_REASONS
 from saq.remediation.external.database import superseding_source_from_reason
 from saq.remediation.external.events import events_from_check
 from saq.remediation.external.types import CheckResult, CheckStatus
@@ -95,6 +99,14 @@ class TargetCoverage:
     pending_remediation: Optional[Remediation] = None
     """ACE's latest ``Remediation`` of this target, while it has not completed."""
 
+    undelivered: Optional[str] = None
+    """Why the journal shows this address did not receive its own copy (a ``DELIVERY_*``
+    reason), from the delivery tag EmailAnalyzer put on the observable."""
+
+    not_delivered: bool = False
+    """The journal explains ACE's finished, unsuccessful removal: there was nothing to remove
+    at this address. Such a target is left out of the alert's counts."""
+
     @property
     def remediated(self) -> bool:
         return bool(self.sources)
@@ -111,6 +123,8 @@ class TargetCoverage:
     def status_display(self) -> str:
         if self.remediated:
             return ", ".join(sorted(self.sources))
+        if self.not_delivered:
+            return describe_undelivered(self.undelivered)
         if self.failed:
             return "failed"
         if self.not_found:
@@ -132,12 +146,18 @@ class RemediationCoverage:
     targets: list[TargetCoverage] = field(default_factory=list)
 
     @property
+    def counted(self) -> list[TargetCoverage]:
+        """The targets the counts and the state cover: all but those the journal shows had
+        nothing to remove."""
+        return [t for t in self.targets if not t.not_delivered]
+
+    @property
     def total(self) -> int:
-        return len(self.targets)
+        return len(self.counted)
 
     @property
     def remediated_count(self) -> int:
-        return sum(1 for t in self.targets if t.remediated)
+        return sum(1 for t in self.counted if t.remediated)
 
     @property
     def sources(self) -> list[str]:
@@ -146,18 +166,18 @@ class RemediationCoverage:
 
     @property
     def not_found_count(self) -> int:
-        return sum(1 for t in self.targets if t.not_found and not t.remediated)
+        return sum(1 for t in self.counted if t.not_found and not t.remediated)
 
     @property
     def covered_count(self) -> int:
         """Targets nothing is left to do for: remediated, or not in the mailbox."""
-        return sum(1 for t in self.targets if t.remediated or t.not_found)
+        return sum(1 for t in self.counted if t.remediated or t.not_found)
 
     @property
     def state(self) -> CoverageState:
-        if not self.targets or not any(t.attempted for t in self.targets):
+        if not self.counted or not any(t.attempted for t in self.counted):
             return CoverageState.NONE
-        if any(t.failed and not t.remediated for t in self.targets):
+        if any(t.failed and not t.remediated for t in self.counted):
             return CoverageState.FAILED
         covered = self.covered_count
         if covered and not self.remediated_count:
@@ -167,7 +187,7 @@ class RemediationCoverage:
             return CoverageState.REMEDIATED
         if covered > 0:
             return CoverageState.PARTIAL
-        if any(t.pending for t in self.targets):
+        if any(t.pending for t in self.counted):
             return CoverageState.PENDING
         return CoverageState.UNREMEDIATED
 
@@ -236,7 +256,7 @@ class RemediationCoverage:
     def tooltip(self) -> str:
         """One line per target: ``recipient: <status>``."""
         lines = [f"{t.recipient}: {t.status_display}" for t in self.targets[:TOOLTIP_TARGET_LIMIT]]
-        remaining = self.total - TOOLTIP_TARGET_LIMIT
+        remaining = len(self.targets) - TOOLTIP_TARGET_LIMIT
         if remaining > 0:
             lines.append(f"... and {remaining} more")
         return "\n".join(lines)
@@ -301,7 +321,44 @@ def get_remediation_coverage(alerts: Iterable) -> dict[str, RemediationCoverage]
     for check in check_rows:
         checks_by_alert[check.alert_uuid].append(check)
 
-    return assemble_coverage(alert_uuids, targets_by_alert, ace_rows_by_target, checks_by_alert)
+    # 4. the delivery tags on those observables, which are scoped to the alert: the journal
+    #    of this alert's email says where that address's copy went
+    undelivered_by_alert: dict[str, dict[str, str]] = defaultdict(dict)
+    if value_by_observable_id:
+        tag_rows = (
+            db.query(ObservableTagIndex.alert_id, ObservableTagIndex.observable_id, Tag.name)
+            .join(Tag, Tag.id == ObservableTagIndex.tag_id)
+            .filter(ObservableTagIndex.alert_id.in_(alert_ids))
+            .filter(ObservableTagIndex.observable_id.in_(list(value_by_observable_id)))
+            .filter(Tag.name.in_(list(DELIVERY_TAG_REASONS)))
+            .all()
+        )
+        for alert_id, observable_id, tag_name in tag_rows:
+            reason = DELIVERY_TAG_REASONS.get(tag_name.lower())
+            if reason:
+                undelivered_by_alert[uuid_by_id[alert_id]][value_by_observable_id[observable_id]] = reason
+
+    return assemble_coverage(alert_uuids, targets_by_alert, ace_rows_by_target, checks_by_alert, undelivered_by_alert)
+
+
+def journal_explains(reason: Optional[str], result: Optional[str]) -> bool:
+    """Whether the journal's account of an address explains ACE's finished removal there
+    finding nothing to remove.
+
+    - expanded: a distribution list holds no mail, so any unsuccessful result is expected.
+    - forwarded: NOT_FOUND or FAILED (the address is not a mailbox) is expected. ERROR is not:
+      it says nothing about the address, and a mailbox that keeps a copy and forwards can have
+      its own Recipient: line in another journal report.
+    - not_journaled: only NOT_FOUND, for the same reason: another report may name the address.
+    """
+    if reason is None:
+        return False
+    explained = {RemediatorStatus.NOT_FOUND.value}
+    if reason != DELIVERY_NOT_JOURNALED:
+        explained.add(RemediatorStatus.FAILED.value)
+    if reason == DELIVERY_EXPANDED:
+        explained.add(RemediatorStatus.ERROR.value)
+    return result in explained
 
 
 def assemble_coverage(
@@ -309,13 +366,17 @@ def assemble_coverage(
     targets_by_alert: dict[str, set[str]],
     ace_rows_by_target: dict[str, list],
     checks_by_alert: dict[str, list],
+    undelivered_by_alert: Optional[dict[str, dict[str, str]]] = None,
 ) -> dict[str, RemediationCoverage]:
     """Pure aggregation over already-fetched rows. See ``get_remediation_coverage``.
 
     ``ace_rows_by_target`` lists each target's ``Remediation`` rows in ascending
     id order; only the latest row decides that target's ACE state.
     ``checks_by_alert`` lists ``ExternalRemediationCheck`` rows per alert.
+    ``undelivered_by_alert`` maps each alert's targets to the journal reason of
+    its delivery tag, for the targets that have one.
     """
+    undelivered_by_alert = undelivered_by_alert or {}
     result: dict[str, RemediationCoverage] = {}
     for alert_uuid in alert_uuids:
         targets: dict[str, TargetCoverage] = {}
@@ -329,8 +390,17 @@ def assemble_coverage(
             target = targets.setdefault(check.observable_value, TargetCoverage(target=check.observable_value))
             _apply_check(target, check)
 
+        undelivered = undelivered_by_alert.get(alert_uuid, {})
         for value, target in targets.items():
-            _apply_ace_rows(target, ace_rows_by_target.get(value, ()))
+            rows = ace_rows_by_target.get(value, ())
+            _apply_ace_rows(target, rows)
+            target.undelivered = undelivered.get(value)
+            latest = rows[-1] if rows else None
+            if (latest is not None and not target.remediated and not target.pending
+                    and latest.action == RemediationAction.REMOVE.value
+                    and journal_explains(target.undelivered, latest.result)):
+                target.not_delivered = True
+                target.failed = False
 
         # A SUPERSEDED row only says "someone else confirmed this first". When that
         # someone is visible here (the sibling's CONFIRMED row, or ACE's own row)
