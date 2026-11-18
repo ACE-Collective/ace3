@@ -1080,7 +1080,7 @@ Several agreed changes are general-purpose and ship as their own PRs:
 | `transfer_work_target` carries the work item's `analysis_mode`, **landed** | A `dispositioned` item pulled by another node ran in correlation mode first, which delayed capture. Phase 2 | FR-5 |
 | `SIMULATED` alerts are archived after `svs.simulated_days`, never deleted; `SIMULATED` in `stop_analysis_on_dispositions` | Nothing else frees test alerts, and deleting them would orphan their verdicts, labels and attributions | FR-7 |
 | Vendored ATT&CK extract (`etc/attack/`) and `bin/update-attack-catalog` | Part 4 | FR-14 |
-| `saq/storage` fixes (TLS, 403 vs missing, atomic local writes) and `saq/crypto` fixes, **landed** | Prerequisites for the CAS | F-13, F-18 to F-20 |
+| `saq/storage` fixes (atomic local writes) and `saq/crypto` fixes, **landed** | Prerequisites for the CAS | F-19, F-20 |
 | `GET /api/v2/alerts` and `alerts.updated_at` (server-side `ON UPDATE`), **landed** | No alert export API exists; the search listing pages by OFFSET | RPT-2, RPT-3, RPT-7, FR-17 |
 | `GET /api/v2/detection-points` and verdict history, **landed** | No detection-point API exists | RPT-2, RPT-4 |
 | Saved filters per screen, **landed** | Saved filters for screens other than the manage page; unique key, scratch rows, name registry and query builder all become per screen | MGT-1, FR-18 |

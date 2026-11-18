@@ -75,8 +75,7 @@ class StorageFactory:
         the class, validate the YAML `config:` sub-dict against the class's own Pydantic model,
         and hand that model to the constructor as its single argument.
 
-        This is how a deployment uses an object store (S3, Azure Blob, ...): ACE ships no
-        object-store client, so the site supplies the backend class, typically from an
+        This is how a deployment uses an object store: ACE ships no object-store client, so the site supplies the backend class, typically from an
         integration, and that vendor's specifics never land in core.
         """
         spec = None if config.storage is None else config.storage.backend

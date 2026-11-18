@@ -18,7 +18,6 @@ import uuid
 from datetime import datetime
 from types import SimpleNamespace
 from unittest.mock import Mock
-from urllib.parse import unquote, urlsplit
 
 import pytest
 
@@ -64,7 +63,6 @@ from saq.crash_report import (
 from saq.database.model import AnalysisModuleCrash
 from saq.database.pool import get_db
 from saq.storage.adapter import StorageAdapter
-from saq.storage.s3 import S3Storage
 
 
 def _raise(message="boom"):
@@ -666,33 +664,25 @@ def test_record_crash_for_an_exception_naming_an_undecodable_file(root_analysis)
     assert _read_metadata(crash_id)["exception_message"] == f"unable to parse {UNDECODABLE_NAME}"
 
 
-class _EmptyBody:
-    def stream(self, **kwargs):
-        return iter([b""])
+class _Utf8KeyStorage:
+    """A backend that, like an object store, refuses a key that is not UTF-8. Records the keys it
+    stored, in order. The local backend takes any file name, so only this reaches that rule."""
+
+    def __init__(self):
+        self.put_keys = []
+
+    def upload_file(self, local_path, bucket, remote_path):
+        remote_path.encode("utf-8")
+        self.put_keys.append(remote_path)
+        return remote_path
 
 
 @pytest.fixture
-def s3_shared_storage(monkeypatch):
-    """Replication to an S3Storage whose real boto3 client serializes each request, as it does in
-    production, and gets an empty 200 at its before-send hook instead of a network round trip.
-    Returns the keys of the objects put, in order. The local backend takes any file name, so only
-    this reaches the UTF-8 requirement S3 keys have."""
-    # boto3 is optional (saq/storage/s3.py), so only this fixture's tests need it
-    AWSResponse = pytest.importorskip("botocore.awsrequest").AWSResponse
-    monkeypatch.setattr(get_config(), "s3", None)
-    storage = S3Storage(host="s3.invalid", port=9000, access_key="key", secret_key="secret")
-    put_keys = []
-
-    def answer(request, **kwargs):
-        bucket, _, key = unquote(urlsplit(request.url).path).lstrip("/").partition("/")
-        if request.method == "PUT":
-            put_keys.append(key)
-        return AWSResponse(request.url, 200, {}, _EmptyBody())
-
-    storage.client.meta.events.register("before-send", answer)
+def utf8_key_storage(monkeypatch):
+    storage = _Utf8KeyStorage()
     monkeypatch.setattr("saq.storage.factory.STORAGE_SYSTEM", StorageAdapter(storage))
     monkeypatch.setattr(get_config().crash_reporting, "replicate", True)
-    return put_keys
+    return storage.put_keys
 
 
 def _crash_on_undecodable_file(root_analysis):
@@ -713,15 +703,15 @@ def _crash_on_undecodable_file(root_analysis):
 
 
 @pytest.mark.unit
-def test_replicate_report_to_s3_with_an_undecodable_file_name(root_analysis, s3_shared_storage, unlogged):
-    """The report keeps the crashed file under its own name, which need not be UTF-8. An S3 key
-    must be: botocore refused to send the key, and the report never replicated."""
+def test_replicate_report_with_an_undecodable_file_name_to_a_utf8_keyed_store(root_analysis, utf8_key_storage, unlogged):
+    """The report keeps the crashed file under its own name, which need not be UTF-8. An object
+    store key generally must be, and without escaping the report never replicated."""
     crash_id = _crash_on_undecodable_file(root_analysis)
     assert os.path.exists(os.path.join(find_crash_report_dir(crash_id), FILE_DIR, UNDECODABLE_NAME))
 
     assert replicate_report(find_crash_report_dir(crash_id), crash_id) is True
-    assert f"{crash_id}/{FILE_DIR}/{ESCAPED_NAME}" in s3_shared_storage
-    assert s3_shared_storage[-1] == f"{crash_id}/{METADATA_FILE}"
+    assert f"{crash_id}/{FILE_DIR}/{ESCAPED_NAME}" in utf8_key_storage
+    assert utf8_key_storage[-1] == f"{crash_id}/{METADATA_FILE}"
 
 
 @pytest.mark.unit
