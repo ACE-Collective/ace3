@@ -18,6 +18,7 @@ from subprocess import PIPE, Popen, TimeoutExpired
 import uuid
 from celery import Celery
 from celery.signals import worker_ready, worker_shutting_down
+from kombu.utils.url import maybe_sanitize_url
 import shutil
 from yaml import load, SafeLoader
 import magic
@@ -635,6 +636,9 @@ app = Celery(
     broker=f"pyamqp://{rabbitmq_user}:{rabbitmq_password}@{rabbitmq_host}:{rabbitmq_port}//")
 
 app.conf.broker_transport_options = {"global_keyprefix": "phishkit"}
+# once per process: the clients and the manager each say where they send, so a mismatch shows in the logs
+logger.info("celery broker %s", maybe_sanitize_url(app.conf.broker_url))
+
 
 # Celery's task time limits are the safety net only — per-attempt duration is
 # enforced by subprocess.communicate(timeout=scanner_timeout) inside _run_scanner.

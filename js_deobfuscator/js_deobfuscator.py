@@ -20,6 +20,7 @@ import uuid
 from subprocess import PIPE, Popen, TimeoutExpired
 
 from celery import Celery
+from kombu.utils.url import maybe_sanitize_url
 from yaml import load, SafeLoader
 
 logger = logging.getLogger(__name__)
@@ -102,6 +103,9 @@ app = Celery(
 )
 
 app.conf.broker_transport_options = {"global_keyprefix": "js_deobfuscator"}
+# once per process: the clients and the manager each say where they send, so a mismatch shows in the logs
+logger.info("celery broker %s", maybe_sanitize_url(app.conf.broker_url))
+
 
 # isolate this app's queue from phishkit — both managers share the same
 # rabbitmq broker, and if both listen on the default "celery" queue each

@@ -53,6 +53,24 @@ def test_without_the_environment_a_manager_uses_the_stacks_rabbitmq(module):
     assert _without_password(_broker_url(module, {})) == "pyamqp://ace3@rabbitmq:5672//"
 
 
+@pytest.mark.unit
+@pytest.mark.parametrize("module", MANAGER_MODULES)
+def test_a_manager_logs_the_broker_it_uses_without_the_password(module):
+    # ACE's clients import the module on first use, so every ACE process and each manager says where it sends
+    env = {key: value for key, value in os.environ.items() if key not in RABBITMQ_VARIABLES}
+    env.update({"ACE_RABBITMQ_HOST": "mq.example.com", "ACE_RABBITMQ_PORT": "5671", "ACE_RABBITMQ_USER": "celery-user"})
+    code = ("import logging\nlogging.basicConfig(level=logging.INFO, format='%(levelname)s %(message)s')\n"
+            f"import {module} as manager\nprint(manager.rabbitmq_password)\n")
+    result = subprocess.run([sys.executable, "-c", code], cwd=get_base_dir(), env=env, capture_output=True,
+                            text=True, timeout=120)
+    assert result.returncode == 0, result.stderr
+    password = result.stdout.strip()
+
+    (record,) = [line for line in result.stderr.splitlines() if "celery broker" in line]
+    assert record.startswith("INFO ") and "pyamqp://celery-user:**@mq.example.com:5671//" in record
+    assert not password or password not in record
+
+
 def _compose() -> dict:
     with open(os.path.join(get_base_dir(), "docker-compose.yml")) as fp:
         return yaml.safe_load(fp)
