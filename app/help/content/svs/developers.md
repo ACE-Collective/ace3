@@ -463,7 +463,7 @@ To update a guide:
 To refresh screenshots:
 
 1. Seed a dev stack with the demo story: `bin/training/svs_demo_seed.py setup` creates the training rule repository and prints a config overlay to merge into `etc/saq.yaml`; restart the services it names, then run `bin/training/svs_demo_seed.py seed` (about 20 minutes; `--resume` skips the phases already done). It refuses to run unless the instance type is DEV, and records the ids it created in `data/svs-training/manifest.json`.
-2. Serve the GUI from the checkout: `ace gui start --port 5050 --api-v2` in the background.
+2. Serve the GUI from the checkout: `ace gui start --port 5050 --api-v2` in the background. The script drives the browser in the `browser-server` compose service, which runs only with the `browser` profile (`docs/GUI_TESTING.md`).
 3. Run `bin/training/svs_guide_screenshots.py` for every shot, or name the shots to retake (`--list` prints them). Each `Shot` names a page, a persona, an element to crop to, steps to take first and text the page must show; a page that logs a console error or an unexpected HTTP error fails its shot instead of being saved.
 
 ## Logging

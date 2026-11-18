@@ -2,7 +2,8 @@
 """Take the screenshots the SVS training guides use (app/help/content/svs/images/).
 
 Run it against a GUI served from the checkout, so the screenshots show the code being documented,
-after bin/training/svs_demo_seed.py has seeded the demo data:
+after bin/training/svs_demo_seed.py has seeded the demo data, with the browser-server compose
+service running (docs/GUI_TESTING.md):
 
     ace gui start --port 5050 --api-v2 &
     bin/training/svs_guide_screenshots.py                 # every shot
@@ -28,6 +29,8 @@ SAQ_HOME = Path(os.environ.get("SAQ_HOME", "/opt/ace"))
 MANIFEST_PATH = SAQ_HOME / "data" / "svs-training" / "manifest.json"
 IMAGES = SAQ_HOME / "app" / "help" / "content" / "svs" / "images"
 GUI = os.environ.get("SVS_TRAINING_GUI", "https://localhost:5050/ace")
+# the browser-server compose service (docs/GUI_TESTING.md)
+BROWSER_SERVER = "ws://localhost:3000/"
 VIEWPORT = {"width": 1440, "height": 900}
 # a full-page shot grows the viewport to the page's content, up to this
 MAX_FULL_HEIGHT = 2600
@@ -169,7 +172,7 @@ def manifest_values() -> dict:
 
 class Browser:
     def __init__(self, playwright, password: str):
-        self.browser = playwright.chromium.launch()
+        self.browser = playwright.chromium.connect(BROWSER_SERVER)
         self.password = password
         self.pages: dict[str, Page] = {}
         self.problems: list[str] = []
