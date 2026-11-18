@@ -82,14 +82,13 @@ def load_configuration(config_paths: list[str] | None = None):
 
     _load_optional(db_auto_yaml)
     # the dev overlay is never part of a test run
-    if get_global_runtime_settings().unit_testing:
-        pass
-    elif "SAQ_SKIP_LOCAL_SAQ_YAML" in os.environ:
-        # a container with a curated SAQ_CONFIG_PATHS overlay (the AI API) must not have the
-        # local dev overlay -- which may hold live credentials -- merged over it
-        sys.stderr.write(f"NOTICE: skipping {local_yaml} because SAQ_SKIP_LOCAL_SAQ_YAML is set\n")
-    else:
-        _load_optional(local_yaml)
+    if not get_global_runtime_settings().unit_testing:
+        if "SAQ_SKIP_LOCAL_SAQ_YAML" in os.environ:
+            # a container with a curated SAQ_CONFIG_PATHS overlay (the AI API) must not have the
+            # local dev overlay -- which may hold live credentials -- merged over it
+            sys.stderr.write(f"NOTICE: skipping {local_yaml} because SAQ_SKIP_LOCAL_SAQ_YAML is set\n")
+        else:
+            _load_optional(local_yaml)
 
     config.apply_path_references()
     return config

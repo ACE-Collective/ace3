@@ -10,7 +10,6 @@ from saq.storage.adapter import StorageAdapter
 from saq.storage.interface import StorageBackendConfig, StorageInterface
 from saq.storage.local import LocalStorage
 from saq.storage.error import StorageError
-from saq.storage.types import StorageTargetType
 
 __all__ = [
     'StorageFactory',
@@ -20,5 +19,4 @@ __all__ = [
     'StorageBackendConfig',
     'LocalStorage',
     'StorageError',
-    'StorageTargetType',
 ]

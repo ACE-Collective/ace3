@@ -2,7 +2,7 @@
 
 The BlobStore interface abstracts bulk-content storage from the cache layer so
 the local filesystem backend and a pluggable remote backend (a custom class
-configured through ``analysis_cache.blob_store``) share the same code paths. See docs/design/analysis_diff_tracking.md §A7 for the full
+configured through ``analysis_cache.blob_store``) share the same code paths. See docs/ANALYSIS_CACHING.md §A7 for the full
 design.
 
 Two kinds of things live in the blob store:
