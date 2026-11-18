@@ -51,6 +51,7 @@ from saq.modules.email.constants import (
     DELIVERY_EXPANDED,
     DELIVERY_FORWARDED,
     DELIVERY_NOT_JOURNALED,
+    DELIVERY_TAGS,
     KEY_COMPAUTH_REASON,
     KEY_COMPAUTH_RESULT,
     KEY_DMARC_RESULT,
@@ -2109,6 +2110,12 @@ def test_journal_records_where_a_header_recipient_went(root_analysis, datadir, f
         create_email_delivery(JOURNAL_MESSAGE_ID, 'former.employee@company.com'),
     }
     assert all(o.has_directive(DIRECTIVE_REMEDIATE) for o in deliveries.values())
+
+    # the tag that tells coverage and the timeline a removal there may find nothing
+    former = deliveries[create_email_delivery(JOURNAL_MESSAGE_ID, 'former.employee@company.com')]
+    manager = deliveries[create_email_delivery(JOURNAL_MESSAGE_ID, 'manager.person@company.com')]
+    assert former.has_tag(DELIVERY_TAGS[reason])
+    assert not any(manager.has_tag(tag) for tag in DELIVERY_TAGS.values())
 
 
 @pytest.mark.integration

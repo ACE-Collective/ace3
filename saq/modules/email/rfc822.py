@@ -70,6 +70,7 @@ from saq.modules.email.constants import (
     DELIVERY_EXPANDED,
     DELIVERY_FORWARDED,
     DELIVERY_NOT_JOURNALED,
+    DELIVERY_TAGS,
     KEY_AUTHENTICATION_FAILED,
     KEY_CC,
     KEY_COMPAUTH_REASON,
@@ -1407,12 +1408,17 @@ class EmailAnalyzer(AnalysisModule):
 
             # a journal report records where each copy went; header recipients are only
             # where the sender addressed it
+            deliveries = {}
             if o365_meta_part:
-                email_details[KEY_DELIVERIES] = parse_journal_deliveries(o365_meta_recipients, delivery_recipients)
+                deliveries = email_details[KEY_DELIVERIES] = parse_journal_deliveries(o365_meta_recipients, delivery_recipients)
 
             for recipient in delivery_recipients:
                 email_delivery_observable = analysis.add_observable_by_spec(F_EMAIL_DELIVERY,
                                             create_email_delivery(email_details[KEY_MESSAGE_ID], recipient))
+                # still remediated, but a removal that finds nothing there is not a failure
+                tag = DELIVERY_TAGS.get(deliveries.get(recipient, {}).get("reason"))
+                if email_delivery_observable and tag:
+                    email_delivery_observable.add_tag(tag)
                 if email_delivery_observable and should_remediate:
                     logging.info(f"copying directive {DIRECTIVE_REMEDIATE} from message-id "
                                  f"{message_id_observable.value} to {email_delivery_observable.value}")

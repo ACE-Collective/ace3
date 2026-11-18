@@ -13,6 +13,7 @@ from saq.database.pool import get_db
 from saq.database.util.alert import ALERT
 from saq.configuration.config import get_config
 from saq.observables.generator import create_observable
+from saq.modules.email.constants import DELIVERY_EXPANDED, DELIVERY_FORWARDED, DELIVERY_NOT_JOURNALED
 from saq.remediation.coverage import (
     ACE_SOURCE,
     TOOLTIP_TARGET_LIMIT,
@@ -21,6 +22,7 @@ from saq.remediation.coverage import (
     TargetCoverage,
     assemble_coverage,
     get_remediation_coverage,
+    journal_explains,
 )
 from saq.remediation.external.database import ace_supersede_reason, probe_supersede_reason
 from saq.remediation.external.types import CheckResult, CheckStatus
@@ -58,12 +60,13 @@ def _check(value, status="COMPLETED", result=None, events=None, probe_name="fake
     )
 
 
-def _assemble(targets=(ALICE, BOB), ace=None, checks=None):
+def _assemble(targets=(ALICE, BOB), ace=None, checks=None, undelivered=None):
     return assemble_coverage(
         [ALERT_UUID],
         {ALERT_UUID: set(targets)},
         ace or {},
         {ALERT_UUID: checks or []},
+        {ALERT_UUID: undelivered or {}},
     )[ALERT_UUID]
 
 
@@ -345,3 +348,84 @@ def test_get_remediation_coverage_reads_all_three_sources():
     assert coverage[alert.uuid].label == "remediated 2/2 · ACE, Fake Source"
     assert coverage[other_alert.uuid].state is CoverageState.NONE
     assert get_remediation_coverage([]) == {}
+
+
+# --- #1199: an address the journal shows did not receive its own copy ---
+
+DL = create_email_delivery("<msg-1@example.com>", "dl@example.com")
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("reason, result, explains", [
+    (None, "NOT_FOUND", False),
+    (DELIVERY_EXPANDED, "SUCCESS", False),
+    (DELIVERY_EXPANDED, "FAILED", True),
+    (DELIVERY_FORWARDED, "ERROR", True),
+    (DELIVERY_FORWARDED, "NOT_FOUND", True),
+    (DELIVERY_NOT_JOURNALED, "NOT_FOUND", True),
+    # the copy may be in a real mailbox another journal report names, so a failure there stays one
+    (DELIVERY_NOT_JOURNALED, "FAILED", False),
+    (DELIVERY_NOT_JOURNALED, "ERROR", False),
+])
+def test_journal_explains(reason, result, explains):
+    assert journal_explains(reason, result) is explains
+
+
+@pytest.mark.unit
+def test_failed_removal_of_a_distribution_list_is_left_out_of_the_count():
+    coverage = _assemble(
+        targets=(ALICE, DL),
+        ace={ALICE: [_ace_row()], DL: [_ace_row(result="FAILED")]},
+        undelivered={DL: DELIVERY_EXPANDED},
+    )
+
+    assert coverage.state is CoverageState.REMEDIATED
+    assert coverage.status_label == "remediated 1/1"
+    assert "dl@example.com: distribution list; its members' copies are their own deliveries" in coverage.tooltip
+
+
+@pytest.mark.unit
+def test_failed_removal_of_an_unjournaled_address_is_still_a_failure():
+    coverage = _assemble(
+        targets=(ALICE, DL),
+        ace={ALICE: [_ace_row()], DL: [_ace_row(result="FAILED")]},
+        undelivered={DL: DELIVERY_NOT_JOURNALED},
+    )
+
+    assert coverage.state is CoverageState.FAILED
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("row", [_ace_row(status="IN_PROGRESS", result=None), _ace_row(result="SUCCESS")])
+def test_an_undelivered_address_still_counts_while_pending_or_once_remediated(row):
+    coverage = _assemble(targets=(ALICE, DL), ace={ALICE: [_ace_row()], DL: [row]}, undelivered={DL: DELIVERY_FORWARDED})
+
+    assert coverage.total == 2
+
+
+@pytest.mark.integration
+def test_get_remediation_coverage_reads_the_delivery_tags():
+    root = create_root_analysis(uuid=str(uuid.uuid4()))
+    root.initialize_storage()
+    root.add_observable_by_spec(F_EMAIL_DELIVERY, ALICE)
+    root.add_observable_by_spec(F_EMAIL_DELIVERY, DL).add_tag("delivery_expanded")
+    root.save()
+    alert = ALERT(root)
+
+    db = get_db()
+    for key, result in ((ALICE, "SUCCESS"), (DL, "FAILED")):
+        remediation = Remediation(type=F_EMAIL_DELIVERY, name="email_remediator", key=key, action="remove",
+                                  status="COMPLETED", result=result,
+                                  user_id=get_config().global_settings.automation_user_id)
+        db.add(remediation)
+        db.flush()
+        db.add(ObservableRemediationMapping(
+            observable_id=upsert_observable(create_observable(F_EMAIL_DELIVERY, key)),
+            remediation_id=remediation.id,
+        ))
+    db.commit()
+
+    coverage = get_remediation_coverage([alert])[alert.uuid]
+
+    assert coverage.state is CoverageState.REMEDIATED
+    assert coverage.label == "remediated 1/1 · ACE"

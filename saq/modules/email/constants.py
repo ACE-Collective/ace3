@@ -52,3 +52,19 @@ DELIVERY_DELIVERED = 'delivered'          # the address has its own Recipient: l
 DELIVERY_FORWARDED = 'forwarded'          # a Forwarded: annotation links it to the mailbox that received it
 DELIVERY_EXPANDED = 'expanded'            # an Expanded: annotation names it as a distribution list
 DELIVERY_NOT_JOURNALED = 'not_journaled'  # in the headers, but no Recipient: line accounts for it
+
+# the tag EmailAnalyzer puts on an email_delivery the journal did not deliver to under its own
+# address; the observable tag index stores it per alert, so coverage reads it from the database
+DELIVERY_TAGS = {
+    DELIVERY_FORWARDED: 'delivery_forwarded',
+    DELIVERY_EXPANDED: 'delivery_expanded',
+    DELIVERY_NOT_JOURNALED: 'delivery_not_journaled',
+}
+DELIVERY_TAG_REASONS = {tag: reason for reason, tag in DELIVERY_TAGS.items()}
+
+# what a removal at such an address means, shown in the remediation timeline and coverage
+UNDELIVERED_NOTES = {
+    DELIVERY_FORWARDED: 'not delivered to this address; forwarded to another mailbox',
+    DELIVERY_EXPANDED: "distribution list; its members' copies are their own deliveries",
+    DELIVERY_NOT_JOURNALED: 'not delivered to this address (no journal record of it)',
+}
