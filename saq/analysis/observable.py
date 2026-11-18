@@ -681,9 +681,6 @@ class Observable(BaseNode):
             analysis.file_manager = self.file_manager
             analysis.json = self.analysis[module_path]
 
-            # set up the EVENT_GLOBAL_* events
-            #analysis.root.event_bus.setup_analysis_event_propagation(analysis)
-
             self.analysis[module_path] = analysis # replace the JSON dict with the actual object
 
     def clear_analysis(self):
