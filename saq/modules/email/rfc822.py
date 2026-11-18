@@ -66,11 +66,16 @@ from saq.environment import get_data_dir, get_local_timezone
 from saq.modules import AnalysisModule
 from saq.modules.config import AnalysisModuleConfig
 from saq.modules.email.constants import (
+    DELIVERY_DELIVERED,
+    DELIVERY_EXPANDED,
+    DELIVERY_FORWARDED,
+    DELIVERY_NOT_JOURNALED,
     KEY_AUTHENTICATION_FAILED,
     KEY_CC,
     KEY_COMPAUTH_REASON,
     KEY_COMPAUTH_RESULT,
     KEY_DECODED_SUBJECT,
+    KEY_DELIVERIES,
     KEY_DKIM_RESULT,
     KEY_DKIM_SIGNING_DOMAINS,
     KEY_DMARC_RESULT,
@@ -570,6 +575,64 @@ def get_address_list(email_obj, header_name):
     return [x[1] for x in addresses]
 
 
+JOURNAL_ANNOTATIONS = {
+    "forwarded": DELIVERY_FORWARDED,
+    "expanded": DELIVERY_EXPANDED,
+}
+
+
+def parse_journal_deliveries(recipient_lines: list[str], header_addresses: list[str]) -> dict[str, dict]:
+    """Where each address went, from the Recipient: lines of an Office 365 journal report.
+
+    A line names the mailbox that received the message, then optional annotations:
+    "Recipient: b@x, Forwarded: a@x" (mail to a was forwarded to b) or
+    "Recipient: b@x, Expanded: dl@x" (b got it as a member of the list dl).
+    Returns {address: {"reason": ..., "mailboxes": [...]}} for every address a line names
+    and every header address. A header address no line accounts for is not_journaled:
+    one message can be split across several journal reports, so that does not prove it
+    received nothing.
+    """
+    parsed = []
+    for line in recipient_lines:
+        mailbox_part, *annotations = line.split(",")
+        mailbox = normalize_email_address(mailbox_part)
+        if mailbox:
+            parsed.append((mailbox, annotations))
+
+    deliveries = {mailbox: {"reason": DELIVERY_DELIVERED, "mailboxes": [mailbox]} for mailbox, _ in parsed}
+    for mailbox, annotations in parsed:
+        for annotation in annotations:
+            name, _, value = annotation.partition(":")
+            reason = JOURNAL_ANNOTATIONS.get(name.strip().lower())
+            address = normalize_email_address(value)
+            if reason is None or not address:
+                logging.info(f"unrecognized journal recipient annotation [{annotation.strip()}] on {mailbox}")
+                continue
+            entry = deliveries.setdefault(address, {"reason": reason, "mailboxes": []})
+            if entry["reason"] != DELIVERY_DELIVERED and mailbox not in entry["mailboxes"]:
+                entry["mailboxes"].append(mailbox)
+
+    for address in header_addresses:
+        deliveries.setdefault(address, {"reason": DELIVERY_NOT_JOURNALED, "mailboxes": []})
+
+    return deliveries
+
+
+def describe_delivery(entry: dict) -> Optional[str]:
+    """What happened to mail sent to an address the journal did not deliver to under that
+    address, or None when it did."""
+    mailboxes = entry.get("mailboxes") or []
+    shown = ", ".join(mailboxes[:3]) + (f" and {len(mailboxes) - 3} more" if len(mailboxes) > 3 else "")
+    reason = entry.get("reason")
+    if reason == DELIVERY_DELIVERED:
+        return None
+    if reason == DELIVERY_FORWARDED and shown:
+        return f"not delivered to this address; forwarded to {shown}"
+    if reason == DELIVERY_EXPANDED and shown:
+        return f"distribution list; delivered to {shown}"
+    return "not delivered to this address (no journal record of it)"
+
+
 # the email body parts are the unnamed text parts EmailAnalyzer extracts
 HTML_BODY_PART_MARKER = ".unknown_text_html"
 BODY_PART_MARKERS = (HTML_BODY_PART_MARKER, ".unknown_text_plain")
@@ -647,6 +710,26 @@ class EmailAnalysis(Analysis):
     @env_rcpt_to.setter
     def env_rcpt_to(self, value):
         self.email[KEY_ENV_RCPT_TO] = value
+
+    @property
+    def deliveries(self) -> dict[str, dict]:
+        """Where each recipient's copy went, from a journal report; empty when there was none."""
+        if self.email and KEY_DELIVERIES in self.email:
+            return self.email[KEY_DELIVERIES]
+
+        return {}
+
+    @property
+    def delivered_mailboxes(self) -> list[str]:
+        """The mailboxes the journal shows the message was delivered to."""
+        return [address for address, entry in self.deliveries.items() if entry["reason"] == DELIVERY_DELIVERED]
+
+    @property
+    def delivery_notes(self) -> list[tuple[str, str]]:
+        """(address, what happened to its mail) for each recipient the journal did not deliver to
+        under that address."""
+        return [(address, note) for address, entry in self.deliveries.items()
+                if (note := describe_delivery(entry)) is not None]
 
     @property
     def mail_from(self):
@@ -1056,7 +1139,7 @@ class EmailAnalyzer(AnalysisModule):
 
         o365_meta_part = None
         o365_meta_re = re.compile(r'^Sender: (.+?)^Subject: (.+?)^Message-Id: (.+?)^Recipient: ', re.M | re.DOTALL)
-        o365_meta_recipient_re = re.compile(r'^Recipient: ([^,\n]+)', re.M)
+        o365_meta_recipient_re = re.compile(r'^Recipient: (.+)$', re.M)
         o365_meta_sender = None
         o365_meta_subject = None
         o365_meta_message_id = None
@@ -1168,7 +1251,8 @@ class EmailAnalyzer(AnalysisModule):
             if o365_meta_recipients:
                 env_rcpt_to = []
                 for recipient in o365_meta_recipients:
-                    _, address = email.utils.parseaddr(recipient)
+                    # the mailbox comes before any ", Forwarded: ..." or ", Expanded: ..." annotation
+                    _, address = email.utils.parseaddr(recipient.split(",")[0])
                     if address:
                         env_rcpt_to.append(address)
 
@@ -1320,6 +1404,11 @@ class EmailAnalyzer(AnalysisModule):
             should_remediate = message_id_observable is not None and any(
                 _.value == message_id_observable.value and _.has_directive(DIRECTIVE_REMEDIATE)
                 for _ in self.get_root().get_observables_by_type(F_MESSAGE_ID))
+
+            # a journal report records where each copy went; header recipients are only
+            # where the sender addressed it
+            if o365_meta_part:
+                email_details[KEY_DELIVERIES] = parse_journal_deliveries(o365_meta_recipients, delivery_recipients)
 
             for recipient in delivery_recipients:
                 email_delivery_observable = analysis.add_observable_by_spec(F_EMAIL_DELIVERY,

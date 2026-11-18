@@ -10,6 +10,8 @@ from saq.configuration.config import get_config
 from saq.constants import F_EMAIL_DELIVERY, F_TEST
 from saq.database.model import ExternalRemediationCheck, Remediation, RemediationHistory
 from saq.database.pool import get_db
+from saq.modules.email.constants import KEY_DELIVERIES, KEY_EMAIL, KEY_MESSAGE_ID
+from saq.modules.email.rfc822 import EmailAnalysis
 from saq.remediation import timeline
 from saq.remediation.coverage import assemble_coverage
 from saq.remediation.timeline import (
@@ -694,3 +696,79 @@ class TestPendingRows:
         events = gather_remediation_events(root, fallback_event_time=_utc(_T0), coverage=coverage)
 
         assert [(e.source, e.pending) for e in events] == [("ACE", False), ("Alpha", True)]
+
+
+def _journaled_email(deliveries: dict, message_id: str = "<m1@x>"):
+    analysis = EmailAnalysis()
+    analysis.details[KEY_EMAIL] = {KEY_MESSAGE_ID: message_id, KEY_DELIVERIES: deliveries}
+    return analysis
+
+
+@pytest.mark.integration
+class TestJournalAndResolvedTargets:
+    """#1199: a removal that found nothing at an address the journal did not deliver to is not
+    a failed remediation, and a remediator that acted on another target says which."""
+
+    def test_not_found_on_an_unjournaled_address_says_not_delivered(self):
+        _remediation_history(_remediation("<m1@x>|former@x"), datetime(2026, 5, 6, 12, 30, tzinfo=timezone.utc),
+                             result="NOT_FOUND")
+        _remediation_history(_remediation("<m1@x>|fwd@x"), datetime(2026, 5, 6, 12, 31, tzinfo=timezone.utc),
+                             result="NOT_FOUND")
+        _remediation_history(_remediation("<m1@x>|manager@x"), datetime(2026, 5, 6, 12, 32, tzinfo=timezone.utc),
+                             result="NOT_FOUND")
+        email = _journaled_email({
+            "manager@x": {"reason": "delivered", "mailboxes": ["manager@x"]},
+            "former@x": {"reason": "not_journaled", "mailboxes": []},
+            "fwd@x": {"reason": "forwarded", "mailboxes": ["manager@x"]},
+        })
+        root = _root(analyses=[email], email_deliveries=["<m1@x>|former@x", "<m1@x>|fwd@x", "<m1@x>|manager@x"])
+
+        events = {e.target: e.description for e in gather_remediation_events(root)}
+
+        assert events == {
+            "former@x": "Remove (not delivered to this address (no journal record of it))",
+            "fwd@x": "Remove (not delivered to this address; forwarded to manager@x)",
+            # the journal delivered it here, so finding nothing is a real result
+            "manager@x": "Remove (Not_found)",
+        }
+
+    def test_journal_is_not_read_without_a_not_found_row(self):
+        _remediation_history(_remediation("<m1@x>|former@x"), datetime(2026, 5, 6, 12, 30, tzinfo=timezone.utc))
+        root = _root(analyses=[_journaled_email({"former@x": {"reason": "not_journaled", "mailboxes": []}})],
+                     email_deliveries=["<m1@x>|former@x"])
+
+        with patch("saq.remediation.timeline._journal_deliveries") as journal:
+            [event] = gather_remediation_events(root)
+
+        journal.assert_not_called()
+        assert event.description == "Remove (Success)"
+
+    def test_resolved_target_is_shown_with_the_remediator_message(self):
+        rem = _remediation("<m1@x>|former@x")
+        history = _remediation_history(rem, datetime(2026, 5, 6, 12, 30, tzinfo=timezone.utc), result="NOT_FOUND",
+                                       message="former@x is an alias of manager@x, which has its own removal")
+        history.resolved_target = "manager@x"
+        get_db().commit()
+        root = _root(analyses=[_journaled_email({"former@x": {"reason": "not_journaled", "mailboxes": []}})],
+                     email_deliveries=["<m1@x>|former@x"])
+
+        [event] = gather_remediation_events(root)
+
+        assert event.target == "former@x → manager@x"
+        # what the remediator did wins over the journal's guess
+        assert event.description == "Remove (Not_found) via manager@x"
+        assert event.metadata["resolved_target"] == "manager@x"
+        assert event.metadata["message"] == "former@x is an alias of manager@x, which has its own removal"
+
+    def test_a_broken_email_analysis_is_logged_and_skipped(self, caplog):
+        _remediation_history(_remediation("<m1@x>|former@x"), datetime(2026, 5, 6, 12, 30, tzinfo=timezone.utc),
+                             result="NOT_FOUND")
+        root = _root(analyses=[_journaled_email({"former@x": {"reason": "not_journaled", "mailboxes": []}})],
+                     email_deliveries=["<m1@x>|former@x"])
+
+        with patch.object(EmailAnalysis, "load_details", side_effect=OSError("gone")):
+            [event] = gather_remediation_events(root)
+
+        assert event.description == "Remove (Not_found)"
+        assert "failed to read journal deliveries" in caplog.text
+        assert "OSError: gone" in caplog.text

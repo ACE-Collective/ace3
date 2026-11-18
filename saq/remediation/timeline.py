@@ -24,7 +24,8 @@ from datetime import datetime, timedelta, timezone
 import logging
 from typing import TYPE_CHECKING, Optional, Protocol, runtime_checkable
 
-from saq.constants import F_EMAIL_DELIVERY, parse_email_delivery
+from saq.constants import F_EMAIL_DELIVERY, create_email_delivery, parse_email_delivery
+from saq.remediation.types import RemediatorStatus
 
 if TYPE_CHECKING:
     from saq.analysis.root import RootAnalysis
@@ -333,6 +334,12 @@ def _gather_ace_email_remediation_events(
         .all()
     )
 
+    # the journal's record of where each copy went is only needed to explain a removal that
+    # found nothing, so the email details are read from disk only for an alert that has one
+    deliveries = {}
+    if any(h.result == RemediatorStatus.NOT_FOUND.value for h in history_rows):
+        deliveries = _journal_deliveries(root)
+
     events: list[RemediationEvent] = []
     for h in history_rows:
         rem = rem_by_id.get(h.remediation_id)
@@ -355,6 +362,17 @@ def _gather_ace_email_remediation_events(
         except (ValueError, TypeError, AttributeError):
             pass
 
+        resolved_target = h.resolved_target
+        if resolved_target and resolved_target != target:
+            # the remediator acted on another target than the key named, e.g. the mailbox that
+            # owns an alias address; its message (the row's tooltip) says why
+            description = f"{description} via {resolved_target}"
+            target = f"{target} \u2192 {resolved_target}" if target else resolved_target
+        elif result == RemediatorStatus.NOT_FOUND.value and deliveries.get(rem.key):
+            # a removal that found nothing where the journal says nothing was delivered is
+            # not a failed remediation
+            description = f"{action.capitalize()} ({deliveries[rem.key]})"
+
         events.append(RemediationEvent(
             source="ACE",
             event_type=f"ace_{action}".lower() if action else "ace",
@@ -369,10 +387,32 @@ def _gather_ace_email_remediation_events(
                 "status": h.status,
                 "result": h.result,
                 "message": h.message,
+                "resolved_target": resolved_target,
             },
         ))
 
     return events
+
+
+def _journal_deliveries(root: "RootAnalysis") -> dict[str, str]:
+    """email_delivery key -> what happened to mail sent to that address, for each address of a
+    journaled email in the alert that the journal did not deliver to under that address."""
+    # rfc822 loads the whole email analysis stack; only an alert page with a removal that
+    # found nothing needs it
+    from saq.modules.email.rfc822 import EmailAnalysis
+
+    result: dict[str, str] = {}
+    for analysis in root.get_analysis_by_type(EmailAnalysis):
+        try:
+            analysis.load_details()
+            message_id = analysis.message_id
+            if not message_id:
+                continue
+            for address, note in analysis.delivery_notes:
+                result[create_email_delivery(message_id, address)] = note
+        except Exception:
+            logging.exception(f"failed to read journal deliveries of {analysis} in {root.uuid}")
+    return result
 
 
 def _gather_external_check_events(root: "RootAnalysis") -> list[RemediationEvent]:

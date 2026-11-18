@@ -38,13 +38,19 @@ from saq.modules.email.rfc822 import (
     TAG_OUTBOUND_EMAIL,
     TAG_OUTBOUND_EXCEPTION_EMAIL,
     TAG_SPOOFED_INTERNAL,
+    describe_delivery,
     get_dkim_signing_domains,
     get_sender_tenant_id,
     normalize_ip_header_value,
     parse_email_authentication,
+    parse_journal_deliveries,
     resolve_first_hop,
 )
 from saq.modules.email.constants import (
+    DELIVERY_DELIVERED,
+    DELIVERY_EXPANDED,
+    DELIVERY_FORWARDED,
+    DELIVERY_NOT_JOURNALED,
     KEY_COMPAUTH_REASON,
     KEY_COMPAUTH_RESULT,
     KEY_DMARC_RESULT,
@@ -2049,3 +2055,137 @@ def test_resolve_first_hop_address_literal_helo_becomes_helo():
     assert hop_ip == '203.0.113.5'
     assert hop_helo == '127.0.0.1'
     assert hop_from is None
+
+
+def _analyze_journaled(root_analysis, datadir, fixture: str, remediate: bool = False) -> EmailAnalysis:
+    root_analysis.alert_type = ANALYSIS_TYPE_MAILBOX
+    root_analysis.analysis_mode = "test_groups"
+    file_observable = root_analysis.add_file_observable(str(datadir / f'emails/{fixture}.email.rfc822'))
+    file_observable.add_directive(DIRECTIVE_ORIGINAL_EMAIL)
+    if remediate:
+        message_id = root_analysis.add_observable_by_spec(F_MESSAGE_ID, '<13268020124593518925.93733CB7019D1C46@company.com>')
+        message_id.add_directive(DIRECTIVE_REMEDIATE)
+    root_analysis.save()
+    root_analysis.schedule()
+
+    engine = Engine()
+    engine.configuration_manager.enable_module('file_type', 'test_groups')
+    engine.configuration_manager.enable_module('email_analyzer', 'test_groups')
+    engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
+
+    root_analysis = load_root(get_storage_dir(root_analysis.uuid))
+    email_analysis = root_analysis.get_observable(file_observable.uuid).get_and_load_analysis(EmailAnalysis)
+    email_analysis.load_details()
+    return email_analysis
+
+
+JOURNAL_MESSAGE_ID = '<13268020124593518925.93733CB7019D1C46@company.com>'
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("fixture, reason, mailboxes", [
+    # the alias case: the header names the alias, the journal names the mailbox that owns it
+    ("o365_journaled_alias", DELIVERY_NOT_JOURNALED, []),
+    ("o365_journaled_forwarded", DELIVERY_FORWARDED, ["manager.person@company.com"]),
+])
+def test_journal_records_where_a_header_recipient_went(root_analysis, datadir, fixture, reason, mailboxes):
+    email_analysis = _analyze_journaled(root_analysis, datadir, fixture, remediate=True)
+
+    assert email_analysis.env_rcpt_to == ['manager.person@company.com']
+    assert email_analysis.deliveries == {
+        'manager.person@company.com': {'reason': DELIVERY_DELIVERED, 'mailboxes': ['manager.person@company.com']},
+        'former.employee@company.com': {'reason': reason, 'mailboxes': mailboxes},
+    }
+    assert email_analysis.delivered_mailboxes == ['manager.person@company.com']
+    [(address, note)] = email_analysis.delivery_notes
+    assert address == 'former.employee@company.com'
+    assert note == describe_delivery(email_analysis.deliveries[address])
+
+    # a header recipient the journal did not deliver to is still remediated: the message can
+    # be split across journal reports, so its absence here proves nothing
+    deliveries = {o.value: o for o in email_analysis.get_observables_by_type(F_EMAIL_DELIVERY)}
+    assert set(deliveries) == {
+        create_email_delivery(JOURNAL_MESSAGE_ID, 'manager.person@company.com'),
+        create_email_delivery(JOURNAL_MESSAGE_ID, 'former.employee@company.com'),
+    }
+    assert all(o.has_directive(DIRECTIVE_REMEDIATE) for o in deliveries.values())
+
+
+@pytest.mark.integration
+def test_journal_expanded_list_is_recorded(root_analysis, datadir):
+    email_analysis = _analyze_journaled(root_analysis, datadir, 'o365_journaled_expanded_rcpt')
+
+    members = ['lulu.zingzing@company.com', 'bob.smith@company.com', 'charlie.jones@company.com']
+    dl = email_analysis.deliveries['dl-allstaff@company.com']
+    assert dl['reason'] == DELIVERY_EXPANDED
+    assert sorted(dl['mailboxes']) == sorted(members)
+    assert sorted(email_analysis.delivered_mailboxes) == sorted(members)
+
+
+@pytest.mark.integration
+def test_unjournaled_email_has_no_delivery_map(root_analysis, datadir):
+    root_analysis.alert_type = ANALYSIS_TYPE_MAILBOX
+    root_analysis.analysis_mode = "test_groups"
+    file_observable = root_analysis.add_file_observable(str(datadir / 'emails/multi_recipient_to_cc.email.rfc822'))
+    file_observable.add_directive(DIRECTIVE_ORIGINAL_EMAIL)
+    root_analysis.save()
+    root_analysis.schedule()
+
+    engine = Engine()
+    engine.configuration_manager.enable_module('file_type', 'test_groups')
+    engine.configuration_manager.enable_module('email_analyzer', 'test_groups')
+    engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
+
+    root_analysis = load_root(get_storage_dir(root_analysis.uuid))
+    email_analysis = root_analysis.get_observable(file_observable.uuid).get_and_load_analysis(EmailAnalysis)
+    email_analysis.load_details()
+    assert email_analysis.email
+    assert email_analysis.get_observables_by_type(F_EMAIL_DELIVERY)
+    assert email_analysis.deliveries == {}
+    assert email_analysis.delivery_notes == []
+
+
+@pytest.mark.unit
+def test_parse_journal_deliveries_lines_and_annotations():
+    deliveries = parse_journal_deliveries(
+        [
+            'b@company.com',
+            'c@company.com, Forwarded: a@company.com',
+            'd@company.com, Expanded: DL@company.com',
+            'e@company.com, Expanded: dl@company.com',
+            # an address with its own line stays delivered even when another line names it
+            'a@company.com',
+        ],
+        ['a@company.com', 'z@company.com', 'dl@company.com'],
+    )
+
+    assert deliveries == {
+        'b@company.com': {'reason': DELIVERY_DELIVERED, 'mailboxes': ['b@company.com']},
+        'c@company.com': {'reason': DELIVERY_DELIVERED, 'mailboxes': ['c@company.com']},
+        'd@company.com': {'reason': DELIVERY_DELIVERED, 'mailboxes': ['d@company.com']},
+        'e@company.com': {'reason': DELIVERY_DELIVERED, 'mailboxes': ['e@company.com']},
+        'a@company.com': {'reason': DELIVERY_DELIVERED, 'mailboxes': ['a@company.com']},
+        'dl@company.com': {'reason': DELIVERY_EXPANDED, 'mailboxes': ['d@company.com', 'e@company.com']},
+        'z@company.com': {'reason': DELIVERY_NOT_JOURNALED, 'mailboxes': []},
+    }
+
+
+@pytest.mark.unit
+def test_parse_journal_deliveries_logs_an_unknown_annotation(caplog):
+    with caplog.at_level(logging.INFO):
+        deliveries = parse_journal_deliveries(['b@company.com, Redirected: a@company.com'], [])
+
+    assert deliveries == {'b@company.com': {'reason': DELIVERY_DELIVERED, 'mailboxes': ['b@company.com']}}
+    assert "unrecognized journal recipient annotation [Redirected: a@company.com] on b@company.com" in caplog.text
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("entry, expected", [
+    ({'reason': DELIVERY_DELIVERED, 'mailboxes': ['a@x.com']}, None),
+    ({'reason': DELIVERY_FORWARDED, 'mailboxes': ['b@x.com']}, "not delivered to this address; forwarded to b@x.com"),
+    ({'reason': DELIVERY_EXPANDED, 'mailboxes': ['a@x.com', 'b@x.com', 'c@x.com', 'd@x.com', 'e@x.com']},
+     "distribution list; delivered to a@x.com, b@x.com, c@x.com and 2 more"),
+    ({'reason': DELIVERY_NOT_JOURNALED, 'mailboxes': []}, "not delivered to this address (no journal record of it)"),
+])
+def test_describe_delivery(entry, expected):
+    assert describe_delivery(entry) == expected

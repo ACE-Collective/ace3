@@ -3266,6 +3266,12 @@ class RemediationHistory(Base):
         Text,
         nullable=False)
 
+    # what the remediator acted on when it was not the key itself, such as the mailbox
+    # that owns an alias address
+    resolved_target: Mapped[Optional[str]] = mapped_column(
+        Text,
+        nullable=True)
+
     status: Mapped[str] = mapped_column(
         Enum('NEW', 'IN_PROGRESS', 'COMPLETED'),
         nullable=False,
