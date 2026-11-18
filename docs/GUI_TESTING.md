@@ -148,8 +148,16 @@ url = "http://localhost:8931/mcp"
   compose `command`, not by the client.
 - Every client session gets a browser context of its own and starts logged out, so agents in different
   worktrees can use the one server at the same time.
-- Snapshots, console logs and screenshots go to `.playwright-mcp/` under the working directory, which is
-  gitignored.
+- The server writes files under the client's *workspace*: the first MCP root the client sends, or the
+  server's own working directory, `/opt/ace`, for a client that sends none. A client in a worktree that
+  sends no roots therefore gets its files in the main checkout.
+  - Files the server names itself (snapshots, console logs, a screenshot taken without `filename`) go to
+    `.playwright-mcp/` in the workspace, which is gitignored.
+  - A relative `filename` is resolved against the workspace itself, not `.playwright-mcp/`:
+    `filename: "manage.png"` leaves an untracked `manage.png` in the checkout root. Pass
+    `.playwright-mcp/manage.png` instead.
+  - A path outside the workspace and `.playwright-mcp/` (`/tmp/manage.png`, a scratch directory) is
+    refused with `File access denied`.
 - An agent outside the `dev` container (Claude Code on the host) cannot reach the server.
 
 Then, for example: navigate to `https://localhost:5050/ace/login`, fill in analyst / analyst, open the page you
