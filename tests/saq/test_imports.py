@@ -316,10 +316,11 @@ def test_ace_api_still_says_how_to_install_a_missing_requests():
 
 
 def test_the_email_archive_and_phishkit_clients_load_their_libraries_on_use():
-    # initialize_environment() sets up the email archive in every process, and the S3 backend is imported
-    # with it even where it is configured; only archiving through S3 or scanning needs boto or celery
-    _assert_loads_none("import saq.email_archive, saq.email_archive.s3, saq.storage, saq.phishkit\n",
-                       ["boto3", "botocore", "saq.storage.s3", "celery", "phishkit"])
+    # initialize_environment() sets up the email archive in every process; only archiving or reading an
+    # email needs the CAS (and with it the ORM models), and only scanning needs celery
+    _assert_loads_none("import saq.email_archive, saq.storage, saq.phishkit\n",
+                       ["saq.cas", "saq.database.model", "sqlalchemy", "boto3", "botocore", "saq.storage.s3",
+                        "celery", "phishkit"])
 
 
 # modules whose import closures loop back through saq.analysis.presenter, imported first so a re-export

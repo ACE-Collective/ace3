@@ -2,7 +2,6 @@ from datetime import datetime
 from typing import Optional, Type
 from pydantic import BaseModel, Field
 import logging
-import os
 
 from saq.analysis.analysis import Analysis
 from saq.analysis.observable import Observable
@@ -11,7 +10,6 @@ from saq.constants import DIRECTIVE_ORIGINAL_EMAIL, F_FILE, F_URL, AnalysisExecu
 from saq.database.pool import get_db_connection
 from saq.database.retry import execute_with_retry
 from saq.email import normalize_email_address
-from saq.environment import get_base_dir
 from saq.modules import AnalysisModule
 from saq.modules.email.archive import EmailArchiveResults
 from saq.modules.email.rfc822 import TAG_OUTBOUND_EMAIL, EmailAnalysis
@@ -155,17 +153,17 @@ class EmailLoggingAnalyzer(AnalysisModule):
         # remove duplicates
         extracted_urls = list(set(extracted_urls))
 
-        # log where we ended up archiving the email
-        archive_path = None
+        # the email's digest in the email archive pool, which is how it is found there
+        archive_hash = None
         archive_results = email_file.get_and_load_analysis(EmailArchiveResults)
         if archive_results:
-            archive_path = archive_results.archive_path
+            archive_hash = archive_results.hash
 
         # so all we need to do now is figure out how to write the data from
         # multiple processes to the same place without collision
         entry = analysis.log_entry.copy()
         entry.update({'extracted_urls': extracted_urls})
-        entry.update({'archive_path': None if archive_path is None else os.path.relpath(archive_path, start=get_base_dir())})
+        entry.update({'archive_hash': archive_hash})
 
         if self.config.brocess_logging_enabled:
             try:

@@ -806,6 +806,13 @@ cas:
       backend: local
       encryption: none
       retention: permanent
+    test_ttl:
+      backend: local
+      encryption: none
+      compression: gzip
+      retention: ttl
+      ttl_days: 2
+      index_database: email_archive
 
 # yara qa storage (tests/saq/yara_qa). the yara_qa pool itself comes from saq.default.yaml; small caps
 # so the tests reach them, small prune batches with no pause so the batching loop runs, and no
@@ -844,9 +851,6 @@ service_svs:
 
 qdrant:
   collection_prefix: ace3-alerts-unittest
-
-email_archive:
-  s3_bucket: ace-email-archive-test
 
 api_query_defaults_test_api:
   name: test_api

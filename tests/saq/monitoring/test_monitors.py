@@ -390,8 +390,62 @@ class TestNodeStatusMonitorQueries:
         assert emitted["location"] == "10.0.0.1:443"
 
 
+def _only_this_node_is_live(db):
+    """Every registered node's heartbeat is a day old except this one's, which is fresh."""
+    cursor = db.cursor()
+    cursor.execute("UPDATE nodes SET last_update = DATE_SUB(NOW(), INTERVAL 1 DAY)")
+    cursor.execute("UPDATE nodes SET last_update = NOW() WHERE id = %s", (get_global_runtime_settings().saq_node_id,))
+
+
 @pytest.mark.integration
 class TestCASPoolMonitor:
+    @patch("saq.monitoring.monitors.cas_pool_monitor.emit_monitor", wraps=emit_monitor)
+    def test_a_single_node_with_local_pools_is_not_an_error(self, mock_emit, caplog):
+        with get_db_connection() as db:
+            _only_this_node_is_live(db)
+            # a node that stopped heartbeating long ago is not a second node
+            _add_node(db, "decommissioned", heartbeat_age_seconds=3600)
+            db.commit()
+
+        CASPoolMonitor(name="test", frequency=1.0).execute()
+
+        emitted = {c[0][1]["pool"]: c[0][1] for c in mock_emit.call_args_list}
+        assert (emitted["email_archive"]["node_local"], emitted["email_archive"]["live_nodes"]) == (True, 1)
+        assert not [r for r in caplog.records if r.levelname == "ERROR"]
+
+    @patch("saq.monitoring.monitors.cas_pool_monitor.emit_monitor", wraps=emit_monitor)
+    def test_a_node_local_pool_on_a_multi_node_cluster_is_an_error(self, mock_emit, caplog):
+        with get_db_connection() as db:
+            _only_this_node_is_live(db)
+            _add_node(db, "second-node")
+            db.commit()
+
+        CASPoolMonitor(name="test", frequency=1.0).execute()
+
+        emitted = {c[0][1]["pool"]: c[0][1] for c in mock_emit.call_args_list}
+        assert emitted["email_archive"]["live_nodes"] == 2
+        errors = {r.cas_pool: r for r in caplog.records if r.levelname == "ERROR"}
+        # every configured pool uses the local backend here, and each one is named
+        assert set(errors) == set(get_cas().pool_names())
+        assert errors["email_archive"].live_nodes == 2
+        assert "only the primary collects its bytes" in errors["email_archive"].getMessage()
+
+    @patch("saq.monitoring.monitors.cas_pool_monitor.emit_monitor", wraps=emit_monitor)
+    def test_a_shared_backend_on_a_multi_node_cluster_is_not_an_error(self, mock_emit, caplog, monkeypatch):
+        with get_db_connection() as db:
+            _only_this_node_is_live(db)
+            _add_node(db, "second-node")
+            db.commit()
+
+        # what an integration's object-store backend declares
+        monkeypatch.setattr(type(get_cas().pool("email_archive").backend), "node_local", False)
+
+        CASPoolMonitor(name="test", frequency=1.0).execute()
+
+        emitted = {c[0][1]["pool"]: c[0][1] for c in mock_emit.call_args_list}
+        assert emitted["email_archive"]["node_local"] is False
+        assert not [r for r in caplog.records if r.levelname == "ERROR"]
+
     @patch("saq.monitoring.monitors.cas_pool_monitor.emit_monitor", wraps=emit_monitor)
     def test_emits_one_record_per_pool(self, mock_emit):
         get_cas().pool("test_plain").put(b"monitored")
@@ -400,7 +454,8 @@ class TestCASPoolMonitor:
 
         emitted = {c[0][1]["pool"]: c[0][1] for c in mock_emit.call_args_list}
         assert {c[0][0].path for c in mock_emit.call_args_list} == {"cas.pool"}
-        # yara_qa and svs_samples are the pools saq.default.yaml defines out of the box
-        assert set(emitted) == {"test_plain", "test_encrypted", "test_permanent", "yara_qa", "svs_samples"}
+        # yara_qa, svs_samples and email_archive are the pools saq.default.yaml defines out of the box
+        assert set(emitted) == {"test_plain", "test_encrypted", "test_permanent", "test_ttl", "yara_qa", "svs_samples",
+                                "email_archive"}
         assert emitted["test_plain"]["objects_present"] == 1
         assert emitted["test_plain"]["size_bytes"] == len(b"monitored")

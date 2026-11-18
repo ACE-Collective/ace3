@@ -94,7 +94,6 @@ class EncryptedArchiveAnalyzer(AnalysisModule):
 
 KEY_MESSAGE_ID = "message_id"
 KEY_ARCHIVE_ID = "archive_id"
-KEY_ARCHIVE_PATH = "archive_path"
 KEY_HASH = "hash"
 
 class EmailArchiveActionConfig(AnalysisModuleConfig):
@@ -106,7 +105,6 @@ class EmailArchiveResults(Analysis):
         self.details = {
             KEY_MESSAGE_ID: None,
             KEY_ARCHIVE_ID: None,
-            KEY_ARCHIVE_PATH: None,
             KEY_HASH: None
         }
 
@@ -127,14 +125,6 @@ class EmailArchiveResults(Analysis):
         self.details[KEY_ARCHIVE_ID] = value
 
     @property
-    def archive_path(self) -> Optional[str]:
-        return self.details[KEY_ARCHIVE_PATH]
-
-    @archive_path.setter
-    def archive_path(self, value: str):
-        self.details[KEY_ARCHIVE_PATH] = value
-
-    @property
     def hash(self) -> Optional[str]:
         return self.details[KEY_HASH]
 
@@ -143,10 +133,10 @@ class EmailArchiveResults(Analysis):
         self.details[KEY_HASH] = value
 
     def generate_summary(self):
-        if not self.archive_path:
+        if not self.hash:
             return None
 
-        return f"Archive Path: {self.archive_path}"
+        return f"Archived Email: {self.hash}"
 
 class EmailArchiveAction(AnalysisModule):
     @classmethod
@@ -206,7 +196,6 @@ class EmailArchiveAction(AnalysisModule):
         assert isinstance(analysis, EmailArchiveResults)
         analysis.hash = archive_result.hash
         analysis.archive_id = archive_result.archive_id
-        analysis.archive_path = archive_result.archive_path
 
         return AnalysisExecutionResult.COMPLETED
 

@@ -12,6 +12,7 @@ import logging
 import os
 
 from saq.cli.cli_main import get_cli_subparsers
+from saq.constants import DB_ACE
 
 # NOTE the saq.cas / saq.database imports below are inside their command functions on purpose,
 # matching the convention in this package (see crash.py): this module is imported on every `ace`
@@ -76,23 +77,29 @@ def cli_pools(args):
     from saq.cas import get_cas, index
 
     cas = get_cas()
-    with index.transaction() as session:
-        summaries = {pool: (count, size, stored) for pool, count, size, stored in index.pool_summaries(session)}
+    # every index database: the main one, and those a pool names (a ttl pool's lives in its own chain)
+    summaries = {}
+    for database in sorted({DB_ACE} | {cas.config.pools[name].index_database for name in cas.pool_names()}):
+        with index.transaction(database) as session:
+            for pool, count, size, stored in index.pool_summaries(session):
+                summaries[(database, pool)] = (count, size, stored)
 
-    print(f"{'POOL':24} {'BACKEND':8} {'ENCRYPTION':10} {'RETENTION':9} {'GRACE':>8} {'SHARED':6} {'OBJECTS':>8} {'SIZE':>14} {'STORED':>14}  LOCATION")
+    row = "{:24} {:8} {:10} {:9} {:>8} {:>8} {:6} {:13} {:>8} {:>14} {:>14}  {}"
+    print(row.format("POOL", "BACKEND", "ENCRYPTION", "RETENTION", "TTL", "GRACE", "SHARED", "INDEX", "OBJECTS",
+                     "SIZE", "STORED", "LOCATION"))
     for name in cas.pool_names():
         pool = cas.pool(name)
-        count, size, stored = summaries.pop(name, (0, 0, 0))
+        count, size, stored = summaries.pop((pool.database, name), (0, 0, 0))
         location = pool.backend.root if hasattr(pool.backend, "root") else type(pool.backend).__name__
-        print("{:24} {:8} {:10} {:9} {:>8} {:6} {:>8} {:>14} {:>14}  {}".format(
+        print(row.format(
             name, pool.config.backend, pool.config.encryption, pool.retention,
-            pool.grace_seconds if pool.retention == "held" else "-",
-            "yes" if pool.config.shared else "no", count, size, stored, location))
+            f"{pool.ttl_days}d" if pool.ttl_days else "-",
+            pool.grace_seconds if pool.retention != "permanent" else "-",
+            "yes" if pool.config.shared else "no", pool.database, count, size, stored, location))
 
-    # rows whose pool is no longer configured (a renamed pool leaves its rows and bytes behind)
-    for name, (count, size, stored) in sorted(summaries.items()):
-        print("{:24} {:8} {:10} {:9} {:>8} {:6} {:>8} {:>14} {:>14}  {}".format(
-            name, "?", "?", "?", "-", "?", count, size, stored, "NOT CONFIGURED"))
+    # rows whose pool is no longer configured there (a renamed pool leaves its rows and bytes behind)
+    for (database, name), (count, size, stored) in sorted(summaries.items()):
+        print(row.format(name, "?", "?", "?", "-", "-", "?", database, count, size, stored, "NOT CONFIGURED"))
 
     return 0
 
@@ -177,8 +184,9 @@ get_parser.set_defaults(func=cli_get)
 #
 
 def cli_gc(args):
-    """Garbage-collect held pools: delete objects that have outlived their last hold by the grace
-    period. Exits 2 if any object could not be deleted or any pool failed."""
+    """Garbage-collect held and ttl pools: delete objects that have outlived their last hold (and,
+    for ttl, their ttl) by the grace period. Exits 2 if any object could not be deleted or any
+    pool failed."""
     if not _primary_or_forced(args, "gc"):
         return 0
 
@@ -200,7 +208,7 @@ def cli_gc(args):
     return 0 if ok and not errors else 2
 
 
-gc_parser = cas_sp.add_parser("gc", help="Delete objects that no longer have a live hold (held pools).")
+gc_parser = cas_sp.add_parser("gc", help="Delete objects that no longer have a live hold (held pools) or have expired (ttl pools).")
 _add_maintenance_arguments(gc_parser)
 gc_parser.set_defaults(func=cli_gc)
 

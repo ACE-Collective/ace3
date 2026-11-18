@@ -254,9 +254,9 @@ reachable from every node (`shared: true`). The CAS ships only the `local` backe
 for a single-node instance. **Providing a shared backend is the site integrator's job**: an S3
 backend, whatever Azure offers, or any other `custom` class that declares `node_local = False`.
 ACE does not build one as an SVS prerequisite. Capture is enabled by default with a `local` pool,
-which is right for a single node. A multi-node site gives `svs_samples` a shared backend, or sets
-`analysis_module_svs_yara_sample_capture.enabled: false` until it has one; otherwise each node keeps
-the bytes it captured. The `yara_qa` pool already works this way (`docs/YARA_QA.md`, *Nodes*): a
+which is right for a single node. A multi-node site gives `svs_samples` a shared backend; otherwise
+each node keeps the bytes it captured. A node-local backend means a single-node install whether or
+not capture runs (`docs/CAS.md`, "Sharing between nodes"). The `yara_qa` pool already works this way (`docs/YARA_QA.md`, *Nodes*): a
 site that has given it a shared backend gives `svs_samples` the same one. [FR-1, CAS-6]
 
 The YARA module is deliberately not cached (`docs/ANALYSIS_CACHING.md`): its filtered output
@@ -1195,7 +1195,7 @@ Every value here is illustrative. The schema rejects unknown keys. Test hosts ar
 |---|---|
 | **0: prerequisites** (independent PRs, each useful without SVS). **Landed** in v3.0.122 (PRs #638–#648) | `archive()` fix; disposition clean-up; prevalence default-queue change; `saq/storage` and `saq/crypto` fixes; the CAS with the `svs_samples` pool (the pool itself is defined in phase 2 [FR-29]); `GET /api/v2/alerts` with `alerts.updated_at`; saved filters per screen; the structured hunt completion record; remote-node correlation submissions get an `alerts` row [FR-6]; the alert-router registry and `move_alert_to_queue` [FR-2] |
 | **1: labels**. **Landed** (PRs #651–#656) | Detection identity (**must land before any verdict is written**); YARA detections on the file; verdict table, effective verdicts and sources, verdict history; the GUI; the detection-points API |
-| **2: YARA capture**. **Landed** (PRs #658–#664 and the Samples card) | The capture module, with the `transfer_work_target` mode fix [FR-5]; the Samples card in the Signatures hub and its API [FR-28]. Capture is on by default; a multi-node site gives `svs_samples` its shared backend or disables capture [FR-1] |
+| **2: YARA capture**. **Landed** (PRs #658–#664 and the Samples card) | The capture module, with the `transfer_work_target` mode fix [FR-5]; the Samples card in the Signatures hub and its API [FR-28]. Capture is on by default; a multi-node site gives `svs_samples` its shared backend or disables capture [FR-1] (disabling capture is no longer an option: a node-local pool means a single-node install, `docs/CAS.md`) |
 | **3: YARA validation**. **Landed** (PRs #668–#674 and the Validations card); CI is wired into a signature repository by its operators (`docs/SVS_VALIDATION.md`) | API, mirror clones, isolated scanning that compiles the way the production loader does [FR-26], the validation queue and result cache, the report and its actions; the Validations card in the Signatures hub [FR-28]; CI in one signature repo |
 | **4: runs**. **Built** on the `jd/svs` integration branch (PRs #683–#721), released to `main` with `jd/svs` | Registration, the test-host table and admin tab, markers, the SVS marker router, the built-in marker rule shipped as a namespace the yara service loads [FR-25], `SIMULATED` and its retention, SVS statuses, the ART catalog; the Runs and Tests tabs, the run page with learned expectations, ownership, *Close*, event log; the SVS logging contract; the run APIs and the reviewed-result snapshot |
 | **5: coverage**. **Built** on the `jd/svs` integration branch (PRs #725–#741), released to `main` with `jd/svs` | Coverage states, the declared-vs-measured worklist, the ATT&CK release pin with the vendored extract and `bin/update-attack-catalog` [FR-14]; the Coverage and Worklist tabs, daily snapshots and their APIs; `docs/SVS_API.md` complete |

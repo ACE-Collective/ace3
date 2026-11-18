@@ -295,7 +295,8 @@ separate mechanism; a module failure is logged at WARNING and gets only the cras
 `saq/cas/` stores immutable bytes by sha256 in *pools*, each a named policy for backend, encryption
 and retention (`docs/CAS.md`): `get_cas().pool(name).put(src, hold=Hold(kind, id))`, `open`,
 `materialize`, `release`, `purge`. The index tables `cas_objects`, `cas_holds` and `cas_purges`
-(main chain) are authoritative for what exists; backends (`local`, or a custom class) are dumb byte
+are authoritative for what exists, in the chain the pool's `index_database` names (the main chain
+by default); backends (`local`, or a custom class) are dumb byte
 stores that only the orphan sweep ever lists. `put` and `hold` lock the object row `FOR UPDATE`, and
 GC flips an unheld object to `deleting` with one conditional UPDATE before removing it, in batches
 of primary keys, never an unbounded DELETE. Only `saq/cas/index.py` writes the index tables, and
@@ -303,7 +304,23 @@ every CAS operation runs in its own private session, never on the caller's `get_
 Encrypted pools use the v1 `saq/crypto` file format (magic, key id, authenticated header); plain
 `encrypt()` still writes the v0 format because existing encrypted data is read across nodes.
 `ace cas gc|verify|orphans` run from `etc/cron/{hourly,weekly}/cas-*` on the primary node.
-`retention: ttl` and an S3 backend are designed but not built; the config rejects both.
+A `retention: ttl` pool keeps its index in its own chain (never the main one) with a day-partitioned
+`cas_touches` table that every `put` appends to; GC collects an object with no touch within
+`ttl_days` and `ace partitions maintain` drops old touch partitions. `compression: gzip` is per pool.
+A node-local backend (`local`) means a single-node install: GC runs on the primary only, so on a
+cluster every pool needs a backend every node can reach, and the `cas.pool` monitor logs an ERROR
+(and reports `node_local` and `live_nodes`) for a node-local pool while more than one node is live.
+There is no object-store backend in the tree; an integration provides one as a `custom` backend.
+
+#### Email archive
+
+Every email the `email_archiver` module archives is an object in the `email_archive` CAS pool (`ttl`,
+30 days, encrypted, gzip, indexed in the email archive database), keyed by its sha256; the email
+archive database's partitioned `archive`, `archive_index` and `email_history` tables map Message-IDs
+and URLs to it (`saq/email_archive/`, `docs/EMAIL_ARCHIVE.md`). `find_archived_email()` returns the
+newest one the pool still has. `ace email-archive migrate` moves each node's old
+`<archive_dir>/<host>/<xx>/<sha>.gz.e` files into the pool. S3 archiving (`email_archive.target: s3`)
+was removed and the config rejects it.
 
 #### YARA QA results
 
@@ -311,7 +328,7 @@ A YARA rule with `modifiers = "qa"` never alerts; the files it matches are kept 
 
 #### SVS sample capture
 
-When an alert's disposition classifies tp or fp, ACE keeps every file a YARA rule matched on it as an SVS sample (`docs/SVS_SAMPLES.md`, design in `docs/SVS.md` Part 2). The `svs_yara_sample_capture` module (`saq/modules/svs.py`) runs in `dispositioned` mode, in post-analysis, which runs on every pass, so every later disposition pass captures again (idempotently); `saq/svs/capture.py` takes one candidate per (file sha256, rule uuid) from the YARA detections on file observables (rules without a uuid and pre-SVS detections are skipped), and stores the file and its `scan_results` entry in the `svs_samples` CAS pool, held by `Hold("svs_capture", <row id>)` and indexed in `svs_yara_captures`, one row per (alert uuid, sha256, rule uuid), idempotent. The row has no foreign key to `alerts`, so a capture outlives its alert and its holds are never orphaned; a capture that could not be stored stays `missing` with a reason and is retried. A sample is one (sha256, rule uuid) over all its captures, and its label is never stored: `saq/svs/labels.py` derives it when read from the verdicts on its alerts' detections (`saq/detection_verdicts/`), strongest verdict source first, and `aceapi_v2/svs/samples/` (`/api/v2/svs/samples`, `signature:read`; files need `signature:download`) serves samples, labels and `infected`-password zips, which the **Signatures → Samples** page (`app/signatures/views/samples.py`, a `filter_list_page.js` shell) lists. Capture is on by default with a node-local pool; a multi-node site gives `svs_samples` a shared backend or disables the module. The analyst actions on a sample are `saq/svs/actions.py` (*Actions* in `docs/SVS_SAMPLES.md`): relabel, reset and confirm write verdicts through `saq/detection_verdicts/store.py::set_verdicts` (`alert:write`), and retire and delete need `svs:admin`. Delete removes the sha256 for every rule and keeps an `svs_sample_deletions` row, which capture checks before and after it stores. YARA validations (`docs/SVS_VALIDATION.md`) replay every stored sample under two commits of a rule repository (`saq/svs/yara/`, in the Landlock sandbox): the repository's CI requests one with an `svs:validate` key (`lib/signature_validator`'s `validate-yara`, `aceapi_v2/svs/yara/validations/`), and `service_svs` (`saq/svs/service.py`) runs the queue in `saq/svs/validations.py`, where workers hold a lease on a validation and a completed one answers repeat requests while the corpus version and engine fingerprint are unchanged; the **Signatures → Validations** page (`app/signatures/views/validations.py`, a `filter_list_page.js` shell) shows the reports, at the `report_path()` CI links to.
+When an alert's disposition classifies tp or fp, ACE keeps every file a YARA rule matched on it as an SVS sample (`docs/SVS_SAMPLES.md`, design in `docs/SVS.md` Part 2). The `svs_yara_sample_capture` module (`saq/modules/svs.py`) runs in `dispositioned` mode, in post-analysis, which runs on every pass, so every later disposition pass captures again (idempotently); `saq/svs/capture.py` takes one candidate per (file sha256, rule uuid) from the YARA detections on file observables (rules without a uuid and pre-SVS detections are skipped), and stores the file and its `scan_results` entry in the `svs_samples` CAS pool, held by `Hold("svs_capture", <row id>)` and indexed in `svs_yara_captures`, one row per (alert uuid, sha256, rule uuid), idempotent. The row has no foreign key to `alerts`, so a capture outlives its alert and its holds are never orphaned; a capture that could not be stored stays `missing` with a reason and is retried. A sample is one (sha256, rule uuid) over all its captures, and its label is never stored: `saq/svs/labels.py` derives it when read from the verdicts on its alerts' detections (`saq/detection_verdicts/`), strongest verdict source first, and `aceapi_v2/svs/samples/` (`/api/v2/svs/samples`, `signature:read`; files need `signature:download`) serves samples, labels and `infected`-password zips, which the **Signatures → Samples** page (`app/signatures/views/samples.py`, a `filter_list_page.js` shell) lists. Capture is on by default with a node-local pool; a multi-node site gives `svs_samples` a shared backend (a node-local pool means a single-node install whether or not capture runs). The analyst actions on a sample are `saq/svs/actions.py` (*Actions* in `docs/SVS_SAMPLES.md`): relabel, reset and confirm write verdicts through `saq/detection_verdicts/store.py::set_verdicts` (`alert:write`), and retire and delete need `svs:admin`. Delete removes the sha256 for every rule and keeps an `svs_sample_deletions` row, which capture checks before and after it stores. YARA validations (`docs/SVS_VALIDATION.md`) replay every stored sample under two commits of a rule repository (`saq/svs/yara/`, in the Landlock sandbox): the repository's CI requests one with an `svs:validate` key (`lib/signature_validator`'s `validate-yara`, `aceapi_v2/svs/yara/validations/`), and `service_svs` (`saq/svs/service.py`) runs the queue in `saq/svs/validations.py`, where workers hold a lease on a validation and a completed one answers repeat requests while the corpus version and engine fingerprint are unchanged; the **Signatures → Validations** page (`app/signatures/views/validations.py`, a `filter_list_page.js` shell) shows the reports, at the `report_path()` CI links to.
 
 #### SVS coverage
 
@@ -395,7 +412,7 @@ Every service, `ace` command, engine worker and API worker holds what its module
 
 - A package `__init__.py` runs whenever any one of its modules is imported, so it imports nothing heavier than that. A name from a module that loads more is re-exported through a PEP 562 `__getattr__` built by `saq.lazy_exports.lazy_getattr()` (`saq/analysis/__init__.py`), never under a name a submodule also has.
 - Core (`saq/`) never imports the web layer: Flask, FastAPI, `app/`, `aceapi_v2/`, `aceapi_ai/`, or `saq.gui.alert`. Integrations name their API router and GUI blueprint in their `integration_<name>:` block (`api_router`, `gui_blueprint`), which only the API and the GUI import.
-- `initialize_environment()` loads only what every process needs. A subsystem only some processes use (the ORM session, the email archive's S3 backend, phishkit's celery) is set up on first use.
+- `initialize_environment()` loads only what every process needs. A subsystem only some processes use (the ORM session, the email archive's CAS pool, phishkit's celery) is set up on first use.
 - An analysis module imports the libraries its analyzer runs (OCR, document parsers, network clients, celery) in the method that runs them. Reading an alert imports the module of every analysis in it, in processes that never analyze.
 - A name needed only for a type annotation is imported under `TYPE_CHECKING`.
 - A new service, entry point or heavy dependency gets a line in `tests/saq/test_imports.py`, which imports in fresh interpreters.

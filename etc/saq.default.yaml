@@ -198,14 +198,30 @@ cas:
       shared: false
     # the YARA samples SVS captures from dispositioned alerts, and their match records
     # (docs/SVS_SAMPLES.md). live malware, so encrypted; kept for as long as a capture record holds
-    # them. backend: local is enough for a single node. a multi-node site redefines this pool in its
+    # them. backend: local is for a single-node install. a multi-node site redefines this pool in its
     # own config with a backend every node can reach and shared: true (the same one it gives
-    # yara_qa), or disables analysis_module_svs_yara_sample_capture: captures happen on whichever
-    # node owns the alert, and SVS validation reads every sample from one node.
+    # yara_qa), whether or not capture is enabled: captures happen on whichever node owns the alert,
+    # and SVS validation reads every sample from one node (docs/CAS.md, "Sharing between nodes").
     svs_samples:
       backend: local
       encryption: system
       retention: held
+      grace_seconds: 86400
+      shared: false
+    # archived emails (docs/EMAIL_ARCHIVE.md). customer mail, so encrypted, and gzip because mail
+    # compresses well. ttl: an email lives for ttl_days after the last time it was archived. archive
+    # rows go a weekly partition at a time, so a message-id can outlive its email by up to a week;
+    # it is then reported as not archived. the index is high churn, so it lives in the email archive
+    # database, not the main one. backend: local is for a single-node install; a multi-node site
+    # gives this pool a backend every node can reach (an integration's custom backend) and
+    # shared: true, or every node but the primary fills its disk (docs/CAS.md, "Sharing between nodes").
+    email_archive:
+      backend: local
+      encryption: system
+      compression: gzip
+      retention: ttl
+      ttl_days: 30
+      index_database: email_archive
       grace_seconds: 86400
       shared: false
 
@@ -959,20 +975,14 @@ observable_types:
     yara_string: "saq.observables.yara:YaraStringObservable"
 
 email_archive:
-  target: local # possible values: local, s3
   # if this system is archiving emails, this determines what section to use for the database config
   # NOTE this is the name of the section without the leading database_ (legacy issue)
   primary: email_archive
-  # the directory to contain the archived emails (relative to DATA_DIR)
+  # the CAS pool (cas.pools) archived emails are stored in (docs/EMAIL_ARCHIVE.md)
+  pool: email_archive
+  # where the archive kept its files before it moved to the CAS (relative to DATA_DIR). only
+  # `ace email-archive migrate` reads it
   archive_dir: archive/email
-
-  # s3 settings
-  # controls which section of the config to use for the s3 config
-  s3_config: s3
-  # the bucket to use for the email archive
-  s3_bucket: ace-email-archive
-  # the region to use for the email archive
-  s3_region:
   # days of archive and archive_index rows to keep. these tables are partitioned by week and
   # `ace partitions maintain` drops a week once all of it is older than this
   # (docs/DATABASE_PARTITIONS.md)
@@ -2464,7 +2474,7 @@ analysis_module_alert_added_to_event:
 
 # captures every YARA-matched file of an alert dispositioned tp or fp into the svs_samples pool, for
 # SVS to check YARA rule changes against (docs/SVS_SAMPLES.md). runs in dispositioned mode. a
-# multi-node site gives svs_samples a shared backend first, or sets enabled: false
+# multi-node site gives svs_samples a shared backend first (docs/SVS_SAMPLES.md, "Nodes")
 analysis_module_svs_yara_sample_capture:
   name: svs_yara_sample_capture
   python_module: saq.modules.svs

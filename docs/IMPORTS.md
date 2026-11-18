@@ -26,7 +26,7 @@ These rules come from the October 2026 import work:
    - The engine API's container imports `aceapi_v2.app_factory`, never `aceapi_v2.application`, which imports every router.
 3. **Initialization loads what every process needs, and nothing else.**
    - `initialize_environment()` runs in every process.
-   - A subsystem only some processes use is set up on first use: the ORM engine and session (`get_db()`), the email archive's S3 backend, phishkit's celery app, the observable type hierarchy.
+   - A subsystem only some processes use is set up on first use: the ORM engine and session (`get_db()`), the email archive's CAS pool, phishkit's celery app, the observable type hierarchy.
    - The `ace` script imports only the command module it runs (`saq/cli/commands/__init__.py`).
 4. **An analysis module imports the tools its analyzer runs in the method that runs them.**
    - Loading an alert imports the module of every analysis class in it. The search indexer, the GUI and the API load alerts without running a single analyzer.

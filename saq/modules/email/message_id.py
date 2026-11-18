@@ -2,7 +2,7 @@ import hashlib
 import logging
 import os
 from typing import Optional, override
-from saq.email_archive import iter_archived_email, email_is_archived
+from saq.email_archive import find_archived_email, get_email_archive_pool
 from saq.analysis.analysis import Analysis
 from saq.analysis.search import search_down
 from saq.constants import F_MESSAGE_ID, AnalysisExecutionResult
@@ -62,7 +62,8 @@ class MessageIDAnalyzerV2(AnalysisModule):
             logging.debug(f"already have email analysis for {message_id.value}")
             return AnalysisExecutionResult.COMPLETED
 
-        if not email_is_archived(message_id.value):
+        digest = find_archived_email(message_id.value)
+        if digest is None:
             logging.info(f"email {message_id.value} is not archived")
             return AnalysisExecutionResult.COMPLETED
 
@@ -75,9 +76,7 @@ class MessageIDAnalyzerV2(AnalysisModule):
             if os.path.exists(target_path):
                 logging.info(f"archived email {target_path} already exists")
             else:
-                with open(target_path, "wb") as fp:
-                    for chunk in iter_archived_email(message_id.value):
-                        fp.write(chunk)
+                get_email_archive_pool().materialize(digest, target_path)
 
             if os.path.getsize(target_path) == 0:
                 logging.info(f"got 0 bytes for {message_id.value}")
