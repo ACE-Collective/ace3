@@ -31,7 +31,16 @@ from saq.database.pool import get_db
 from saq.database.util.alert import set_dispositions
 from saq.database.util.locking import acquire_lock, release_lock
 from saq.database.util.user_management import add_user, delete_user
-from tests.saq.helpers import audit_actor_of, audit_actors, audit_record, audit_records, insert_alert, make_simulated, person
+from tests.saq.helpers import (
+    audit_actor_of,
+    audit_actors,
+    audit_record,
+    audit_records,
+    fail_commit_of,
+    insert_alert,
+    make_simulated,
+    person,
+)
 
 pytestmark = pytest.mark.integration
 
@@ -473,6 +482,30 @@ def test_bulk_tag_skips_an_alert_being_analyzed(web_client, caplog, endpoint):
     [audit] = audit_records(caplog)
     assert audit.alert_uuids == [unlocked.uuid]
     assert locked.uuid not in audit.getMessage() and missing not in audit.getMessage()
+
+
+@pytest.mark.parametrize("endpoint", ["events.bulk_add_tag", "events.bulk_remove_tag"])
+def test_bulk_tag_goes_on_after_an_alert_fails_to_commit(web_client, monkeypatch, caplog, endpoint):
+    """A failed commit leaves the session needing a rollback; the alerts after it are still changed and audited."""
+    adding = endpoint == "events.bulk_add_tag"
+    first, failing, last = insert_alert(), insert_alert(), insert_alert()
+    alert_uuids = f"{first.uuid},{failing.uuid},{last.uuid}"
+    if not adding:
+        web_client.post(url_for("events.bulk_add_tag"), data={
+            "event_id": EVENT_ID, "alert_uuids": alert_uuids, "tag": "bulk_tag"})
+
+    fail_commit_of(monkeypatch, failing.uuid)
+    caplog.clear()
+    with caplog.at_level(logging.INFO):
+        response = web_client.post(url_for(endpoint), data={
+            "event_id": EVENT_ID, "alert_uuids": alert_uuids, "tag": "bulk_tag"})
+
+    assert response.status_code == 302
+    assert _flashes(web_client) == ["unable to modify some alerts: alert is currently being analyzed"]
+    assert _reloaded_root(first).has_tag("bulk_tag") == adding
+    assert _reloaded_root(last).has_tag("bulk_tag") == adding
+    [audit] = audit_records(caplog)
+    assert audit.alert_uuids == [first.uuid, last.uuid]
 
 
 def test_bulk_tag_failure_is_logged_with_its_traceback(web_client, monkeypatch, caplog):

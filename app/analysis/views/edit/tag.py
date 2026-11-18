@@ -65,6 +65,9 @@ def add_tag():
 
         except Exception as e:
             logging.exception(f"unable to add tag to {alert}: {e}")
+            # a failed commit leaves the session unusable until it is rolled back (#852), and the
+            # next alert's lookup runs on it
+            get_db().rollback()
             failed_count += 1
 
         finally:
@@ -139,6 +142,9 @@ def remove_tag():
 
         except Exception as e:
             logging.exception(f"unable to remove tag from {alert}: {e}")
+            # a failed commit leaves the session unusable until it is rolled back (#852), and the
+            # next alert's lookup runs on it
+            get_db().rollback()
             failed_count += 1
 
         finally:

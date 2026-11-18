@@ -7,7 +7,7 @@ import pytest
 from saq.database.pool import get_db
 from saq.database.util.locking import acquire_lock, release_lock
 from saq.gui.alert import GUIAlert
-from tests.saq.helpers import audit_actor_of, audit_record, audit_records, insert_alert
+from tests.saq.helpers import audit_actor_of, audit_record, audit_records, fail_commit_of, insert_alert
 
 
 @pytest.mark.integration
@@ -414,3 +414,26 @@ def test_remove_tag_audit_names_every_tag(web_client, session_actor, caplog):
     assert alert.uuid in record.getMessage()
     assert (*audit_actor_of(record), record.alert_uuids, record.tags) == (
         *session_actor, [alert.uuid], ["malware", "phish"])
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("endpoint", ["analysis.add_tag", "analysis.remove_tag"])
+def test_tag_change_goes_on_after_an_alert_fails_to_commit(web_client, monkeypatch, caplog, endpoint):
+    """A failed commit leaves the session needing a rollback; the alerts after it are still changed and audited."""
+    adding = endpoint == "analysis.add_tag"
+    first, failing, last = insert_alert(), insert_alert(), insert_alert()
+    uuids = f"{first.uuid},{failing.uuid},{last.uuid}"
+    if not adding:
+        web_client.post(url_for("analysis.add_tag"), data={"tag": "malware", "uuids": uuids, "redirect": "analysis"})
+
+    fail_commit_of(monkeypatch, failing.uuid)
+    caplog.clear()
+    with caplog.at_level(logging.INFO):
+        response = web_client.post(url_for(endpoint), data={"tag": "malware", "uuids": uuids, "redirect": "analysis"})
+
+    assert response.status_code == 302
+    assert _flashes(web_client) == ["unable to modify alert: alert is currently being analyzed"]
+    assert _has_tag(first, "malware") is adding
+    assert _has_tag(last, "malware") is adding
+    [audit] = audit_records(caplog)
+    assert audit.alert_uuids == [first.uuid, last.uuid]

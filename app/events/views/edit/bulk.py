@@ -69,6 +69,9 @@ def _apply_tags(alert_uuids: list[str], tags: list[str], add: bool) -> tuple[lis
 
         except Exception as e:
             logging.exception(f"unable to modify tags on {alert}: {e}")
+            # a failed commit leaves the session unusable until it is rolled back (#852), and the
+            # next alert's lookup runs on it
+            get_db().rollback()
             failed_count += 1
 
         finally:

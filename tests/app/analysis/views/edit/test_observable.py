@@ -126,6 +126,23 @@ class TestAddObservable:
         assert _saved_root(alert).get_observables_by_type('ipv4') == []
         assert _workload_modes(alert) == []
 
+    def test_invalid_observable_value(self, web_client, alert, basic_form_data, caplog):
+        """A value its type rejects adds nothing, so nothing is audited and the alert is not queued again."""
+        caplog.set_level(logging.INFO)
+        response = web_client.post(url_for('analysis.add_observable'),
+                                   data={**basic_form_data, 'add_observable_value': '999.1.1.1'})
+
+        assert response.status_code == 302
+        with web_client.session_transaction() as sess:
+            assert [message for _category, message in sess.get('_flashes', [])] == [
+                'unable to add observable: invalid value or too many observables of that type']
+        root = _saved_root(alert)
+        assert root.get_observables_by_type('ipv4') == []
+        assert root.analysis_mode == ANALYSIS_MODE_DISPOSITIONED
+        assert _workload_modes(alert) == []
+        assert audit_records(caplog) == []
+        assert _is_unlocked(alert.uuid)
+
     def test_alert_not_found_in_database(self, web_client, caplog):
         """An unknown alert uuid is client input: refused with a WARNING that names it, not an error."""
         missing_uuid = str(uuid4())
