@@ -838,11 +838,6 @@ storage:
   target: local
   base_dir: data_unittest/main/storage
 
-# s3 test credentials are loaded from ace-auth mount (garage-init writes garage-test-* keys)
-# s3:
-#   access_key: file:/auth/passwords/garage-test-access-key
-#   secret_key: file:/auth/passwords/garage-test-secret-key
-
 service_search_indexer:
   enabled: false
 

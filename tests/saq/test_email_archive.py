@@ -150,10 +150,10 @@ def test_the_archive_dir_on_the_archiver_module_fails_instead_of_being_ignored()
 
 
 @pytest.mark.unit
-def test_an_s3_target_fails_instead_of_falling_back_to_local():
+def test_a_remote_target_fails_instead_of_falling_back_to_local():
     data = copy.deepcopy(get_config().raw._data)
-    data["email_archive"]["target"] = "s3"
-    with pytest.raises(ValidationError, match="email_archive.target: 's3' was removed"):
+    data["email_archive"]["target"] = "remote"
+    with pytest.raises(ValidationError, match="email_archive.target: 'remote' was removed"):
         ACEConfig.model_validate(data)
 
     # the old local setting changes nothing

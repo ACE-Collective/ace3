@@ -1018,17 +1018,6 @@ CONFIG_RABBITMQ_PASSWORD = "password"
 CONFIG_RABBITMQ_HOST = "host"
 CONFIG_RABBITMQ_PORT = "port"
 
-# s3-compatible storage
-CONFIG_S3 = "s3"
-CONFIG_S3_HOST = "host"
-CONFIG_S3_PORT = "port"
-CONFIG_S3_ACCESS_KEY = "access_key"
-CONFIG_S3_SECRET_KEY = "secret_key"
-CONFIG_S3_SECURE = "secure"
-CONFIG_S3_CERT_CHECK = "cert_check"
-CONFIG_S3_REGION = "region"
-CONFIG_S3_USE_EC2_METADATA = "use_ec2_metadata"
-
 # redis
 CONFIG_REDIS = "redis"
 CONFIG_REDIS_USERNAME = "username"

@@ -185,17 +185,16 @@ node can serve any report:
 
 ```yaml
 storage:
-  target: s3          # or the local backend with base_dir on a filesystem every node shares
+  target: local       # with base_dir on a filesystem every node shares, or custom (below)
+  base_dir: /mnt/shared/ace-storage
 crash_reporting:
   replicate: true
   storage_bucket: ace-crash-reports
 ```
 
-The built-in `s3` backend talks to an S3-compatible endpoint with a static access key and secret
-(`saq/storage/factory.py::_create_s3_storage` reads the top-level `s3:` block, including `secure`,
-`cert_check` and `region`). A deployment whose
-object store authenticates some other way — an IAM instance role, STS, a signing proxy — supplies
-its own backend instead, through the same plugin convention `analysis_cache.blob_store` uses:
+ACE ships no object store client. A deployment that keeps the reports in an object store
+supplies its own backend class, typically from an integration, through the same plugin convention
+`analysis_cache.blob_store` uses:
 
 ```yaml
 storage:
@@ -204,15 +203,13 @@ storage:
     python_module: mypackage.my_storage
     python_class: MyStorage
     config:
-      region: us-east-2
+      endpoint: https://objects.example.com
 ```
 
 The class is imported, its `get_config_class()` model validates the `config:` sub-dict, and the
 resulting model is its single constructor argument. It has to implement the seven methods of
-`StorageInterface` (`saq/storage/interface.py`), and it can get all of them by subclassing
-`S3Storage` and replacing only the client. Note `S3Storage._ensure_bucket_exists()` does
-`head_bucket` and then `create_bucket` on first upload per process — a backend running under a
-least-privilege policy that denies those should override it and let the bucket be pre-created.
+`StorageInterface` (`saq/storage/interface.py`), and it bounds every network call itself (connect
+and read timeouts, capped retries), because ACE calls those methods synchronously.
 
 This is an explicit opt-in rather than something inferred from `storage.target`, because a cluster
 running the local backend with `base_dir` on NFS is a perfectly good deployment — inferring would
@@ -243,16 +240,17 @@ is finished, and objects without it mean an interrupted upload, which is served 
 Keys are derivable from the crash id, so **no database column and no migration** — the
 `analysis_module_crashes` row is unchanged.
 
-The crashed file keeps the observable's own name, which need not be UTF-8, and an S3 key must be.
+The crashed file keeps the observable's own name, which need not be UTF-8, and an object store key
+generally must be.
 A name that is not is uploaded with each undecodable byte written as its `\udcXX` escape
 (`utf8_safe()` in `saq/logging.py`), so a report fetched from shared storage, and the
 `GET /api/v2/crashes/{crash_id}` detail of any report, name that file in escaped form. The download
 of a local report keeps the raw bytes. Reads and deletes use each key exactly as storage lists it,
 so a report replicated under the raw name before keys were escaped is still fetched and pruned.
 
-The upload runs on a **daemon thread that is never joined**. S3 requests are bounded — `S3Config`
-sets `connect_timeout`, `read_timeout` and `max_attempts` — but bounded is not instant: a report is
-several objects, each a multipart transfer of several requests, and the caller is a worker holding
+The upload runs on a **daemon thread that is never joined**. A network backend bounds its own
+requests, but bounded is not instant: a report is several objects, each possibly a multipart
+transfer of several requests, and the caller is a worker holding
 a work item lock. The local report is already durable before replication starts, so it is pure
 best-effort; at most two uploads run at once per process and the rest are left to the sweeper.
 `timeout` reports are never replicated inline at all, because `os._exit(1)` would annihilate the
@@ -275,8 +273,6 @@ reports by, silently extending retention.
   local one (remote first, and it skips the local delete if that fails, so the two never drift),
   but a decommissioned node's reports have nobody left to prune them. A bucket lifecycle rule is
   the backstop.
-- Least-privilege policies that deny `HeadBucket`/`CreateBucket` will break the automatic bucket
-  creation in `saq/storage/s3.py`; pre-create the bucket in that case.
 
 ## Configuration
 

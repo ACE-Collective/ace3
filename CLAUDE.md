@@ -285,8 +285,8 @@ Nothing in the module may raise — it runs on paths where a failure would break
 dying process. `analysis_module_crashes` is a derived index; the filesystem is authoritative. On by
 default and size-capped. `crash_reporting.replicate` (off by default, `saq/crash_replication.py`)
 copies each report to a shared bucket through `saq/storage/` so any node can serve any report; the
-upload runs on a never-joined daemon thread (S3 requests are bounded, but an object store round
-trip still does not belong on the crash path), and `ace crash sync` is the catch-up sweeper (hourly, from `etc/cron/hourly/crash-reports`).
+upload runs on a never-joined daemon thread (a network backend bounds its own requests, but an
+object store round trip still does not belong on the crash path), and `ace crash sync` is the catch-up sweeper (hourly, from `etc/cron/hourly/crash-reports`).
 Error reports (`data/error_reports`, written for a record logged at ERROR with a traceback, once per cause every ten minutes) are a
 separate mechanism; a module failure is logged at WARNING and gets only the crash report.
 
@@ -322,8 +322,8 @@ searchable (email search is in the log platform, from what `email_logger` export
 pivot and recipient history are gone. `find_archived_email()` returns the newest email of a
 Message-ID the pool still has. `ace email-archive migrate` copies the legacy `archive`/`archive_index`
 Message-IDs into `archived_messages` and moves each node's old `<archive_dir>/<host>/<xx>/<sha>.gz.e`
-files into the pool; nothing else reads the legacy tables, which a later release drops. S3
-archiving (`email_archive.target: s3`) was removed and the config rejects it.
+files into the pool; nothing else reads the legacy tables, which a later release drops. The old
+`email_archive.target` setting was removed and the config rejects any value but `local`.
 
 #### YARA QA results
 

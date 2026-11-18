@@ -7,13 +7,12 @@ attribute lookup, pydantic validation, construction -- actually runs.
 """
 
 from typing import Optional, Type
-from unittest.mock import patch
 
 import pytest
 from pydantic import Field, ValidationError
 
 from saq.configuration.config import get_config
-from saq.configuration.schema import S3Config, StorageBackendSpec, StorageConfig
+from saq.configuration.schema import StorageBackendSpec, StorageConfig
 from saq.storage.adapter import StorageAdapter
 from saq.storage.error import StorageError
 from saq.storage.factory import StorageFactory
@@ -50,7 +49,6 @@ _ = BackendWithoutConfigClass
 
 def _configure(monkeypatch, target: str = "custom", backend: Optional[StorageBackendSpec] = None):
     monkeypatch.setattr(get_config(), "storage", StorageConfig(target=target, backend=backend))
-    monkeypatch.setattr(get_config(), "s3", None)
 
 
 def _spec(python_class: str = "SampleBackend", **config) -> StorageBackendSpec:
@@ -119,23 +117,8 @@ def test_backend_without_get_config_class_is_rejected(monkeypatch):
         StorageFactory.get_storage_system()
 
 
-@pytest.mark.parametrize("secure, cert_check, scheme", [
-    (True, False, "https"),
-    (False, True, "http"),
-])
-def test_s3_backend_honors_tls_cert_check_and_region(secure, cert_check, scheme, monkeypatch):
-    """target: s3 builds its client from the same s3 settings get_s3_client() honors: it used
-    to hardcode plain HTTP and ignore cert_check and region (F-13)."""
-    pytest.importorskip("boto3")
-    monkeypatch.setattr(get_config(), "storage", StorageConfig(target="s3"))
-    monkeypatch.setattr(get_config(), "s3", S3Config(
-        host="s3.example", port=443, access_key="key", secret_key="secret",
-        secure=secure, cert_check=cert_check, region="us-east-2",
-    ))
-    with patch("saq.storage.s3.boto3") as mock_boto3:
-        StorageFactory.get_storage_system()
-
-    kwargs = mock_boto3.client.call_args.kwargs
-    assert kwargs["endpoint_url"] == f"{scheme}://s3.example:443"
-    assert kwargs["verify"] is cert_check
-    assert kwargs["region_name"] == "us-east-2"
+def test_an_unknown_target_fails_to_load():
+    """The factory builds local storage for any target but custom, so a target it has no backend
+    for must fail at config load rather than leave a node writing to its own disk."""
+    with pytest.raises(ValidationError, match="Input should be 'local' or 'custom'"):
+        StorageConfig(target="nfs")

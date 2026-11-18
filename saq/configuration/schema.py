@@ -163,23 +163,9 @@ class StorageBackendSpec(BaseModel):
     config: dict = Field(default_factory=dict, description="backend-specific config, validated against the class's get_config_class()")
 
 class StorageConfig(BaseModel):
-    target: str = Field(default="local", description="storage target: local, s3 or custom")
+    target: Literal["local", "custom"] = Field(default="local", description="storage target: local or custom")
     base_dir: str = Field(default="data/storage", description="base directory for local storage (relative to SAQ_HOME)")
-    backend: Optional[StorageBackendSpec] = Field(default=None, description="pluggable storage backend, loaded when target is custom. Use this when the object store needs credentials the built-in s3 backend does not model (IAM instance roles, STS, etc.)")
-
-class S3Config(BaseModel):
-    host: str = Field(..., description="s3-compatible storage host")
-    port: int = Field(..., description="s3-compatible storage port")
-    access_key: str = Field(..., description="s3 access key")
-    secret_key: str = Field(..., description="s3 secret key")
-    secure: bool = Field(..., description="set to use SSL")
-    cert_check: bool = Field(..., description="set to validate SSL certification")
-    region: Optional[str] = Field(description="s3 region")
-    # botocore's own defaults here are 60s/60s with legacy retries (5 attempts), which means a
-    # black-holed endpoint can occupy a caller for minutes per request. these bound that.
-    connect_timeout: int = Field(default=10, ge=1, description="seconds to wait for a TCP connection to the s3 endpoint before giving up. 60s (botocore's default) to establish a connection is pathological; this is the setting that bounds a black-holed endpoint")
-    read_timeout: int = Field(default=60, ge=1, description="seconds to wait for a single socket read. NOT a cap on a whole transfer: uploads and downloads are multipart (8MiB parts, up to 10 concurrent), so this is a per-part stall detector. lowering it imposes a per-stream throughput floor and can break large transfers on a slow link")
-    max_attempts: int = Field(default=3, ge=1, description="total attempts per request, including the first, under botocore's standard retry mode (which classifies retryable errors more narrowly than the legacy mode boto3 otherwise defaults to)")
+    backend: Optional[StorageBackendSpec] = Field(default=None, description="pluggable storage backend, loaded when target is custom. This is how a deployment uses an object store: ACE ships no object store client")
 
 class RedisConfig(BaseModel):
     name: str = Field(..., description="redis name")
@@ -682,7 +668,7 @@ class AnalysisCacheConfig(BaseModel):
     file_blob_max_bytes: int = Field(default=32 * 1024 * 1024, description="Per-file size cap (bytes) for file observables produced by a cacheable module. A delta containing a larger file is refused (refusal_reason=file_too_large) — file bytes live in the blob store, outside the delta row, so max_compressed_bytes does not cover them. OCR/QR outputs are KB-scale; this is a safety net, not a budget. A value of 0 disables the check entirely (no per-file size cap).")
     partition_retention_days: int = Field(default=35, description="Retention window (days) for analysis_result_cache / blob_refs partitions. `ace partitions maintain` drops partitions older than this (docs/DATABASE_PARTITIONS.md). MUST exceed the longest module cache_ttl (currently 30 days) or partition drops would delete rows still inside their TTL.")
     blob_gc_grace_seconds: int = Field(default=24 * 3600, description="Durable-tier blob GC grace period (seconds). A blob with zero blob_refs rows is only deleted once its durable-tier object is older than this. Guards the window between blob_store.put() and the blob_refs row being committed.")
-    local_cache_max_age_seconds: int = Field(default=7 * 24 * 3600, description="Max age (seconds) of a blob in a node's local cache tier before local maintenance evicts it. Only meaningful for two-tier backends (e.g. S3); ignored by the pure-local backend whose store is the durable tier.")
+    local_cache_max_age_seconds: int = Field(default=7 * 24 * 3600, description="Max age (seconds) of a blob in a node's local cache tier before local maintenance evicts it. Only meaningful for two-tier backends (a node-local cache in front of a remote store); ignored by the pure-local backend whose store is the durable tier.")
     local_cache_max_bytes: Optional[int] = Field(default=None, description="Optional size cap (bytes) on a node's local cache tier. When set, local maintenance evicts oldest-first until the tier is under budget. None means age-based eviction only.")
 
 
@@ -994,7 +980,6 @@ class ACEConfig(BaseModel):
     pcap: PcapConfig = Field(default_factory=PcapConfig, description="pcap/pcapng dissection shared by every pcap analysis module")
     tool_sandbox: ToolSandboxConfig = Field(default_factory=ToolSandboxConfig, description="the Landlock sandbox analysis modules run the external tools that parse alert files in")
     storage: Optional[StorageConfig] = None
-    s3: Optional[S3Config] = None
     redis: Optional[RedisConfig] = None
     redis_local: Optional[RedisConfig] = Field(default=None, alias="redis-local")
     qdrant: Optional[QdrantConfig] = None
@@ -1086,9 +1071,9 @@ class ACEConfig(BaseModel):
 
     @model_validator(mode="before")
     @classmethod
-    def _reject_removed_email_archive_s3(cls, data):
-        # the archive is a CAS pool now; a site that archived to S3 would otherwise silently fall back
-        # to the local backend
+    def _reject_removed_email_archive_target(cls, data):
+        # the archive is a CAS pool now, and the model ignores unknown keys: a site that archived to a
+        # remote target would otherwise silently fall back to the local backend
         if isinstance(data, dict):
             archive = data.get("email_archive")
             if isinstance(archive, dict) and archive.get("target", "local") != "local":
