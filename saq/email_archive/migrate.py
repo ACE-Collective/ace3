@@ -11,11 +11,17 @@ from collections.abc import Iterator
 from dataclasses import dataclass
 from typing import Optional
 
+from sqlalchemy import func, select
+from sqlalchemy.dialects.mysql import insert as mysql_insert
+from sqlalchemy.orm import Session
+
 from saq.cas import DigestMismatch
 from saq.configuration.config import get_config
 from saq.constants import DB_EMAIL_ARCHIVE
 from saq.crypto import decrypt
-from saq.database import execute_with_retry, get_db_connection
+from saq.database import get_db_connection
+from saq.database.model import ArchivedMessage, EmailArchive, EmailArchiveIndex
+from saq.database.private_session import private_transaction, run_private_transaction
 from saq.email_archive.archive import get_email_archive_pool
 from saq.environment import get_data_dir, get_temp_dir
 
@@ -25,8 +31,9 @@ _LEGACY_NAME = re.compile(r"^([0-9a-f]{64})\.gz\.e$")
 # a progress line every this many files
 _PROGRESS_EVERY = 1000
 
-# legacy archive_ids copied per backfill transaction
+# legacy archive_ids copied per backfill transaction, and a progress line every this many of them
 _BACKFILL_BATCH = 5000
+_BACKFILL_PROGRESS_EVERY = 100
 
 
 @dataclass
@@ -108,27 +115,38 @@ def backfill_archived_messages(stats: MigrationStats, batch_size: int = _BACKFIL
     archive_ids, so it never holds a lock for long, and INSERT IGNORE makes a rerun (on another
     node, or after a stop) copy nothing twice. Nothing writes the legacy tables any more, so the
     shared locks INSERT ... SELECT takes on them block no one."""
-    with get_db_connection(DB_EMAIL_ARCHIVE) as db:
-        cursor = db.cursor()
+    with private_transaction(DB_EMAIL_ARCHIVE) as session:
         if stats.dry_run:
-            cursor.execute("SELECT COUNT(*) FROM archive_index WHERE field = 'message_id'")
-            stats.rows_backfilled = cursor.fetchone()[0]
+            stats.rows_backfilled = session.execute(
+                select(func.count()).select_from(EmailArchiveIndex).where(EmailArchiveIndex.field == "message_id")).scalar()
             return
 
-        cursor.execute("SELECT MAX(archive_id) FROM archive")
-        last = cursor.fetchone()[0] or 0
-        db.commit()
+        # archive_id never resets, and partition maintenance has dropped every row older than the
+        # retention, so the ids below the oldest kept row are all empty batches
+        first, last = session.execute(select(func.min(EmailArchive.archive_id), func.max(EmailArchive.archive_id))).one()
 
-        for low in range(0, last, batch_size):
-            stats.rows_backfilled += execute_with_retry(db, cursor, """
-                INSERT IGNORE INTO archived_messages ( message_id_hash, digest, insert_date )
-                SELECT archive_index.hash, archive.hash, archive.insert_date
-                FROM archive JOIN archive_index ON archive_index.archive_id = archive.archive_id
-                WHERE archive.archive_id > %s AND archive.archive_id <= %s AND archive_index.field = 'message_id'""",
-                (low, low + batch_size), commit=True)
+    # with no legacy rows there is nothing to copy (and min/max are NULL)
+    for batch, low in enumerate(range(first - 1, last, batch_size) if first is not None else (), start=1):
+        stats.rows_backfilled += run_private_transaction(
+            _copy_message_ids, low, low + batch_size, database=DB_EMAIL_ARCHIVE,
+            description="email archive migration: copying message-ids", extra={"archive_id": low})
+        if batch % _BACKFILL_PROGRESS_EVERY == 0:
+            logging.info("email archive migration: %s message-id rows copied, up to archive_id %s of %s",
+                         stats.rows_backfilled, min(low + batch_size, last), last,
+                         extra={"rows_backfilled": stats.rows_backfilled, "archive_id": min(low + batch_size, last)})
 
     logging.info("email archive migration: copied %s message-id rows into archived_messages", stats.rows_backfilled,
                  extra={"rows_backfilled": stats.rows_backfilled})
+
+
+def _copy_message_ids(session: Session, low: int, high: int) -> int:
+    """One backfill batch: the legacy rows with low < archive_id <= high."""
+    legacy = (select(EmailArchiveIndex.hash, EmailArchive.hash, EmailArchive.insert_date)
+              .join(EmailArchiveIndex, EmailArchiveIndex.archive_id == EmailArchive.archive_id)
+              .where(EmailArchive.archive_id > low, EmailArchive.archive_id <= high,
+                     EmailArchiveIndex.field == "message_id"))
+    return session.execute(mysql_insert(ArchivedMessage).prefix_with("IGNORE").from_select(
+        ["message_id_hash", "digest", "insert_date"], legacy)).rowcount
 
 
 def _store(pool, legacy: LegacyFile) -> int:

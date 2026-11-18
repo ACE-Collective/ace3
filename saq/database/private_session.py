@@ -9,6 +9,7 @@ from typing import Callable, Iterator, Optional, TypeVar
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.orm import Session
 
+from saq.constants import DB_ACE
 from saq.database.pool import get_db
 from saq.database.retry import get_dbapi_error_code
 from saq.shutdown import is_shutting_down
@@ -21,13 +22,13 @@ RETRYABLE_LOCK_ERROR_CODES = frozenset({1205, 1213})
 
 
 @contextmanager
-def private_transaction() -> Iterator[Session]:
-    """A private session on the main database's engine, committed on exit and rolled back on
-    error. Private because the thread-shared get_db() session of the calling process (an analysis
+def private_transaction(database: str = DB_ACE) -> Iterator[Session]:
+    """A private session on the named database's engine (the main one by default), committed on
+    exit and rolled back on error. Private because the thread-shared get_db() session of the calling process (an analysis
     module, a Flask request, a service loop) may be mid-transaction, and this commit or rollback
     must not touch that work. Sharing the engine keeps the connection pool's fork handling in
     force. The CAS keeps its own equivalent (saq/cas/index.py)."""
-    scoped = get_db()
+    scoped = get_db(database)
     if scoped is None:
         raise RuntimeError("the database is not initialized")
 
@@ -37,8 +38,9 @@ def private_transaction() -> Iterator[Session]:
 
 
 def run_private_transaction(work: Callable[..., T], *args, attempts: int = 5, description: str = "transaction",
-                            extra: Optional[dict] = None, **kwargs) -> T:
-    """Runs work(session, *args, **kwargs) in a private_transaction and returns what it returns.
+                            extra: Optional[dict] = None, database: str = DB_ACE, **kwargs) -> T:
+    """Runs work(session, *args, **kwargs) in a private_transaction on database and returns what it
+    returns.
     When MySQL rolls the transaction back as a deadlock victim (1213) or a lock wait times out
     (1205), the whole transaction runs again, in a new private_transaction, up to attempts times
     in all; any other error, the last failed attempt, and a failure while the process is shutting
@@ -54,7 +56,7 @@ def run_private_transaction(work: Callable[..., T], *args, attempts: int = 5, de
 
     for attempt in range(1, attempts + 1):
         try:
-            with private_transaction() as session:
+            with private_transaction(database) as session:
                 return work(session, *args, **kwargs)
         except DBAPIError as e:
             code = get_dbapi_error_code(e)

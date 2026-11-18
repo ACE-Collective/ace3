@@ -114,17 +114,6 @@ def test_the_email_archive_tables_keep_the_archive_retention(monkeypatch):
     assert "email_archive.email_history" not in tables
 
 
-@pytest.mark.unit
-def test_archived_messages_outlive_the_email_archive_pools_ttl(monkeypatch):
-    # a Message-ID dropped while its email is still in the pool could not be found again
-    monkeypatch.setattr(get_config().cas.pools["email_archive"], "ttl_days", 45)
-    assert {t.key: t for t in get_managed_tables()}["email_archive.archived_messages"].minimum_retention_days == 45
-
-    # a site that keeps the archive another way has no floor to keep
-    monkeypatch.setattr(get_config().cas.pools["email_archive"], "retention", "held")
-    assert {t.key: t for t in get_managed_tables()}["email_archive.archived_messages"].minimum_retention_days == 1
-
-
 @pytest.mark.integration
 def test_maintain_refuses_a_retention_below_the_minimum(scratch):
     created = scratch()

@@ -36,8 +36,8 @@ email_archive <sha256> ...`) keeps an email past its ttl.
 The rows go a weekly partition at a time, once all of the partition is older than
 `email_archive.partition_retention_days` (30). So a Message-ID's rows can outlive its email by up to
 a week. A lookup in that week finds the rows but not the email, logs it at INFO, and reports the
-email as not archived. `ace partitions maintain` refuses a `partition_retention_days` below the
-pool's `ttl_days`, which would drop the Message-ID of an email the pool still has.
+email as not archived. A `partition_retention_days` below the pool's `ttl_days` fails to load,
+since it would drop the Message-ID of an email the pool still has.
 
 The pool's index (`cas_objects`, `cas_touches`, ...) is in the email archive database, not the main
 one (`index_database: email_archive`). The email archive is the high-churn store that motivated

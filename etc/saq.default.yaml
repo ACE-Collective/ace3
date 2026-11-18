@@ -981,8 +981,8 @@ email_archive:
   # `ace email-archive migrate` reads it
   archive_dir: archive/email
   # days of archived_messages rows (Message-ID -> digest) to keep. the table is partitioned by week
-  # and `ace partitions maintain` drops a week once all of it is older than this; it refuses a
-  # value below the pool's ttl_days, which would lose the Message-ID of an email still in the pool
+  # and `ace partitions maintain` drops a week once all of it is older than this. a value below the
+  # pool's ttl_days fails to load: it would lose the Message-ID of an email still in the pool
   # (docs/DATABASE_PARTITIONS.md)
   partition_retention_days: 30
 

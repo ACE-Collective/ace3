@@ -1083,8 +1083,6 @@ STATE_ANALYSIS_START_TIME = "analysis_start_time"
 # storage constants
 BUCKET_ACE3 = "ace3"
 
-# email archive constants
-
 # analysis module names
 ANALYSIS_MODULE_ACTIVE_MIME = "active_mime"
 ANALYSIS_MODULE_ALERT_ADDED_TO_EVENT = "alert_added_to_event"

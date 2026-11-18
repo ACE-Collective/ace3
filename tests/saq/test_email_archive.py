@@ -162,6 +162,25 @@ def test_an_s3_target_fails_instead_of_falling_back_to_local():
 
 
 @pytest.mark.unit
+def test_an_archive_retention_shorter_than_the_pools_ttl_fails_to_load():
+    # rows dropped before their emails would lose emails the pool still has
+    data = copy.deepcopy(get_config().raw._data)
+    data["email_archive"]["partition_retention_days"] = 29
+    with pytest.raises(ValidationError, match=r"partition_retention_days \(29\) must be at least the ttl_days of cas pool email_archive \(30\)"):
+        ACEConfig.model_validate(data)
+
+    data["email_archive"]["partition_retention_days"] = 30
+    ACEConfig.model_validate(data)
+
+    # a site that keeps the archive in a pool without a ttl has no floor to keep
+    data["email_archive"]["partition_retention_days"] = 7
+    data["cas"]["pools"]["email_archive"]["retention"] = "held"
+    del data["cas"]["pools"]["email_archive"]["ttl_days"]
+    data["cas"]["pools"]["email_archive"]["index_database"] = "ace"
+    ACEConfig.model_validate(data)
+
+
+@pytest.mark.unit
 def test_the_removed_email_archive_settings_are_ignored():
     # a site overlay may still set them; they do nothing now
     data = copy.deepcopy(get_config().raw._data)

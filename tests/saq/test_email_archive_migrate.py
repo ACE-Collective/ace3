@@ -18,6 +18,7 @@ from saq.crypto import FORMAT_V0, encrypt
 from saq.database import get_db_connection
 from saq.email import normalize_message_id
 from saq.email_archive import find_archived_email, get_email_archive_pool, query_archive_hashes
+from saq.email_archive import migrate
 from saq.email_archive.migrate import (
     MigrationStats,
     backfill_archived_messages,
@@ -115,14 +116,58 @@ def test_the_backfill_runs_a_batch_again_after_a_deadlock(monkeypatch):
     for n in range(2):
         index_legacy(hashlib.sha256(f"deadlock {n}".encode()).hexdigest(), f"<deadlock-{n}@local>")
 
-    # the second batch is the victim
-    failed = inject_deadlock(monkeypatch, "INSERT IGNORE INTO archived_messages", skip=1)
+    # one batch holds both rows (the reset keeps archive's AUTO_INCREMENT, so their ids depend on
+    # the tests that ran before, but stay far below the batch size), and its first attempt is the victim
+    with get_db_connection(DB_EMAIL_ARCHIVE) as db:
+        cursor = db.cursor()
+        cursor.execute("SELECT MAX(archive_id) FROM archive")
+        assert cursor.fetchone()[0] < 5000
+
+    failed = inject_deadlock(monkeypatch, "INSERT IGNORE INTO archived_messages")
     stats = MigrationStats(dry_run=False)
-    backfill_archived_messages(stats, batch_size=1)
+    backfill_archived_messages(stats, batch_size=5000)
 
     assert len(failed) == 1
     assert stats.rows_backfilled == 2
+    assert len(archived_messages()) == 2
     assert all(query_archive_hashes(f"<deadlock-{n}@local>") for n in range(2))
+
+
+def test_the_backfill_starts_at_the_oldest_legacy_row(monkeypatch):
+    # rows partition maintenance already dropped leave the ids below the oldest kept row empty
+    for n in range(3):
+        index_legacy(hashlib.sha256(f"dropped {n}".encode()).hexdigest(), f"<dropped-{n}@local>")
+
+    with get_db_connection(DB_EMAIL_ARCHIVE) as db:
+        cursor = db.cursor()
+        cursor.execute("DELETE FROM archive")
+        db.commit()
+
+    for n in range(2):
+        index_legacy(hashlib.sha256(f"kept {n}".encode()).hexdigest(), f"<kept-{n}@local>")
+
+    batches = []
+    copy = migrate._copy_message_ids
+    monkeypatch.setattr(migrate, "_copy_message_ids", lambda session, low, high: batches.append(low) or copy(session, low, high))
+    stats = MigrationStats(dry_run=False)
+    backfill_archived_messages(stats, batch_size=1)
+
+    assert stats.rows_backfilled == 2
+    # one batch per kept row, none for the dropped ones
+    assert len(batches) == 2
+
+
+def test_the_backfill_logs_its_progress(monkeypatch, caplog):
+    for n in range(3):
+        index_legacy(hashlib.sha256(f"progress {n}".encode()).hexdigest(), f"<progress-{n}@local>")
+
+    monkeypatch.setattr(migrate, "_BACKFILL_PROGRESS_EVERY", 2)
+    with caplog.at_level(logging.INFO):
+        backfill_archived_messages(MigrationStats(dry_run=False), batch_size=1)
+
+    # three batches: a progress line after the second, then the total
+    progress = [r for r in caplog.records if "message-id rows copied, up to archive_id" in r.getMessage()]
+    assert [r.rows_backfilled for r in progress] == [2]
 
 
 def test_a_dry_run_backfill_counts_and_copies_nothing():
