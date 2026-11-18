@@ -26,7 +26,7 @@ TEST_EMAIL = b"From: sender@example.com\r\nTo: recipient@example.com\r\nSubject:
 def archived_email(tmpdir):
     email = tmpdir / "test_email.eml"
     email.write_binary(TEST_EMAIL)
-    return archive_email(str(email), TEST_MESSAGE_ID, ["test@local"], local_time())
+    return archive_email(str(email), TEST_MESSAGE_ID, local_time())
 
 
 @pytest.mark.asyncio
@@ -44,7 +44,7 @@ async def test_message_id_with_a_slash(client: AsyncClient, tmpdir):
     message_id = "<abc/def@example.com>"
     email = tmpdir / "slash.eml"
     email.write_binary(TEST_EMAIL)
-    archive_email(str(email), message_id, ["test@local"], local_time())
+    archive_email(str(email), message_id, local_time())
 
     response = await client.get(ARCHIVE_PATH, params={"message_id": message_id})
 
@@ -62,7 +62,7 @@ async def test_unknown_message_id_is_404(client: AsyncClient):
 @pytest.mark.asyncio
 async def test_an_expired_email_is_404(client: AsyncClient, archived_email):
     # its archive rows outlive it: the pool collected it first
-    get_email_archive_pool().purge(archived_email.hash, reason="test", actor="test")
+    get_email_archive_pool().purge(archived_email, reason="test", actor="test")
 
     response = await client.get(ARCHIVE_PATH, params={"message_id": TEST_MESSAGE_ID})
 
@@ -72,7 +72,7 @@ async def test_an_expired_email_is_404(client: AsyncClient, archived_email):
 @pytest.mark.asyncio
 async def test_a_corrupt_email_fails_before_the_response_starts(archived_email):
     pool = get_email_archive_pool()
-    with open(pool.backend.path(pool.key(archived_email.hash)), "r+b") as fp:
+    with open(pool.backend.path(pool.key(archived_email)), "r+b") as fp:
         fp.seek(-1, 2)
         last = fp.read(1)
         fp.seek(-1, 2)
@@ -91,7 +91,7 @@ async def test_streams_an_email_larger_than_one_chunk(client: AsyncClient, tmpdi
     content = TEST_EMAIL + b"x" * 100_000
     email = tmpdir / "large.eml"
     email.write_binary(content)
-    archive_email(str(email), "<large@example.com>", ["test@local"], local_time())
+    archive_email(str(email), "<large@example.com>", local_time())
 
     response = await client.get(ARCHIVE_PATH, params={"message_id": "<large@example.com>"})
 

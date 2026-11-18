@@ -116,7 +116,7 @@ def cli_rebuild(args):
 
 rebuild_parser = partitions_sp.add_parser(
     "rebuild", help="Repair a table whose catchall holds data: swap in a freshly partitioned copy and copy the retained rows back.")
-rebuild_parser.add_argument("table", help="The table to rebuild, e.g. email_archive.archive_index (see `ace partitions status`).")
+rebuild_parser.add_argument("table", help="The table to rebuild, e.g. email_archive.archived_messages (see `ace partitions status`).")
 rebuild_parser.add_argument("--execute", action="store_true", default=False, help="Do it. Without this, only report what would happen.")
 rebuild_parser.add_argument("--force", action="store_true", default=False, help="Rebuild even a table that maintenance can handle.")
 rebuild_parser.add_argument("--batch-size", type=int, default=5_000, help="Rows of the old table read per batch while copying back (default 5000).")

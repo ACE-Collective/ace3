@@ -114,7 +114,9 @@ def get_managed_tables() -> list[ManagedTable]:
     """Returns every table whose partitions are maintained, configured from the ACE config."""
     config = get_config()
     email_retention = config.email_archive.partition_retention_days
-    history_retention = config.email_archive.email_history_retention_days
+    # a Message-ID must resolve for as long as the pool keeps its email
+    archive_pool = config.cas.pools.get(config.email_archive.pool)
+    archive_minimum = archive_pool.ttl_days if archive_pool is not None and archive_pool.retention == "ttl" else 1
     cache_retention = config.analysis_cache.partition_retention_days
     # GC keeps a ttl object while it has a touch within ttl_days, so a touch partition must outlive
     # the longest ttl of the pools indexed here (docs/CAS.md)
@@ -122,9 +124,11 @@ def get_managed_tables() -> list[ManagedTable]:
                            if pool.retention == "ttl" and pool.index_database == DB_EMAIL_ARCHIVE),
                           default=email_retention)
     return [
+        ManagedTable(DB_EMAIL_ARCHIVE, "archived_messages", "insert_date", Granularity.WEEK, email_retention, 4,
+                     minimum_retention_days=archive_minimum),
+        # LEGACY: nothing writes these; maintenance empties them until a later release drops them
         ManagedTable(DB_EMAIL_ARCHIVE, "archive", "insert_date", Granularity.WEEK, email_retention, 4),
         ManagedTable(DB_EMAIL_ARCHIVE, "archive_index", "insert_date", Granularity.WEEK, email_retention, 4),
-        ManagedTable(DB_EMAIL_ARCHIVE, "email_history", "insert_date", Granularity.WEEK, history_retention, 4),
         ManagedTable(DB_EMAIL_ARCHIVE, "cas_touches", "day", Granularity.DAY, touch_retention, 7),
         # cache rows live for up to 30 days (the longest module cache_ttl), so a partition must outlive that
         ManagedTable(DB_ANALYSIS_RESULT_CACHE, "analysis_result_cache", "created_at", Granularity.DAY, cache_retention, 7,

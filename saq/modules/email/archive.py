@@ -1,4 +1,3 @@
-import gzip
 import logging
 import os
 import shutil
@@ -8,13 +7,9 @@ from typing import Optional, Type
 from pydantic import Field
 from saq.analysis.analysis import Analysis
 from saq.analysis.observable import Observable
-from saq.analysis.search import recurse_tree
-from saq.constants import DB_EMAIL_ARCHIVE, DIRECTIVE_ARCHIVE, EMAIL_ARCHIVE_FIELD_URL, F_FILE, F_URL, TAG_DECRYPTED_EMAIL, AnalysisExecutionResult
-from saq.crypto import decrypt
-from saq.database.pool import get_db_connection
-from saq.database.retry import execute_with_retry
-from saq.email_archive import archive_email, index_email_archive
-from saq.environment import get_data_dir, get_global_runtime_settings
+from saq.constants import DIRECTIVE_ARCHIVE, F_FILE, TAG_DECRYPTED_EMAIL, AnalysisExecutionResult
+from saq.email_archive import archive_email
+from saq.environment import get_data_dir
 from saq.modules import AnalysisModule
 from saq.modules.config import AnalysisModuleConfig
 from saq.modules.email.rfc822 import TAG_OUTBOUND_EMAIL, EmailAnalysis
@@ -22,78 +17,7 @@ from saq.observables.file import FileObservable
 from saq.util.time import local_time
 
 
-KEY_DECRYPTED_FILE = "decrypted_file"
-
-class EncryptedArchiveAnalysis(Analysis):
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.details = {
-            KEY_DECRYPTED_FILE: None,
-        }
-
-    @property
-    def decrypted_file(self) -> Optional[str]:
-        return self.details.get(KEY_DECRYPTED_FILE)
-
-    @decrypted_file.setter
-    def decrypted_file(self, value: str):
-        self.details[KEY_DECRYPTED_FILE] = value
-
-    def generate_summary(self):
-        if not self.decrypted_file:
-            return None
-
-        return "Encrypted Archive Analysis - retrieved {}".format(self.decrypted_file)
-
-class EncryptedArchiveAnalyzer(AnalysisModule):
-    def verify_environment(self):
-        self.verify_program_exists('zcat')
-
-    @property
-    def generated_analysis_type(self):
-        return EncryptedArchiveAnalysis
-
-    @property
-    def valid_observable_types(self):
-        return F_FILE
-
-    def execute_analysis(self, _file) -> AnalysisExecutionResult:
-        assert isinstance(_file, FileObservable)
-        # do we have the decryption password available?
-        if not get_global_runtime_settings().encryption_initialized:
-            return AnalysisExecutionResult.COMPLETED
-
-        # encrypted archives end with .gz.e
-        if not _file.file_name.endswith('.gz.e'):
-            return AnalysisExecutionResult.COMPLETED
-
-        gzip_path = '{}.rfc822.gz'.format(_file.full_path[:-len('.gz.e')])
-        dest_path = '{}.rfc822'.format(_file.full_path[:-len('.gz.e')])
-
-        # decrypt and decompress the archive file
-        try:
-            decrypt(_file.full_path, gzip_path)
-            with gzip.open(gzip_path, 'rb') as fp_in:
-                with open(dest_path, 'wb') as fp_out:
-                    shutil.copyfileobj(fp_in, fp_out)
-
-        except Exception as e:
-            logging.exception("unable to decrypt {}: {}".format(_file.full_path, e))
-            return AnalysisExecutionResult.COMPLETED
-
-        analysis = self.create_analysis(_file)
-
-        # add the resulting file as an observable
-        file_observable = analysis.add_file_observable(dest_path)
-        if file_observable:
-            #file_observable.add_directive(DIRECTIVE_EXTRACT_URLS)
-            file_observable.add_tag(TAG_DECRYPTED_EMAIL)
-            file_observable.add_yara_meta("type", "email")
-        analysis.decrypted_file = os.path.relpath(dest_path, start=self.get_root().storage_dir)
-        return AnalysisExecutionResult.COMPLETED
-
 KEY_MESSAGE_ID = "message_id"
-KEY_ARCHIVE_ID = "archive_id"
 KEY_HASH = "hash"
 
 class EmailArchiveActionConfig(AnalysisModuleConfig):
@@ -104,7 +28,6 @@ class EmailArchiveResults(Analysis):
         super().__init__(*args, **kwargs)
         self.details = {
             KEY_MESSAGE_ID: None,
-            KEY_ARCHIVE_ID: None,
             KEY_HASH: None
         }
 
@@ -115,14 +38,6 @@ class EmailArchiveResults(Analysis):
     @message_id.setter
     def message_id(self, value: str):
         self.details[KEY_MESSAGE_ID] = value
-
-    @property
-    def archive_id(self) -> Optional[int]:
-        return self.details[KEY_ARCHIVE_ID]
-
-    @archive_id.setter
-    def archive_id(self, value: int):
-        self.details[KEY_ARCHIVE_ID] = value
 
     @property
     def hash(self) -> Optional[str]:
@@ -173,66 +88,19 @@ class EmailArchiveAction(AnalysisModule):
                 logging.warning(f"unable to obtain EmailAnalysis for {_file}")
             return AnalysisExecutionResult.COMPLETED
 
-        missing_reason = None
+        # the archive is found by Message-ID, so an email without one could never be found again
         if not email_analysis.message_id:
-            missing_reason = "missing message-id header"
-        elif not email_analysis.env_rcpt_to:
-            missing_reason = "missing envelope recipients"
-
-        if missing_reason:
             review_dir = os.path.join(get_data_dir(), "review", "rfc822")
             os.makedirs(review_dir, exist_ok=True)
             review_path = os.path.join(review_dir, f"{uuid.uuid4()}.rfc822")
             shutil.copy2(_file.full_path, review_path)
-            logging.error(f"unable to archive {_file} - {missing_reason} - saved to {review_path} for review")
+            logging.error(f"unable to archive {_file} - missing message-id header - saved to {review_path} for review")
             return AnalysisExecutionResult.COMPLETED
 
-        insert_date = local_time()
-        archive_result = archive_email(_file.full_path, email_analysis.message_id, email_analysis.env_rcpt_to, insert_date)
+        digest = archive_email(_file.full_path, email_analysis.message_id, local_time())
 
-        # only once the email is archived: post-analysis indexes the URLs under every
-        # EmailArchiveResults it finds, and one left by a failed archive has no archive_id
         analysis = self.create_analysis(_file)
         assert isinstance(analysis, EmailArchiveResults)
-        analysis.hash = archive_result.hash
-        analysis.archive_id = archive_result.archive_id
+        analysis.hash = digest
 
         return AnalysisExecutionResult.COMPLETED
-
-    def index_email(self, _file: Observable):
-        analysis = _file.get_and_load_analysis(EmailArchiveResults)
-        assert isinstance(analysis, EmailArchiveResults)
-
-        # find all the urls rooted at this email
-        transactions = []
-
-        def _callback(target):
-            if isinstance(target, Observable) and target.type == F_URL:
-                transactions.append((EMAIL_ARCHIVE_FIELD_URL, target.value))
-                    
-        recurse_tree(_file, _callback)
-
-        # update the fast search indexes
-        insert_date = local_time()
-
-        def _index(db, cursor):
-            for field, email_property in transactions:
-                index_email_archive(db, cursor, analysis.archive_id, field, email_property, insert_date)
-
-        with get_db_connection(DB_EMAIL_ARCHIVE) as db:
-            execute_with_retry(db, db.cursor(), _index, commit=True)
-
-    # url and content data found in attachments can (will) be added after we
-    # initially record the archive analysis
-
-    def execute_post_analysis(self):
-        for _file in self.get_root().find_observables(lambda o: o.type == F_FILE):
-            email_analysis = _file.get_and_load_analysis(EmailAnalysis)
-            if not email_analysis:
-                continue
-
-            archive_analysis = _file.get_and_load_analysis(EmailArchiveResults)
-            if not archive_analysis:
-                continue
-
-            self.index_email(_file)

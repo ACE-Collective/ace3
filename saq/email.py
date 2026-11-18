@@ -84,21 +84,6 @@ def is_local_email_domain(email_address):
 
     return False
 
-def get_email_archive_sections():
-    """Returns the list of configuration sections for email archives.
-       Includes the primary and any secondary."""
-
-    result = []
-    if get_config().email_archive.primary:
-        result.append(get_config().email_archive.primary)
-    
-    for section in get_config().raw._data.keys():
-        if section.startswith('database_email_archive_'):
-            if section not in result:
-                result.append(section[len('database_'):])
-
-    return result
-
 def normalize_message_id(message_id):
     """Returns message id with < and > prepended and appended respectively
 

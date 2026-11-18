@@ -346,11 +346,9 @@ class WikiConfig(BaseModel):
     event_link_enabled: bool = Field(..., description="enable wiki link next to event names on manage events page")
 
 class EmailArchiveConfig(BaseModel):
-    primary: str = Field(..., description="if this system is archiving emails, this determines what section to use for the database config")
     pool: str = Field(default="email_archive", description="the CAS pool archived emails are stored in (docs/EMAIL_ARCHIVE.md)")
     archive_dir: str = Field(default="archive/email", description="the directory of the archive before it moved to the CAS (relative to the data directory); only `ace email-archive migrate` reads it")
-    partition_retention_days: int = Field(default=30, description="days of archive and archive_index rows to keep; `ace partitions maintain` drops a weekly partition once all of it is older than this (docs/DATABASE_PARTITIONS.md)")
-    email_history_retention_days: int = Field(default=30, description="days of email_history rows (who received each message-id, which remediation looks up) to keep; `ace partitions maintain` drops a weekly partition once all of it is older than this (docs/DATABASE_PARTITIONS.md)")
+    partition_retention_days: int = Field(default=30, description="days of archived_messages rows (Message-ID -> digest) to keep; `ace partitions maintain` drops a weekly partition once all of it is older than this, and refuses a value below the pool's ttl_days (docs/DATABASE_PARTITIONS.md)")
 
 class MemcachedConfig(BaseModel):
     client_address: str = Field(..., description="the address of the memcached system used by ACE")

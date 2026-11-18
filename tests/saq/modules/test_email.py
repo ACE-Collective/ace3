@@ -25,7 +25,6 @@ from saq.engine.engine_configuration import EngineConfiguration
 from saq.engine.enums import EngineExecutionMode
 from saq.environment import get_global_runtime_settings, get_local_timezone, get_temp_dir
 from saq.modules.email.archive import EmailArchiveResults
-from saq.modules.email.correlation import URLEmailPivotAnalysis_v2
 from saq.modules.email.logging import EmailLoggingAnalyzer
 from saq.modules.email.mailbox import MAILBOX_ALERT_PREFIX
 from saq.modules.email.message_id import MessageIDAnalysisV2
@@ -391,120 +390,11 @@ def test_an_email_that_could_not_be_archived_has_no_results_and_no_index(root_an
     file_observable = root_analysis.get_observable(file_observable.uuid)
     assert file_observable
     assert not file_observable.get_and_load_analysis(EmailArchiveResults)
-    # the email's URLs were found, and none was indexed under an archive that does not exist
-    assert root_analysis.find_observable(lambda o: o.type == F_URL)
+    # nothing names an email the pool does not have
     with get_db_connection(DB_EMAIL_ARCHIVE) as db:
         cursor = db.cursor()
-        cursor.execute("SELECT COUNT(*) FROM archive_index")
+        cursor.execute("SELECT COUNT(*) FROM archived_messages")
         assert cursor.fetchone()[0] == 0
-
-@pytest.mark.integration
-def test_email_pivot(root_analysis, datadir):
-
-    # process the email first -- we'll find it when we pivot
-
-    root_analysis.alert_type = ANALYSIS_TYPE_MAILBOX
-    root_analysis.analysis_mode = "test_groups"
-    file_observable = root_analysis.add_file_observable(str(datadir / 'emails/splunk_logging.email.rfc822'))
-    file_observable.add_directive(DIRECTIVE_ORIGINAL_EMAIL)
-    file_observable.add_directive(DIRECTIVE_ARCHIVE)
-    root_analysis.save()
-    root_analysis.schedule()
-
-    engine = Engine()
-    engine.configuration_manager.enable_module('file_type', 'test_groups')
-    engine.configuration_manager.enable_module('file_hash_analyzer', 'test_groups')
-    engine.configuration_manager.enable_module('email_analyzer', 'test_groups')
-    engine.configuration_manager.enable_module('email_archiver', 'test_groups')
-    engine.configuration_manager.enable_module('url_extraction', 'test_groups')
-    engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
-
-    new_root = create_root_analysis(analysis_mode="test_groups")
-    new_root.initialize_storage()
-
-    # make up some details
-    new_root.details = { 
-        'alertable': 1,
-        'context': {
-            'c': '1c38af75-0c42-4ae3-941d-de3975f68602',
-            'd': '1',
-            'i': 'example',
-            's': 'email_scanner'
-        },
-        'sha256_url': '0061537d578e4f65d13e31e190e1079e00dadd808e9fa73f77e3308fdb0e1485',
-        'url': 'https://www.alienvault.com', # <-- the important part
-    }
-
-    url_observable = new_root.add_observable_by_spec(F_URL, 'https://www.alienvault.com')
-    new_root.save()
-    new_root.schedule()
-
-    engine = Engine()
-    engine.configuration_manager.enable_module('url_email_pivot_analyzer', 'test_groups')
-    engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
-
-    new_root = load_root(get_storage_dir(new_root.uuid))
-    url_observable = new_root.get_observable(url_observable.uuid)
-    analysis = url_observable.get_and_load_analysis(URLEmailPivotAnalysis_v2)
-    assert isinstance(analysis, URLEmailPivotAnalysis_v2)
-    analysis.load_details()
-    assert analysis.count == 1
-
-@pytest.mark.integration
-def test_email_pivot_excessive_emails(root_analysis, datadir):
-
-    # process the email first -- we'll find it when we pivot
-
-    root_analysis.alert_type = ANALYSIS_TYPE_MAILBOX
-    root_analysis.analysis_mode = "test_groups"
-    file_observable = root_analysis.add_file_observable(str(datadir / 'emails/splunk_logging.email.rfc822'))
-    file_observable.add_directive(DIRECTIVE_ORIGINAL_EMAIL)
-    file_observable.add_directive(DIRECTIVE_ARCHIVE)
-    root_analysis.save()
-    root_analysis.schedule()
-
-    engine = Engine()
-    engine.configuration_manager.enable_module('file_type', 'test_groups')
-    engine.configuration_manager.enable_module('file_hash_analyzer', 'test_groups')
-    engine.configuration_manager.enable_module('email_analyzer', 'test_groups')
-    engine.configuration_manager.enable_module('email_archiver', 'test_groups')
-    engine.configuration_manager.enable_module('url_extraction', 'test_groups')
-    engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
-
-    # force this to exceed the limit
-    get_analysis_module_config('url_email_pivot_analyzer').result_limit = 0
-    new_root = create_root_analysis(analysis_mode="test_groups")
-    new_root.initialize_storage()
-
-    # make up some details
-    new_root.details = { 
-        'alertable': 1,
-        'context': {
-            'c': '1c38af75-0c42-4ae3-941d-de3975f68602',
-            'd': '1',
-            'i': 'example',
-            's': 'email_scanner'
-        },
-        'sha256_url': '0061537d578e4f65d13e31e190e1079e00dadd808e9fa73f77e3308fdb0e1485',
-        'url': 'https://www.alienvault.com', # <-- the important part
-    }
-
-    url_observable = new_root.add_observable_by_spec(F_URL, 'https://www.alienvault.com')
-    new_root.save()
-    new_root.schedule()
-
-    engine = Engine()
-    engine.configuration_manager.enable_module('url_email_pivot_analyzer', 'test_groups')
-    engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
-
-    new_root = load_root(get_storage_dir(new_root.uuid))
-    url_observable = new_root.get_observable(url_observable.uuid)
-    analysis = url_observable.get_and_load_analysis(URLEmailPivotAnalysis_v2)
-    assert isinstance(analysis, URLEmailPivotAnalysis_v2)
-    analysis.load_details()
-    assert analysis.count == 1
-    # this should not have the details since it exceeded the limit
-    assert analysis.emails is None
 
 @pytest.mark.integration
 def test_message_id(root_analysis, datadir):

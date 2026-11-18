@@ -4722,8 +4722,29 @@ class EmailThreadDomain(BrocessBase):
         nullable=True)
 
 
+class ArchivedMessage(EmailArchiveBase):
+    """Message-ID -> the digest of an email archived under it in the email archive CAS pool
+    (docs/EMAIL_ARCHIVE.md). One Message-ID can name more than one email (journaled copies, a
+    resent message), so the lookup takes the newest the pool still has.
+
+    The primary key is the lookup, the de-duplication key of archive_email()'s INSERT IGNORE, and
+    contains insert_date because the table is RANGE partitioned by it (`ace partitions`)."""
+
+    __tablename__ = 'archived_messages'
+
+    message_id_hash: Mapped[bytes] = mapped_column(BINARY(32), primary_key=True)    # UNHEX(SHA2(normalized message-id, 256))
+    digest: Mapped[bytes] = mapped_column(BINARY(32), primary_key=True)             # the email's sha256
+    # DATETIME, not DATE: two emails with one Message-ID on one day are still ordered newest first
+    insert_date: Mapped[datetime] = mapped_column(DateTime, primary_key=True)
+
+
+# LEGACY: archive, archive_index and archive_server are the email archive index from before the
+# CAS. Nothing writes them; `ace email-archive migrate` reads them to backfill archived_messages and
+# to find the old files still referenced, and partition maintenance empties them. A later release
+# drops them (docs/EMAIL_ARCHIVE.md, "Migrating from the old archive").
+
 class EmailArchive(EmailArchiveBase):
-    """One row per archived email, keyed by (server_id, SHA-256 hash)."""
+    """LEGACY. One row per archived email, keyed by (server_id, SHA-256 hash)."""
 
     __tablename__ = 'archive'
     __table_args__ = (
@@ -4752,7 +4773,7 @@ class EmailArchive(EmailArchiveBase):
 
 
 class EmailArchiveIndex(EmailArchiveBase):
-    """Fast-search index over archived emails: (field, hashed value) -> archive_id."""
+    """LEGACY. (field, hashed value) -> archive_id; the message_id rows are what the backfill copies."""
 
     __tablename__ = 'archive_index'
     __table_args__ = (
@@ -4780,53 +4801,8 @@ class EmailArchiveIndex(EmailArchiveBase):
         server_default=text('CURRENT_TIMESTAMP'))
 
 
-class EmailHistory(EmailArchiveBase):
-    """Per-(message-id, recipient) delivery history.
-
-    message_id / recipient have no hard length limit so they are stored
-    full-length as TEXT and indexed via fixed-width BINARY(32) SHA-256 hash
-    columns (UNHEX(SHA2(value, 256))).
-    """
-
-    __tablename__ = 'email_history'
-    __table_args__ = (
-        UniqueConstraint('message_id_hash', 'recipient_hash', 'insert_date',
-                         name='idx_eh_message_id_recipient'),
-        Index('idx_eh_insert_date', 'insert_date'),
-        Index('idx_eh_message_id', 'message_id_hash'),
-        Index('idx_eh_recipient', 'recipient_hash'),
-    )
-
-    id: Mapped[int] = mapped_column(
-        BigInteger,
-        primary_key=True,
-        autoincrement=True)
-
-    insert_date: Mapped[datetime] = mapped_column(
-        DateTime,
-        primary_key=True,
-        nullable=False,
-        server_default=text('CURRENT_TIMESTAMP'))
-
-    message_id: Mapped[str] = mapped_column(
-        Text,
-        nullable=False)
-
-    message_id_hash: Mapped[bytes] = mapped_column(
-        BINARY(32),
-        nullable=False)
-
-    recipient: Mapped[str] = mapped_column(
-        Text,
-        nullable=False)
-
-    recipient_hash: Mapped[bytes] = mapped_column(
-        BINARY(32),
-        nullable=False)
-
-
 class EmailArchiveServer(EmailArchiveBase):
-    """Registry of hosts that own archived emails. Not partitioned."""
+    """LEGACY. The hosts whose old archive directories the legacy rows name. Not partitioned."""
 
     __tablename__ = 'archive_server'
     __table_args__ = (

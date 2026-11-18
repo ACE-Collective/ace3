@@ -24,7 +24,6 @@ from saq.crypto import set_encryption_password
 from saq.database.admin import superuser_connection
 from saq.database.pool import get_db_connection, remove_all_sessions
 from saq.database.util.user_management import add_user
-from saq.email_archive import initialize_email_archive
 from saq.engine.tracking import clear_all_tracking
 from saq.cas import reset_cas
 from saq.signatures.yara_inventory import reset_yara_inventory
@@ -111,7 +110,6 @@ def global_setup(request):
 @dataclass
 class DatabaseResetInformation:
     existing_nodes: Optional[list] = None
-    existing_email_archive_server: Optional[list] = None
     existing_unit_test_user: Optional[tuple] = None
     existing_db_config: Optional[list] = None
 
@@ -131,15 +129,8 @@ def record_database_reset_information():
         cursor.execute("SELECT `key`, `value` FROM `config`")
         existing_db_config = cursor.fetchall()
 
-    # record email archive server configuration
-    with get_db_connection("email_archive") as db:
-        cursor = db.cursor()
-        cursor.execute("SELECT server_id, hostname FROM archive_server")
-        existing_email_archive_server = cursor.fetchall()
-
     DATABASE_RESET_INFORMATION = DatabaseResetInformation(
         existing_nodes=existing_nodes,
-        existing_email_archive_server=existing_email_archive_server,
         existing_unit_test_user=existing_unit_test_user,
         existing_db_config=existing_db_config)
 
@@ -253,19 +244,16 @@ def execute_global_db_setup(database_reset_information: Optional[DatabaseResetIn
 
     with get_db_connection('email_archive') as db:
         cursor = db.cursor()
+        cursor.execute("DELETE FROM archived_messages")
+        # the legacy tables `ace email-archive migrate` reads
         cursor.execute("DELETE FROM archive")
         cursor.execute("DELETE FROM archive_index")
         cursor.execute("DELETE FROM archive_server")
-        cursor.execute("DELETE FROM email_history")
         # the CAS index of the pools indexed here (the email_archive pool, test_ttl)
         cursor.execute("DELETE FROM cas_holds")
         cursor.execute("DELETE FROM cas_purges")
         cursor.execute("DELETE FROM cas_objects")
         cursor.execute("DELETE FROM cas_touches")
-
-        if database_reset_information is not None:
-            for row in database_reset_information.existing_email_archive_server:
-                cursor.execute("INSERT INTO archive_server (server_id, hostname) VALUES (%s, %s)", row)
 
         db.commit()
 
@@ -309,8 +297,6 @@ def execute_global_setup():
 
     # clear the tracking
     clear_all_tracking()
-
-    initialize_email_archive()
 
     # set a fake encryption password
     set_encryption_password("test")

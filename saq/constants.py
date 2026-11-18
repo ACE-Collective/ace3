@@ -1084,8 +1084,6 @@ STATE_ANALYSIS_START_TIME = "analysis_start_time"
 BUCKET_ACE3 = "ace3"
 
 # email archive constants
-EMAIL_ARCHIVE_FIELD_MESSAGE_ID = "message_id"
-EMAIL_ARCHIVE_FIELD_URL = "url"
 
 # analysis module names
 ANALYSIS_MODULE_ACTIVE_MIME = "active_mime"
@@ -1109,7 +1107,6 @@ ANALYSIS_MODULE_EMAIL_CONVERSATION_ATTACHMENT_ANALYZER = "email_conversation_att
 ANALYSIS_MODULE_EMAIL_CONVERSATION_FREQUENCY_ANALYZER = "email_conversation_frequency_analyzer"
 ANALYSIS_MODULE_EMAIL_CONVERSATION_LINK_ANALYZER = "email_conversation_link_analyzer"
 ANALYSIS_MODULE_EMAIL_LOGGER = "email_logger"
-ANALYSIS_MODULE_ENCRYPTED_ARCHIVE_ANALYZER = "encrypted_archive_analyzer"
 ANALYSIS_MODULE_EXIF = "exif"
 ANALYSIS_MODULE_EXTRACTED_OLE_ANALYZER = "extracted_ole_analyzer"
 ANALYSIS_MODULE_EXTRACTED_RTF_ANALYZER = "extracted_rtf_analyzer"
@@ -1166,7 +1163,6 @@ ANALYSIS_MODULE_SPLUNK_API = "splunk_api"
 ANALYSIS_MODULE_SSDEEP = "ssdeep"
 ANALYSIS_MODULE_TLS_KEYLOG = "tls_keylog"
 ANALYSIS_MODULE_UPX = "upx"
-ANALYSIS_MODULE_URL_EMAIL_PIVOT_ANALYZER = "url_email_pivot_analyzer"
 ANALYSIS_MODULE_URL_EXTRACTION = "url_extraction"
 ANALYSIS_MODULE_USER_ANALYZER = "user_analyzer"
 ANALYSIS_MODULE_USER_DEFINED_TAGGING = "user_defined_tagging"

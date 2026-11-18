@@ -315,12 +315,15 @@ There is no object-store backend in the tree; an integration provides one as a `
 #### Email archive
 
 Every email the `email_archiver` module archives is an object in the `email_archive` CAS pool (`ttl`,
-30 days, encrypted, gzip, indexed in the email archive database), keyed by its sha256; the email
-archive database's partitioned `archive`, `archive_index` and `email_history` tables map Message-IDs
-and URLs to it (`saq/email_archive/`, `docs/EMAIL_ARCHIVE.md`). `find_archived_email()` returns the
-newest one the pool still has. `ace email-archive migrate` moves each node's old
-`<archive_dir>/<host>/<xx>/<sha>.gz.e` files into the pool. S3 archiving (`email_archive.target: s3`)
-was removed and the config rejects it.
+30 days, encrypted, gzip, indexed in the email archive database), keyed by its sha256, and one row in
+the email archive database's weekly-partitioned `archived_messages` maps its Message-ID to it
+(`saq/email_archive/`, `docs/EMAIL_ARCHIVE.md`). That is all archiving writes: the archive is not
+searchable (email search is in the log platform, from what `email_logger` exports), and the URL
+pivot and recipient history are gone. `find_archived_email()` returns the newest email of a
+Message-ID the pool still has. `ace email-archive migrate` copies the legacy `archive`/`archive_index`
+Message-IDs into `archived_messages` and moves each node's old `<archive_dir>/<host>/<xx>/<sha>.gz.e`
+files into the pool; nothing else reads the legacy tables, which a later release drops. S3
+archiving (`email_archive.target: s3`) was removed and the config rejects it.
 
 #### YARA QA results
 

@@ -1,5 +1,6 @@
-"""`ace email-archive migrate`: moves the archive's files from before the CAS into the pool
-(docs/EMAIL_ARCHIVE.md, "Migrating from the old archive")."""
+"""`ace email-archive migrate`: fills archived_messages from the legacy archive rows, then moves the
+archive's files from before the CAS into the pool (docs/EMAIL_ARCHIVE.md, "Migrating from the old
+archive")."""
 
 import gzip
 import logging
@@ -14,7 +15,7 @@ from saq.cas import DigestMismatch
 from saq.configuration.config import get_config
 from saq.constants import DB_EMAIL_ARCHIVE
 from saq.crypto import decrypt
-from saq.database import get_db_connection
+from saq.database import execute_with_retry, get_db_connection
 from saq.email_archive.archive import get_email_archive_pool
 from saq.environment import get_data_dir, get_temp_dir
 
@@ -23,6 +24,9 @@ _LEGACY_NAME = re.compile(r"^([0-9a-f]{64})\.gz\.e$")
 
 # a progress line every this many files
 _PROGRESS_EVERY = 1000
+
+# legacy archive_ids copied per backfill transaction
+_BACKFILL_BATCH = 5000
 
 
 @dataclass
@@ -37,6 +41,7 @@ class MigrationStats:
     bytes_migrated: int = 0         # plaintext bytes stored
     sources_removed: int = 0
     stopped_at_limit: bool = False
+    rows_backfilled: int = 0        # archived_messages rows copied from the legacy rows (a dry run: legacy rows there are)
 
 
 @dataclass(frozen=True)
@@ -97,6 +102,35 @@ def _is_referenced(server_id: Optional[int], sha256: str) -> bool:
         return cursor.fetchone() is not None
 
 
+def backfill_archived_messages(stats: MigrationStats, batch_size: int = _BACKFILL_BATCH) -> None:
+    """Copies the Message-ID of every legacy archive row into archived_messages, keeping its
+    insert_date so it ages out when the legacy row would have. One short transaction per range of
+    archive_ids, so it never holds a lock for long, and INSERT IGNORE makes a rerun (on another
+    node, or after a stop) copy nothing twice. Nothing writes the legacy tables any more, so the
+    shared locks INSERT ... SELECT takes on them block no one."""
+    with get_db_connection(DB_EMAIL_ARCHIVE) as db:
+        cursor = db.cursor()
+        if stats.dry_run:
+            cursor.execute("SELECT COUNT(*) FROM archive_index WHERE field = 'message_id'")
+            stats.rows_backfilled = cursor.fetchone()[0]
+            return
+
+        cursor.execute("SELECT MAX(archive_id) FROM archive")
+        last = cursor.fetchone()[0] or 0
+        db.commit()
+
+        for low in range(0, last, batch_size):
+            stats.rows_backfilled += execute_with_retry(db, cursor, """
+                INSERT IGNORE INTO archived_messages ( message_id_hash, digest, insert_date )
+                SELECT archive_index.hash, archive.hash, archive.insert_date
+                FROM archive JOIN archive_index ON archive_index.archive_id = archive.archive_id
+                WHERE archive.archive_id > %s AND archive.archive_id <= %s AND archive_index.field = 'message_id'""",
+                (low, low + batch_size), commit=True)
+
+    logging.info("email archive migration: copied %s message-id rows into archived_messages", stats.rows_backfilled,
+                 extra={"rows_backfilled": stats.rows_backfilled})
+
+
 def _store(pool, legacy: LegacyFile) -> int:
     """Decrypts and decompresses legacy into the pool. Returns the plaintext size."""
     fd, compressed_path = tempfile.mkstemp(dir=get_temp_dir(), prefix="email-archive-migrate-", suffix=".gz")
@@ -127,15 +161,19 @@ def _remove_source(legacy: LegacyFile, stats: MigrationStats, keep_source: bool)
 
 def migrate_legacy_archive(archive_dir: Optional[str] = None, *, dry_run: bool = False, keep_source: bool = False,
                            limit: Optional[int] = None) -> MigrationStats:
-    """Moves every reachable email in the old archive directory into the pool (see the module
-    docstring). limit stops after that many files have been stored. Safe to run again: a file the
-    pool already has is only removed."""
+    """Fills archived_messages from the legacy rows, then moves every reachable email in the old
+    archive directory into the pool (see the module docstring). limit stops after that many files
+    have been stored. Safe to run again: a row already copied and a file the pool already has are
+    only skipped (the file is removed)."""
     archive_dir = archive_dir or get_legacy_archive_dir()
     stats = MigrationStats(dry_run=dry_run)
     pool = get_email_archive_pool()
     server_ids = _server_ids()
     logging.info("email archive migration: from %s into cas pool %s%s", archive_dir, pool.name, " (dry run)" if dry_run else "",
                  extra={"path": archive_dir, "cas_pool": pool.name, "dry_run": dry_run})
+
+    # first, so a Message-ID resolves as soon as its file is in the pool
+    backfill_archived_messages(stats)
 
     for legacy in iter_legacy_files(archive_dir, stats):
         if limit is not None and stats.migrated >= limit:
@@ -181,7 +219,7 @@ def migrate_legacy_archive(archive_dir: Optional[str] = None, *, dry_run: bool =
         "path": archive_dir, "cas_pool": pool.name, "dry_run": dry_run, "scanned": stats.scanned,
         "migrated": stats.migrated, "already_present": stats.already_present, "unreferenced": stats.unreferenced,
         "failed": stats.failed, "unrecognized": stats.unrecognized, "bytes_migrated": stats.bytes_migrated,
-        "sources_removed": stats.sources_removed})
+        "sources_removed": stats.sources_removed, "rows_backfilled": stats.rows_backfilled})
     return stats
 
 

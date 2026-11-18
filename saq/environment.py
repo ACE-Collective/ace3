@@ -40,7 +40,6 @@ class GlobalRuntimeSettings(BaseModel):
     company_name: Optional[str] = Field(default=None, description="the company this node belongs to")
     data_dir: str = Field(default="/opt/ace/data", description="where ACE stores most of it's data, including alert data")
     default_encoding: str = Field(default_factory=locale.getpreferredencoding, description="what text encoding we're using")
-    email_archive_server_id: Optional[int] = Field(default=None, description="archive server id for this server")
     encryption_initialized: bool = Field(default=False, description="")
     encryption_key: Optional[str] = Field(default=None, description="the private key password for encrypting/decrypting archive files")
     forced_alerts: bool = Field(default=False, description="set this to True to force all anlaysis to result in an alert being generated")
@@ -363,9 +362,6 @@ def initialize_environment(
         get_global_runtime_settings().managed_network_cidrs.append(cidr.strip())
 
     # initialize other systems
-
-    from saq.email_archive import initialize_email_archive
-    initialize_email_archive()
 
     from saq.monitor import initialize_monitoring
     initialize_monitoring()
