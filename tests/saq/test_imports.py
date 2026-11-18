@@ -316,8 +316,8 @@ def test_ace_api_still_says_how_to_install_a_missing_requests():
 
 
 def test_the_email_archive_and_phishkit_clients_load_their_libraries_on_use():
-    # initialize_environment() sets up the email archive in every process; only archiving or reading an
-    # email needs the CAS (and with it the ORM models), and only scanning needs celery
+    # every process that reads an alert imports the email archive (its analysis modules do); only
+    # archiving or reading an email needs the CAS and the ORM models, and only scanning needs celery
     _assert_loads_none("import saq.email_archive, saq.storage, saq.phishkit\n",
                        ["saq.cas", "saq.database.model", "sqlalchemy", "boto3", "botocore", "saq.storage.s3",
                         "celery", "phishkit"])

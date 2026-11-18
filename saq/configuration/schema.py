@@ -346,11 +346,9 @@ class WikiConfig(BaseModel):
     event_link_enabled: bool = Field(..., description="enable wiki link next to event names on manage events page")
 
 class EmailArchiveConfig(BaseModel):
-    primary: str = Field(..., description="if this system is archiving emails, this determines what section to use for the database config")
     pool: str = Field(default="email_archive", description="the CAS pool archived emails are stored in (docs/EMAIL_ARCHIVE.md)")
     archive_dir: str = Field(default="archive/email", description="the directory of the archive before it moved to the CAS (relative to the data directory); only `ace email-archive migrate` reads it")
-    partition_retention_days: int = Field(default=30, description="days of archive and archive_index rows to keep; `ace partitions maintain` drops a weekly partition once all of it is older than this (docs/DATABASE_PARTITIONS.md)")
-    email_history_retention_days: int = Field(default=30, description="days of email_history rows (who received each message-id, which remediation looks up) to keep; `ace partitions maintain` drops a weekly partition once all of it is older than this (docs/DATABASE_PARTITIONS.md)")
+    partition_retention_days: int = Field(default=30, description="days of archived_messages rows (Message-ID -> digest) to keep; `ace partitions maintain` drops a weekly partition once all of it is older than this. At least the pool's ttl_days, or the config fails to load (docs/DATABASE_PARTITIONS.md)")
 
 class MemcachedConfig(BaseModel):
     client_address: str = Field(..., description="the address of the memcached system used by ACE")
@@ -1098,6 +1096,18 @@ class ACEConfig(BaseModel):
                                  "stored in the email_archive CAS pool, which an integration can give a custom "
                                  "backend; see docs/EMAIL_ARCHIVE.md")
         return data
+
+    @model_validator(mode="after")
+    def _archive_rows_outlive_their_emails(self):
+        # archived_messages is how an archived email is found: rows dropped before the pool's ttl
+        # would lose emails the pool still has. Refused here, before an upgrade migrates anything,
+        # rather than by partition maintenance once rows have filled the table's catchall
+        archive = self.email_archive
+        pool = self.cas.pools.get(archive.pool) if archive is not None else None
+        if pool is not None and pool.retention == "ttl" and archive.partition_retention_days < pool.ttl_days:
+            raise ValueError(f"email_archive.partition_retention_days ({archive.partition_retention_days}) must be at "
+                             f"least the ttl_days of cas pool {archive.pool} ({pool.ttl_days}); see docs/EMAIL_ARCHIVE.md")
+        return self
 
     @model_validator(mode="before")
     @classmethod

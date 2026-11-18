@@ -1,8 +1,8 @@
 """``ace email-archive`` -- the email archive (docs/EMAIL_ARCHIVE.md).
 
-``migrate`` moves the archive's files from before the CAS into the email_archive pool. Each node kept
-the emails it archived itself, so it runs on every node that archived email, and it is safe to run
-again (or to stop and resume).
+``migrate`` copies the Message-IDs of the archive from before the CAS into archived_messages and moves
+its files into the email_archive pool. Each node kept the emails it archived itself, so it runs on
+every node that archived email, and it is safe to run again (or to stop and resume).
 """
 
 from saq.cli.cli_main import get_cli_subparsers
@@ -31,6 +31,8 @@ def cli_migrate(args):
     stats = migrate_legacy_archive(archive_dir, dry_run=args.dry_run, keep_source=args.keep_source, limit=args.limit)
 
     verb = "would migrate" if args.dry_run else "migrated"
+    copied = "message-id row(s) to copy" if args.dry_run else "message-id row(s) copied"
+    print(f"{stats.rows_backfilled} {copied} into archived_messages")
     print(f"{archive_dir}: scanned {stats.scanned} file(s), {verb} {stats.migrated} ({stats.bytes_migrated} bytes), "
           f"{stats.already_present} already in the pool, {stats.unreferenced} with no archive row (left for the "
           f"archive cron task), {stats.unrecognized} unrecognized, {stats.failed} failed, "
@@ -42,7 +44,7 @@ def cli_migrate(args):
 
 
 migrate_parser = email_archive_sp.add_parser(
-    "migrate", help="Move the archive's files from before the CAS into the email_archive pool.")
+    "migrate", help="Copy the old archive's Message-IDs and move its files into the email_archive pool.")
 migrate_parser.add_argument("--archive-dir", default=None,
                             help="The old archive directory (default: email_archive.archive_dir under the data directory).")
 migrate_parser.add_argument("--dry-run", action="store_true", default=False,

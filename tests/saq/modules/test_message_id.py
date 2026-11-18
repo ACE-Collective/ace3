@@ -17,7 +17,7 @@ from tests.saq.test_util import create_test_context
 def _archive(tmpdir, message_id: str, content: bytes):
     email = tmpdir / "archived_email"
     email.write_binary(content)
-    return archive_email(str(email), message_id, ["test@local"], local_time())
+    return archive_email(str(email), message_id, local_time())
 
 @pytest.mark.unit
 def test_message_id_analysis_v2():
@@ -80,7 +80,7 @@ def test_message_id_analyzer_v2_expired_email_is_not_archived(tmpdir, caplog):
     root.initialize_storage()
     observable = root.add_observable_by_spec(F_MESSAGE_ID, "<test@local>")
     # the archive rows outlive the email, which the pool has already collected
-    get_email_archive_pool().purge(_archive(tmpdir, "<test@local>", b"This is a test.").hash, reason="test", actor="test")
+    get_email_archive_pool().purge(_archive(tmpdir, "<test@local>", b"This is a test."), reason="test", actor="test")
 
     analyzer = MessageIDAnalyzerV2(get_analysis_module_config(ANALYSIS_MODULE_MESSAGE_ID_ANALYZER_V2), context=create_test_context(root=root))
     with caplog.at_level(logging.INFO):
@@ -118,7 +118,7 @@ def test_message_id_analyzer_v2_archive_failure_is_reported(tmpdir, monkeypatch,
     observable = root.add_observable_by_spec(F_MESSAGE_ID, "<test@local>")
     # indexed in the archive and in the pool's index, but the pool's bytes are gone
     pool = get_email_archive_pool()
-    os.unlink(pool.backend.path(pool.key(_archive(tmpdir, "<test@local>", b"This is a test.").hash)))
+    os.unlink(pool.backend.path(pool.key(_archive(tmpdir, "<test@local>", b"This is a test."))))
 
     write_error_report = Mock()
     monkeypatch.setattr("saq.error.reporting.write_error_report", write_error_report)

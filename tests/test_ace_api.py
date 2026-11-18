@@ -654,6 +654,6 @@ def test_iter_archived_email(tmpdir):
     content = b"From: sender@example.com\r\nTo: recipient@example.com\r\nSubject: Test Email\r\n\r\nTest body"
     email = tmpdir / "test_email.eml"
     email.write_binary(content)
-    archive_email(str(email), "<test-message-id@example.com>", ["test@local"], local_time())
+    archive_email(str(email), "<test-message-id@example.com>", local_time())
 
     assert b"".join(ace_api.iter_archived_email("<test-message-id@example.com>")) == content

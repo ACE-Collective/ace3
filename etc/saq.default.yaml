@@ -975,21 +975,16 @@ observable_types:
     yara_string: "saq.observables.yara:YaraStringObservable"
 
 email_archive:
-  # if this system is archiving emails, this determines what section to use for the database config
-  # NOTE this is the name of the section without the leading database_ (legacy issue)
-  primary: email_archive
   # the CAS pool (cas.pools) archived emails are stored in (docs/EMAIL_ARCHIVE.md)
   pool: email_archive
   # where the archive kept its files before it moved to the CAS (relative to DATA_DIR). only
   # `ace email-archive migrate` reads it
   archive_dir: archive/email
-  # days of archive and archive_index rows to keep. these tables are partitioned by week and
-  # `ace partitions maintain` drops a week once all of it is older than this
+  # days of archived_messages rows (Message-ID -> digest) to keep. the table is partitioned by week
+  # and `ace partitions maintain` drops a week once all of it is older than this. a value below the
+  # pool's ttl_days fails to load: it would lose the Message-ID of an email still in the pool
   # (docs/DATABASE_PARTITIONS.md)
   partition_retention_days: 30
-  # days of email_history rows to keep, the same way. this is who received each message-id, which
-  # remediation looks up to find the mailboxes to remediate, so it is set separately
-  email_history_retention_days: 30
 
 memcached:
   # the address of the memcached system used by ACE
@@ -1703,12 +1698,6 @@ analysis_module_email_archiver:
   # how long to keep archived emails (in days)
   expiration_days: 7
 
-analysis_module_encrypted_archive_analyzer:
-  name: encrypted_archive_analyzer
-  python_module: saq.modules.email.archive
-  python_class: EncryptedArchiveAnalyzer
-  enabled: true
-
 analysis_module_file_location_analysis:
   name: file_location_analysis
   python_module: saq.modules.file_path
@@ -1855,15 +1844,6 @@ analysis_module_email_thread_analyzer:
   #   ignored_domain_pairs:
   #     - [example.com, example-group.com]
   config_path: etc/email_thread_analysis.yaml
-
-analysis_module_url_email_pivot_analyzer:
-  name: url_email_pivot_analyzer
-  python_module: saq.modules.email.correlation
-  python_class: URLEmailPivotAnalyzer
-  enabled: true
-  # the maximum amount of results to download
-  # if there are more emails, only the count is recorded
-  result_limit: 35
 
 analysis_module_email_logger:
   name: email_logger
@@ -2514,6 +2494,9 @@ deprecated_modules:
   - saq.modules.asset.active_directory:ActiveDirectoryAnalysis
   - saq.modules.pcap.sensor_extraction:PcapExtractionAnalysis
   - saq.modules.user:UserTagAnalysis
+  # the email archive is no longer searchable (docs/EMAIL_ARCHIVE.md)
+  - saq.modules.email.correlation:URLEmailPivotAnalysis_v2
+  - saq.modules.email.archive:EncryptedArchiveAnalysis
 
 analysis_module_observable_detection:
   name: observable_detection
@@ -2670,7 +2653,6 @@ module_group_correlation:
     - phishkit_analyzer
     - rdap_analyzer
     - snort_signature_analysis_v1
-    - url_email_pivot_analyzer
     - user_analyzer
 
 module_group_yara:
@@ -2748,7 +2730,6 @@ module_group_email:
     - email_conversation_attachment_analyzer
     - email_conversation_frequency_analyzer
     - email_conversation_link_analyzer
-    - encrypted_archive_analyzer
     - mailbox_email_analyzer
 
 module_group_common:

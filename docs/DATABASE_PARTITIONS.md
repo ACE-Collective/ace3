@@ -7,8 +7,8 @@ locks rows, writes undo log and can block inserts for as long as it runs, they a
 
 | Table | Database | Column | One partition per | Retention (config) | Provisioned ahead |
 |---|---|---|---|---|---|
-| `archive`, `archive_index` | email archive | `insert_date` | ISO week (`pGGGGwVV`) | `email_archive.partition_retention_days` (30) | 4 weeks |
-| `email_history` | email archive | `insert_date` | ISO week (`pGGGGwVV`) | `email_archive.email_history_retention_days` (30) | 4 weeks |
+| `archived_messages` | email archive | `insert_date` | ISO week (`pGGGGwVV`) | `email_archive.partition_retention_days` (30), at least the `email_archive` pool's `ttl_days` | 4 weeks |
+| `archive`, `archive_index` (legacy, nothing writes them) | email archive | `insert_date` | ISO week (`pGGGGwVV`) | `email_archive.partition_retention_days` (30) | 4 weeks |
 | `cas_touches` | email archive | `day` (a `DATE`) | day (`pYYYYMMDD`) | the longest `ttl_days` of the `ttl` CAS pools indexed there (`email_archive`: 30), else `email_archive.partition_retention_days` | 7 days |
 | `analysis_result_cache`, `blob_refs` | analysis result cache | `created_at` | day (`pYYYYMMDD`) | `analysis_cache.partition_retention_days` (35, at least 31) | 7 days |
 
@@ -84,8 +84,8 @@ to it:
 
 ```
 ace partitions status
-ace partitions rebuild email_archive.archive_index             # shows what it would do
-ace partitions rebuild email_archive.archive_index --execute
+ace partitions rebuild email_archive.archived_messages             # shows what it would do
+ace partitions rebuild email_archive.archived_messages --execute
 ```
 
 Things to know before running it:

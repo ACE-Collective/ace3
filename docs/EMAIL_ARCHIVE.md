@@ -5,23 +5,24 @@ directive), so that an email can be pulled back later by its Message-ID: the `me
 does that when an alert names a Message-ID, and `GET /api/v2/email/archive?message_id=` streams one
 to an analyst. The code is `saq/email_archive/`.
 
+The archive is not searchable. Searching email (by URL, recipient, sender, subject) happens in the
+log platform, from the entry `email_logger` exports for every email, which carries the email's
+`message_id`, `env_rcpt_to`, `extracted_urls` and its digest in the pool as `archive_hash`. The
+archive answers one question: which email does this Message-ID name.
+
 ## What is stored where
 
 - **The email.** Its bytes are an object in the CAS pool named by `email_archive.pool` (default
   `email_archive`, `docs/CAS.md`), and its digest is the sha256 of the email. The pool is encrypted
   with the system key and gzip-compressed (`compression: gzip`). The digest is still that of the
   uncompressed email.
-- **Which Message-ID names which email, and who received it.** These are in the email archive
-  database (`database_email_archive`):
-  - `archive` has one row per (archiving host, email, time it was archived);
-  - `archive_index` maps the hash of a Message-ID, or of a URL found in the email, to `archive` rows;
-  - `email_history` maps a Message-ID to the recipients it was delivered to, which remediation uses.
+- **Which Message-ID names which email.** `archived_messages` in the email archive database
+  (`database_email_archive`) has one row per (hash of the Message-ID, digest, time it was
+  archived). It is partitioned by week and dropped by `ace partitions maintain`
+  (`docs/DATABASE_PARTITIONS.md`).
 
-  All three are partitioned by week and dropped by `ace partitions maintain`
-  (`docs/DATABASE_PARTITIONS.md`). `archive_server` names the hosts.
-
-`archive_email()` puts the email in the pool before it writes any row, so a row never names an email
-the pool never had. `find_archived_email(message_id)` returns the digest of the newest email
+Archiving an email is the pool `put` and that one row. `archive_email()` does the `put` first, so a
+row never names an email the pool never had. `find_archived_email(message_id)` returns the digest of the newest email
 archived under that Message-ID that the pool still has. One Message-ID can name more than one email,
 for example a journaled copy and the original.
 
@@ -32,10 +33,11 @@ The pool is a `ttl` pool (`docs/CAS.md`, "Retention modes and churn"). An email 
 then deletes it. Archiving the same email again renews it. A legal hold (`ace cas hold add
 email_archive <sha256> ...`) keeps an email past its ttl.
 
-The database rows go a weekly partition at a time, once all of the partition is older than
+The rows go a weekly partition at a time, once all of the partition is older than
 `email_archive.partition_retention_days` (30). So a Message-ID's rows can outlive its email by up to
 a week. A lookup in that week finds the rows but not the email, logs it at INFO, and reports the
-email as not archived.
+email as not archived. A `partition_retention_days` below the pool's `ttl_days` fails to load,
+since it would drop the Message-ID of an email the pool still has.
 
 The pool's index (`cas_objects`, `cas_touches`, ...) is in the email archive database, not the main
 one (`index_database: email_archive`). The email archive is the high-churn store that motivated
@@ -74,15 +76,24 @@ site configures its integration's backend for this pool before it upgrades.
 
 Before the CAS, each node wrote the emails it archived to
 `<DATA_DIR>/<email_archive.archive_dir>/<hostname>/<sha[:2]>/<sha>.gz.e`, gzip and then encrypted
-(`saq.crypto` v0). An email that has not been migrated cannot be found, so run the migration on
-every node that archived email, as soon as the new code is running:
+(`saq.crypto` v0), and indexed them in the `archive`, `archive_index`, `email_history` and
+`archive_server` tables. The upgrade creates `archived_messages` empty and drops `email_history`,
+which nothing read. An email that has not been migrated cannot be found, so run the migration on
+every node that archived email, as soon as the new code is running and within
+`partition_retention_days` (after that, partition maintenance has emptied the old tables and the
+cron task has deleted the old files):
 
 ```bash
 ace email-archive migrate --dry-run     # count what would move
 ace email-archive migrate               # move it
 ```
 
-For each file, the migration:
+First, the migration copies the Message-ID of every legacy `archive` row into `archived_messages`,
+keeping the time it was archived, so it ages out when the legacy row would have. It does this in
+batches of `archive_id`, one short transaction each. The legacy tables are shared by every node, so
+the first node to run copies them all and the others copy nothing.
+
+Then, for each file, the migration:
 
 - skips the file and leaves it in place when no `archive` row names it any more. Nothing can find
   such an email. The daily `archive` cron task deletes these files after 30 days;
@@ -96,7 +107,11 @@ again retries it. `--keep-source` leaves every file in place, `--limit N` stops 
 `--archive-dir` reads another directory. The migration is safe to stop and to run again.
 
 A migrated email counts as archived on the day it was migrated, so it lives `ttl_days` from then
-rather than from when it was first archived.
+rather than from when it was first archived. Its Message-ID row keeps the original date, so the row
+can go before the email does; the email is then unreachable and GC deletes it at the end of its ttl.
+
+Nothing writes `archive`, `archive_index` or `archive_server` once the new code runs. Partition
+maintenance empties the first two, and a later release drops all three.
 
 The migration needs the encryption key, since it has to decrypt the old files and the pool encrypts
 what it stores.
@@ -106,8 +121,9 @@ what it stores.
 - `saq/email_archive/archive.py`: archiving, lookups and reading.
 - `saq/email_archive/migrate.py`: the migration, which `ace email-archive migrate`
   (`saq/cli/commands/email_archive.py`) runs.
-- `saq/modules/email/archive.py`: the `email_archiver` module, which archives each email and
-  indexes the URLs found in it in post-analysis.
+- `saq/modules/email/archive.py`: the `email_archiver` module, which archives each email that has
+  a Message-ID. One without is copied to `data/review/rfc822/` and logged at ERROR, since it could
+  never be found again.
 - `saq/modules/email/message_id.py`: the `message_id_analyzer`, which materializes an archived
   email into an alert.
 - `aceapi_v2/email/`: `GET /api/v2/email/archive`. The email is looked up and verified (and
@@ -116,3 +132,8 @@ what it stores.
 
 The email log entry that `email_logger` exports (fluent-bit, brocess) carries the email's digest as
 `archive_hash`. Its old `archive_path` field named the `.gz.e` file and is gone.
+
+The URL pivot (`url_email_pivot_analyzer`), which counted the archived emails that contained a URL,
+and `encrypted_archive_analyzer`, which decrypted a `.gz.e` file of the old archive found in an
+alert, were removed with the search tables. Their analyses in existing alerts load as unknown
+analyses (`deprecated_modules`).

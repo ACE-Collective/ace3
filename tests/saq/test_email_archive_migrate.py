@@ -1,27 +1,32 @@
-"""`ace email-archive migrate`: moving the archive's files from before the CAS into the pool."""
+"""`ace email-archive migrate`: copying the legacy Message-ID rows into archived_messages and moving
+the archive's files from before the CAS into the pool."""
 
 import gzip
 import hashlib
 import logging
 import os
+import socket
 from argparse import Namespace
+from datetime import datetime, timedelta
+from typing import Optional
 
 import pytest
 
 from saq.cli.commands.email_archive import cli_migrate
-from saq.constants import DB_EMAIL_ARCHIVE, EMAIL_ARCHIVE_FIELD_MESSAGE_ID
+from saq.constants import DB_EMAIL_ARCHIVE
 from saq.crypto import FORMAT_V0, encrypt
 from saq.database import get_db_connection
-from saq.email_archive import (
-    find_archived_email,
-    get_email_archive_local_server_name,
-    get_email_archive_pool,
-    index_email_archive,
-    register_email_archive,
+from saq.email import normalize_message_id
+from saq.email_archive import find_archived_email, get_email_archive_pool, query_archive_hashes
+from saq.email_archive import migrate
+from saq.email_archive.migrate import (
+    MigrationStats,
+    backfill_archived_messages,
+    get_legacy_archive_dir,
+    migrate_legacy_archive,
 )
-from saq.email_archive.migrate import get_legacy_archive_dir, migrate_legacy_archive
-from saq.environment import get_global_runtime_settings
 from saq.util.time import local_time
+from tests.saq.helpers import inject_deadlock
 
 pytestmark = pytest.mark.integration
 
@@ -33,7 +38,7 @@ def legacy_dir(tmp_path):
 
 def write_legacy(legacy_dir: str, content: bytes, hostname: str = None, name_hash: str = None) -> str:
     """A file as the old archive wrote it: <hostname>/<sha[:2]>/<sha>.gz.e, gzip then encrypted (v0)."""
-    hostname = hostname or get_email_archive_local_server_name()
+    hostname = hostname or socket.gethostname().lower()
     sha256 = name_hash or hashlib.sha256(content).hexdigest()
     target = os.path.join(legacy_dir, hostname, sha256[:2], f"{sha256}.gz.e")
     os.makedirs(os.path.dirname(target), exist_ok=True)
@@ -46,17 +51,37 @@ def write_legacy(legacy_dir: str, content: bytes, hostname: str = None, name_has
     return target
 
 
-def index_legacy(sha256: str, message_id: str, hostname: str = None) -> None:
-    """The archive rows the old archive wrote for an email, under the server that archived it."""
-    server_id = register_email_archive(hostname) if hostname else get_global_runtime_settings().email_archive_server_id
-    insert_date = local_time().replace(microsecond=0)
+def index_legacy(sha256: str, message_id: str, hostname: str = None, insert_date: Optional[datetime] = None,
+                 urls: tuple[str, ...] = ()) -> None:
+    """The rows the old archive wrote for an email: its host in archive_server, the archive row, and
+    the archive_index rows of its Message-ID and of the URLs found in it."""
+    hostname = hostname or socket.gethostname().lower()
+    insert_date = (insert_date or local_time()).replace(microsecond=0)
     with get_db_connection(DB_EMAIL_ARCHIVE) as db:
         cursor = db.cursor()
+        cursor.execute("INSERT IGNORE INTO archive_server (hostname) VALUES (%s)", (hostname,))
+        cursor.execute("SELECT server_id FROM archive_server WHERE hostname = %s", (hostname,))
+        server_id = cursor.fetchone()[0]
         cursor.execute("INSERT INTO archive (server_id, hash, insert_date) VALUES (%s, UNHEX(%s), %s)",
                        (server_id, sha256, insert_date))
         archive_id = cursor.lastrowid
-        index_email_archive(db, cursor, archive_id, EMAIL_ARCHIVE_FIELD_MESSAGE_ID, message_id, insert_date)
+        for field, value in [("message_id", normalize_message_id(message_id))] + [("url", url) for url in urls]:
+            cursor.execute("INSERT INTO archive_index (field, hash, archive_id, insert_date) "
+                           "VALUES (%s, UNHEX(SHA2(%s, 256)), %s, %s)", (field, value, archive_id, insert_date))
         db.commit()
+
+
+def archived_messages() -> list[tuple]:
+    """Every archived_messages row as (message_id_hash hex, digest hex, insert_date), sorted."""
+    with get_db_connection(DB_EMAIL_ARCHIVE) as db:
+        cursor = db.cursor()
+        cursor.execute("SELECT LOWER(HEX(message_id_hash)), LOWER(HEX(digest)), insert_date FROM archived_messages "
+                       "ORDER BY insert_date")
+        return list(cursor.fetchall())
+
+
+def _message_id_hash(message_id: str) -> str:
+    return hashlib.sha256(normalize_message_id(message_id).encode()).hexdigest()
 
 
 def legacy_email(legacy_dir: str, content: bytes, message_id: str, hostname: str = None) -> tuple[str, str]:
@@ -64,6 +89,99 @@ def legacy_email(legacy_dir: str, content: bytes, message_id: str, hostname: str
     sha256 = hashlib.sha256(content).hexdigest()
     index_legacy(sha256, message_id, hostname)
     return path, sha256
+
+
+def test_the_backfill_copies_each_message_id_with_its_insert_date(legacy_dir):
+    # three legacy emails, one batch each; the URL rows stay behind
+    then = local_time().replace(microsecond=0) - timedelta(days=3)
+    expected = []
+    for n in range(3):
+        sha256 = hashlib.sha256(f"legacy {n}".encode()).hexdigest()
+        index_legacy(sha256, f"<backfill-{n}@local>", insert_date=then + timedelta(hours=n), urls=(f"https://example.com/{n}",))
+        expected.append((_message_id_hash(f"<backfill-{n}@local>"), sha256, (then + timedelta(hours=n)).replace(tzinfo=None)))
+
+    stats = MigrationStats(dry_run=False)
+    backfill_archived_messages(stats, batch_size=1)
+    assert stats.rows_backfilled == 3
+    assert archived_messages() == expected
+
+    # a second run (another node, or after a stop) copies nothing twice
+    again = MigrationStats(dry_run=False)
+    backfill_archived_messages(again, batch_size=1)
+    assert again.rows_backfilled == 0
+    assert archived_messages() == expected
+
+
+def test_the_backfill_runs_a_batch_again_after_a_deadlock(monkeypatch):
+    for n in range(2):
+        index_legacy(hashlib.sha256(f"deadlock {n}".encode()).hexdigest(), f"<deadlock-{n}@local>")
+
+    # one batch holds both rows (the reset keeps archive's AUTO_INCREMENT, so their ids depend on
+    # the tests that ran before, but stay far below the batch size), and its first attempt is the victim
+    with get_db_connection(DB_EMAIL_ARCHIVE) as db:
+        cursor = db.cursor()
+        cursor.execute("SELECT MAX(archive_id) FROM archive")
+        assert cursor.fetchone()[0] < 5000
+
+    failed = inject_deadlock(monkeypatch, "INSERT IGNORE INTO archived_messages")
+    stats = MigrationStats(dry_run=False)
+    backfill_archived_messages(stats, batch_size=5000)
+
+    assert len(failed) == 1
+    assert stats.rows_backfilled == 2
+    assert len(archived_messages()) == 2
+    assert all(query_archive_hashes(f"<deadlock-{n}@local>") for n in range(2))
+
+
+def test_the_backfill_starts_at_the_oldest_legacy_row(monkeypatch):
+    # rows partition maintenance already dropped leave the ids below the oldest kept row empty
+    for n in range(3):
+        index_legacy(hashlib.sha256(f"dropped {n}".encode()).hexdigest(), f"<dropped-{n}@local>")
+
+    with get_db_connection(DB_EMAIL_ARCHIVE) as db:
+        cursor = db.cursor()
+        cursor.execute("DELETE FROM archive")
+        db.commit()
+
+    for n in range(2):
+        index_legacy(hashlib.sha256(f"kept {n}".encode()).hexdigest(), f"<kept-{n}@local>")
+
+    batches = []
+    copy = migrate._copy_message_ids
+    monkeypatch.setattr(migrate, "_copy_message_ids", lambda session, low, high: batches.append(low) or copy(session, low, high))
+    stats = MigrationStats(dry_run=False)
+    backfill_archived_messages(stats, batch_size=1)
+
+    assert stats.rows_backfilled == 2
+    # one batch per kept row, none for the dropped ones
+    assert len(batches) == 2
+
+
+def test_the_backfill_logs_its_progress(monkeypatch, caplog):
+    for n in range(3):
+        index_legacy(hashlib.sha256(f"progress {n}".encode()).hexdigest(), f"<progress-{n}@local>")
+
+    monkeypatch.setattr(migrate, "_BACKFILL_PROGRESS_EVERY", 2)
+    with caplog.at_level(logging.INFO):
+        backfill_archived_messages(MigrationStats(dry_run=False), batch_size=1)
+
+    # three batches: a progress line after the second, then the total
+    progress = [r for r in caplog.records if "message-id rows copied, up to archive_id" in r.getMessage()]
+    assert [r.rows_backfilled for r in progress] == [2]
+
+
+def test_a_dry_run_backfill_counts_and_copies_nothing():
+    index_legacy(hashlib.sha256(b"dry").hexdigest(), "<dry@local>", urls=("https://example.com/dry",))
+    stats = MigrationStats(dry_run=True)
+    backfill_archived_messages(stats)
+    assert stats.rows_backfilled == 1
+    assert archived_messages() == []
+
+
+def test_with_no_legacy_rows_the_backfill_copies_nothing():
+    stats = MigrationStats(dry_run=False)
+    backfill_archived_messages(stats)
+    assert stats.rows_backfilled == 0
 
 
 def test_migrate_moves_a_referenced_email_into_the_pool(legacy_dir):
@@ -118,9 +236,10 @@ def test_a_file_the_pool_already_has_is_only_removed(legacy_dir):
 def test_dry_run_changes_nothing(legacy_dir):
     path, sha256 = legacy_email(legacy_dir, b"dry run", "<m3@local>")
     stats = migrate_legacy_archive(legacy_dir, dry_run=True)
-    assert (stats.dry_run, stats.migrated, stats.sources_removed) == (True, 1, 0)
+    assert (stats.dry_run, stats.migrated, stats.sources_removed, stats.rows_backfilled) == (True, 1, 0, 1)
     assert os.path.exists(path)
     assert not get_email_archive_pool().exists(sha256)
+    assert archived_messages() == []
 
 
 def test_keep_source(legacy_dir):
@@ -199,6 +318,7 @@ def test_cli_migrate(legacy_dir, capsys):
     legacy_email(legacy_dir, b"through the cli", "<cli@local>")
     assert cli_migrate(_cli_args(legacy_dir)) == 0
     out = capsys.readouterr().out
+    assert "1 message-id row(s) copied into archived_messages" in out
     assert "scanned 1 file(s), migrated 1" in out and "1 old file(s) removed" in out
 
 
