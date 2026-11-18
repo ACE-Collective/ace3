@@ -14,6 +14,7 @@ import saq.collectors.hunter.base_hunter as hunter_base
 import saq.collectors.hunter.query_hunter as query_hunter_module
 import saq.util.time as saq_time
 from saq.collectors.hunter import HunterService, HuntManager, read_persistence_data
+from saq.collectors.hunter.correlation.schema import CorrelateConfig
 from saq.collectors.hunter.query_hunter import (
     QueryHunt,
     QueryHuntConfig,
@@ -51,6 +52,7 @@ from saq.observables.mapping import (
 from saq.query.config import SummaryDetailConfig
 from saq.splunk import extract_event_timestamp as splunk_extract_event_timestamp
 from saq.svs import attribution, maintenance
+from saq.svs.constants import MarkerResult, SVSStatus
 from saq.svs.markers import new_marker
 from saq.svs.refusals import Caller
 from saq.util.time import create_timedelta, local_time
@@ -902,14 +904,11 @@ def test_process_query_results_captures_original_events(monkeypatch, hunt_manage
     assert [e["src"] for e in hunt.original_query_results] == ["1.2.3.4", "5.6.7.8", "9.9.9.9"]
     assert [e["tag"] for e in hunt.original_query_results] == ["keep", "drop", "keep"]
 
-    # every produced submission carries the originals on its root.details so they
-    # persist with the alert (mirrors how correlation_trace is attached)
-    for submission in submissions:
-        assert "original_events" in submission.root.details
-        assert submission.root.details["original_events"] is hunt.original_query_results
-        assert [e["src"] for e in submission.root.details["original_events"]] == [
-            "1.2.3.4", "5.6.7.8", "9.9.9.9",
-        ]
+    # each alert of an ungrouped hunt carries its own pre-correlation event only: the filtered
+    # event belongs to no alert, and neither alert sees the other's
+    assert [[e["src"] for e in s.root.details["original_events"]] for s in submissions] == [
+        ["1.2.3.4"], ["9.9.9.9"],
+    ]
 
     # snapshot must be a deep copy: mutating the snapshot must not affect the input
     # and mutating the input must not affect the snapshot
@@ -1843,6 +1842,114 @@ def test_correlation_trace_filtered_event_not_attached_to_other_alerts(monkeypat
         indices = [et["event_index"] for et in s.root.details["correlation_trace"]["event_traces"]]
         assert 1 not in indices
         assert len(indices) == 1
+
+
+CORRELATE_DROP_TAGGED = {"logic": [{
+    "when": {"type": "equals", "value": "drop", "property": "tag"},
+    "execute": [{"action": "filter"}],
+}]}
+
+
+@pytest.mark.unit
+def test_grouped_alert_original_events_hold_only_its_own_group(monkeypatch, hunt_manager):
+    """Each alert of a grouped correlate hunt carries the pre-correlation events of its own group,
+    the filtered ones included, and none of another group's (#1255)."""
+    monkeypatch.setattr(query_hunter_module, "local_time", mock_local_time)
+    hunt = default_hunt(
+        manager=hunt_manager,
+        name="original_events_grouped",
+        analysis_mode=ANALYSIS_MODE_CORRELATION,
+        group_by="incident_id",
+        observable_mapping=[ObservableMapping(fields=["src"], type="ip")],
+        correlate=CorrelateConfig.model_validate(CORRELATE_DROP_TAGGED),
+    )
+    submissions = hunt.process_query_results([
+        {"incident_id": "A", "src": "1.1.1.1", "tag": "keep"},
+        {"incident_id": "B", "src": "2.2.2.2", "tag": "keep"},
+        {"incident_id": "A", "src": "3.3.3.3", "tag": "drop"},
+        {"incident_id": "C", "src": "4.4.4.4", "tag": "drop"},
+    ])
+
+    original = {s.group_value: [e["src"] for e in s.root.details["original_events"]] for s in submissions}
+    assert original == {"A": ["1.1.1.1", "3.3.3.3"], "B": ["2.2.2.2"]}
+
+
+@pytest.mark.unit
+def test_group_by_all_alert_original_events_hold_every_event(monkeypatch, hunt_manager):
+    monkeypatch.setattr(query_hunter_module, "local_time", mock_local_time)
+    hunt = default_hunt(
+        manager=hunt_manager,
+        name="original_events_all",
+        analysis_mode=ANALYSIS_MODE_CORRELATION,
+        group_by="ALL",
+        observable_mapping=[ObservableMapping(fields=["src"], type="ip")],
+        correlate=CorrelateConfig.model_validate(CORRELATE_DROP_TAGGED),
+    )
+    (submission,) = hunt.process_query_results([
+        {"src": "1.1.1.1", "tag": "keep"},
+        {"src": "2.2.2.2", "tag": "drop"},
+    ])
+    assert submission.root.details["original_events"] == hunt.original_query_results
+
+
+@pytest.mark.unit
+def test_grouped_alert_original_events_include_events_grouped_by_a_correlated_field(monkeypatch, hunt_manager):
+    """An alert grouped by a field correlation added still gets the events it came from, which have
+    no such field."""
+    monkeypatch.setattr(query_hunter_module, "local_time", mock_local_time)
+    correlate = CorrelateConfig.model_validate({"logic": [{"transform": {
+        "type": "event", "method": "property", "property_type": "str", "property_name": "incident_id",
+        "command": {"type": "query", "source": "splunk", "query": "index=x src={{ _event.src }}"},
+    }}]})
+    hunt = default_hunt(
+        manager=hunt_manager,
+        name="original_events_correlated_group",
+        analysis_mode=ANALYSIS_MODE_CORRELATION,
+        group_by="incident_id",
+        observable_mapping=[ObservableMapping(fields=["src"], type="ip")],
+        correlate=correlate,
+    )
+    # the correlate query is answered from a saved result instead of splunk
+    hunt._correlate_replay_results = [
+        {"source": "splunk", "query": "index=x src=1.1.1.1", "results": [{"incident": "A"}]},
+        {"source": "splunk", "query": "index=x src=2.2.2.2", "results": [{"incident": "B"}]},
+    ]
+    submissions = hunt.process_query_results([{"src": "1.1.1.1"}, {"src": "2.2.2.2"}])
+
+    assert [s.group_value for s in submissions] == ['{"incident": "A"}', '{"incident": "B"}']
+    assert [[e["src"] for e in s.root.details["original_events"]] for s in submissions] == [
+        ["1.1.1.1"], ["2.2.2.2"],
+    ]
+    assert all("incident_id" not in e for s in submissions for e in s.root.details["original_events"])
+
+    # an original group_by value correlation replaced with a group value is not one, even unhashable
+    submissions = hunt.process_query_results([{"src": "1.1.1.1", "incident_id": {"raw": 1}}])
+    assert [e["src"] for e in submissions[0].root.details["original_events"]] == ["1.1.1.1"]
+
+
+@pytest.mark.unit
+def test_alert_original_events_after_a_stream_reset_hold_no_unrelated_event(monkeypatch, hunt_manager):
+    """A stream transform replaces the events correlation alerts on, so the index of an alerted
+    event no longer names the original event it came from."""
+    monkeypatch.setattr(query_hunter_module, "local_time", mock_local_time)
+    hunt = default_hunt(
+        manager=hunt_manager,
+        name="original_events_stream_reset",
+        analysis_mode=ANALYSIS_MODE_CORRELATION,
+        group_by=None,
+        observable_mapping=[ObservableMapping(fields=["src"], type="ip")],
+        correlate=CorrelateConfig.model_validate({"logic": [{"transform": {
+            "type": "stream", "method": "mutate",
+            "command": {"type": "query", "source": "splunk", "query": "index=other"},
+        }}]}),
+    )
+    hunt._correlate_replay_results = [
+        {"source": "splunk", "query": "index=other", "results": [{"src": "9.9.9.9"}, {"src": "8.8.8.8"}]},
+    ]
+    submissions = hunt.process_query_results([{"src": "1.1.1.1"}, {"src": "2.2.2.2"}])
+
+    assert [s.root.details["events"][0]["src"] for s in submissions] == ["9.9.9.9", "8.8.8.8"]
+    assert [s.root.details["original_events"] for s in submissions] == [[], []]
 
 
 @pytest.mark.unit
@@ -4542,6 +4649,31 @@ def test_a_runs_matches_are_suppressed_under_the_runs_own_key(hunt_manager, capl
     second = _svs_run(now - timedelta(minutes=30))
     (submission,) = hunt.process_query_results([{"host": "win10-01"}])
     assert submission.suppression_key == f"svs_run:{second.uuid}:win10-01"
+
+
+@pytest.mark.integration
+def test_a_marker_in_one_groups_event_is_not_judged_on_another_groups_alert(hunt_manager):
+    """Two runs' detections come back in one query of a grouped correlate hunt (#1255): the marker
+    of the run on win10-02 is attributed on its own alert and never sighted on win10-01's."""
+    run = _svs_run(datetime.now() - timedelta(minutes=10), host="win10-02")
+    hunt = default_hunt(
+        manager=hunt_manager,
+        name="svs_grouped_correlate",
+        analysis_mode=ANALYSIS_MODE_CORRELATION,
+        group_by="incident_id",
+        observable_mapping=[ObservableMapping(fields=["host"], type=F_HOSTNAME)],
+        correlate=CorrelateConfig.model_validate(CORRELATE_DROP_TAGGED),
+    )
+    submissions = hunt.process_query_results([
+        {"incident_id": "1", "host": "win10-01", "cmd": "whoami"},
+        {"incident_id": "2", "host": "win10-02", "cmd": f"whoami /{run.marker}"},
+    ])
+    by_group = {s.group_value: s.root for s in submissions}
+
+    other = attribution.evaluate(by_group["1"], datetime.now())
+    assert other.judgements == [] and other.status != SVSStatus.MISMATCH
+    own = attribution.evaluate(by_group["2"], datetime.now())
+    assert [(j.marker, j.result) for j in own.judgements] == [(run.marker, MarkerResult.ATTRIBUTED)]
 
 
 @pytest.mark.integration

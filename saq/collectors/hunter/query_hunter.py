@@ -10,7 +10,7 @@ import os
 import os.path
 import re
 from tempfile import mkstemp
-from typing import Callable, Optional, TypeVar
+from typing import Any, Callable, Optional, TypeVar
 
 import pytz
 from pydantic import Field, model_validator
@@ -835,6 +835,51 @@ class QueryHunt(Hunt):
             summary = summary[: _EVENT_SUMMARY_MAX_LEN - 1] + "…"
         return summary
 
+    def _original_events_by_submission(
+        self,
+        submissions: list[Submission],
+        event_submission_map: dict[int, list[Submission]],
+        alert_event_origin_indices: list[int],
+    ) -> dict[int, list[dict]]:
+        """The pre-correlation events of each submission's own group, keyed by id(submission): those
+        its alerted events came from, and those whose group_by value is its group_value. Never
+        another group's: svs attribution judges every marker in root.details against the alert's
+        hosts, so one group's marker would be a mismatch on every other group's alert (#1255)."""
+        originals = self.original_query_results
+        if self.group_by == "ALL":
+            return {id(submission): originals for submission in submissions}
+
+        indices: dict[int, set[int]] = {id(submission): set() for submission in submissions}
+
+        # after a stream reset the alerted events are indexed into the new stream, not the originals
+        stream_reset = self.correlation_trace is not None and any(
+            stream_event.event_type == "stream_reset" for stream_event in self.correlation_trace.stream_events)
+        if not stream_reset:
+            for post_index, owners in event_submission_map.items():
+                if post_index < len(alert_event_origin_indices):
+                    for owner in owners:
+                        indices[id(owner)].add(alert_event_origin_indices[post_index])
+
+        if self.group_by is not None:
+            by_group: dict[Any, list[Submission]] = {}
+            for submission in submissions:
+                group_value = getattr(submission, "group_value", None)
+                if group_value is not None:
+                    by_group.setdefault(group_value, []).append(submission)
+
+            for index, event in enumerate(originals):
+                value = event.get(self.group_by)
+                for group_value in value if isinstance(value, list) else [value]:
+                    try:
+                        owners = by_group.get(group_value, [])
+                    except TypeError:
+                        # an unhashable value (a dict) can't be any submission's group_value
+                        continue
+                    for owner in owners:
+                        indices[id(owner)].add(index)
+
+        return {key: [originals[i] for i in sorted(found)] for key, found in indices.items()}
+
     def key_suppression(self, submissions: list[Submission]):
         """Sets each grouped submission's suppression_key, which the suppression check and the
         manager's last alert times use: its group_value, or during an svs run or maintenance window
@@ -1308,8 +1353,10 @@ class QueryHunt(Hunt):
         # Attach the pre-correlation events to each correlated alert so hunt authors can inspect
         # what came back from the data source before correlation filtered/transformed it.
         if self.config.correlate is not None and self.original_query_results is not None:
+            original_events = self._original_events_by_submission(
+                submissions, event_submission_map, alert_event_origin_indices)
             for submission in submissions:
-                submission.root.details[QUERY_DETAILS_ORIGINAL_EVENTS] = self.original_query_results
+                submission.root.details[QUERY_DETAILS_ORIGINAL_EVENTS] = original_events[id(submission)]
 
         # Attach step provenance to each correlated alert so the GUI can group the
         # Analysis Overview by the hunt step that produced each observable. We walk each
