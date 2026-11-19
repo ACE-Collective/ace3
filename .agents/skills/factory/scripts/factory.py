@@ -19,8 +19,15 @@ Stdlib only.
     factory.py push TICKET [--repo NAME]    check (for ace3) and push the ticket's branch
     factory.py pr-create TICKET --repo NAME --title T --body-file F
     factory.py pr-body TICKET --repo NAME --body-file F
+    factory.py pr-labels TICKET --repo NAME [--add L ...] [--remove L ...]
+                                            label the PR from the repo's own labels; prints them
     factory.py comment TICKET --kind KIND [--repo NAME | --on-ticket] --body-file F
     factory.py post-review TICKET --repo NAME --bundle DIR
+    factory.py backlog TICKET --repo NAME --bundle DIR
+                                            a finished round's pre-existing findings and new design
+                                            flaws, each with the issues that may already be it
+    factory.py file-backlog TICKET --repo NAME --bundle DIR
+                                            file the ones $B/backlog.json judged new, record the rest
     factory.py comments TICKET --repo NAME  the human comments rework has to answer
     factory.py promote TICKET               mark every PR ready, once each has shipped at its head
     factory.py handoff FILE                 validate a task's result against the live state
@@ -44,6 +51,7 @@ public_text.py, and nothing is published when it finds a match or cannot run.
 
 import argparse
 import fnmatch
+import html
 import json
 import os
 import re
@@ -828,11 +836,62 @@ def pr_body(ctx: Context, ref: str, repo_name: str, body: str) -> dict:
     return {"updated": pr["url"]}
 
 
+def ado_pr_labels(repo: dict, pr_id: int, method: str = "GET", name: str | None = None) -> list[str]:
+    ado = repo["config"]["azure_devops"]
+    route = ["--route-parameters", f"project={ado['project']}", f"repositoryId={ado['repository']}", f"pullRequestId={pr_id}"]
+    if method == "DELETE":
+        route.append(f"labelIdOrName={name}")
+    args = ["devops", "invoke", *ado_args(repo), "--area", "git", "--resource", "pullRequestLabels", *route,
+            "--http-method", method, "--api-version", ADO_API]
+    if method != "POST":
+        result = az(*args)
+        return [l["name"] for l in (result or {}).get("value", [])]
+    with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as fp:
+        json.dump({"name": name}, fp)
+    try:
+        az(*args, "--in-file", fp.name)
+    finally:
+        os.unlink(fp.name)
+    return []
+
+
+def pr_labels(ctx: Context, ref: str, repo_name: str, add: list[str], remove: list[str]) -> dict:
+    """Label a factory PR. On GitHub only labels the repo already has, so a typo never makes a new
+    one; never a factory:* label, which is the ticket's state, not the change's."""
+    repo = ctx.repos[repo_name]
+    pr = find_pr(ctx, ref, repo_name)
+    if bad := sorted(l for l in add + remove if l in LABELS):
+        raise FactoryError(f"{', '.join(bad)} label the ticket's state, not a PR")
+    if repo["host"] == "github":
+        existing = label_names(ctx)
+        if unknown := sorted(set(add) - existing):
+            raise FactoryError(f"the repo has no label {', '.join(unknown)}; pick from: {', '.join(sorted(existing - set(LABELS)))}")
+        if add or remove:
+            args = ["pr", "edit", str(pr["id"]), "--repo", ctx.slug]
+            for label in add:
+                args += ["--add-label", label]
+            for label in remove:
+                args += ["--remove-label", label]
+            gh(ctx.main, *args)
+        labels = json.loads(gh(ctx.main, "pr", "view", str(pr["id"]), "--repo", ctx.slug, "--json", "labels"))["labels"]
+        return {"pr": pr["url"], "labels": sorted(l["name"] for l in labels), "available": sorted(existing - set(LABELS))}
+    for label in add:
+        ado_pr_labels(repo, pr["id"], "POST", label)
+    for label in remove:
+        ado_pr_labels(repo, pr["id"], "DELETE", label)
+    return {"pr": pr["url"], "labels": sorted(ado_pr_labels(repo, pr["id"]))}
+
+
+def host_bundle(ctx: Context, bundle: str) -> str:
+    """A review bundle's path on the host, given its path on either side."""
+    if not os.path.isdir(bundle):
+        bundle = on_host(bundle, dev_mounts(ctx.main) or []) or bundle
+    return bundle
+
+
 def post_review(ctx: Context, ref: str, repo_name: str, bundle: str) -> dict:
     """Post an ace-review round as one comment: its report, and a marker carrying its result."""
-    if not os.path.isdir(bundle):
-        mounts = dev_mounts(ctx.main) or []
-        bundle = on_host(bundle, mounts) or bundle
+    bundle = host_bundle(ctx, bundle)
     with open(os.path.join(bundle, "factory.json")) as fp:
         result = json.load(fp)
     report = read_body(os.path.join(bundle, "report.md"))
@@ -952,6 +1011,185 @@ def issue_create(ctx: Context, title: str, body: str, labels: list[str]) -> dict
     for label in labels:
         args += ["--label", label]
     return {"issue": gh(ctx.main, *args, stdin=body).strip()}
+
+
+# ---------------------------------------------------------------- backlog
+
+FLAW_LABEL = "design flaw"
+# a pre-existing finding's ace3 label: the dimension's own where the repo has one, else bug
+DIMENSION_LABELS = {"logging": "logging", "performance": "performance", "tests": "tests"}
+BACKLOG_TAG = "factory:backlog"
+SIMILAR_LIMIT = 15
+
+
+def load_bundle_json(bundle: str, name: str, default=None):
+    try:
+        with open(os.path.join(bundle, name)) as fp:
+            return json.load(fp)
+    except FileNotFoundError:
+        return default
+
+
+def dump_bundle_json(bundle: str, name: str, data) -> None:
+    with open(os.path.join(bundle, name), "w") as fp:
+        json.dump(data, fp, indent=2)
+
+
+def backlog_candidates(bundle: str) -> list[dict]:
+    """What a finished round leaves for the backlog: its pre-existing findings, and the design flaws
+    no issue had yet."""
+    summary = load_bundle_json(bundle, "summary.json")
+    if summary is None:
+        raise FactoryError(f"{bundle} is not finished: run findings.py finish first")
+    flaws = {f["fid"]: f for f in load_bundle_json(bundle, "flaws.json", [])}
+    keys = ("title", "file", "line", "dimension", "severity", "evidence", "impact", "fix")
+    found = [{"id": f["id"], "kind": "finding", **{k: f.get(k) for k in keys}}
+             for f in load_bundle_json(bundle, "verified.json", []) if f.get("origin") == "pre-existing"]
+    keys = ("title", "file", "line", "area", "flaw", "workaround", "fix_size", "fix")
+    found += [{"id": s["id"], "kind": "flaw", **{k: flaws[s["id"]].get(k) for k in keys}}
+              for s in summary.get("flaws", []) if s.get("new") and s["id"] in flaws]
+    return found
+
+
+def backlog_trackers(ctx: Context, repo_name: str, candidate: dict) -> list[str]:
+    """The repos whose tracker may hold the candidate. A pre-existing finding stays with the code it
+    is in. A flaw found reviewing ace3 is in public code, so ace3's. A flaw found reviewing an
+    internal repo is ace3's when it is in core, which the change only works around, and the internal
+    repo's when it is in that repo's own code; only the driver, reading it, can tell which."""
+    if candidate["kind"] == "finding" or ctx.repos[repo_name]["public"]:
+        return [repo_name if candidate["kind"] == "finding" else CORE]
+    return [CORE, repo_name]
+
+
+def backlog_home(ctx: Context, repo_name: str, candidate: dict, decision: dict) -> dict:
+    trackers = backlog_trackers(ctx, repo_name, candidate)
+    if len(trackers) == 1:
+        return ctx.repos[trackers[0]]
+    if decision.get("tracker") not in trackers:
+        raise FactoryError(f"{candidate['id']} is a design flaw found in {repo_name}: its decision names its tracker, "
+                           f"{CORE} (a flaw in core) or {repo_name} (one in {repo_name}'s own code)")
+    return ctx.repos[decision["tracker"]]
+
+
+def similar_issues(ctx: Context, repo_name: str, candidate: dict, home: dict) -> list[dict]:
+    """Issues or work items in one tracker that may already be this candidate, for the driver to
+    judge. A search is not published, but an internal repo's file names stay out of a search of the
+    public repo."""
+    named = candidate.get("file") and (ctx.repos[repo_name]["public"] or not home["public"])
+    term = os.path.basename(candidate["file"]) if named else candidate.get("area") or candidate["title"]
+    if home["host"] == "github":
+        rows = json.loads(gh(ctx.main, "issue", "list", "--repo", ctx.slug, "--state", "all", "--search", f'"{term}"',
+                             "--json", "number,title,state,url", "--limit", str(SIMILAR_LIMIT)) or "[]")
+        return [{"ref": f"#{r['number']}", "title": r["title"], "state": r["state"].lower(), "url": r["url"]} for r in rows]
+    ado = home["config"]["azure_devops"]
+    term = term.replace("'", "''")
+    wiql = (f"SELECT [System.Id], [System.Title], [System.State] FROM workitems WHERE [System.TeamProject] = '{ado['project']}' "
+            f"AND [System.WorkItemType] = 'Bug' AND ([System.Title] CONTAINS '{term}' OR [System.Description] CONTAINS WORDS '{term}')")
+    items = az("boards", "query", *ado_args(home), "--project", ado["project"], "--wiql", wiql) or []
+    return [{"ref": f"ado:{i['id']}", "title": i.get("fields", {}).get("System.Title", ""),
+             "state": i.get("fields", {}).get("System.State", "")} for i in items[:SIMILAR_LIMIT]]
+
+
+def backlog(ctx: Context, ref: str, repo_name: str, bundle: str) -> dict:
+    bundle = host_bundle(ctx, bundle)
+    filed = load_bundle_json(bundle, "filed-backlog.json", {})
+    candidates = []
+    for c in backlog_candidates(bundle):
+        trackers = backlog_trackers(ctx, repo_name, c)
+        found = ({"recorded": filed[c["id"]]} if c["id"] in filed
+                 else {"similar": {t: similar_issues(ctx, repo_name, c, ctx.repos[t]) for t in trackers}})
+        candidates.append({**c, "trackers": trackers, **found})
+    return {"candidates": candidates}
+
+
+def finding_body(candidate: dict, found_in: str) -> str:
+    where = f"`{candidate['file']}:{candidate['line']}`" if candidate.get("line") else f"`{candidate['file']}`"
+    return (f"{candidate['evidence']}\n\n**Impact:** {candidate['impact']}\n\n**Fix:** {candidate['fix']}\n\n"
+            f"**Where:** {where}\n\n<sub>Found by /ace-review as pre-existing ({candidate['dimension']}, {candidate['severity']}) "
+            f"in code {found_in} touches; filed by /factory.</sub>")
+
+
+def flaw_body(candidate: dict, worked_around: str) -> str:
+    return (f"{candidate['flaw']}\n\n**Real fix** ({candidate['fix_size']}): {candidate.get('fix') or 'not sketched yet'}\n\n"
+            f"**Area:** {candidate.get('area') or 'unknown'}\n\n**Worked around** {worked_around}:\n\n{candidate['workaround']}\n\n"
+            "<sub>Found by /ace-review; filed by /factory.</sub>")
+
+
+def ado_html(text: str) -> str:
+    return "".join(f"<p>{html.escape(p).replace(chr(10), '<br>')}</p>" for p in text.split("\n\n"))
+
+
+def ado_bug(repo: dict, title: str, body: str, tags: list[str]) -> str:
+    ado = repo["config"]["azure_devops"]
+    item = az("boards", "work-item", "create", *ado_args(repo), "--project", ado["project"], "--type", "Bug",
+              "--title", title, "--description", ado_html(body), "--fields", f"System.Tags={'; '.join([BACKLOG_TAG, *tags])}")
+    return item.get("_links", {}).get("html", {}).get("href") or f"ado:{item['id']}"
+
+
+def file_candidate(ctx: Context, repo_name: str, pr: dict, candidate: dict, decision: dict, home: dict) -> str:
+    title = decision.get("title") or candidate["title"]
+    reviewed = ctx.repos[repo_name]
+    # an internal repo's PR, branch and paths never go in a public issue
+    pr_ref = f"#{pr['id']}" if reviewed["public"] else pr["url"] or f"PR {pr['id']}"
+    if candidate["kind"] == "flaw":
+        where = (f"in {pr_ref}, `{candidate['file']}:{candidate['line']}`" if reviewed["public"] or not home["public"]
+                 else "by a change in an internal repository")
+        body = decision.get("body") or flaw_body(candidate, where)
+        if home["public"]:
+            return issue_create(ctx, title, body, [FLAW_LABEL])["issue"]
+        return ado_bug(home, title, body, [FLAW_LABEL, home["name"]])
+    body = decision.get("body") or finding_body(candidate, pr_ref)
+    if home["public"]:
+        return issue_create(ctx, title, body, [DIMENSION_LABELS.get(candidate["dimension"], "bug")])["issue"]
+    return ado_bug(home, title, body, [home["name"]])
+
+
+def flaw_record(ctx: Context, home: dict, ref: str) -> dict:
+    """findings.py's record of a flaw's issue: an ace3 issue by number, a work item by its link."""
+    if not home["public"]:
+        return {"id": None, "url": ref}
+    match = re.fullmatch(r"#?(\d+)|.*/issues/(\d+)", str(ref).strip())
+    if not match:
+        raise FactoryError(f"a design flaw kept in {CORE} is an issue of it, not {ref!r}")
+    number = int(match.group(1) or match.group(2))
+    return {"id": number, "url": f"https://github.com/{ctx.slug}/issues/{number}"}
+
+
+def file_backlog(ctx: Context, ref: str, repo_name: str, bundle: str) -> dict:
+    """File each backlog candidate the driver judged new in $B/backlog.json, and record each one it
+    matched to an existing issue. A candidate already recorded is never filed twice. A write the
+    public-text check refuses is reported, not fatal: the driver rewrites its title or body there."""
+    bundle = host_bundle(ctx, bundle)
+    candidates = backlog_candidates(bundle)
+    decisions = {d["id"]: d for d in load_bundle_json(bundle, "backlog.json", [])}
+    if missing := [c["id"] for c in candidates if c["id"] not in decisions]:
+        raise FactoryError(f"backlog.json has no decision for {', '.join(missing)}")
+    if unknown := sorted(set(decisions) - {c["id"] for c in candidates}):
+        raise FactoryError(f"backlog.json decides {', '.join(unknown)}, which this round does not have")
+    # every tracker is settled before anything is written
+    homes = {c["id"]: backlog_home(ctx, repo_name, c, decisions[c["id"]]) for c in candidates}
+    pr = find_pr(ctx, ref, repo_name)
+    filed = load_bundle_json(bundle, "filed-backlog.json", {})
+    flaws = load_bundle_json(bundle, "filed-flaws.json", {})
+    refused = []
+    for candidate in candidates:
+        cid, decision = candidate["id"], decisions[candidate["id"]]
+        if cid in filed:
+            continue
+        if decision.get("duplicate"):
+            filed[cid] = {"ref": str(decision["duplicate"]), "filed": False}
+        else:
+            try:
+                filed[cid] = {"ref": file_candidate(ctx, repo_name, pr, candidate, decision, homes[cid]), "filed": True}
+            except FactoryError as e:
+                refused.append({"id": cid, "error": str(e)})
+                continue
+        if candidate["kind"] == "flaw":
+            flaws[cid] = {**flaw_record(ctx, homes[cid], filed[cid]["ref"]), "title": candidate["title"], "status": "open"}
+            dump_bundle_json(bundle, "filed-flaws.json", flaws)
+        # after each one, so a failure part way through never files the earlier ones again
+        dump_bundle_json(bundle, "filed-backlog.json", filed)
+    return {"recorded": filed, "refused": refused}
 
 
 def retro_data(ctx: Context, since: str | None, mark: bool) -> dict:
@@ -1130,6 +1368,11 @@ def main() -> int:
         command.add_argument("--repo", default=CORE)
         command.add_argument("--body-file", required=True)
     sub.choices["pr-create"].add_argument("--title", required=True)
+    command = sub.add_parser("pr-labels")
+    command.add_argument("ticket")
+    command.add_argument("--repo", default=CORE)
+    command.add_argument("--add", action="append", default=[])
+    command.add_argument("--remove", action="append", default=[])
     command = sub.add_parser("comment")
     command.add_argument("ticket")
     command.add_argument("--kind", required=True, choices=[k for k in KINDS if k != "review"])
@@ -1141,6 +1384,11 @@ def main() -> int:
     command.add_argument("ticket")
     command.add_argument("--repo", default=CORE)
     command.add_argument("--bundle", required=True)
+    for name in ("backlog", "file-backlog"):
+        command = sub.add_parser(name)
+        command.add_argument("ticket")
+        command.add_argument("--repo", default=CORE)
+        command.add_argument("--bundle", required=True)
     command = sub.add_parser("comments")
     command.add_argument("ticket")
     command.add_argument("--repo", default=CORE)
@@ -1184,6 +1432,12 @@ def main() -> int:
             result = pr_body(ctx, args.ticket, args.repo, read_body(args.body_file))
         elif args.command == "comment":
             result = post_comment(ctx, args.ticket, args.kind, read_body(args.body_file), None if args.on_ticket else args.repo)
+        elif args.command == "pr-labels":
+            result = pr_labels(ctx, args.ticket, args.repo, args.add, args.remove)
+        elif args.command == "backlog":
+            result = backlog(ctx, args.ticket, args.repo, args.bundle)
+        elif args.command == "file-backlog":
+            result = file_backlog(ctx, args.ticket, args.repo, args.bundle)
         elif args.command == "post-review":
             result = post_review(ctx, args.ticket, args.repo, args.bundle)
         elif args.command == "comments":

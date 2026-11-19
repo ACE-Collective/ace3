@@ -877,3 +877,230 @@ def test_a_git_failure_stops_the_check(core, tmp_path):
 
     with pytest.raises(public_text.CheckError, match="failed"):
         public_text.scan_range(public_text.load_terms(str(core), []), str(repo), "nosuchref..HEAD", None)
+
+
+# ---------------------------------------------------------------- PR labels
+
+
+@pytest.fixture
+def label_calls(monkeypatch) -> list[tuple]:
+    """gh and az calls, with the repo's labels and the PR's labels answered."""
+    recorded = []
+
+    def fake_gh(main, *args, stdin=None):
+        recorded.append(("gh", *args))
+        if args[:2] == ("label", "list"):
+            return json.dumps([{"name": n} for n in ("bug", "logging", "factory:ready")])
+        if args[:2] == ("pr", "view"):
+            return json.dumps({"labels": [{"name": "bug"}]})
+        return ""
+
+    def fake_az(*args):
+        recorded.append(("az", *args))
+        return {"value": [{"name": "bug"}]}
+
+    monkeypatch.setattr(factory, "gh", fake_gh)
+    monkeypatch.setattr(factory, "az", fake_az)
+    return recorded
+
+
+def test_a_pr_is_labeled_only_with_labels_the_repo_has(core, label_calls):
+    ctx = FakeContext(core, ticket_state(prs=[open_pr()]))
+
+    result = factory.pr_labels(ctx, "1", "ace3", ["bug"], [])
+
+    assert ("gh", "pr", "edit", "3", "--repo", "org/ace3", "--add-label", "bug") in label_calls
+    assert result["labels"] == ["bug"] and result["available"] == ["bug", "logging"]
+    with pytest.raises(factory.FactoryError, match="no label bugfix; pick from: bug, logging"):
+        factory.pr_labels(ctx, "1", "ace3", ["bugfix"], [])
+
+
+@pytest.mark.parametrize("repo", ["ace3", "internal"])
+def test_a_factory_state_label_is_never_put_on_a_pr(core, label_calls, repo):
+    ctx = FakeContext(core, ticket_state(prs=[open_pr(repo)]))
+
+    with pytest.raises(factory.FactoryError, match="factory:needs-human label the ticket's state"):
+        factory.pr_labels(ctx, "1", repo, ["factory:needs-human"], [])
+    assert label_calls == []
+
+
+def test_an_azure_devops_pr_is_labeled_through_its_labels_resource(core, label_calls):
+    factory.pr_labels(FakeContext(core, ticket_state(prs=[open_pr("internal", id_=5)])), "1", "internal", ["bug"], [])
+
+    [post] = [c for c in label_calls if "POST" in c]
+    assert "pullRequestLabels" in post and "pullRequestId=5" in post
+
+
+# ---------------------------------------------------------------- backlog
+
+
+def finished_round(path: Path, pre_existing=(), flaws=(), known_flaws=()) -> Path:
+    """A finished /ace-review bundle: its verified findings, flaws and summary, as findings.py writes them."""
+    path.mkdir(parents=True, exist_ok=True)
+    verified = [{"id": "R1-1", "origin": "new", "title": "new one", "file": "a.py", "line": 1}]
+    verified += [{"id": f"P1-{n}", "origin": "pre-existing", "title": title, "file": "saq/x.py", "line": 10, "dimension": dimension,
+                  "severity": "fix-first", "evidence": "what it does", "impact": "what breaks", "fix": "the fix"}
+                 for n, (title, dimension) in enumerate(pre_existing, 1)]
+    flaw_rows = [{"fid": f"F{n}", "title": title, "file": "saq/x.py", "line": 20, "area": "engine", "flaw": "the flaw",
+                  "workaround": "the workaround", "fix_size": "medium", "fix": "real fix"}
+                 for n, title in enumerate([*flaws, *known_flaws], 1)]
+    summary = {"flaws": [{"id": f["fid"], "new": f["title"] in flaws} for f in flaw_rows]}
+    for name, data in (("verified.json", verified), ("flaws.json", flaw_rows), ("summary.json", summary)):
+        (path / name).write_text(json.dumps(data))
+    return path
+
+
+@pytest.fixture
+def backlog_calls(monkeypatch) -> list[tuple]:
+    recorded, numbers = [], iter(range(100, 200))
+
+    def fake_gh(main, *args, stdin=None):
+        recorded.append(("gh", *args, stdin))
+        if args[:2] == ("issue", "create"):
+            return f"https://github.com/org/ace3/issues/{next(numbers)}\n"
+        return "[]"
+
+    def fake_az(*args):
+        recorded.append(("az", *args))
+        return {"id": 77, "_links": {"html": {"href": "https://ado.example.com/wi/77"}}} if "create" in args else []
+
+    monkeypatch.setattr(factory, "gh", fake_gh)
+    monkeypatch.setattr(factory, "az", fake_az)
+    return recorded
+
+
+def created(calls) -> list[tuple]:
+    return [c for c in calls if c[1:3] == ("issue", "create") or c[1:4] == ("boards", "work-item", "create")]
+
+
+def decide(bundle: Path, decisions: list[dict]) -> None:
+    (bundle / "backlog.json").write_text(json.dumps(decisions))
+
+
+def test_the_backlog_is_the_pre_existing_findings_and_the_flaws_no_issue_has(tmp_path):
+    bundle = finished_round(tmp_path / "b", pre_existing=[("old bug", "correctness")], flaws=["new flaw"], known_flaws=["known flaw"])
+
+    assert [(c["id"], c["kind"]) for c in factory.backlog_candidates(str(bundle))] == [("P1-1", "finding"), ("F1", "flaw")]
+
+
+def test_an_unfinished_round_has_no_backlog(tmp_path):
+    with pytest.raises(factory.FactoryError, match="run findings.py finish first"):
+        factory.backlog_candidates(str(tmp_path))
+
+
+def test_backlog_lists_each_candidate_with_the_issues_that_may_already_be_it(core, tmp_path, monkeypatch):
+    bundle = finished_round(tmp_path / "b", pre_existing=[("old bug", "correctness")])
+    searches = []
+
+    def fake_gh(main, *args, stdin=None):
+        searches.append(args)
+        return json.dumps([{"number": 9, "title": "same thing", "state": "OPEN", "url": "u9"}])
+
+    monkeypatch.setattr(factory, "gh", fake_gh)
+
+    [candidate] = factory.backlog(FakeContext(core), "1", "ace3", str(bundle))["candidates"]
+
+    assert candidate["trackers"] == ["ace3"]
+    assert candidate["similar"] == {"ace3": [{"ref": "#9", "title": "same thing", "state": "open", "url": "u9"}]}
+    assert '"x.py"' in searches[0]
+
+
+def test_new_backlog_is_filed_and_a_duplicate_is_only_recorded(core, tmp_path, backlog_calls):
+    bundle = finished_round(tmp_path / "b", pre_existing=[("old bug", "correctness"), ("noisy log", "logging"), ("seen before", "uptime")],
+                            flaws=["new flaw"])
+    decide(bundle, [{"id": "P1-1"}, {"id": "P1-2"}, {"id": "P1-3", "duplicate": "#12"}, {"id": "F1"}])
+    ctx = FakeContext(core, ticket_state(prs=[open_pr()]))
+
+    result = factory.file_backlog(ctx, "1", "ace3", str(bundle))
+
+    issues = created(backlog_calls)
+    assert [(c[c.index("--title") + 1], c[c.index("--label") + 1]) for c in issues] == [
+        ("old bug", "bug"), ("noisy log", "logging"), ("new flaw", "design flaw")]
+    assert "#3" in issues[0][-1] and "`saq/x.py:10`" in issues[0][-1]
+    assert "in #3, `saq/x.py:20`" in issues[2][-1]
+    assert result["recorded"]["P1-3"] == {"ref": "#12", "filed": False}
+    assert result["refused"] == []
+    # findings.py reads this, so the round's summary names the flaw's new issue once finish runs again
+    assert json.loads((bundle / "filed-flaws.json").read_text())["F1"]["id"] == 102
+
+
+def test_a_candidate_already_recorded_is_never_filed_again(core, tmp_path, backlog_calls):
+    bundle = finished_round(tmp_path / "b", pre_existing=[("old bug", "correctness")])
+    decide(bundle, [{"id": "P1-1"}])
+    ctx = FakeContext(core, ticket_state(prs=[open_pr()]))
+
+    factory.file_backlog(ctx, "1", "ace3", str(bundle))
+    factory.file_backlog(ctx, "1", "ace3", str(bundle))
+
+    assert len(created(backlog_calls)) == 1
+
+
+def test_every_candidate_needs_a_decision_before_anything_is_filed(core, tmp_path, backlog_calls):
+    bundle = finished_round(tmp_path / "b", pre_existing=[("old bug", "correctness")], flaws=["new flaw"])
+    decide(bundle, [{"id": "P1-1"}])
+
+    with pytest.raises(factory.FactoryError, match="no decision for F1"):
+        factory.file_backlog(FakeContext(core, ticket_state(prs=[open_pr()])), "1", "ace3", str(bundle))
+    assert created(backlog_calls) == []
+
+
+def test_a_refused_public_write_is_reported_and_left_for_the_driver_to_reword(core, tmp_path, backlog_calls):
+    bundle = finished_round(tmp_path / "b", pre_existing=[("Initech's parser hangs", "uptime"), ("old bug", "correctness")])
+    decide(bundle, [{"id": "P1-1"}, {"id": "P1-2"}])
+    ctx = FakeContext(core, ticket_state(prs=[open_pr()]))
+
+    result = factory.file_backlog(ctx, "1", "ace3", str(bundle))
+
+    assert [r["id"] for r in result["refused"]] == ["P1-1"] and "company name" in result["refused"][0]["error"]
+    assert list(result["recorded"]) == ["P1-2"]
+    decide(bundle, [{"id": "P1-1", "title": "The parser hangs"}, {"id": "P1-2"}])
+    assert "P1-1" in factory.file_backlog(ctx, "1", "ace3", str(bundle))["recorded"]
+
+
+def test_an_internal_repo_s_flaw_may_go_to_either_tracker_and_is_searched_in_both(core, tmp_path, backlog_calls):
+    bundle = finished_round(tmp_path / "b", flaws=["new flaw"])
+
+    [candidate] = factory.backlog(FakeContext(core), "1", "internal", str(bundle))["candidates"]
+
+    assert candidate["trackers"] == ["ace3", "internal"] and set(candidate["similar"]) == {"ace3", "internal"}
+    [github_search] = [c for c in backlog_calls if c[1:3] == ("issue", "list")]
+    assert not any("x.py" in str(arg) for arg in github_search)
+
+
+def test_an_internal_repo_s_flaw_is_filed_only_once_its_tracker_is_chosen(core, tmp_path, backlog_calls):
+    bundle = finished_round(tmp_path / "b", pre_existing=[("old bug", "correctness")], flaws=["new flaw"])
+    decide(bundle, [{"id": "P1-1"}, {"id": "F1"}])
+    ctx = FakeContext(core, ticket_state(prs=[open_pr("internal", id_=5)]))
+
+    with pytest.raises(factory.FactoryError, match="F1 is a design flaw found in internal: its decision names its tracker"):
+        factory.file_backlog(ctx, "1", "internal", str(bundle))
+    assert created(backlog_calls) == []
+
+
+def test_a_flaw_in_an_internal_repo_s_own_code_is_its_work_item_with_the_detail(core, tmp_path, backlog_calls):
+    bundle = finished_round(tmp_path / "b", flaws=["new flaw"])
+    decide(bundle, [{"id": "F1", "tracker": "internal"}])
+    ctx = FakeContext(core, ticket_state(prs=[open_pr("internal", id_=5)]))
+
+    result = factory.file_backlog(ctx, "1", "internal", str(bundle))
+
+    [work_item] = created(backlog_calls)
+    assert work_item[:4] == ("az", "boards", "work-item", "create")
+    assert "System.Tags=factory:backlog; design flaw; internal" in work_item
+    assert "saq/x.py:20" in work_item[work_item.index("--description") + 1]
+    assert json.loads((bundle / "filed-flaws.json").read_text())["F1"]["url"] == result["recorded"]["F1"]["ref"]
+
+
+def test_an_internal_repo_s_finding_is_a_work_item_and_a_core_flaw_names_none_of_it(core, tmp_path, backlog_calls):
+    bundle = finished_round(tmp_path / "b", pre_existing=[("old bug", "correctness")], flaws=["new flaw"])
+    decide(bundle, [{"id": "P1-1"}, {"id": "F1", "tracker": "ace3"}])
+    ctx = FakeContext(core, ticket_state(prs=[open_pr("internal", id_=5)]))
+
+    result = factory.file_backlog(ctx, "1", "internal", str(bundle))
+
+    work_item, flaw = created(backlog_calls)
+    assert work_item[:4] == ("az", "boards", "work-item", "create") and "Bug" in work_item
+    assert "System.Tags=factory:backlog; internal" in work_item
+    assert result["recorded"]["P1-1"]["ref"] == "https://ado.example.com/wi/77"
+    assert flaw[1:3] == ("issue", "create")
+    assert "saq/x.py" not in flaw[-1] and "internal repository" in flaw[-1]
