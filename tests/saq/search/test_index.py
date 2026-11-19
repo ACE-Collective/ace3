@@ -20,6 +20,7 @@ from saq.search import index
 from saq.search.documents import SearchDocument
 from saq.search.model import SCHEMA_VERSION
 from saq.search.types import KIND_ALERT, KIND_COMMENT
+from saq.util.filesystem import abs_path
 from tests.saq.helpers import insert_alert
 
 pytestmark = pytest.mark.unit
@@ -360,7 +361,7 @@ class TestIndexAlert:
         assert records[0].levelno == logging.WARNING
         assert records[0].alert_uuid == alert.uuid
         assert records[0].storage_dir == alert.storage_dir
-        assert records[0].path.endswith(os.path.join(alert.storage_dir, "data.json"))
+        assert records[0].path == os.path.join(os.path.normpath(abs_path(alert.storage_dir)), "data.json")
 
     @pytest.mark.integration
     def test_corrupt_alert_still_raises(self, mock_qdrant):

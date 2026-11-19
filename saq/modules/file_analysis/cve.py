@@ -98,7 +98,7 @@ class CVE_2021_30657_Analyzer(AnalysisModule):
 
                 # extract this one file
                 # out of time: the rest of the files are not checked
-                process = self.run_sandboxed_tool(["7z", "x", f"-o{os.path.abspath(temp_dir)}", local_file_path, file_path],
+                process = self.run_sandboxed_tool(["7z", "x", f"-o{temp_dir}", local_file_path, file_path],
                                                   local_file_path, write_dirs=[temp_dir])
                 if process is None:
                     analysis.error = f"7z did not finish extracting {file_path}, so it and the files after it were not checked"

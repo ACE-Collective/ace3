@@ -24,9 +24,11 @@ database passwords and `SAQ_ENC`.
   john, 7z and the JVM run one per core. When it exits, times out or the analysis is cancelled
   (`should_stop()`), the launcher kills everything it started.
 
-ACE's paths are often relative to SAQ_HOME. An argument equal to `target`, a `read_files` entry or a
-`write_dirs` entry is made absolute. A path inside a longer argument, like 7z's `-o<dir>`, is the
-module's to make absolute.
+The tool's relative paths are relative to its working directory, not SAQ_HOME. The paths ACE gives a
+module are absolute (a file observable's `full_path`, the root's `storage_dir`, `file_dir` and the
+paths `create_file_path()` and `create_output_file()` return, `get_temp_dir()`), so they reach the
+tool unchanged, also inside a longer argument like 7z's `-o<dir>`. A relative `read_files` or
+`write_dirs` entry makes setpriv refuse to start the tool, which is reported as a sandbox failure.
 
 ## Outputs
 

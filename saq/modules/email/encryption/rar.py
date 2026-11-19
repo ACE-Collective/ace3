@@ -193,7 +193,7 @@ class RarEncryptionAnalyzer(AnalysisModule):
 
             try:
                 analysis.password = crack_password(self, self.john_bin_path, hash_file, _file.full_path,
-                                                   f'--wordlist={os.path.abspath(wordlist_path)}',
+                                                   f'--wordlist={wordlist_path}',
                                                    read_files=[wordlist_path])
             except Exception as e:
                 logging.exception(f"unable to crack the password for {_file}",
@@ -218,7 +218,7 @@ class RarEncryptionAnalyzer(AnalysisModule):
         # output_dir as the directory to extract into
         # -kb keeps a member cut off at the file size limit (UNRAR_WRITE_ERROR)
         result = self.run_sandboxed_tool(['unrar', 'x', '-y', '-kb', f'-p{analysis.password}', _file.full_path,
-                                          os.path.join(os.path.abspath(output_dir), '')], _file.full_path,
+                                          os.path.join(output_dir, '')], _file.full_path,
                                          read_files=archive_volumes(_file.full_path), write_dirs=[output_dir])
         if result is None:
             # run_sandboxed_tool() logged why (a timeout). What it extracted before it was stopped is

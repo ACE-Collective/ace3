@@ -9,11 +9,12 @@ from unittest.mock import Mock, patch
 import pytest
 import redis
 
-from saq.configuration.config import get_config, get_service_config
-from saq.constants import ANALYSIS_MODE_CORRELATION, SERVICE_SEARCH_INDEXER
+from saq.configuration.config import get_config, get_engine_config, get_service_config
+from saq.constants import ANALYSIS_MODE_ANALYSIS, ANALYSIS_MODE_CORRELATION, SERVICE_SEARCH_INDEXER
 from saq.engine.engine_configuration import EngineConfiguration
 from saq.engine.worker import Worker
 from saq.search.tasks import submit_index_task
+from saq.util.uuid import storage_dir_from_uuid, workload_storage_dir
 from tests.saq.helpers import create_root_analysis
 
 pytestmark = pytest.mark.unit
@@ -100,3 +101,19 @@ def test_stalled_redis_times_out_and_is_logged_at_error(monkeypatch, caplog):
     assert len(errors) == 1
     assert errors[0].getMessage().startswith(f"error submitting search index task for {root.uuid}")
     assert isinstance(errors[0].exc_info[1], redis.TimeoutError)
+
+
+def test_analysis_moves_to_the_work_directory(monkeypatch, tmp_path):
+    """A root in the alerts directory moves to the engine's work directory: the root's storage_dir is
+    absolute, so the move is decided on the storage directory as the database records it."""
+    monkeypatch.setattr(get_engine_config(), "work_dir", str(tmp_path))
+    root_uuid = str(uuid.uuid4())
+    root = create_root_analysis(uuid=root_uuid, storage_dir=storage_dir_from_uuid(root_uuid),
+                                analysis_mode=ANALYSIS_MODE_ANALYSIS)
+    root.initialize_storage()
+    root.save()
+    worker = _worker(requested=False)
+
+    assert worker.execute(root) is True
+    worker.analysis_orchestrator._relocate_storage_directory.assert_called_once()
+    assert worker.analysis_orchestrator._relocate_storage_directory.call_args.args[0] == workload_storage_dir(root_uuid)

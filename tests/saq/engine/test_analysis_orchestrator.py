@@ -16,13 +16,14 @@ from saq.constants import (
     STATE_ANALYST_REQUESTED_ANALYSIS,
 )
 from saq.database.model import Alert
-from saq.database.pool import get_db
+from saq.database.pool import get_db, get_db_connection
 from saq.database.util.workload import request_analyst_analysis
 from saq.database.util.alert import ALERT, get_alert_by_uuid
 from saq.engine.delayed_analysis import DelayedAnalysisRequest
 from saq.engine.execution_context import EngineExecutionContext
 from saq.environment import get_global_runtime_settings
 from saq.modules.test import BasicTestAnalysis
+from saq.util.uuid import storage_dir_from_uuid
 from tests.saq.helpers import create_root_analysis, create_test_orchestrator
 
 
@@ -460,3 +461,28 @@ class TestCheckDispositionAnalystOverride:
         request_analyst_analysis(root)
 
         assert not root.is_analysis_failed(BasicTestAnalysis, observable)
+
+
+@pytest.mark.integration
+def test_an_alert_in_the_alerts_directory_stays_there():
+    """A root's storage_dir is absolute, the database records the storage directory as it was given
+    (relative to SAQ_HOME), and _convert_to_alert compares that with storage_dir_from_uuid: an alert
+    already in the alerts directory is not moved, and its rows name the directory as it did."""
+    root_uuid = str(uuid.uuid4())
+    root = create_root_analysis(uuid=root_uuid, storage_dir=storage_dir_from_uuid(root_uuid),
+                                analysis_mode=ANALYSIS_MODE_CORRELATION)
+    root.initialize_storage()
+    root.save()
+    root.schedule()
+    assert os.path.isabs(root.storage_dir)
+
+    orchestrator = create_test_orchestrator()
+    with patch.object(orchestrator, "_relocate_storage_directory") as relocate:
+        orchestrator._convert_to_alert(EngineExecutionContext(work_item=root))
+
+    relocate.assert_not_called()
+    assert get_alert_by_uuid(root_uuid).storage_dir == storage_dir_from_uuid(root_uuid)
+    with get_db_connection() as db:
+        cursor = db.cursor()
+        cursor.execute("SELECT storage_dir FROM workload WHERE uuid = %s", (root_uuid,))
+        assert cursor.fetchone()[0] == storage_dir_from_uuid(root_uuid)

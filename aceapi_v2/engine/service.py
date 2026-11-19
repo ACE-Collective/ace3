@@ -107,7 +107,7 @@ def receive_upload(uuid: str, archive: IO[bytes], modifiers: UploadModifiers) ->
         with get_db_connection() as db:
             cursor = db.cursor()
             cursor.execute("UPDATE alerts SET location = %s, storage_dir = %s WHERE uuid = %s",
-                           (root.location, root.storage_dir, uuid))
+                           (root.location, root.stored_storage_dir, uuid))
             db.commit()
 
     # A correlation-mode root is an alert. submit_local() inserts its alerts row before scheduling
@@ -122,7 +122,7 @@ def receive_upload(uuid: str, archive: IO[bytes], modifiers: UploadModifiers) ->
     if modifiers.sync:
         root.schedule()
 
-    return root.storage_dir
+    return root.stored_storage_dir
 
 
 def clear_target(uuid: str, lock_uuid: str) -> None:

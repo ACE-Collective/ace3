@@ -479,8 +479,15 @@ class RootAnalysis(Analysis):
 
     @property
     def storage_dir(self) -> str:
-        """The base storage directory for output."""
+        """The absolute path of the storage directory, so that every path built on it names the same file in
+        any working directory."""
         return self.file_manager.storage_dir
+
+    @property
+    def stored_storage_dir(self) -> str:
+        """The storage directory as the database records it (alerts, workload and delayed_analysis) and
+        compares it: relative to SAQ_HOME, or absolute."""
+        return self.file_manager.stored_storage_dir
 
     @property
     def hardcopy_dir(self) -> str:

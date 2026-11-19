@@ -323,16 +323,13 @@ class YaraScanner_v3_4(AnalysisModule):
                     "sha256": _file.value.lower(),
                 }
 
-            # this path needs to be absolute for the yara scanner service to know where to find it
-            _full_path = os.path.abspath(local_file_path)
-
             # any other failure of the service (including a scanner that crashed on this file)
             # is a scan failure, handled below
             try:
-                result = yara_client.scan_file(_full_path, meta_tags=meta_tags, qa=qa_context)
+                result = yara_client.scan_file(local_file_path, meta_tags=meta_tags, qa=qa_context)
                 matches_found = bool(result)
 
-                logging.debug("scanned file {} with the yara scanner service (matches found: {})".format(_full_path, matches_found))
+                logging.debug("scanned file {} with the yara scanner service (matches found: {})".format(local_file_path, matches_found))
 
                 # if that worked and we have a local scanner see if we still need it
                 # we keep it around for some length of time
@@ -347,7 +344,7 @@ class YaraScanner_v3_4(AnalysisModule):
                         gc.collect()
 
             except YaraScanTimeout as e:
-                logging.warning("yara scanner service timed out scanning file %s: %s", _full_path, e)
+                logging.warning("yara scanner service timed out scanning file %s: %s", local_file_path, e)
                 matches_found = False
 
             except YaraServiceUnavailable as e:
@@ -587,9 +584,9 @@ class YaraScanner_v3_4(AnalysisModule):
                             try:
                                 first_instr_offset = position - start_byte
                                 # Add a fifth item to the context list of the last yara_result added. app/templates/analysis/yara_analysis* will render this appropriately
-                                yara_result['context'][-1].append(disassemble(_full_path, start_byte, first_instr_offset, len(value), context_data, decoder))
+                                yara_result['context'][-1].append(disassemble(local_file_path, start_byte, first_instr_offset, len(value), context_data, decoder))
                             except Exception:
-                                logging.exception(f"unable to disassemble {string_id} at {position} in {_full_path}")
+                                logging.exception(f"unable to disassemble {string_id} at {position} in {local_file_path}")
                                 yara_result['context'][-1].append('Failed to disassemble')
 
             # did this rule have any tags?

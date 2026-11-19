@@ -417,11 +417,11 @@ class AnalysisModule(FileWatcherMixin):
         The tool can read target, read_files and read_dirs, and the directory its program is in, and
         write only its own empty working directory (its cwd, HOME and TMPDIR, unless cwd names one of
         write_dirs) and write_dirs, which the module creates for it; no network. A name in args
-        without a directory is relative to the working directory, and an arg that is target or one of
-        read_files or write_dirs is made absolute (one inside a longer arg, like 7z's -o<dir>, is the
-        module's to make absolute). outputs maps names relative to the working directory to where
-        the module keeps them, and each one the tool left as a plain file is moved there once it has
-        finished, whatever its exit status. Nothing is moved from a tool that was stopped.
+        without a directory is relative to the working directory. The paths ACE gives out (a file
+        observable's full_path, the root's directories, get_temp_dir()) are absolute, so they name the
+        same files there, also inside a longer arg like 7z's -o<dir>. outputs maps names relative to
+        the working directory to where the module keeps them, and each one the tool left as a plain
+        file is moved there once it has finished, whatever its exit status. Nothing is moved from a tool that was stopped.
 
         It is stopped like run_tool() stops one (at timeout seconds, or before this call to analyze()
         runs out of time), when it writes more than tool_sandbox.max_output_bytes, and when
@@ -457,11 +457,6 @@ class AnalysisModule(FileWatcherMixin):
             self._sandbox_failed(program, target, "the Landlock sandbox is not available on this node")
             return None
 
-        # ACE's paths are often relative to SAQ_HOME, the tool's are relative to its working directory
-        absolute = {path: os.path.abspath(path) for path in [target, *read_files, *write_dirs]}
-        args = [absolute.get(arg, arg) for arg in args]
-        target = absolute[target]
-
         allowed = max(1.0, self.time_left() - TOOL_TIMEOUT_MARGIN_SECONDS)
         seconds = allowed if timeout is None else max(1.0, min(timeout, allowed))
         tool = os.path.basename(program)
@@ -470,9 +465,9 @@ class AnalysisModule(FileWatcherMixin):
         with create_workdir(work_root) as workdir:
             argv = build_sandbox_argv(
                 [program, *args[1:]], workdir, config, timedelta(seconds=seconds),
-                read_files=[path for path in (target, *(absolute[path] for path in read_files)) if os.path.exists(path)],
+                read_files=[path for path in (target, *read_files) if os.path.exists(path)],
                 read_dirs=[*tool_dirs, *read_dirs],
-                write_dirs=[absolute[path] for path in write_dirs],
+                write_dirs=list(write_dirs),
                 # RLIMIT_CPU counts every thread, and john, 7z and the JVM run one per core; the
                 # timeout still bounds the wall time
                 cpu_seconds=math.ceil(seconds * (os.cpu_count() or 1)),
@@ -481,7 +476,7 @@ class AnalysisModule(FileWatcherMixin):
             tool_env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "LANG": "C.UTF-8", "HOME": workdir,
                         "TMPDIR": workdir, **(env or {})}
             try:
-                result = run_sandboxed(argv, None, tool_env, os.path.abspath(cwd) if cwd else workdir,
+                result = run_sandboxed(argv, None, tool_env, cwd or workdir,
                                        timedelta(seconds=seconds), config.max_output_bytes, cancel=self.should_stop)
             except SandboxCancelled:
                 logging.info("%s stopped %s on %s: the analysis was stopped", self, tool, target,

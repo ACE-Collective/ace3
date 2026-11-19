@@ -109,7 +109,7 @@ class Alert(Base):
     def create_from_root_analysis(cls, root_analysis: RootAnalysis) -> "Alert":
         return cls(
             uuid=root_analysis.uuid,
-            storage_dir=root_analysis.storage_dir,
+            storage_dir=root_analysis.stored_storage_dir,
             location=root_analysis.location,
             company_id=root_analysis.company_id,
             event_time=root_analysis.event_time,

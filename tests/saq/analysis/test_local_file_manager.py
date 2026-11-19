@@ -8,6 +8,7 @@ from pathlib import Path
 from saq.analysis.file_manager.local_file_manager import MAX_RELATIVE_PATH_BYTES, LocalFileManager, clean_file_name
 from saq.util.filesystem import NAME_MAX_BYTES
 from saq.constants import FILE_SUBDIR
+from saq.environment import get_global_runtime_settings
 
 # a name that is not UTF-8, as os.listdir returns it
 UNDECODABLE_NAME = b"\xe9\xe9.pdf".decode("utf-8", "surrogateescape")
@@ -227,15 +228,26 @@ def test_create_file_path_inside_the_file_dir(contained_file_manager):
     assert os.path.isdir(os.path.join(file_dir, "sub"))
 
 
+@pytest.fixture
+def saq_home_elsewhere(tmp_path, monkeypatch):
+    """SAQ_HOME is tmp_path, and the working directory is somewhere else."""
+    monkeypatch.setattr(get_global_runtime_settings(), "saq_home", str(tmp_path))
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
+
+
 @pytest.mark.unit
-def test_create_file_path_with_a_relative_storage_dir(tmp_path, outside_dir, monkeypatch):
-    """Storage directories are relative to SAQ_HOME, which is the working directory."""
-    monkeypatch.chdir(tmp_path)
+def test_create_file_path_with_a_relative_storage_dir(tmp_path, outside_dir, saq_home_elsewhere):
+    """A storage directory is relative to SAQ_HOME, and the paths made in it are absolute."""
     fm = LocalFileManager("storage")
     os.makedirs(fm.file_dir)
+    assert fm.storage_dir == str(tmp_path / "storage")
+    assert fm.stored_storage_dir == "storage"
 
-    assert fm.create_file_path("a.txt") == os.path.join("storage", FILE_SUBDIR, "a.txt")
-    assert fm.create_file_path(os.path.join("storage", FILE_SUBDIR, "a.txt")) == os.path.join("storage", FILE_SUBDIR, "a.txt")
+    assert fm.create_file_path("a.txt") == str(tmp_path / "storage" / FILE_SUBDIR / "a.txt")
+    # the path relative to SAQ_HOME that it gave out before
+    assert fm.create_file_path(os.path.join("storage", FILE_SUBDIR, "a.txt")) == str(tmp_path / "storage" / FILE_SUBDIR / "a.txt")
     assert fm.create_file_path(str(tmp_path / "storage" / FILE_SUBDIR / "b.txt")) == str(tmp_path / "storage" / FILE_SUBDIR / "b.txt")
     with pytest.raises(ValueError):
         fm.create_file_path(os.path.join("..", "..", "outside", "escaped.txt"))
@@ -640,13 +652,12 @@ def test_create_output_file_refuses_a_symlink_out_of_the_file_dir(contained_file
 
 
 @pytest.mark.unit
-def test_create_output_file_with_a_relative_storage_dir(tmp_path, outside_dir, monkeypatch):
-    """Storage directories are relative to SAQ_HOME, which is the working directory."""
-    monkeypatch.chdir(tmp_path)
+def test_create_output_file_with_a_relative_storage_dir(tmp_path, outside_dir, saq_home_elsewhere):
+    """A storage directory is relative to SAQ_HOME, and the files made in it are absolute paths."""
     fm = LocalFileManager("storage")
     os.makedirs(fm.file_dir)
 
-    assert fm.create_output_file("a.txt") == os.path.join("storage", FILE_SUBDIR, "a.txt")
+    assert fm.create_output_file("a.txt") == str(tmp_path / "storage" / FILE_SUBDIR / "a.txt")
     assert fm.create_output_file(os.path.join("..", "..", "outside", "escaped.txt")) == \
-        os.path.join("storage", FILE_SUBDIR, "_", "_", "outside", "escaped.txt")
+        str(tmp_path / "storage" / FILE_SUBDIR / "_" / "_" / "outside" / "escaped.txt")
     assert os.listdir(outside_dir) == []

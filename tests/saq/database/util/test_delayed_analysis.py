@@ -73,7 +73,7 @@ def test_inserts_the_request_row(request_args):
         observable.uuid,
         analysis_module.name,
         get_global_runtime_settings().saq_node_id,
-        root.storage_dir,
+        root.stored_storage_dir,
     )
     # delayed by 1h 2m 3s from the database's clock
     assert 3723 - 5 <= row[5] <= 3723

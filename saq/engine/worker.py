@@ -680,7 +680,7 @@ class Worker:
                     # and this system uses a work directory for analysis,
                     and work_dir
                     # and the storage directory is currently set to the main data directory
-                    and work_item.storage_dir == storage_dir_from_uuid(work_item.uuid)
+                    and work_item.stored_storage_dir == storage_dir_from_uuid(work_item.uuid)
                 ):
                     logging.info(f"switching to work directory for {work_item}")
                     # then we move the storage directory to the work directory

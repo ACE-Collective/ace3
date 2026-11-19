@@ -39,7 +39,7 @@ def add_delayed_analysis_request(root, observable, analysis_module, hours, minut
                                   minutes, 
                                   seconds, 
                                   get_global_runtime_settings().saq_node_id,
-                                  root.storage_dir 
+                                  root.stored_storage_dir
                               ))
             db.commit()
 

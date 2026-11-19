@@ -109,7 +109,7 @@ class MemoryWorkloadManager(WorkloadManagerInterface):
             root.analysis_mode,
             datetime.now(),
             getattr(root, 'company_id', self._current_company_id),
-            root.storage_dir
+            root.stored_storage_dir
         )
         
         logging.info("added {} to workload with analysis mode {} company_id {}".format(
@@ -305,7 +305,7 @@ class MemoryWorkloadManager(WorkloadManagerInterface):
             observable_uuid=observable.uuid,
             analysis_module_str=analysis_module.name,
             next_analysis=next_analysis,
-            storage_dir=root.storage_dir,
+            storage_dir=root.stored_storage_dir,
             database_id=request_id
         )
         

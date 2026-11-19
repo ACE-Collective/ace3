@@ -604,3 +604,25 @@ class TestEventTimeSource:
         assert root.event_time_source == EventTimeSource.EVENT
         (record,) = [r for r in caplog.records if "unknown event_time_source" in r.getMessage()]
         assert record.levelno == logging.WARNING and record.root_uuid == root.uuid
+
+
+@pytest.mark.unit
+def test_paths_resolve_outside_saq_home(root_analysis, tmp_path, monkeypatch):
+    """The storage directory is recorded relative to SAQ_HOME, but the paths a root gives out are absolute, so
+    a program started in another directory (a sandboxed tool runs in a working directory of its own) finds the
+    same files."""
+    assert not os.path.isabs(root_analysis.stored_storage_dir)
+    path = root_analysis.create_file_path("sample.txt")
+    with open(path, "w") as fp:
+        fp.write("content")
+    file_observable = root_analysis.add_file_observable(path)
+
+    monkeypatch.chdir(tmp_path)
+    for directory in (root_analysis.storage_dir, root_analysis.file_dir, root_analysis.hardcopy_dir):
+        assert os.path.isabs(directory) and os.path.isdir(directory)
+
+    with open(file_observable.full_path) as fp:
+        assert fp.read() == "content"
+
+    output = root_analysis.create_output_file("output.txt")
+    assert os.path.isabs(output) and os.path.isfile(output)

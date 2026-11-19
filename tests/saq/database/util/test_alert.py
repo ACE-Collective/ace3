@@ -58,7 +58,7 @@ def test_ALERT_function():
     assert isinstance(alert, Alert)
     assert alert.id is not None
     assert alert.uuid == root_uuid
-    assert alert.storage_dir == root.storage_dir
+    assert alert.storage_dir == root.stored_storage_dir
     assert alert.tool == root.tool
     assert alert.alert_type == root.alert_type
     assert alert.description == root.description

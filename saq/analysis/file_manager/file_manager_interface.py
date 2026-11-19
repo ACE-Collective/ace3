@@ -23,7 +23,12 @@ class FileManagerInterface(Protocol):
         
     @property
     def storage_dir(self) -> str:
-        """The base storage directory for output."""
+        """The absolute path of the storage directory."""
+        ...
+
+    @property
+    def stored_storage_dir(self) -> str:
+        """The storage directory as the database records it: relative to SAQ_HOME, or absolute."""
         ...
         
     @property

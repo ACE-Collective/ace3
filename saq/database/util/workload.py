@@ -60,7 +60,7 @@ INSERT INTO workload (
     storage_dir,
     insert_date )
 VALUES ( %s, %s, %s, %s, %s, NOW() )
-ON DUPLICATE KEY UPDATE uuid=uuid""", (root.uuid, get_global_runtime_settings().saq_node_id, root.analysis_mode, root.company_id, root.storage_dir))
+ON DUPLICATE KEY UPDATE uuid=uuid""", (root.uuid, get_global_runtime_settings().saq_node_id, root.analysis_mode, root.company_id, root.stored_storage_dir))
         db.commit()
         logging.info("added {} to workload with analysis mode {} company_id {}".format(
                       root.uuid, root.analysis_mode, root.company_id))

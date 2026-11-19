@@ -6,7 +6,6 @@ from typing import Any, Optional
 
 from saq.analysis.file_manager.file_manager_interface import FileManagerInterface, FileRefusedError
 from saq.constants import FILE_SUBDIR, HARDCOPY_SUBDIR
-from saq.environment import get_base_dir
 from saq.util.filesystem import NAME_MAX_BYTES, abs_path, is_path_under, shorten_basename_for_suffix
 from saq.util.hashing import sha256_file
 
@@ -64,7 +63,8 @@ class LocalFileManager(FileManagerInterface):
         Args:
             storage_dir: The base storage directory for this analysis
         """
-        self._storage_dir = storage_dir
+        # as the database records it: relative to SAQ_HOME, or absolute
+        self._stored_storage_dir = storage_dir
         # base path -> the _NNN index to try next, so that N outputs sharing a name cost N checks rather
         # than N^2/2 (a crafted document can repeat a part name thousands of times)
         self._next_suffix: dict[str, int] = {}
@@ -73,33 +73,40 @@ class LocalFileManager(FileManagerInterface):
         
     @property
     def storage_dir(self) -> str:
-        """The base storage directory for output."""
-        return self._storage_dir
+        """The absolute path of the storage directory, which names the same directory in any working
+        directory (a sandboxed tool runs in one of its own)."""
+        return os.path.normpath(abs_path(self._stored_storage_dir))
+
+    @property
+    def stored_storage_dir(self) -> str:
+        """The storage directory as it was given, and as the database records it (alerts, workload and
+        delayed_analysis): relative to SAQ_HOME, or absolute."""
+        return self._stored_storage_dir
         
     @property
     def hardcopy_dir(self) -> str:
         """Returns the path to the hardcopy directory. File content is stored here by sha256 hash."""
-        return os.path.join(self._storage_dir, HARDCOPY_SUBDIR)
+        return os.path.join(self.storage_dir, HARDCOPY_SUBDIR)
         
     @property
     def file_dir(self) -> str:
         """Returns the path to the files directory. File references to hard copies are stored here by relative path."""
-        return os.path.join(self._storage_dir, FILE_SUBDIR)
+        return os.path.join(self.storage_dir, FILE_SUBDIR)
         
     @property
     def json_path(self) -> str:
         """Path to the JSON file that stores this alert."""
-        return os.path.join(get_base_dir(), self._storage_dir, 'data.json')
+        return os.path.join(self.storage_dir, 'data.json')
         
     @property
     def submission_json_path(self) -> str:
         """Returns the path used to store the submission JSON data."""
-        return os.path.join(self._storage_dir, '.ace', 'submission.json')
+        return os.path.join(self.storage_dir, '.ace', 'submission.json')
         
     def initialize_storage(self):
         """Initialize the storage directory structure."""
         try:
-            target_dir = os.path.join(get_base_dir(), self._storage_dir)
+            target_dir = self.storage_dir
             if not os.path.exists(target_dir):
                 os.makedirs(target_dir)
 
@@ -116,12 +123,12 @@ class LocalFileManager(FileManagerInterface):
     def ensure_storage_directories(self):
         """Ensure the storage and .ace directories exist."""
         # make sure the containing directory exists
-        if not os.path.exists(os.path.join(get_base_dir(), self._storage_dir)):
-            os.makedirs(os.path.join(get_base_dir(), self._storage_dir))
+        if not os.path.exists(self.storage_dir):
+            os.makedirs(self.storage_dir)
 
         # analysis details go into a hidden directory
-        if not os.path.exists(os.path.join(get_base_dir(), self._storage_dir, '.ace')):
-            os.makedirs(os.path.join(get_base_dir(), self._storage_dir, '.ace'))
+        if not os.path.exists(os.path.join(self.storage_dir, '.ace')):
+            os.makedirs(os.path.join(self.storage_dir, '.ace'))
 
     def _refuse_outside_file_dir(self, target_path: str, name: str):
         """Raises FileRefusedError when target_path is not a file inside the files directory. Names come
@@ -132,7 +139,7 @@ class LocalFileManager(FileManagerInterface):
             return
 
         logging.warning("refusing file path %r (resolves to %s) outside of the files directory of %s", name, resolved,
-                        self._storage_dir, extra={"storage_dir": self._storage_dir, "path": name, "resolved_path": resolved})
+                        self.storage_dir, extra={"storage_dir": self.storage_dir, "path": name, "resolved_path": resolved})
         raise FileRefusedError(f"file path {name!r} is outside of the files directory {self.file_dir}")
 
     def create_file_path(self, relative_path: str) -> str:
@@ -149,9 +156,11 @@ class LocalFileManager(FileManagerInterface):
         Raises:
             FileRefusedError: If the path is not inside the file directory
         """
-        if os.path.dirname(relative_path) == self.file_dir:
+        # a path relative to SAQ_HOME, as storage directories were before they were made absolute, still matches
+        full_path = abs_path(relative_path)
+        if os.path.normpath(os.path.dirname(full_path)) == self.file_dir:
             # already a full path within the files dir
-            target_path = relative_path
+            target_path = full_path
         else:
             target_path = os.path.join(self.file_dir, relative_path)
 
@@ -273,9 +282,11 @@ class LocalFileManager(FileManagerInterface):
         if not os.path.exists(source_path):
             raise FileNotFoundError(f"Source file does not exist: {source_path}")
             
-        # Determine target path
-        if source_path.startswith(self.file_dir):
-            target_path = source_path
+        # Determine target path. A path relative to SAQ_HOME, as storage directories were before they were made
+        # absolute, still matches
+        full_source_path = os.path.normpath(abs_path(source_path))
+        if full_source_path.startswith(self.file_dir):
+            target_path = full_source_path
         else:
             relative_path = clean_file_name(target_path or os.path.basename(source_path))
             directory = self._output_directory(os.path.dirname(relative_path), relative_path)
@@ -319,7 +330,7 @@ class LocalFileManager(FileManagerInterface):
         # Create reference link
         if not os.path.exists(target_path):
             os.link(hardcopy_path, target_path)
-        elif target_path != source_path and not (os.path.isfile(target_path) and sha256_file(target_path) == sha256_hash):
+        elif target_path != full_source_path and not (os.path.isfile(target_path) and sha256_file(target_path) == sha256_hash):
             # another file (or a directory) already has this name, and reusing it would give this
             # observable the other file's bytes
             target_path = self._free_path(target_path)
@@ -354,11 +365,11 @@ class LocalFileManager(FileManagerInterface):
         Raises:
             RuntimeError: If destination already exists
         """
-        if os.path.exists(dest_dir):
+        if os.path.exists(abs_path(dest_dir)):
             raise RuntimeError(f"Destination directory {dest_dir} already exists")
             
-        shutil.copytree(self._storage_dir, dest_dir)
-        logging.debug(f"copied storage from {self._storage_dir} to {dest_dir}")
+        shutil.copytree(self.storage_dir, abs_path(dest_dir))
+        logging.debug(f"copied storage from {self.storage_dir} to {dest_dir}")
         
     def move_storage(self, dest_dir: str):
         """
@@ -370,29 +381,29 @@ class LocalFileManager(FileManagerInterface):
         Raises:
             RuntimeError: If destination already exists
         """
-        if os.path.exists(dest_dir):
+        if os.path.exists(abs_path(dest_dir)):
             raise RuntimeError(f"Destination directory {dest_dir} already exists")
             
-        shutil.move(self._storage_dir, dest_dir)
-        logging.debug(f"moved storage from {self._storage_dir} to {dest_dir}")
-        self._storage_dir = dest_dir
+        shutil.move(self.storage_dir, abs_path(dest_dir))
+        logging.debug(f"moved storage from {self.storage_dir} to {dest_dir}")
+        self._stored_storage_dir = dest_dir
         
     def delete_storage(self):
         """Delete the entire storage directory and its contents."""
         try:
-            if os.path.exists(self._storage_dir):
-                shutil.rmtree(self._storage_dir)
-                logging.debug("deleted storage directory {}".format(self._storage_dir))
+            if os.path.exists(self.storage_dir):
+                shutil.rmtree(self.storage_dir)
+                logging.debug("deleted storage directory {}".format(self.storage_dir))
         except Exception as e:
-            logging.error("unable to delete storage {}: {}".format(self._storage_dir, e))
+            logging.exception("unable to delete storage {}: {}".format(self.storage_dir, e))
             raise e
             
     def cleanup_empty_directories(self):
         """Remove empty directories within the storage directory."""
         from subprocess import Popen
         
-        logging.debug("removing empty directories inside {}".format(self._storage_dir))
-        p = Popen(['find', abs_path(self._storage_dir), '-type', 'd', '-empty', '-delete'])
+        logging.debug("removing empty directories inside {}".format(self.storage_dir))
+        p = Popen(['find', self.storage_dir, '-type', 'd', '-empty', '-delete'])
         p.wait()
         
     def archive_files(self, retained_files: set):
@@ -408,7 +419,7 @@ class LocalFileManager(FileManagerInterface):
         Args:
             retained_files: Set of file paths to retain (relative to SAQ_HOME or absolute)
         """
-        storage_dir = abs_path(self._storage_dir)
+        storage_dir = self.storage_dir
         retained = {os.path.normpath(abs_path(path)) for path in retained_files}
         kept_dirs = {os.path.normpath(storage_dir), os.path.join(os.path.normpath(storage_dir), '.ace')}
 

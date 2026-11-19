@@ -480,8 +480,8 @@ def test_sandboxed_tool_reads_its_target_and_keeps_its_outputs(root_analysis):
     module = _module(SsdeepAnalyzer, "ssdeep", root_analysis)
     observable = _file(root_analysis, "sample.bin", b"sample content")
     kept = f"{observable.full_path}.out"
-    # a relative path, as ACE's often are; the tool runs in its own working directory
-    assert not os.path.isabs(observable.full_path)
+    # the tool runs in its own working directory, where ACE's paths still name the same files
+    assert os.path.isabs(observable.full_path)
 
     result = module.run_sandboxed_tool(
         _sh('cat "$1"; touch "$(dirname "$1")/planted" 2>/dev/null && echo planted >&2; echo result > out.txt',

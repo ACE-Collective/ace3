@@ -49,7 +49,7 @@ class PDFEncryptionAnalyzer(EmailPasswordAnalyzer):
             with open(wordlist_path, 'w') as fp:
                 fp.writelines(f'{word}\n' for word in word_list)
 
-            return crack_password(self, self.john_bin_path, hash_file, hash_file, f'--wordlist={os.path.abspath(wordlist_path)}',
+            return crack_password(self, self.john_bin_path, hash_file, hash_file, f'--wordlist={wordlist_path}',
                                   login='pdf', read_files=[wordlist_path])
 
     def execute_analysis(self, _file) -> AnalysisExecutionResult:

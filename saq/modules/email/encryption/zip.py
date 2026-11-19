@@ -196,7 +196,7 @@ class ZipEncryptionAnalyzer(AnalysisModule):
 
             try:
                 analysis.password = crack_password(self, self.john_bin_path, hash_file, _file.full_path,
-                                                   f'--wordlist={os.path.abspath(wordlist_path)}',
+                                                   f'--wordlist={wordlist_path}',
                                                    read_files=[wordlist_path])
             except Exception as e:
                 logging.exception(f"unable to crack the password for {_file}",
@@ -219,7 +219,7 @@ class ZipEncryptionAnalyzer(AnalysisModule):
 
         # extract data from zip to output directory w/ 7zip
         # 'x' = extract, '-y' = assume yes to all queries
-        result = self.run_sandboxed_tool(['7z', 'x', '-y', f'-p{analysis.password}', f"-o{os.path.abspath(output_dir)}",
+        result = self.run_sandboxed_tool(['7z', 'x', '-y', f'-p{analysis.password}', f"-o{output_dir}",
                                           _file.full_path], _file.full_path, timeout=self.extract_timeout,
                                          write_dirs=[output_dir])
         if result is None:

@@ -447,7 +447,7 @@ class AnalysisOrchestrator:
 
         # is the current storage directory in a different directory than the alerts?
         target_dir = storage_dir_from_uuid(execution_context.root.uuid)
-        if execution_context.root.storage_dir != target_dir:
+        if execution_context.root.stored_storage_dir != target_dir:
             self._relocate_storage_directory(target_dir, execution_context)
 
         # Create the alert
@@ -475,9 +475,9 @@ class AnalysisOrchestrator:
                 sql = []
                 params = []
                 sql.append("UPDATE workload SET storage_dir = %s WHERE uuid = %s")
-                params.append((execution_context.root.storage_dir, execution_context.root.uuid))
+                params.append((execution_context.root.stored_storage_dir, execution_context.root.uuid))
                 sql.append("UPDATE delayed_analysis SET storage_dir = %s WHERE uuid = %s")
-                params.append((execution_context.root.storage_dir, execution_context.root.uuid))
+                params.append((execution_context.root.stored_storage_dir, execution_context.root.uuid))
                 execute_with_retry(db, cursor, sql, params, commit=True)
         except Exception as e:
             logging.exception(
@@ -502,12 +502,12 @@ class AnalysisOrchestrator:
                 # hand the alert the tree we just analyzed rather than making sync() read a
                 # second copy of it off disk and serialize that back out. only safe when both
                 # point at the same storage directory -- otherwise fall back to loading.
-                if alert.storage_dir == execution_context.root.storage_dir:
+                if alert.storage_dir == execution_context.root.stored_storage_dir:
                     alert.attach_root_analysis(execution_context.root)
                 else:
                     logging.debug(
                         "alert %s storage_dir %s does not match root storage_dir %s - loading from disk",
-                        execution_context.root.uuid, alert.storage_dir, execution_context.root.storage_dir,
+                        execution_context.root.uuid, alert.storage_dir, execution_context.root.stored_storage_dir,
                     )
                     alert.load()
                 # the alert's last pass: nothing delayed is outstanding, or analysis was aborted

@@ -1,3 +1,4 @@
+import os
 import uuid
 
 import bcrypt
@@ -8,6 +9,7 @@ from saq.database.model import Alert, User, load_alert, verify_password_hash
 from saq.database.pool import get_db
 from saq.database.util.alert import ALERT
 from saq.gui.icon import IconConfiguration, KEY_ICON_CONFIGURATION
+from saq.util.filesystem import abs_path
 from tests.saq.helpers import create_root_analysis, insert_alert
 
 from sqlalchemy import inspect
@@ -45,7 +47,7 @@ def test_alert_log_error_on_load(caplog):
         alert.load()
         error_records = [r for r in caplog.records if r.levelname == "ERROR"]
         assert len(error_records) == 1
-        assert alert.storage_dir in error_records[0].getMessage()
+        assert os.path.normpath(abs_path(alert.storage_dir)) in error_records[0].getMessage()
 
 @pytest.mark.integration
 def test_insert_alert_name_too_long():
