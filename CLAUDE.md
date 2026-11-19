@@ -209,7 +209,7 @@ Key top-level conventions:
 
 ### The analysis tree
 
-- `saq/analysis/observable.py` — `Observable`: a piece of data that can itself be analyzed (ip, url, file, email_address, …). Types are declared in config and form an **inheritance hierarchy** (`docs/OBSERVABLE_TYPE_INHERITANCE.md`): a module declaring `valid_observable_types = F_EMAIL_ADDRESS` also runs on `email_from`, `email_to`, etc.
+- `saq/analysis/observable.py` — `Observable`: a piece of data that can itself be analyzed (ip, url, file, email_address, …). Types are declared in config and form an **inheritance hierarchy** (`docs/OBSERVABLE_TYPE_INHERITANCE.md`): a module declaring `valid_observable_types = F_EMAIL_ADDRESS` also runs on `email_from`, `email_to`, etc., so module code tests a type with `observable.is_a(F_EMAIL_ADDRESS)`, never `observable.type ==`.
 - `saq/analysis/analysis.py` — `Analysis`: the output of one module against one observable; holds a summary, summary details, free-form `details`, and any new observables it produced.
 - `saq/analysis/root.py` — `RootAnalysis`: the root of the tree and the unit of work. Serialized to a storage directory under the data dir (`storage_dir_from_uuid`); `saq/database/model.py::Alert` is its database counterpart.
 - Observables carry **directives**, **tags**, **relationships**, and **detection points**; a detection point anywhere in the tree is what promotes an analysis to an alert.

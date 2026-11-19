@@ -57,7 +57,6 @@ from saq.analysis.presenter.analysis_presenter import (
 from saq.constants import F_FQDN, F_IP, AnalysisExecutionResult
 from saq.modules import AnalysisModule
 from saq.modules.apex_domain import ApexDomainAnalysis
-from saq.observables.type_hierarchy import get_type_hierarchy
 from saq.util.strings import format_item_list_for_summary
 
 # whoisit, whois and tldextract (~16 MB with the requests and httpx they load) are imported in the functions that
@@ -548,12 +547,6 @@ class RdapAnalysis(Analysis):
         return f"RDAP Analysis{suffix}: " + ", ".join(parts)
 
 
-def _is_ip(observable) -> bool:
-    # the module also runs on subtypes of ip (email_first_hop_ip), which an
-    # exact type comparison would send down the domain path
-    return get_type_hierarchy().is_subtype(observable.type, F_IP)
-
-
 class RdapAnalyzer(AnalysisModule):
     """Analysis module performing RDAP (with WHOIS fallback) on FQDN
     observables.
@@ -577,7 +570,7 @@ class RdapAnalyzer(AnalysisModule):
         there instead of once per subdomain. apex_domain_analyzer is a declared
         dependency, so its result is known here; when it is disabled or did not
         run on this observable, the subdomain is still looked up as before."""
-        if not _is_ip(observable):
+        if not observable.is_a(F_IP):
             apex_analysis = observable.get_analysis(ApexDomainAnalysis)
             # the analysis is kept when the observable limit stopped the apex from being added
             return not (isinstance(apex_analysis, ApexDomainAnalysis) and apex_analysis.get_observable_by_type(F_FQDN))
@@ -596,7 +589,7 @@ class RdapAnalyzer(AnalysisModule):
         now = datetime.now(timezone.utc)
         analysis.datetime_of_analysis = now.isoformat(" ")
 
-        is_ip = _is_ip(observable)
+        is_ip = observable.is_a(F_IP)
         if is_ip:
             # IPs are queried verbatim; RDAP answers for the network the
             # address falls in, so no eTLD+1-style reduction applies.

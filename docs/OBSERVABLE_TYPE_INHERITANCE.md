@@ -141,6 +141,12 @@ This module will be dispatched against every observable whose type *is or
 extends* `email_address` — including all the new email subtypes, plus any new
 ones added later in YAML. No code changes required when a new subtype lands.
 
+Inside the module, test the type the same way the dispatch did, with
+`observable.is_a(F_EMAIL_ADDRESS)` (it takes several types too:
+`observable.is_a(F_IP, F_IPV4)`). `observable.type == F_EMAIL_ADDRESS` is false
+for every subtype, so an `email_from` the module was handed would go down the
+wrong branch.
+
 If a particular module genuinely requires an exact-type match (for example,
 something that should only ever run on the bare `email_address` and never on
 the subtypes), set `valid_observable_subtypes = False` on the class:
@@ -294,6 +300,7 @@ email addresses.
 | Observable classes (`observable_types.classes`) | `etc/saq.default.yaml`, resolved by `saq/observables/generator.py` (`get_observable_class()`) |
 | Registry implementation                  | `saq/observables/type_hierarchy.py` (`get_type_hierarchy()`, `get_all_valid_types()`)           |
 | Module dispatch (subtype-aware)          | `saq/modules/base_module.py` (`AnalysisModule.accepts`, `valid_observable_subtypes`)            |
+| Subtype test in module code              | `saq/analysis/observable.py` (`Observable.is_a`)                                                 |
 | Display-label fallback                   | `saq/analysis/observable.py` (`Observable.display_type`)                                        |
 | `observable_modifier` rule matching      | `saq/modules/util/observable_modifier.py` (`RuleConditions.evaluate`, `evaluate_early`)         |
 | Detection export type selection          | `saq/observables/export/base.py` (`select_detections`), used by the yara and splunk targets      |

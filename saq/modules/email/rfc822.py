@@ -56,7 +56,6 @@ from saq.constants import (
     create_email_delivery,
 )
 from saq.configuration.config import get_config
-from saq.observables.type_hierarchy import get_type_hierarchy
 from saq.email import (
     decode_rfc2822,
     describe_undelivered,
@@ -1257,14 +1256,13 @@ class EmailAnalyzer(AnalysisModule):
 
         # emails that come from the SMTP collector should already have observables added with tags smtp_mail_from and
         # smtp_rctp_to
-        hierarchy = get_type_hierarchy()
         for smtp_rcpt_to in [o.value for o in self.get_root().find_observables(
-                lambda o: hierarchy.is_subtype(o.type, F_EMAIL_ADDRESS) and o.has_tag('smtp_rcpt_to'))]:
+                lambda o: o.is_a(F_EMAIL_ADDRESS) and o.has_tag('smtp_rcpt_to'))]:
             if smtp_rcpt_to not in env_rcpt_to:
                 env_rcpt_to.append(smtp_rcpt_to)
 
         mail_from = self.get_root().find_observable(
-                lambda o: hierarchy.is_subtype(o.type, F_EMAIL_ADDRESS) and o.has_tag('smtp_mail_from'))
+                lambda o: o.is_a(F_EMAIL_ADDRESS) and o.has_tag('smtp_mail_from'))
         if mail_from:
             env_mail_from = mail_from.value
 

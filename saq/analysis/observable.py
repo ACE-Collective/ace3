@@ -701,6 +701,14 @@ class Observable(BaseNode):
 
         return search_down(self, lambda obj: False if isinstance(obj, RootAnalysis) else obj.has_detection_points()) is not None
 
+    def is_a(self, *types: str) -> bool:
+        """True if this observable's type is one of types or extends one of them (etc/observable_types.yaml).
+
+        Modules are dispatched by subtype, so a module declaring F_EMAIL_ADDRESS also gets email_from: compare
+        with this, not observable.type ==, which is False for every subtype."""
+        hierarchy = get_type_hierarchy()
+        return any(hierarchy.is_subtype(self.type, t) for t in types)
+
     def is_managed(self) -> bool:
         """Returns True if this observable is considered to be managed. The definition of that is likely to change
         based on the company using this."""

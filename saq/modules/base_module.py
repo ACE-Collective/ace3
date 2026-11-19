@@ -26,7 +26,6 @@ from saq.environment import get_base_dir, get_data_dir
 from saq.filesystem.notification import FileWatcherMixin
 from saq.modules.config import AnalysisModuleConfig
 from saq.modules.context import AnalysisModuleContext
-from saq.observables.type_hierarchy import get_type_hierarchy
 from saq.util.filesystem import is_path_under
 from saq.sandbox.runner import (
     NODE_FAILURE_EXIT_CODES,
@@ -645,10 +644,7 @@ class AnalysisModule(FileWatcherMixin):
 
             try:
                 if self.valid_observable_subtypes:
-                    hierarchy = get_type_hierarchy()
-                    if not any(
-                        hierarchy.is_subtype(observable.type, vt) for vt in valid_types
-                    ):
+                    if not observable.is_a(*valid_types):
                         return False
                 else:
                     if observable.type not in valid_types:

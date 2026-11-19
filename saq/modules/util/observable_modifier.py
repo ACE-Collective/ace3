@@ -18,7 +18,6 @@ from saq.modules import AnalysisModule
 from saq.signatures.builtin import SIGNATURE_VERSION_UNKNOWN
 from saq.signatures.model import SignatureType
 from saq.modules.config import AnalysisModuleConfig
-from saq.observables.type_hierarchy import get_type_hierarchy
 
 
 class ObservableModifierConfig(AnalysisModuleConfig):
@@ -258,9 +257,8 @@ class TreeCondition:
     def _check_produces_observable(self, analysis) -> bool:
         """True if the analysis produced an observable whose type is a subtype of
         produces_observable_type and (if set) whose value matches produces_observable_value."""
-        hierarchy = get_type_hierarchy()
         for produced in analysis.observables:
-            if not hierarchy.is_subtype(produced.type, self.produces_observable_type):
+            if not produced.is_a(self.produces_observable_type):
                 continue
             if self.produces_observable_value is not None:
                 if not self.produces_observable_value.search(str(produced.value)):
@@ -375,8 +373,7 @@ class RuleConditions:
         """Check only immutable conditions known at analysis start.
         Returns False if the rule cannot match, True if it might."""
         if self.observable_types:
-            hierarchy = get_type_hierarchy()
-            if not any(hierarchy.is_subtype(observable.type, t) for t in self.observable_types):
+            if not observable.is_a(*self.observable_types):
                 return False
         if self.alert_type is not None:
             if root.alert_type != self.alert_type:
@@ -426,8 +423,7 @@ class RuleConditions:
         # Observable type check (subtype-aware: a rule targeting "email_address"
         # also matches subtypes like "email_from", "email_return_path", etc.)
         if self.observable_types:
-            hierarchy = get_type_hierarchy()
-            if not any(hierarchy.is_subtype(observable.type, t) for t in self.observable_types):
+            if not observable.is_a(*self.observable_types):
                 return False
 
         # Alert-level checks

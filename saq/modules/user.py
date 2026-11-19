@@ -37,11 +37,11 @@ class UserAnalyzer(AnalysisModule):
             return AnalysisExecutionResult.COMPLETED
 
         # skip external email addresses
-        if observable.type == F_EMAIL_ADDRESS and not is_local_email_domain(observable.value):
+        if observable.is_a(F_EMAIL_ADDRESS) and not is_local_email_domain(observable.value):
             return AnalysisExecutionResult.COMPLETED
 
         # lookup user details
-        if observable.type == F_EMAIL_ADDRESS:
+        if observable.is_a(F_EMAIL_ADDRESS):
             details = lookup_email_address(observable.value)
         else:
             details = lookup_user(observable.value)
@@ -56,7 +56,7 @@ class UserAnalyzer(AnalysisModule):
 
         # add user or email address observable depending on which we allready have
         new_observable = None
-        if observable.type == F_EMAIL_ADDRESS:
+        if observable.is_a(F_EMAIL_ADDRESS):
             if 'cn' in analysis.details['ldap'] and analysis.details['ldap']['cn'] is not None:
                 new_observable = analysis.add_observable_by_spec(F_USER, analysis.details['ldap']['cn'].lower())
         elif 'mail' in analysis.details['ldap'] and analysis.details['ldap']['mail'] is not None:
