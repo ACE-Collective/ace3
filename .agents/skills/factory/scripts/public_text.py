@@ -108,12 +108,13 @@ def scan(terms: list[dict], text: str, source: str, first_line: int = 1, lines: 
 
 def git(repo: str, *args: str) -> str:
     try:
-        result = subprocess.run(["git", "-C", repo, *args], capture_output=True, text=True, timeout=GIT_TIMEOUT)
+        # bytes, not text: text mode turns a lone CR into a line break, which would split a line of content
+        result = subprocess.run(["git", "-C", repo, *args], capture_output=True, timeout=GIT_TIMEOUT)
     except (OSError, subprocess.TimeoutExpired) as e:
         raise CheckError(f"git {' '.join(args)}: {e}") from e
     if result.returncode:
-        raise CheckError(f"git {' '.join(args)} failed: {result.stderr.strip()}")
-    return result.stdout
+        raise CheckError(f"git {' '.join(args)} failed: {result.stderr.decode('utf-8', 'replace').strip()}")
+    return result.stdout.decode("utf-8", "replace")
 
 
 # the output of git diff pinned against the user's config: unquoted UTF-8 paths, a/ and b/ prefixes
@@ -126,11 +127,14 @@ def added_lines(diff: str) -> dict[str, list[tuple[int, str]]]:
     a header this cannot read stops the check rather than skip what follows it."""
     files: dict[str, list[tuple[int, str]]] = {}
     path, line, old_left, new_left = None, 0, 0, 0
-    for text in diff.splitlines():
+    # split on \n alone: splitlines() also breaks at \f, \v, \x1c-\x1e and U+2028, which can be content
+    for text in diff.split("\n"):
         if old_left > 0 or new_left > 0:
             if text.startswith("\\"):
                 continue
             kind, content = text[:1], text[1:]
+            if kind not in ("+", "-", " "):
+                raise CheckError("cannot read a line of the diff inside a hunk; nothing may be published unchecked")
             if kind == "+":
                 if path is not None:
                     files.setdefault(path, []).append((line, content))

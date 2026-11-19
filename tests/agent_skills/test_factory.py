@@ -841,3 +841,39 @@ def test_labels_creates_only_the_missing_ones(core, monkeypatch):
 
     assert made == ["factory:in-progress", "factory:needs-info", "factory:needs-human"]
     assert result == {"created": made, "existing": ["factory:ready"]}
+
+
+@pytest.mark.parametrize("separator", ["\f", "\r", " ", "\v", "\x1c"])
+def test_a_line_holding_a_character_python_splits_lines_on_does_not_hide_the_lines_after_it(core, tmp_path, separator):
+    repo = make_repo(tmp_path / "repo")
+    base = commit(repo, {"keep.md": "keep\n"})
+    (repo / "odd.md").write_bytes(f"one{separator}two\nInitech after it\n".encode())
+    commit(repo, {})
+
+    hits = public_text.scan_range(public_text.load_terms(str(core), []), str(repo), f"{base}..HEAD", None)
+
+    assert [(h["source"], h["line"]) for h in hits] == [("odd.md", 2)]
+
+
+def test_a_hunk_line_the_scan_cannot_read_stops_the_check(core, tmp_path, monkeypatch):
+    real_git = public_text.git
+
+    def git_with_a_bad_hunk_line(repo, *args):
+        out = real_git(repo, *args)
+        return out.replace("+generic", "?generic") if "--name-only" not in args else out
+
+    repo = make_repo(tmp_path / "repo")
+    base = commit(repo, {"keep.md": "x\n"})
+    commit(repo, {"a.md": "generic\n"})
+    monkeypatch.setattr(public_text, "git", git_with_a_bad_hunk_line)
+
+    with pytest.raises(public_text.CheckError, match="cannot read a line of the diff"):
+        public_text.scan_range(public_text.load_terms(str(core), []), str(repo), f"{base}..HEAD", None)
+
+
+def test_a_git_failure_stops_the_check(core, tmp_path):
+    repo = make_repo(tmp_path / "repo")
+    commit(repo, {"a.md": "x\n"})
+
+    with pytest.raises(public_text.CheckError, match="failed"):
+        public_text.scan_range(public_text.load_terms(str(core), []), str(repo), "nosuchref..HEAD", None)
