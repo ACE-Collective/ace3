@@ -181,8 +181,8 @@ def _populate(root: str):
     hunts/        a hunt rule directory with an includes/ subdirectory
     rules/        the observable modifier ruleset, a single file
     """
-    _write(os.path.join(root, "yara", "bv", "rules.yar"), YARA_RULES)
-    _write(os.path.join(root, "yara", "bv", "nested", "nested.yar"),
+    _write(os.path.join(root, "yara", "rules", "rules.yar"), YARA_RULES)
+    _write(os.path.join(root, "yara", "rules", "nested", "nested.yar"),
            _other_rule("nested_rule", "22222222-2222-2222-2222-222222222222"))
     _write(os.path.join(root, "yara", "loose.yar"),
            _other_rule("loose_rule", "33333333-3333-3333-3333-333333333333"))
@@ -252,7 +252,7 @@ def test_load_yara_signatures(signature_repo):
     assert tracked.type == SignatureType.YARA
     assert tracked.version == _git(signature_repo, "rev-parse", "HEAD")
     assert tracked.git_remote == TEST_GIT_REMOTE
-    assert tracked.source_path == "yara/bv/rules.yar"
+    assert tracked.source_path == "yara/rules/rules.yar"
 
     # native rule tags merged with mitre_attack, sorted and deduplicated
     assert tracked.tags == ("mitre:T1566.003", "mitre:T1566.004", "phishing", "smishing")
@@ -286,7 +286,7 @@ def test_yara_git_repo_dirs_declaration_is_mirrored(signature_repo):
            _other_rule("sibling_rule", "55555555-5555-5555-5555-555555555555"))
     _commit(signature_repo, "add sibling")
 
-    by_name = {s.name: s for s in load_yara_signatures(_yara_dir(signature_repo), ["bv"])}
+    by_name = {s.name: s for s in load_yara_signatures(_yara_dir(signature_repo), ["rules"])}
 
     declared = by_name["tracked_rule"]
     assert declared.version == _git(signature_repo, "rev-parse", "HEAD")
@@ -305,7 +305,7 @@ def test_yara_git_repo_dirs_entry_forms(signature_repo):
     the same forms YaraScanner._resolve_signature_subdir accepts."""
     yara_dir = _yara_dir(signature_repo)
     versions = set()
-    for entry in ("bv", "./bv", os.path.join(yara_dir, "bv")):
+    for entry in ("rules", "./rules", os.path.join(yara_dir, "rules")):
         versions.add(load_yara_signatures(yara_dir, [entry])[0].version)
 
     assert versions == {_git(signature_repo, "rev-parse", "HEAD")}
@@ -588,7 +588,7 @@ def test_loading_from_a_directory_that_is_not_a_repo(signature_dir):
 
 @pytest.mark.unit
 @pytest.mark.parametrize("file_name,content", [
-    ("yara/bv/broken.yar", "rule broken { this is not yara"),
+    ("yara/rules/broken.yar", "rule broken { this is not yara"),
     ("hunts/broken.yaml", "rule: [\n  unterminated"),
 ])
 def test_unparseable_file_is_skipped(signature_repo, file_name, content):
@@ -694,13 +694,13 @@ def test_yara_parse_cache_reuses_unchanged_files(signature_repo, monkeypatch):
     assert {s.version for s in restamped} == {commit}
 
     # a changed rule file is parsed again
-    _write(os.path.join(signature_repo, "yara", "bv", "rules.yar"), YARA_RULES + QA_RULES)
+    _write(os.path.join(signature_repo, "yara", "rules", "rules.yar"), YARA_RULES + QA_RULES)
     changed = load_yara_signatures(_yara_dir(signature_repo), parse_cache=cache)
     assert parsed == ["rules.yar", "rules.yar"]
     assert "qa_rule" in {s.name for s in changed}
 
     # a removed rule file is dropped from the cache
-    os.remove(os.path.join(signature_repo, "yara", "bv", "rules.yar"))
+    os.remove(os.path.join(signature_repo, "yara", "rules", "rules.yar"))
     assert load_yara_signatures(_yara_dir(signature_repo), parse_cache=cache) == []
     assert cache == {}
 

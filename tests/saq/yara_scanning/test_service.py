@@ -32,14 +32,14 @@ def _init_repo_with_commit(path: str):
 @pytest.fixture
 def signature_dir(tmp_path, monkeypatch) -> str:
     """A signature_dir that is itself inside a git repo, holding one rule
-    directory - signatures/yara/bv, the layout the real signatures repo uses,
+    directory - signatures/yara/rules, the layout the real signatures repo uses,
     and the case the upstream fix exists for."""
     repo = str(tmp_path / "signatures")
     os.makedirs(repo)
     _init_repo_with_commit(repo)
 
     result = os.path.join(repo, "yara")
-    os.makedirs(os.path.join(result, "bv"))
+    os.makedirs(os.path.join(result, "rules"))
 
     monkeypatch.setattr(get_service_config(SERVICE_YARA_SCANNER), "signature_dir", result)
     return result
@@ -74,20 +74,20 @@ def test_no_git_repo_dirs_configured(signature_dir, monkeypatch, caplog):
 
 @pytest.mark.unit
 def test_directory_in_a_git_repo_is_kept(signature_dir, monkeypatch, caplog):
-    _set_git_repo_dirs(monkeypatch, ["bv"])
+    _set_git_repo_dirs(monkeypatch, ["rules"])
 
     with caplog.at_level(logging.ERROR):
         # a rule directory does not have to be the root of the repo
-        assert get_validated_git_repo_dirs() == ["bv"]
+        assert get_validated_git_repo_dirs() == ["rules"]
 
     assert not caplog.records
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize("entry", ["./bv", "ABSOLUTE"])
+@pytest.mark.parametrize("entry", ["./rules", "ABSOLUTE"])
 def test_entries_resolve_the_same_way_the_scanner_resolves_them(signature_dir, monkeypatch, entry):
     if entry == "ABSOLUTE":
-        entry = os.path.join(signature_dir, "bv")
+        entry = os.path.join(signature_dir, "rules")
 
     _set_git_repo_dirs(monkeypatch, [entry])
 
@@ -109,10 +109,10 @@ def test_directory_not_in_a_git_repo_is_dropped(plain_signature_dir, monkeypatch
 
 @pytest.mark.unit
 def test_missing_directory_is_dropped(signature_dir, monkeypatch, caplog):
-    _set_git_repo_dirs(monkeypatch, ["bv", "does_not_exist"])
+    _set_git_repo_dirs(monkeypatch, ["rules", "does_not_exist"])
 
     with caplog.at_level(logging.ERROR):
-        assert get_validated_git_repo_dirs() == ["bv"]
+        assert get_validated_git_repo_dirs() == ["rules"]
 
     assert any("does_not_exist" in r.getMessage() for r in caplog.records)
 
