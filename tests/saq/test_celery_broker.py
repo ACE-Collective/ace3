@@ -56,7 +56,8 @@ def test_without_the_environment_a_manager_uses_the_stacks_rabbitmq(module):
 @pytest.mark.unit
 @pytest.mark.parametrize("module", MANAGER_MODULES)
 def test_a_manager_logs_the_broker_it_uses_without_the_password(module):
-    # ACE's clients import the module on first use, so every ACE process and each manager says where it sends
+    # ACE's clients import the module on first use, after ACE has set up logging, so every ACE process that sends
+    # tasks says where; the managers' broker is in celery's banner
     env = {key: value for key, value in os.environ.items() if key not in RABBITMQ_VARIABLES}
     env.update({"ACE_RABBITMQ_HOST": "mq.example.com", "ACE_RABBITMQ_PORT": "5671", "ACE_RABBITMQ_USER": "celery-user"})
     code = ("import logging\nlogging.basicConfig(level=logging.INFO, format='%(levelname)s %(message)s')\n"

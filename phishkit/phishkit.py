@@ -636,7 +636,9 @@ app = Celery(
     broker=f"pyamqp://{rabbitmq_user}:{rabbitmq_password}@{rabbitmq_host}:{rabbitmq_port}//")
 
 app.conf.broker_transport_options = {"global_keyprefix": "phishkit"}
-# once per process: the clients and the manager each say where they send, so a mismatch shows in the logs
+# once per process. this is for ACE's side: its clients import this module after ACE has set up logging.
+# celery worker imports it before logging is configured, so in a manager the record is dropped and the
+# broker shows in celery's startup banner instead
 logger.info("celery broker %s", maybe_sanitize_url(app.conf.broker_url))
 
 
