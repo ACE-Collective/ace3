@@ -476,22 +476,28 @@ def _sh(script: str, *args: str) -> list[str]:
 
 @pytest.mark.unit
 @needs_landlock
-def test_sandboxed_tool_reads_its_target_and_keeps_its_outputs(root_analysis):
+def test_sandboxed_tool_runs_in_aces_cwd_and_keeps_its_outputs(root_analysis):
     module = _module(SsdeepAnalyzer, "ssdeep", root_analysis)
     observable = _file(root_analysis, "sample.bin", b"sample content")
     kept = f"{observable.full_path}.out"
-    # a relative path, as ACE's often are; the tool runs in its own working directory
+    # a path relative to SAQ_HOME, as ACE's are, means the same file to the tool, inside a longer arg too
     assert not os.path.isabs(observable.full_path)
+    script = ('pwd; path="${1#--in=}"; cat "$path"; '
+              'touch "$(dirname "$path")/planted" 2>/dev/null && echo planted next to the target >&2; '
+              'touch planted 2>/dev/null && echo planted in the cwd >&2; '
+              'echo result > "$2"')
 
-    result = module.run_sandboxed_tool(
-        _sh('cat "$1"; touch "$(dirname "$1")/planted" 2>/dev/null && echo planted >&2; echo result > out.txt',
-            observable.full_path), observable.full_path, outputs={"out.txt": kept, "missing.txt": f"{kept}.missing"})
+    with module.tool_workdir() as workdir:
+        result = module.run_sandboxed_tool(
+            _sh(script, f"--in={observable.full_path}", os.path.join(workdir, "out.txt")), observable.full_path,
+            workdir=workdir, outputs={"out.txt": kept, "missing.txt": f"{kept}.missing"})
 
     assert result.returncode == 0
-    assert result.stdout == "sample content"
-    # it can write nothing next to the file it reads
+    assert result.stdout == f"{os.getcwd()}\nsample content"
+    # it can write nothing next to the file it reads, nor in the cwd it shares with ACE
     assert result.stderr == ""
     assert not os.path.exists(os.path.join(os.path.dirname(observable.full_path), "planted"))
+    assert not os.path.exists("planted")
     with open(kept) as fp:
         assert fp.read() == "result\n"
     # an output the tool did not write is skipped
@@ -537,7 +543,7 @@ def test_an_output_that_is_not_a_plain_file_is_not_kept(root_analysis, caplog):
     module = _module(SsdeepAnalyzer, "ssdeep", root_analysis)
     observable = _file(root_analysis, "sample.bin", b"sample")
     # a link to a file of ACE's would have ACE copy it into the alert
-    script = f'ln -s {get_base_dir()}/etc/saq.default.yaml symlink.txt; echo a > a; ln a hardlink.txt'
+    script = f'cd "$HOME"; ln -s {get_base_dir()}/etc/saq.default.yaml symlink.txt; echo a > a; ln a hardlink.txt'
 
     with caplog.at_level(logging.WARNING):
         module.run_sandboxed_tool(_sh(script), observable.full_path,
@@ -545,7 +551,7 @@ def test_an_output_that_is_not_a_plain_file_is_not_kept(root_analysis, caplog):
 
     assert not os.path.lexists(f"{observable.full_path}.1")
     assert not os.path.lexists(f"{observable.full_path}.2")
-    target = os.path.abspath(observable.full_path)
+    target = observable.full_path
     assert sorted(r.getMessage() for r in caplog.records if "not a plain file" in r.getMessage()) == [
         f"SsdeepAnalyzer did not keep sh's output hardlink.txt on {target}: not a plain file",
         f"SsdeepAnalyzer did not keep sh's output symlink.txt on {target}: not a plain file",
@@ -560,12 +566,12 @@ def test_a_stopped_tool_keeps_nothing(root_analysis, caplog):
 
     started = time.monotonic()
     with caplog.at_level(logging.WARNING):
-        assert module.run_sandboxed_tool(_sh("echo partial > out.txt; exec sleep 60"), observable.full_path, timeout=1,
+        assert module.run_sandboxed_tool(_sh('echo partial > "$HOME/out.txt"; exec sleep 60'), observable.full_path, timeout=1,
                                          outputs={"out.txt": f"{observable.full_path}.out"}) is None
 
     assert time.monotonic() - started < 30
     assert not os.path.exists(f"{observable.full_path}.out")
-    assert any(r.getMessage() == f"SsdeepAnalyzer stopped sh on {os.path.abspath(observable.full_path)}: "
+    assert any(r.getMessage() == f"SsdeepAnalyzer stopped sh on {observable.full_path}: "
                "command timed out after 0:00:01" for r in caplog.records)
 
 
@@ -622,16 +628,16 @@ def test_a_tool_that_writes_past_the_file_size_limit_is_stopped(root_analysis, m
     observable = _file(root_analysis, "sample.bin", b"sample")
 
     with caplog.at_level(logging.WARNING):
-        assert module.run_sandboxed_tool(_sh("echo started; exec head -c 2000000 /dev/zero > big.bin"),
+        assert module.run_sandboxed_tool(_sh('echo started; exec head -c 2000000 /dev/zero > "$HOME/big.bin"'),
                                          observable.full_path, outputs={"big.bin": f"{observable.full_path}.big"}) is None
 
     # what it wrote was cut off at the limit, so it is not kept
     assert not os.path.exists(f"{observable.full_path}.big")
     [record] = [r for r in caplog.records if "file size limit" in r.getMessage()]
     assert record.levelno == logging.WARNING
-    assert record.getMessage() == (f"SsdeepAnalyzer stopped sh on {os.path.abspath(observable.full_path)}: "
+    assert record.getMessage() == (f"SsdeepAnalyzer stopped sh on {observable.full_path}: "
                                    f"it wrote a file larger than tool_sandbox's file size limit of 1048576 bytes")
-    assert record.path == os.path.abspath(observable.full_path)
+    assert record.path == observable.full_path
 
 
 @pytest.mark.unit

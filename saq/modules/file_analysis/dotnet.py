@@ -96,11 +96,12 @@ class De4dotAnalyzer(AnalysisModule):
     def verify_environment(self):
         self.verify_program_exists(self.config.binary_path)
 
-    def _run_de4dot(self, args: list[str], local_file_path: str, outputs: Optional[dict[str, str]] = None):
+    def _run_de4dot(self, args: list[str], local_file_path: str, outputs: Optional[dict[str, str]] = None,
+                    workdir: Optional[str] = None):
         # de4dot's dynamic string decrypters can call the sample's own methods
         return self.run_sandboxed_tool([self.config.binary_path, *args], local_file_path, timeout=DE4DOT_TIMEOUT_SECONDS,
                                        read_dirs=DOTNET_READ_DIRS, env=DOTNET_ENV, memory_limit=DOTNET_MEMORY_LIMIT,
-                                       outputs=outputs, startup_errors=DOTNET_STARTUP_ERRORS)
+                                       outputs=outputs, workdir=workdir, startup_errors=DOTNET_STARTUP_ERRORS)
     
     @property
     def valid_observable_types(self):
@@ -125,8 +126,9 @@ class De4dotAnalyzer(AnalysisModule):
         assert isinstance(analysis, De4dotAnalysis)
 
         output_path = f'{local_file_path}.deobfuscated'
-        result = self._run_de4dot([local_file_path, '-o', 'deobfuscated'], local_file_path,
-                                  outputs={'deobfuscated': output_path})
+        with self.tool_workdir() as workdir:
+            result = self._run_de4dot([local_file_path, '-o', os.path.join(workdir, 'deobfuscated')], local_file_path,
+                                      outputs={'deobfuscated': output_path}, workdir=workdir)
         if result is None:
             analysis.error = "de4dot did not finish"
         else:
@@ -240,10 +242,11 @@ class IlspyAnalyzer(AnalysisModule):
         # stream, named after the input. with -o it also checks for a newer release over the network
         # unless told not to
         il_name = f"{os.path.splitext(os.path.basename(_file.full_path))[0]}.il"
-        result = self.run_sandboxed_tool([self.binary_path, "-il", "--disable-updatecheck", "-o", ".", _file.full_path],
-                                         _file.full_path, timeout=ILSPY_TIMEOUT_SECONDS, read_dirs=DOTNET_READ_DIRS,
-                                         env=DOTNET_ENV, memory_limit=DOTNET_MEMORY_LIMIT,
-                                         outputs={il_name: target_path}, startup_errors=DOTNET_STARTUP_ERRORS)
+        with self.tool_workdir() as workdir:
+            result = self.run_sandboxed_tool([self.binary_path, "-il", "--disable-updatecheck", "-o", workdir, _file.full_path],
+                                             _file.full_path, timeout=ILSPY_TIMEOUT_SECONDS, read_dirs=DOTNET_READ_DIRS,
+                                             env=DOTNET_ENV, memory_limit=DOTNET_MEMORY_LIMIT, workdir=workdir,
+                                             outputs={il_name: target_path}, startup_errors=DOTNET_STARTUP_ERRORS)
         if result is None:
             analysis.error = "ilspy did not finish"
             return AnalysisExecutionResult.COMPLETED

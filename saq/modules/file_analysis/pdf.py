@@ -197,8 +197,10 @@ class PDFAnalyzer(AnalysisModule):
         # changing command line to match our needs as the old commands were tailed for Qakbot PDFs we no longer observe
         gs_output_file = f"{local_file_path}.gs.pdf"
         # ghostscript interprets the document, and its -dSAFER mode has been escaped many times
-        self.run_sandboxed_tool(["gs", "-sDEVICE=pdfwrite", "-o", "output.pdf", "-f", local_file_path], local_file_path,
-                                timeout=GS_TIMEOUT_SECONDS, outputs={"output.pdf": gs_output_file})
+        with self.tool_workdir() as workdir:
+            self.run_sandboxed_tool(["gs", "-sDEVICE=pdfwrite", "-o", os.path.join(workdir, "output.pdf"), "-f",
+                                     local_file_path], local_file_path, timeout=GS_TIMEOUT_SECONDS, workdir=workdir,
+                                    outputs={"output.pdf": gs_output_file})
 
         if os.path.exists(gs_output_file) and os.path.getsize(gs_output_file) > 0:
             file_observable = analysis.add_file_observable(gs_output_file, volatile=True)
@@ -513,8 +515,10 @@ class PDFTextAnalyzer(AnalysisModule):
         else:
             output_path = '{}.pdf.txt'.format(local_file_path)
 
-        result = self.run_sandboxed_tool([self.pdftotext_path, local_file_path, "output.txt"], local_file_path,
-                                         timeout=self.timeout, outputs={"output.txt": output_path})
+        with self.tool_workdir() as workdir:
+            result = self.run_sandboxed_tool([self.pdftotext_path, local_file_path, os.path.join(workdir, "output.txt")],
+                                             local_file_path, timeout=self.timeout, workdir=workdir,
+                                             outputs={"output.txt": output_path})
         if result is None:
             analysis.error = "pdftotext did not finish"
             return AnalysisExecutionResult.COMPLETED

@@ -98,8 +98,9 @@ class DMGAnalyzer(AnalysisModule):
 
         # the image is kept next to the dmg, replacing .dmg with .img
         image_file = local_file_path[:-4] + ".img"
-        result = self.run_sandboxed_tool(["dmg2img", local_file_path, "image.img"], local_file_path,
-                                         outputs={"image.img": image_file})
+        with self.tool_workdir() as workdir:
+            result = self.run_sandboxed_tool(["dmg2img", local_file_path, os.path.join(workdir, "image.img")],
+                                             local_file_path, workdir=workdir, outputs={"image.img": image_file})
         if result is None:
             # whatever it wrote is incomplete, and was not kept
             analysis.error = "dmg2img did not finish"
