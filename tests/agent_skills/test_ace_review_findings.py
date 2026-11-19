@@ -841,22 +841,40 @@ def test_touched_means_a_change_within_two_lines(history, path, line, expected):
     assert findings.touched(str(repo), first, second, path, line) is expected
 
 
-def finished_round(bundle, ranked, still_open=(), **target):
-    write_json(bundle / "target.json", {"round": 2, "repo": "/opt/ace", "branch": "factory/12-x", "head": "a" * 40, **target})
+def committed_repo(path):
+    """A repo with one commit: its path, head and the head's tree."""
+    path.mkdir()
+    run = lambda *args: subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@example.com", "-C", str(path), *args],
+                                       capture_output=True, text=True, check=True).stdout.strip()
+    run("init", "--quiet")
+    (path / "a.py").write_text("a\n")
+    run("add", "a.py")
+    run("commit", "--quiet", "-m", "one")
+    return str(path), run("rev-parse", "HEAD"), run("rev-parse", "HEAD^{tree}")
+
+
+def finished_round(bundle, ranked, still_open=(), tests_exit=0, **target):
+    repo, head, tree = committed_repo(bundle.parent / "repo")
+    write_json(bundle / "target.json", {"round": 2, "repo": repo, "branch": "factory/12-x", "head": head, "tree": tree,
+                                        "rule_changes_status": None, **target})
     write_json(bundle / "previous.json", [earlier(fid, "open") for fid in still_open])
     write_json(bundle / "carried.json", [{"id": fid, "status": "open"} for fid in still_open])
     write_json(bundle / "ranked.json", ranked)
+    (bundle / "tests.txt").write_text("tests/saq/test_x.py\n")
+    if tests_exit is not None:
+        (bundle / "pytest.txt").write_text(f"1 passed\nexit={tests_exit}\n")
     findings.finish(str(bundle))
+    return head
 
 
-def test_factory_result_lists_the_findings_still_to_fix(bundle):
-    finished_round(bundle, [judged(title="fix me"), judged(title="later", bucket="consider"),
-                            finding(title="old code", origin="pre-existing", severity="nit")], still_open=["R1-1"])
+def test_factory_result_lists_the_findings_still_to_fix_and_names_its_bundle(bundle):
+    head = finished_round(bundle, [judged(title="fix me"), judged(title="later", bucket="consider"),
+                                   finding(title="old code", origin="pre-existing", severity="nit")], still_open=["R1-1"])
 
     result = findings.factory_result(str(bundle), "fix-first")
 
-    assert result == {"round": 2, "head": "a" * 40, "branch": "factory/12-x", "verdict": "fix-first", "floor": "fix-first",
-                      "open": ["R2-1", "R1-1"]}
+    assert result == {"round": 2, "head": head, "branch": "factory/12-x", "verdict": "fix-first", "floor": "fix-first",
+                      "open": ["R2-1", "R1-1"], "bundle": f"{bundle.parent.name}/{bundle.name}"}
     assert read_json(bundle / "factory.json") == result
 
 
@@ -868,10 +886,36 @@ def test_factory_result_may_be_worse_than_the_floor_but_not_better(bundle):
         findings.factory_result(str(bundle), "ship")
 
 
-def test_factory_result_refuses_an_unfinished_round_and_uncommitted_work(bundle, tmp_path):
+def test_factory_result_takes_ship_for_a_clean_head_with_passing_tests(bundle):
+    finished_round(bundle, [])
+
+    assert findings.factory_result(str(bundle), "ship")["verdict"] == "ship"
+
+
+def test_factory_result_refuses_an_unfinished_round(bundle):
     with pytest.raises(SystemExit, match="not finished"):
         findings.factory_result(str(bundle), "ship")
 
-    finished_round(bundle, [], includes_uncommitted=True)
+
+def test_factory_result_refuses_a_tree_that_is_not_the_head_s(bundle):
+    finished_round(bundle, [], tree="b" * 40)
+
     with pytest.raises(SystemExit, match="uncommitted work"):
+        findings.factory_result(str(bundle), "fix-first")
+
+
+@pytest.mark.parametrize("status", ["pending", "rejected"])
+def test_factory_result_floors_an_unaccepted_rule_change_at_fix_first(bundle, status):
+    finished_round(bundle, [], rule_changes_status=status)
+
+    with pytest.raises(SystemExit, match="rule changes"):
+        findings.factory_result(str(bundle), "ship")
+    assert findings.factory_result(str(bundle), "fix-first")["floor"] == "fix-first"
+
+
+@pytest.mark.parametrize("tests_exit", [None, 1])
+def test_factory_result_floors_a_round_whose_tests_did_not_pass_at_fix_first(bundle, tests_exit):
+    finished_round(bundle, [], tests_exit=tests_exit)
+
+    with pytest.raises(SystemExit, match="tests"):
         findings.factory_result(str(bundle), "ship")

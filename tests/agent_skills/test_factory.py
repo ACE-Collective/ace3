@@ -405,3 +405,439 @@ def test_the_changed_files_include_uncommitted_and_new_ones_but_not_deleted_ones
     (clone / "new.py").write_text("new\n")
 
     assert factory.changed_files(str(clone), "main") == ["a.py", "new.py"]
+
+
+# ---------------------------------------------------------------- the range scan misses nothing
+
+
+@pytest.mark.parametrize("config", [[], ["-c", "diff.noprefix=true"], ["-c", "diff.mnemonicPrefix=true"]])
+def test_every_added_line_is_scanned_whatever_the_file_name_or_git_config(core, tmp_path, config, monkeypatch):
+    repo = make_repo(tmp_path / "repo")
+    base = commit(repo, {"keep.md": "keep\n"})
+    commit(repo, {"café.md": "Initech\n", "pp.md": "++ a marker line\nInitech after it\n", "plain.md": "Initech\n"})
+    if config:
+        # the user's own git config, which the scan must not depend on
+        monkeypatch.setenv("GIT_CONFIG_COUNT", "1")
+        key, value = config[1].split("=")
+        monkeypatch.setenv("GIT_CONFIG_KEY_0", key)
+        monkeypatch.setenv("GIT_CONFIG_VALUE_0", value)
+
+    hits = public_text.scan_range(public_text.load_terms(str(core), []), str(repo), f"{base}..HEAD", None)
+
+    assert sorted((h["source"], h["line"]) for h in hits) == [("café.md", 1), ("plain.md", 1), ("pp.md", 2)]
+
+
+def test_the_names_of_added_and_renamed_files_are_scanned_without_echoing_them(core, tmp_path):
+    repo = make_repo(tmp_path / "repo")
+    base = commit(repo, {"keep.txt": "generic\n"})
+    git(repo, "mv", "keep.txt", "initech_keep.txt")
+    commit(repo, {"initech/x.md": "generic\n"})
+
+    hits = public_text.scan_range(public_text.load_terms(str(core), []), str(repo), f"{base}..HEAD", None)
+
+    assert [(h["source"], h["reason"]) for h in hits] == [("file name", "company name")] * 2
+    assert "initech" not in json.dumps(hits).lower()
+
+
+def test_a_multi_word_term_split_across_lines_is_matched_on_the_line_it_starts(tmp_path):
+    core = tmp_path / "core"
+    integration = make_repo(core / "integrations" / "internal")
+    (integration / ".factory").mkdir()
+    (integration / ".factory" / "public-denylist.toml").write_text('[[term]]\ntext = "Example Corp"\nreason = "company"\n')
+    terms = public_text.load_terms(str(core), [])
+
+    hits = public_text.scan(terms, "first line\nadd support for Example\n  Corp files", "body")
+
+    assert [(h["line"], h["reason"]) for h in hits] == [(2, "company")]
+
+
+def test_a_term_split_across_added_lines_of_one_file_is_matched(tmp_path):
+    core = tmp_path / "core"
+    integration = make_repo(core / "integrations" / "internal")
+    (integration / ".factory").mkdir()
+    (integration / ".factory" / "public-denylist.toml").write_text('[[term]]\ntext = "Example Corp"\nreason = "company"\n')
+    repo = make_repo(tmp_path / "repo")
+    base = commit(repo, {"a.md": "one\n"})
+    commit(repo, {"a.md": "one\nthanks to Example\nCorp\n"})
+
+    hits = public_text.scan_range(public_text.load_terms(str(core), []), str(repo), f"{base}..HEAD", None)
+
+    assert [(h["source"], h["line"]) for h in hits] == [("a.md", 2)]
+
+
+def test_a_diff_header_the_scan_cannot_read_stops_the_check(core, tmp_path, monkeypatch):
+    real_git = public_text.git
+
+    def git_with_odd_header(repo, *args):
+        out = real_git(repo, *args)
+        return out.replace("+++ b/a.md", '+++ "b/a\\tb.md"') if "diff" in args and "--name-only" not in args else out
+
+    repo = make_repo(tmp_path / "repo")
+    base = commit(repo, {"keep.md": "x\n"})
+    commit(repo, {"a.md": "generic\n"})
+    monkeypatch.setattr(public_text, "git", git_with_odd_header)
+
+    with pytest.raises(public_text.CheckError, match="cannot read the diff header"):
+        public_text.scan_range(public_text.load_terms(str(core), []), str(repo), f"{base}..HEAD", None)
+
+
+# ---------------------------------------------------------------- the commands, with gh, az and git push recorded
+
+
+class FakeContext:
+    """A Context whose state is given, over the `core` checkout (ace3 public, one internal repo)."""
+
+    def __init__(self, core: Path, state: dict | None = None):
+        self.main = str(core)
+        self.slug = "org/ace3"
+        self.repos = {
+            "ace3": {"name": "ace3", "path": str(core), "host": "github", "public": True},
+            "internal": {"name": "internal", "path": str(core / "integrations" / "internal"), "host": "azure-devops",
+                         "public": False, "config": {"azure_devops": {"organization": "https://ado.example.com/org",
+                                                                      "project": "p", "repository": "internal"}}},
+        }
+        self._state = state or {}
+
+    def state(self, ref):
+        return self._state
+
+
+@pytest.fixture
+def calls(monkeypatch) -> list[tuple]:
+    """Every gh and az call the code makes, recorded rather than run."""
+    recorded = []
+
+    def fake_gh(main, *args, stdin=None):
+        recorded.append(("gh", *args, stdin))
+        return "https://github.com/org/ace3/pull/9\n" if args[:2] in (("pr", "create"), ("issue", "create")) else ""
+
+    def fake_az(*args):
+        recorded.append(("az", *args))
+        return {"pullRequestId": 5, "repository": {"webUrl": "https://ado.example.com/r"}}
+
+    monkeypatch.setattr(factory, "gh", fake_gh)
+    monkeypatch.setattr(factory, "az", fake_az)
+    return recorded
+
+
+def open_pr(repo="ace3", head="h1", comments=(), draft=True, id_=3) -> dict:
+    return {"repo": repo, "host": "github" if repo == "ace3" else "azure-devops", "id": id_, "url": f"https://example.com/{repo}/{id_}",
+            "state": "open", "draft": draft, "head": head, "branch": "factory/1-x", "progress": factory.pr_progress(list(comments))}
+
+
+def ticket_state(next_="review", prs=(), branches=None, repo=None) -> dict:
+    return {"ticket": {"ref": "1", "kind": "github", "id": 1}, "me": "me", "next": next_, "why": f"because {next_}",
+            "prs": list(prs), "branches": branches if branches is not None else {"ace3": ["factory/1-x"]},
+            **({"repo": repo} if repo else {})}
+
+
+def wrote(calls) -> list[tuple]:
+    return [c for c in calls if c[0] == "az" or c[1:3] not in (("label", "list"),)]
+
+
+@pytest.mark.parametrize("write", [
+    lambda ctx: factory.pr_create(ctx, "1", "ace3", "Fix Initech's thing", "generic body"),
+    lambda ctx: factory.pr_create(ctx, "1", "ace3", "generic title", "a body naming\nInitech"),
+    lambda ctx: factory.pr_body(ctx, "1", "ace3", "now it names Initech"),
+    lambda ctx: factory.post_comment(ctx, "1", "reply", "thanks, Initech", "ace3"),
+    lambda ctx: factory.post_comment(ctx, "1", "question", "is this for Initech?", None),
+    lambda ctx: factory.issue_create(ctx, "Initech retro", "body", []),
+])
+def test_every_public_write_is_refused_when_it_names_an_internal_term(core, calls, write):
+    ctx = FakeContext(core, ticket_state(prs=[open_pr()] if write.__code__.co_names.count("pr_create") == 0 else []))
+
+    with pytest.raises(factory.FactoryError, match="refusing to publish.*company name"):
+        write(ctx)
+    assert calls == []
+
+
+def test_a_write_to_an_internal_repo_is_not_checked_against_the_denylist(core, calls):
+    ctx = FakeContext(core, ticket_state(prs=[open_pr("internal")]))
+
+    factory.post_comment(ctx, "1", "reply", "thanks, Initech", "internal")
+
+    assert [c[:3] for c in calls] == [("az", "devops", "invoke")]
+
+
+def test_a_public_write_with_no_denylist_to_check_against_is_refused(tmp_path, calls):
+    core = tmp_path / "core"
+    make_repo(core / "integrations" / "internal")
+
+    with pytest.raises(factory.FactoryError, match="refusing to publish: no .factory/public-denylist.toml"):
+        factory.issue_create(FakeContext(core), "generic", "generic", [])
+    assert calls == []
+
+
+def test_a_generic_public_write_goes_through(core, calls):
+    factory.issue_create(FakeContext(core), "A cache lock blocks maintenance", "generic body", ["factory:ready"])
+
+    assert calls == [("gh", "issue", "create", "--repo", "org/ace3", "--title", "A cache lock blocks maintenance", "--body-file", "-",
+                      "--label", "factory:ready", "generic body")]
+
+
+@pytest.fixture
+def ticket_worktree(core, remote, monkeypatch) -> Path:
+    """The clone in `remote`, as ticket 1's worktree, on its factory branch."""
+    _, clone = remote
+    git(clone, "switch", "--quiet", "-c", "factory/1-x")
+    monkeypatch.setattr(factory, "find_worktree", lambda main, name: str(clone) if name == "factory-1" else None)
+    return clone
+
+
+def test_push_refuses_a_branch_that_names_an_internal_term_and_pushes_nothing(core, remote, ticket_worktree):
+    origin, _ = remote
+    commit(ticket_worktree, {"a.py": "generic\n"}, message="Make it work for Initech")
+
+    with pytest.raises(factory.FactoryError, match="refusing to push.*company name"):
+        factory.push(FakeContext(core), "1", "ace3")
+    assert "factory/1-x" not in git(origin, "branch")
+
+
+def test_push_pushes_a_generic_branch(core, remote, ticket_worktree):
+    origin, _ = remote
+    head = commit(ticket_worktree, {"a.py": "generic\n"})
+
+    assert factory.push(FakeContext(core), "1", "ace3")["head"] == head
+    assert git(origin, "rev-parse", "factory/1-x").strip() == head
+
+
+def test_push_refuses_a_branch_that_is_not_the_ticket_s(core, ticket_worktree):
+    git(ticket_worktree, "switch", "--quiet", "-c", "factory/2-other")
+
+    with pytest.raises(factory.FactoryError, match="not a factory/1-\\* branch"):
+        factory.push(FakeContext(core), "1", "ace3")
+
+
+def test_worktree_remove_refuses_while_work_is_unpushed(core, ticket_worktree, monkeypatch):
+    removed, real_git = [], factory.git
+    monkeypatch.setattr(factory, "git", lambda repo, *args, check=True: removed.append(args) if "remove" in args else real_git(repo, *args, check=check))
+    (ticket_worktree / "new_test.py").write_text("never committed\n")
+
+    with pytest.raises(factory.FactoryError, match="not removing the worktree.*uncommitted"):
+        factory.remove_worktree(FakeContext(core), "1")
+    assert removed == []
+
+
+def test_new_files_count_as_uncommitted(remote):
+    _, clone = remote
+    (clone / "new_test.py").write_text("never committed\n")
+
+    assert any("uncommitted" in p for p in factory.unpushed(str(clone)))
+
+
+def test_pr_create_refuses_without_a_pushed_branch_or_with_a_pr_already_open(core, calls):
+    with pytest.raises(factory.FactoryError, match="push ace3's branch"):
+        factory.pr_create(FakeContext(core, ticket_state(branches={})), "1", "ace3", "t", "b")
+    with pytest.raises(factory.FactoryError, match="already has an open ace3 PR"):
+        factory.pr_create(FakeContext(core, ticket_state(prs=[open_pr()])), "1", "ace3", "t", "b")
+    assert calls == []
+
+
+@pytest.mark.parametrize("body, added", [
+    ("generic body", True),
+    ("see #1234 for background", True),
+    ("Fixes #1", False),
+    ("this closes #1.", False),
+])
+def test_a_github_ticket_s_pr_body_always_closes_it(core, calls, body, added):
+    factory.pr_create(FakeContext(core, ticket_state(prs=[])), "1", "ace3", "t", body)
+    factory.pr_body(FakeContext(core, ticket_state(prs=[open_pr()])), "1", "ace3", body)
+
+    expected = f"{body}\n\nFixes #1" if added else body
+    assert [c[-1] for c in calls if c[1] == "pr"] == [expected, expected]
+
+
+def test_an_internal_pr_description_over_the_limit_is_refused(core, calls):
+    ctx = FakeContext(core, ticket_state(prs=[open_pr("internal")], branches={"internal": ["factory/1-x"]}))
+
+    with pytest.raises(factory.FactoryError, match="Azure DevOps takes 4000"):
+        factory.pr_body(ctx, "1", "internal", "x" * 4001)
+    with pytest.raises(factory.FactoryError, match="Azure DevOps takes 4000"):
+        factory.pr_create(FakeContext(core, ticket_state(branches={"internal": ["factory/1-x"]})), "1", "internal", "t", "x" * 4001)
+    assert calls == []
+
+
+def test_a_review_is_posted_with_its_result_and_bundle_in_the_marker(core, calls, tmp_path):
+    bundle = tmp_path / "factory-1-factory-1-x" / "round-2"
+    bundle.mkdir(parents=True)
+    (bundle / "report.md").write_text("the report\n<sub>Dropped: 0. Bundle: /Users/me/local/x</sub>\n")
+    (bundle / "factory.json").write_text(json.dumps({"round": 2, "head": "h1", "verdict": "fix-first", "open": ["R2-1"],
+                                                     "bundle": "factory-1-factory-1-x/round-2"}))
+
+    factory.post_review(FakeContext(core, ticket_state(prs=[open_pr()])), "1", "ace3", str(bundle))
+
+    [body] = [c[-1] for c in calls if c[1:3] == ("pr", "comment")]
+    assert "/Users/me" not in body
+    assert factory.read_marker(body) == ("review", {"round": 2, "head": "h1", "verdict": "fix-first", "open": ["R2-1"],
+                                                    "bundle": "factory-1-factory-1-x/round-2", "ticket": "1"})
+
+
+def test_a_review_of_another_head_is_not_posted(core, calls, tmp_path):
+    (tmp_path / "report.md").write_text("r")
+    (tmp_path / "factory.json").write_text(json.dumps({"round": 1, "head": "old", "verdict": "ship", "open": [], "bundle": "b/round-1"}))
+
+    with pytest.raises(factory.FactoryError, match="push, then review again"):
+        factory.post_review(FakeContext(core, ticket_state(prs=[open_pr(head="new")])), "1", "ace3", str(tmp_path))
+    assert calls == []
+
+
+def test_gh_prs_ignores_a_fork_s_pr_on_a_branch_with_the_factory_s_name(monkeypatch):
+    rows = [{"number": 7, "url": "u7", "isDraft": True, "headRefOid": "h", "state": "OPEN", "baseRefName": "main", "title": "ours",
+             "isCrossRepository": False},
+            {"number": 8, "url": "u8", "isDraft": False, "headRefOid": "x", "state": "OPEN", "baseRefName": "main", "title": "a fork's",
+             "isCrossRepository": True}]
+    monkeypatch.setattr(factory, "gh", lambda main, *args, stdin=None: json.dumps(rows))
+    monkeypatch.setattr(factory, "gh_comments", lambda *args, **kwargs: [])
+
+    assert [pr["id"] for pr in factory.gh_prs("/main", "org/ace3", ["factory/1-x"])] == [7]
+
+
+def test_only_comments_by_people_with_write_access_are_trusted_on_github(monkeypatch):
+    def rows(main, path, jq):
+        if path.endswith("/reviews"):
+            return [{"author": "m", "association": "MEMBER", "body": "", "at": "1", "url": "u"},
+                    {"author": "m", "association": "MEMBER", "body": "change this", "at": "2", "url": "u"}]
+        if "/pulls/" in path:
+            return []
+        return [{"author": a.lower(), "association": a, "body": "b", "at": "0", "url": "u"}
+                for a in ("OWNER", "MEMBER", "COLLABORATOR", "CONTRIBUTOR", "FIRST_TIME_CONTRIBUTOR", "NONE")]
+
+    monkeypatch.setattr(factory, "gh_lines", rows)
+
+    comments = factory.gh_comments("/main", "org/ace3", 3, include_pr=True)
+
+    assert {c["author"]: c["trusted"] for c in comments if c["body"] == "b"} == {
+        "owner": True, "member": True, "collaborator": True, "contributor": False, "first_time_contributor": False, "none": False}
+    # a review with no body only holds its inline comments
+    assert [c["body"] for c in comments if c["at"] in ("1", "2")] == ["change this"]
+
+
+def test_only_people_s_text_comments_count_on_azure_devops(core, monkeypatch):
+    thread = {"value": [{"comments": [
+        {"commentType": "text", "author": {"uniqueName": "person@example.com"}, "content": "please rename", "publishedDate": "1"},
+        {"commentType": "system", "author": {"uniqueName": "system"}, "content": "pushed", "publishedDate": "2"},
+        {"commentType": "text", "author": {"displayName": "[p]\\Contributors", "isContainer": True}, "content": "group", "publishedDate": "3"},
+        {"commentType": "text", "isDeleted": True, "author": {"uniqueName": "person@example.com"}, "content": "gone", "publishedDate": "4"},
+    ]}]}
+    monkeypatch.setattr(factory, "az", lambda *args: thread)
+
+    comments = factory.ado_threads(FakeContext(core).repos["internal"], 5)
+
+    assert [(c["body"], c["trusted"]) for c in comments] == [("please rename", True), ("group", False)]
+
+
+def test_a_ticket_labeled_ready_again_after_needs_info_is_implemented():
+    assert factory.ticket_step(ticket(["factory:needs-info", "factory:ready"]), [], {}, "me")["next"] == "implement"
+
+
+def test_claim_clears_the_stop_labels_and_assigns_the_ticket(core, calls):
+    factory.claim(FakeContext(core, ticket_state("implement", prs=[])), "1")
+
+    [edit] = calls
+    assert edit[:4] == ("gh", "issue", "edit", "1")
+    assert {edit[i + 1] for i, a in enumerate(edit) if a == "--remove-label"} == {"factory:ready", "factory:needs-info"}
+    assert ("--add-label", "factory:in-progress") in zip(edit, edit[1:]) and ("--add-assignee", "@me") in zip(edit, edit[1:])
+
+
+@pytest.mark.parametrize("next_", ["blocked", "not-ready", "done", "needs-info", "needs-human"])
+def test_claim_refuses_a_ticket_it_may_not_take(core, calls, next_):
+    with pytest.raises(factory.FactoryError, match=f"cannot claim 1: because {next_}"):
+        factory.claim(FakeContext(core, ticket_state(next_)), "1")
+    assert calls == []
+
+
+def test_a_stop_goes_on_the_pr_of_the_repo_that_stopped(core, calls):
+    ctx = FakeContext(core, ticket_state("needs-human", prs=[open_pr("ace3"), open_pr("internal", id_=5)], repo="internal"))
+
+    factory.release(ctx, "1", "needs-human", "the internal PR hit the cap", None)
+
+    assert [c[:3] for c in calls if c[0] == "az"] == [("az", "devops", "invoke")]
+    assert not [c for c in calls if c[1:3] == ("pr", "comment")]
+
+
+def test_a_stop_goes_on_the_repo_it_is_given(core, calls):
+    ctx = FakeContext(core, ticket_state("review", prs=[open_pr("ace3"), open_pr("internal", id_=5)]))
+
+    factory.release(ctx, "1", "needs-human", "the ace3 rebase conflicts", "ace3")
+
+    assert [c[1:3] for c in calls if c[0] == "gh"][0] == ("pr", "comment")
+
+
+def test_promote_refuses_unless_the_state_says_promote(core, calls):
+    with pytest.raises(factory.FactoryError, match="not ready to promote: because rework"):
+        factory.promote(FakeContext(core, ticket_state("rework", prs=[open_pr()])), "1")
+    assert calls == []
+
+
+def test_promote_marks_each_draft_pr_ready_and_clears_in_progress(core, calls):
+    ctx = FakeContext(core, ticket_state("promote", prs=[open_pr("ace3"), open_pr("internal", id_=5), open_pr("ace3", draft=False, id_=4)]))
+
+    factory.promote(ctx, "1")
+
+    assert [c[:4] for c in calls[:2]] == [("gh", "pr", "ready", "3"), ("az", "repos", "pr", "update")]
+    assert calls[2][:4] == ("gh", "issue", "edit", "1")
+
+
+def test_a_handoff_that_disagrees_with_the_live_state_is_invalid(core, tmp_path, monkeypatch):
+    path = tmp_path / "handoff.json"
+    path.write_text(json.dumps(handoff(next_state="promote", verdict="ship")))
+    monkeypatch.setattr(factory, "Context", None)
+
+    result = factory.check_handoff(FakeContext(core, ticket_state("rework")), str(path))
+
+    assert result["valid"] is False and "the ticket's state says rework" in result["problems"][0]
+    path.write_text(json.dumps(handoff()))
+    assert factory.check_handoff(FakeContext(core, ticket_state("rework")), str(path))["valid"] is True
+
+
+def test_retro_data_reads_the_prs_merged_since_the_last_retro_and_marks_where_it_stopped(core, monkeypatch):
+    merged = [{"number": n, "title": f"pr {n}", "headRefName": branch, "mergedAt": at, "url": f"u{n}", "headRefOid": "h"}
+              for n, branch, at in ((1, "factory/1-a", "2026-01-01"), (2, "factory/2-b", "2026-02-01"),
+                                    (3, "mw/other", "2026-03-01"), (4, "factory/4-c", "2026-04-01"))]
+    monkeypatch.setattr(factory, "gh", lambda main, *args, stdin=None: json.dumps(merged))
+    monkeypatch.setattr(factory, "gh_comments", lambda *args, **kwargs: [
+        review("2026-01-05", "h", "ship"), comment("2026-01-06", "please rename it")])
+    (core / "local" / "factory").mkdir(parents=True)
+    (core / "local" / "factory" / "retro.json").write_text(json.dumps({"last_merged_at": "2026-01-01"}))
+    ctx = FakeContext(core)
+
+    result = factory.retro_data(ctx, None, mark=True)
+
+    # merged after the last retro, and factory branches only
+    assert [pr["pr"] for pr in result["prs"]] == ["u2", "u4"]
+    assert result["prs"][0]["rounds"] == [{"round": 1, "verdict": "ship", "open": []}]
+    assert [c["body"] for c in result["prs"][0]["maintainer_comments"]] == ["please rename it"]
+    assert json.loads((core / "local" / "factory" / "retro.json").read_text()) == {"last_merged_at": "2026-04-01"}
+    assert factory.retro_data(ctx, None, mark=False)["prs"] == []
+
+
+def test_an_azure_devops_work_item_reads_as_a_ticket(core, monkeypatch):
+    item = {"fields": {"System.Title": "t", "System.State": "Done", "System.Tags": "factory:ready; other",
+                       "System.AssignedTo": {"uniqueName": "me@example.com"}}, "_links": {"html": {"href": "https://ado/1"}}}
+    monkeypatch.setattr(factory, "az", lambda *args: item)
+
+    ticket_info = factory.ado_ticket(FakeContext(core).repos["internal"], 1)
+
+    assert (ticket_info["closed"], ticket_info["labels"], ticket_info["assignees"]) == (True, ["factory:ready", "other"], ["me@example.com"])
+
+
+def test_an_azure_devops_pr_reads_as_the_factory_s_pr(core, monkeypatch):
+    pr = {"pullRequestId": 5, "repository": {"webUrl": "https://ado/r"}, "title": "t", "isDraft": True,
+          "lastMergeSourceCommit": {"commitId": "h1"}, "targetRefName": "refs/heads/main", "status": "active"}
+    monkeypatch.setattr(factory, "az", lambda *args: [pr] if args[:3] == ("repos", "pr", "list") else {"value": []})
+
+    [read] = factory.ado_prs(FakeContext(core).repos["internal"], ["factory/1-x"])
+
+    assert {k: read[k] for k in ("id", "url", "draft", "head", "base", "state")} == {
+        "id": 5, "url": "https://ado/r/pullrequest/5", "draft": True, "head": "h1", "base": "main", "state": "open"}
+
+
+def test_labels_creates_only_the_missing_ones(core, monkeypatch):
+    made = []
+    monkeypatch.setattr(factory, "gh", lambda main, *args, stdin=None: json.dumps([{"name": "factory:ready"}, {"name": "bug"}])
+                        if args[:2] == ("label", "list") else made.append(args[2]))
+
+    result = factory.ensure_labels(FakeContext(core))
+
+    assert made == ["factory:in-progress", "factory:needs-info", "factory:needs-human"]
+    assert result == {"created": made, "existing": ["factory:ready"]}

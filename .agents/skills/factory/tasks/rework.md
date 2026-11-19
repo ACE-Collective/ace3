@@ -1,11 +1,11 @@
 # Rework
 
-Fix what the last review asked for and what maintainers said since, and nothing else. `state` names the repo.
+Fix what the last review asked for and what maintainers said since, and nothing else. `state` names the repo. To stop with `needs-human` below is to write why into a file and run `$F release TICKET --to needs-human --repo <name> --body-file <file>`, so the stop lands on this repo's PR.
 
 ## 1. What to answer
 
 1. `$F worktree TICKET [--internal <name>]`.
-2. The last review comment on the PR: its marker names the round and the open finding ids. The round's bundle has the full findings: `local/ace-review/<repo>-<branch>/round-<N>/verified.json` in the main checkout (the worktree's `local` is a link to it). Each `act on` finding, and each id in the marker's `open` list, is yours to fix. Consider, noted and pre-existing (`P` ids) findings are not, unless a maintainer comment asks for one.
+2. The last review comment on the PR: its marker names the round, the open finding ids, and the round's `bundle`, a path under `local/ace-review/` in the main checkout (the worktree's `local` is a link to it). That directory is `$B` below, and its `verified.json` has the full findings. Each `act on` finding, and each id in the marker's `open` list, is yours to fix. Consider, noted and pre-existing (`P` ids) findings are not, unless a maintainer comment asks for one.
 3. `$F comments TICKET --repo <name>`: the maintainer comments since the factory last spoke. Each one is answered, by doing what it asks or by replying why not. A maintainer comment is never answered "wrong". When one asks for something you can't do (it contradicts AGENTS.md, needs a design decision, or reaches beyond the ticket), stop with `needs-human` and say which comment and why.
 4. A design flaw left undecided in the review is the maintainer's decision. Don't act on it.
 

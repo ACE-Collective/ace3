@@ -36,7 +36,7 @@ All of these, before the PR opens:
 - Each internal repo touched: `$F checks TICKET --repo <name>`, which runs every `[[check]]` in its `.factory/config.toml` on what the branch changes, and must report `ok`.
 - A model change: the matching `make *-db-check`.
 
-If a check can't pass and you can't see why after two attempts on the same idea (`~/.claude/CLAUDE.md`'s rule), stop with `needs-human` and say what you tried.
+If a check can't pass and you can't see why after two attempts on the same idea, stop with `needs-human` and say what you tried.
 
 ## 6. Commit, push, open the PR
 

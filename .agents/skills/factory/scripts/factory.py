@@ -8,7 +8,7 @@ Stdlib only.
     factory.py ready                        list the tickets labeled factory:ready
     factory.py state TICKET                 the ticket, its PRs, their reviews, and the next task
     factory.py claim TICKET                 assign the ticket to you and mark it in progress
-    factory.py release TICKET --to STATE [--body-file F]
+    factory.py release TICKET --to STATE [--body-file F] [--repo NAME]
                                             hand the ticket back: needs-info, needs-human or ready
     factory.py worktree TICKET [--slug S] [--internal NAME ...]
                                             create or reuse the ticket's worktree; prints its path
@@ -77,6 +77,7 @@ TIMEOUT = 120
 CONFIG = os.path.join(".factory", "config.toml")
 ADO_API = "7.1"
 ADO_DESCRIPTION_LIMIT = 4000
+ADO_CLOSED_STATES = ("Closed", "Done", "Removed", "Resolved")
 
 
 class FactoryError(Exception):
@@ -190,6 +191,8 @@ def read_marker(body: str) -> tuple[str, dict] | None:
     try:
         return kind, json.loads(payload) if payload else {}
     except json.JSONDecodeError:
+        # a marker someone edited by hand: its kind still says whose comment it is, and a review
+        # without a head reads as not yet reviewed, so the PR is simply reviewed again
         return kind, {}
 
 
@@ -259,7 +262,8 @@ def ticket_step(ticket: dict, prs: list[dict], branches: dict[str, list[str]], m
     labels, assignees = set(ticket["labels"]), ticket["assignees"]
     if ticket["closed"]:
         return {"next": "done", "why": "the ticket is closed"}
-    if NEEDS_INFO in labels:
+    # a maintainer who answered labels the ticket factory:ready again, which outranks the old stop
+    if NEEDS_INFO in labels and READY not in labels:
         return {"next": "needs-info", "why": "waiting for a maintainer to answer on the ticket and label it factory:ready again"}
     if NEEDS_HUMAN in labels:
         return {"next": "needs-human", "why": "a human has to take it from here; remove factory:needs-human to let /factory continue"}
@@ -321,8 +325,9 @@ def gh_prs(main: str, slug: str, branches: list[str]) -> list[dict]:
     prs = []
     for branch in branches:
         found = json.loads(gh(main, "pr", "list", "--repo", slug, "--head", branch, "--state", "all",
-                              "--json", "number,url,isDraft,headRefOid,state,baseRefName,title"))
-        for pr in found:
+                              "--json", "number,url,isDraft,headRefOid,state,baseRefName,title,isCrossRepository"))
+        # --head matches the branch name in any fork too, and a fork's PR is never the factory's
+        for pr in (p for p in found if not p["isCrossRepository"]):
             prs.append({"repo": CORE, "host": "github", "id": pr["number"], "url": pr["url"], "branch": branch, "title": pr["title"],
                         "draft": pr["isDraft"], "head": pr["headRefOid"], "base": pr["baseRefName"],
                         "state": {"OPEN": "open", "MERGED": "merged"}.get(pr["state"], "closed"),
@@ -394,7 +399,7 @@ def ado_ticket(repo: dict, number: int) -> dict:
     tags = [t.strip() for t in (fields.get("System.Tags") or "").split(";") if t.strip()]
     state = fields.get("System.State", "")
     return {"ref": f"ado:{number}", "title": fields.get("System.Title", ""), "url": item.get("_links", {}).get("html", {}).get("href", ""),
-            "body": fields.get("System.Description", ""), "closed": state in ("Closed", "Done", "Removed", "Resolved"),
+            "body": fields.get("System.Description", ""), "closed": state in ADO_CLOSED_STATES,
             "labels": tags, "assignees": [assigned.get("uniqueName")] if assigned.get("uniqueName") else []}
 
 
@@ -635,7 +640,8 @@ def repo_path_in(worktree: str, name: str) -> str:
 
 def unpushed(repo_path: str) -> list[str]:
     problems = []
-    if git(repo_path, "status", "--porcelain", "--untracked-files=no").strip():
+    # new files count: worktree removal is forced, so a file never committed would be lost
+    if git(repo_path, "status", "--porcelain").strip():
         problems.append(f"{repo_path} has uncommitted changes")
     branch = git(repo_path, "rev-parse", "--abbrev-ref", "HEAD").strip()
     if branch.startswith("factory/"):
@@ -772,6 +778,18 @@ def push(ctx: Context, ref: str, repo_name: str) -> dict:
     return {"pushed": branch, "repo": repo_name, "head": git(path, "rev-parse", "HEAD").strip()}
 
 
+def closing(ticket: dict, body: str) -> str:
+    """The body with a line that closes the GitHub ticket when the PR merges, unless it has one."""
+    if ticket["kind"] != "github" or re.search(rf"\b(fix(e[sd])?|close[sd]?|resolve[sd]?) #{ticket['id']}\b", body, re.IGNORECASE):
+        return body
+    return f"{body}\n\nFixes #{ticket['id']}"
+
+
+def check_ado_description(body: str) -> None:
+    if len(body) > ADO_DESCRIPTION_LIMIT:
+        raise FactoryError(f"the description is {len(body)} characters; Azure DevOps takes {ADO_DESCRIPTION_LIMIT}")
+
+
 def pr_create(ctx: Context, ref: str, repo_name: str, title: str, body: str) -> dict:
     ticket = parse_ticket(ref)
     state = ctx.state(ref)
@@ -782,14 +800,12 @@ def pr_create(ctx: Context, ref: str, repo_name: str, title: str, body: str) -> 
         raise FactoryError(f"{ref} already has an open {repo_name} PR")
     repo = ctx.repos[repo_name]
     if repo["public"]:
-        if ticket["kind"] == "github" and f"#{ticket['id']}" not in body:
-            body = f"{body}\n\nFixes #{ticket['id']}"
+        body = closing(ticket, body)
         publish_text(ctx, repo, f"{title}\n{body}")
         url = gh(ctx.main, "pr", "create", "--repo", ctx.slug, "--draft", "--head", branch, "--base", base_branch(ctx.main),
                  "--title", title, "--body-file", "-", stdin=body).strip()
         return {"pr": url}
-    if len(body) > ADO_DESCRIPTION_LIMIT:
-        raise FactoryError(f"the description is {len(body)} characters; Azure DevOps takes {ADO_DESCRIPTION_LIMIT}")
+    check_ado_description(body)
     ado = repo["config"]["azure_devops"]
     pr = az("repos", "pr", "create", *ado_args(repo), "--project", ado["project"], "--repository", ado["repository"],
             "--source-branch", branch, "--target-branch", base_branch(repo["path"]), "--title", title,
@@ -803,11 +819,11 @@ def pr_body(ctx: Context, ref: str, repo_name: str, body: str) -> dict:
     repo = ctx.repos[repo_name]
     pr = find_pr(ctx, ref, repo_name)
     if repo["public"]:
+        body = closing(parse_ticket(ref), body)
         publish_text(ctx, repo, body)
         gh(ctx.main, "pr", "edit", str(pr["id"]), "--repo", ctx.slug, "--body-file", "-", stdin=body)
     else:
-        if len(body) > ADO_DESCRIPTION_LIMIT:
-            raise FactoryError(f"the description is {len(body)} characters; Azure DevOps takes {ADO_DESCRIPTION_LIMIT}")
+        check_ado_description(body)
         az("repos", "pr", "update", "--id", str(pr["id"]), *ado_args(repo), "--description", body)
     return {"updated": pr["url"]}
 
@@ -825,7 +841,8 @@ def post_review(ctx: Context, ref: str, repo_name: str, bundle: str) -> dict:
     pr = find_pr(ctx, ref, repo_name)
     if result.get("head") != pr["head"]:
         raise FactoryError(f"the review is of {str(result.get('head'))[:12]}, but the PR's head is {str(pr['head'])[:12]}; push, then review again")
-    body = f"{report}\n\n{marker('review', {'round': result['round'], 'head': result['head'], 'verdict': result['verdict'], 'open': result['open'], 'ticket': parse_ticket(ref)['ref']})}"
+    data = {key: result[key] for key in ("round", "head", "verdict", "open", "bundle")}
+    body = f"{report}\n\n{marker('review', {**data, 'ticket': parse_ticket(ref)['ref']})}"
     posted = post_comment(ctx, ref, "review", body, repo_name)
     return {**posted, "verdict": result["verdict"], "round": result["round"]}
 
@@ -872,25 +889,32 @@ def claim(ctx: Context, ref: str) -> dict:
     state = ctx.state(ref)
     if state["next"] in ("blocked", "not-ready", "done", "needs-info", "needs-human"):
         raise FactoryError(f"cannot claim {ref}: {state['why']}")
-    set_labels(ctx, ref, add={IN_PROGRESS}, remove={READY}, assign=True)
+    set_labels(ctx, ref, add={IN_PROGRESS}, remove={READY, NEEDS_INFO}, assign=True)
     return {"claimed": ref, "by": state["me"], "next": state["next"]}
 
 
-def release(ctx: Context, ref: str, to: str, body: str | None) -> dict:
+def release(ctx: Context, ref: str, to: str, body: str | None, repo_name: str | None = None) -> dict:
     label = STOP_LABELS[to]
     if body:
         state = ctx.state(ref)
-        open_prs = [pr for pr in state["prs"] if pr["state"] == "open"]
-        # a question about the ticket goes on the ticket; a stop goes where the work is
-        target = open_prs[0]["repo"] if open_prs and to == "needs-human" else None
+        open_repos = [pr["repo"] for pr in state["prs"] if pr["state"] == "open"]
+        # a question about the ticket goes on the ticket; a stop goes on the PR that stopped, since
+        # that PR's round count starts again from it: the repo given, or the one the state names
+        target = None
+        if to == "needs-human" and open_repos:
+            target = next((r for r in (repo_name, state.get("repo")) if r in open_repos), open_repos[0])
         post_comment(ctx, ref, "question" if to == "needs-info" else "stop" if to == "needs-human" else "note", body, target)
     set_labels(ctx, ref, add={label}, remove=set(STOP_LABELS.values()) - {label} | {IN_PROGRESS},
                unassign=to in ("needs-info", "ready"))
     return {"released": ref, "to": label}
 
 
+def label_names(ctx: Context) -> set[str]:
+    return {l["name"] for l in json.loads(gh(ctx.main, "label", "list", "--repo", ctx.slug, "--limit", "500", "--json", "name"))}
+
+
 def ensure_labels(ctx: Context) -> dict:
-    existing = {l["name"] for l in json.loads(gh(ctx.main, "label", "list", "--repo", ctx.slug, "--limit", "500", "--json", "name"))}
+    existing = label_names(ctx)
     made = []
     for name, (color, description) in LABELS.items():
         if name not in existing:
@@ -909,7 +933,7 @@ def ready(ctx: Context) -> dict:
             continue
         ado = repo["config"]["azure_devops"]
         wiql = (f"SELECT [System.Id], [System.Title] FROM workitems WHERE [System.TeamProject] = '{ado['project']}' "
-                f"AND [System.Tags] CONTAINS '{READY}' AND [System.State] NOT IN ('Closed', 'Done', 'Removed', 'Resolved')")
+                f"AND [System.Tags] CONTAINS '{READY}' AND [System.State] NOT IN ({', '.join(repr(s) for s in ADO_CLOSED_STATES)})")
         for item in az("boards", "query", *ado_args(repo), "--project", ado["project"], "--wiql", wiql) or []:
             tickets.append({"ticket": f"ado:{item['id']}", "title": item.get("fields", {}).get("System.Title", ""), "url": "", "assignees": []})
         break  # one Azure DevOps project holds the work items of every internal repo
@@ -1065,8 +1089,7 @@ def doctor(ctx: Context) -> dict:
         except FactoryError as e:
             add("az", False, str(e), "az login")
     try:
-        existing = {l["name"] for l in json.loads(gh(ctx.main, "label", "list", "--repo", ctx.slug, "--limit", "500", "--json", "name"))}
-        missing = sorted(set(LABELS) - existing)
+        missing = sorted(set(LABELS) - label_names(ctx))
         add("labels", not missing, f"missing {', '.join(missing)}" if missing else "all present", "factory.py labels")
     except FactoryError as e:
         add("labels", False, str(e))
@@ -1087,6 +1110,7 @@ def main() -> int:
     command.add_argument("ticket")
     command.add_argument("--to", required=True, choices=sorted(STOP_LABELS))
     command.add_argument("--body-file")
+    command.add_argument("--repo", help="the repo whose PR stopped (default: the one the ticket's state names)")
     command = sub.add_parser("worktree")
     command.add_argument("ticket")
     command.add_argument("--slug")
@@ -1143,7 +1167,7 @@ def main() -> int:
         elif args.command == "claim":
             result = claim(ctx, args.ticket)
         elif args.command == "release":
-            result = release(ctx, args.ticket, args.to, read_body(args.body_file) if args.body_file else None)
+            result = release(ctx, args.ticket, args.to, read_body(args.body_file) if args.body_file else None, args.repo)
         elif args.command == "worktree":
             result = create_worktree(ctx, args.ticket, args.slug, args.internal)
         elif args.command == "worktree-remove":
