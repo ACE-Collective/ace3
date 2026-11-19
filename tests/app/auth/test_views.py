@@ -179,26 +179,52 @@ class TestLogin:
             # Flask-Login sends a path, not a full URL
             assert next_url == manage_url
 
-            response = client.post(f"{login_location.path}?{login_location.query}", data={
+            # the browser gets the login form, which carries next only in a hidden field,
+            # and posts that form to the login URL without a query string
+            response = client.get(f"{login_location.path}?{login_location.query}")
+            assert response.status_code == 200
+            assert f'<input type="hidden" name="next" value="{manage_url}">' in response.get_data(as_text=True)
+
+            response = client.post(url_for('auth.login'), data={
                 'username': 'testuser',
-                'password': 'TestPass123!'
+                'password': 'TestPass123!',
+                'next': next_url,
             })
 
             assert response.status_code == 302
             assert response.location == manage_url
             assert 'unsafe redirect attempt blocked' not in caplog.text
 
-    def test_login_with_same_host_absolute_next_parameter(self, app, test_user):
-        """A full URL on this host is accepted."""
+    @pytest.mark.parametrize("base_url", ['http://localhost', 'https://localhost'])
+    def test_login_with_same_host_absolute_next_parameter(self, app, test_user, base_url):
+        """A full URL on this host and scheme is accepted."""
         with app.test_client() as client:
-            next_url = url_for('analysis.manage', _external=True)
-            response = client.post(url_for('auth.login', next=next_url), data={
+            next_url = f"{base_url}{url_for('analysis.manage')}"
+            response = client.post(url_for('auth.login', next=next_url), base_url=base_url, data={
                 'username': 'testuser',
                 'password': 'TestPass123!'
             })
 
             assert response.status_code == 302
             assert response.location == next_url
+
+    @pytest.mark.parametrize("base_url,next_scheme", [
+        ('https://localhost', 'http'),
+        ('http://localhost', 'https'),
+    ])
+    def test_login_with_other_scheme_next_parameter_blocked(self, app, test_user, caplog, base_url, next_scheme):
+        """A full URL on this host with the other scheme is refused: request.host_url carries the user's scheme."""
+        with app.test_client() as client:
+            next_url = f"{next_scheme}://localhost{url_for('analysis.manage')}"
+            with caplog.at_level(logging.WARNING):
+                response = client.post(url_for('auth.login', next=next_url), base_url=base_url, data={
+                    'username': 'testuser',
+                    'password': 'TestPass123!'
+                })
+
+            assert response.status_code == 302
+            assert response.location == url_for('main.index')
+            assert f"unsafe redirect attempt blocked: {next_url}" in caplog.text
 
     @pytest.mark.parametrize("next_url", [
         '//malicious-site.com/manage',
@@ -209,12 +235,20 @@ class TestLogin:
         'http://malicious-site.com/manage',
         'ftp://localhost/manage',
         'http://[malicious-site.com/manage',
+        # urljoin fills an empty host from the base, browsers take the next path segment as the host
+        '///malicious-site.com/manage',
+        '////malicious-site.com/manage',
+        '/\t//malicious-site.com/manage',
+        'http:///malicious-site.com/manage',
+        'https:///malicious-site.com/manage',
+        'https:malicious-site.com/manage',
     ])
-    def test_login_with_other_host_next_parameter_blocked(self, app, test_user, caplog, next_url):
+    @pytest.mark.parametrize("base_url", ['http://localhost', 'https://localhost'])
+    def test_login_with_other_host_next_parameter_blocked(self, app, test_user, caplog, next_url, base_url):
         """A next URL a browser would resolve to another host or scheme is refused and logged."""
         with app.test_client() as client:
             with caplog.at_level(logging.WARNING):
-                response = client.post(url_for('auth.login', next=next_url), data={
+                response = client.post(url_for('auth.login', next=next_url), base_url=base_url, data={
                     'username': 'testuser',
                     'password': 'TestPass123!'
                 })

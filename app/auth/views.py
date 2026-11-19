@@ -1,7 +1,7 @@
 from app.blueprints import auth
 
 import logging
-from urllib.parse import urljoin, urlparse
+from urllib.parse import urlparse
 
 from flask import render_template, redirect, request, url_for, flash, session
 from flask_login import login_user, logout_user, login_required, current_user
@@ -24,27 +24,26 @@ def is_safe_redirect_url(target):
     if not target:
         return False
 
-    # browsers read a backslash as a slash, so /\\host leads to another host while
-    # urlparse sees a path (urlparse already drops the tabs and newlines browsers drop)
-    if '\\' in target:
+    # the raw target is what gets redirected to, so it must read the same here and in a browser:
+    # browsers read a backslash as a slash, and drop tabs and newlines, so /<tab>//host
+    # would pass the // check below and reach the browser as ///host
+    if '\\' in target or any(ord(c) <= 0x20 or ord(c) == 0x7f for c in target):
         return False
 
     try:
         target_url = urlparse(target)
-        # a path relative to the login page is not something this app sends
-        if not target_url.scheme and not target.startswith('/'):
-            return False
-
-        resolved_url = urlparse(urljoin(request.host_url, target))
     except ValueError:
         # malformed URL (an unclosed IPv6 bracket); the caller logs the refusal
         return False
 
-    # no exact scheme match: behind the TLS-terminating proxy request.host_url is http
-    if resolved_url.scheme not in ('http', 'https'):
-        return False
+    if not target_url.scheme:
+        # a path on this site; browsers read //host, ///host and so on as another host,
+        # and a path relative to the login page is not something this app sends
+        return target.startswith('/') and not target.startswith('//')
 
-    return resolved_url.netloc == urlparse(request.host_url).netloc
+    # nginx passes HTTPS through uwsgi_params, so request.host_url carries the user's scheme
+    ref_url = urlparse(request.host_url)
+    return target_url.scheme == ref_url.scheme and target_url.netloc == ref_url.netloc
 
 def get_safe_next_url():
     """
