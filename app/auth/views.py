@@ -18,30 +18,32 @@ def get_remote_ipv4():
 
 def is_safe_redirect_url(target):
     """
-    Validate that the target URL is safe for redirection.
-    Only allows redirects to the same host and valid schemes.
+    Validate that the target URL is safe for redirection: a path on this site
+    (what Flask-Login sends as next) or an http(s) URL on this host.
     """
     if not target:
         return False
-    
-    # Parse the target URL
+
+    # the raw target is what gets redirected to, so it must read the same here and in a browser:
+    # browsers read a backslash as a slash, and drop tabs and newlines, so /<tab>//host
+    # would pass the // check below and reach the browser as ///host
+    if '\\' in target or any(ord(c) <= 0x20 or ord(c) == 0x7f for c in target):
+        return False
+
     try:
         target_url = urlparse(target)
-    except Exception:
+    except ValueError:
+        # malformed URL (an unclosed IPv6 bracket); the caller logs the refusal
         return False
-    
-    # Only allow http and https schemes
-    if target_url.scheme not in ('http', 'https'):
-        return False
-    
-    # Get the current request's host URL for comparison
+
+    if not target_url.scheme:
+        # a path on this site; browsers read //host, ///host and so on as another host,
+        # and a path relative to the login page is not something this app sends
+        return target.startswith('/') and not target.startswith('//')
+
+    # nginx passes HTTPS through uwsgi_params, so request.host_url carries the user's scheme
     ref_url = urlparse(request.host_url)
-    
-    # Ensure the target URL is for the same host
-    if ref_url.netloc != target_url.netloc:
-        return False
-    
-    return True
+    return target_url.scheme == ref_url.scheme and target_url.netloc == ref_url.netloc
 
 def get_safe_next_url():
     """
