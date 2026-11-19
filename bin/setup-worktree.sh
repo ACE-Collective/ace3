@@ -6,6 +6,10 @@
 #     checkout, at the commit the main checkout has checked out
 #   - tests/test_external_integration_*: the main checkout's links into those repositories
 #   - local: a link to the main checkout's local/, so what is written there outlives the worktree
+#   - data: a link to /opt/ace/data, the stack's data volume where the dev container mounts it, so
+#     that ace run from the worktree there has the main checkout's data directory (logs, data/etc,
+#     the yara socket) instead of failing on a missing one. It dangles on the host, where nothing
+#     reads it
 #   - a copy of each path in .worktreeinclude, which Claude Code copies into a worktree it creates
 #     and other tools do not
 #   - .agents/skills/<name>: a link to each skill in the main checkout and in ~/.claude/skills that
@@ -121,6 +125,10 @@ esac
 if [ ! -e "$worktree/local" ] && [ ! -L "$worktree/local" ]; then
     mkdir -p "$main/local"
     ln -s "$local_target" "$worktree/local" && echo "local: linked to $main/local"
+fi
+
+if [ ! -e "$worktree/data" ] && [ ! -L "$worktree/data" ]; then
+    ln -s /opt/ace/data "$worktree/data" && echo "data: linked to /opt/ace/data (the dev container's data volume)"
 fi
 
 # the main checkout's come first, so that it wins over the user for a skill they both have

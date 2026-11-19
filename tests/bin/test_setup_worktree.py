@@ -94,9 +94,12 @@ def test_sets_up_a_worktree(main):
     # relative, so it resolves wherever the main checkout is mounted
     assert os.readlink(worktree / "local") == "../../../local"
     assert (worktree / "local").resolve() == (main / "local").resolve()
+    # the stack's data volume as the dev container mounts it, where the worktree's ace commands run
+    assert os.readlink(worktree / "data") == "/opt/ace/data"
     assert "integrations/ext: new worktree" in result.stdout
     assert "tests: linked 1" in result.stdout
     assert "local: linked" in result.stdout
+    assert "data: linked to /opt/ace/data" in result.stdout
 
 
 def test_a_second_run_changes_nothing_and_prints_nothing(main):
@@ -170,6 +173,7 @@ def test_does_nothing_in_the_main_checkout(main):
     assert result.returncode == 0, result.stderr
     assert result.stdout == ""
     assert not (main / "local").exists()
+    assert not (main / "data").exists()
     assert len(_git(main / "integrations" / "ext", "worktree", "list").splitlines()) == 1
 
 
@@ -200,6 +204,31 @@ def test_leaves_an_existing_local_directory_alone(main):
     assert result.returncode == 0, result.stderr
     assert not (worktree / "local").is_symlink()
     assert "local: linked" not in result.stdout
+
+
+def test_leaves_an_existing_data_directory_alone(main):
+    worktree = _add_worktree(main, "wt")
+    (worktree / "data").mkdir()
+
+    result = _run(worktree)
+
+    assert result.returncode == 0, result.stderr
+    assert not (worktree / "data").is_symlink()
+    assert "data: linked" not in result.stdout
+
+
+def test_the_repository_ignores_the_links(main):
+    # a link is not a directory to git, so a pattern with a trailing slash does not ignore it
+    (main / ".gitignore").write_text((SCRIPT.parents[1] / ".gitignore").read_text())
+    _git(main, "add", ".gitignore")
+    _git(main, "commit", "--quiet", "-m", "the repository's .gitignore")
+    worktree = _add_worktree(main, "wt")
+
+    _run(worktree)
+
+    assert (worktree / "data").is_symlink()
+    assert (worktree / "local").is_symlink()
+    assert _git(worktree, "status", "--porcelain", "--", "data", "local") == ""
 
 
 def test_prunes_the_worktree_of_a_deleted_worktree(main):

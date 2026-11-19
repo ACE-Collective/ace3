@@ -119,7 +119,8 @@ ace.out/
 error_reports/
 load_proxy
 backups/
-/data/
+# no trailing slash: in a worktree, data is a symlink to the dev container's data volume (bin/setup-worktree.sh)
+/data
 extra/
 
 # site modules
