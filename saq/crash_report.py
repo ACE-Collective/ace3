@@ -759,7 +759,8 @@ def record_module_crash(
             module_start_time=module_start_time,
             elapsed_seconds=elapsed_seconds,
             root_uuid=getattr(root, "uuid", None),
-            root_storage_dir=getattr(root, "storage_dir", None),
+            # as the database records it: relative to SAQ_HOME
+            root_storage_dir=getattr(root, "stored_storage_dir", getattr(root, "storage_dir", None)),
             root_description=getattr(root, "description", None),
             observable_uuid=observable_uuid,
             observable_type=observable_type,

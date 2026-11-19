@@ -53,6 +53,7 @@ from saq.constants import DB_ANALYSIS_RESULT_CACHE, F_FILE, FILE_SUBDIR
 from saq.database.model import AnalysisResultCache
 from saq.database.pool import get_db
 from saq.util import parse_event_time
+from saq.util.filesystem import store_storage_paths_relative
 
 if TYPE_CHECKING:
     from saq.analysis.observable import Observable
@@ -163,7 +164,18 @@ class CacheWriteResult(NamedTuple):
     compressed_bytes: int
 
 
-def _maybe_spill_details(delta_dict: dict, blob_store: BlobStore, cache_key: str) -> bool:
+def _dumps_for_root(value, root: Optional["RootAnalysis"]) -> bytes:
+    """value as the JSON a cache row stores, which names the files of root (the alert the module ran
+    against) relative to SAQ_HOME, as its data.json does."""
+    encoded = json.dumps(value, sort_keys=True, default=str)
+    if root is not None:
+        encoded = store_storage_paths_relative(encoded, root.storage_dir, root.stored_storage_dir)
+
+    return encoded.encode("utf-8")
+
+
+def _maybe_spill_details(delta_dict: dict, blob_store: BlobStore, cache_key: str,
+                         root: Optional["RootAnalysis"] = None) -> bool:
     """Move ``delta_dict['analysis']['details']`` into the blob store when it exceeds the spill threshold.
 
     Mutates ``delta_dict`` in place: ``details`` is replaced with a
@@ -181,7 +193,7 @@ def _maybe_spill_details(delta_dict: dict, blob_store: BlobStore, cache_key: str
         return False
 
     # Serialize separately so we can both measure and avoid double-serializing.
-    details_bytes = json.dumps(details, sort_keys=True, default=str).encode("utf-8")
+    details_bytes = _dumps_for_root(details, root)
     threshold = get_config().analysis_cache.details_spill_bytes
     if len(details_bytes) < threshold:
         return False
@@ -305,7 +317,7 @@ def put_cached_delta(
             return None
 
         delta_dict = delta.to_dict()
-        has_blob_refs = _maybe_spill_details(delta_dict, blob_store, cache_key)
+        has_blob_refs = _maybe_spill_details(delta_dict, blob_store, cache_key, root)
 
         # Phase 4: store each produced file's bytes in the blob store.
         # exists() short-circuits re-uploading content the store already
@@ -340,7 +352,7 @@ def put_cached_delta(
         zstd_level = analysis_cache.zstd_level
         max_compressed_bytes = analysis_cache.max_compressed_bytes
 
-        delta_json = json.dumps(delta_dict, sort_keys=True, default=str).encode("utf-8")
+        delta_json = _dumps_for_root(delta_dict, root)
         uncompressed_size = len(delta_json)
         compressor = zstandard.ZstdCompressor(level=zstd_level)
         delta_zstd = compressor.compress(delta_json)

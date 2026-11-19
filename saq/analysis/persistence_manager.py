@@ -14,6 +14,7 @@ from saq.analysis.io_tracking import _track_reads, _track_writes
 from saq.environment import get_base_dir
 from saq.json_encoding import _JSONEncoder
 from saq.util import abs_path
+from saq.util.filesystem import store_storage_paths_relative
 
 class AnalysisDetailsPersistenceManager:
     """Responsible for managing the persistence of analysis details."""
@@ -64,7 +65,8 @@ class AnalysisDetailsPersistenceManager:
         if not os.path.exists(os.path.join(get_base_dir(), self.file_manager.storage_dir, '.ace')):
             os.makedirs(os.path.join(get_base_dir(), self.file_manager.storage_dir, '.ace'))
 
-        json_data = json.dumps(analysis.details, sort_keys=True, cls=_JSONEncoder)
+        json_data = store_storage_paths_relative(json.dumps(analysis.details, sort_keys=True, cls=_JSONEncoder),
+                                                 self.file_manager.storage_dir, self.file_manager.stored_storage_dir)
 
         # save the details using atomic write-then-rename to avoid partial reads
         logging.debug("SAVE: saving external details for {} to {}".format(analysis, analysis.external_details_path))

@@ -1,6 +1,7 @@
 from contextlib import contextmanager
 import fcntl
 import hashlib
+import json
 import logging
 import os
 import re
@@ -67,6 +68,24 @@ def abs_path(path):
         return path
 
     return os.path.join(get_base_dir(), path)
+
+def store_storage_paths_relative(json_text: str, storage_dir: str, stored_storage_dir: str) -> str:
+    """Returns JSON text about to be written for a root with every occurrence of storage_dir, the root's
+    absolute storage directory, replaced by stored_storage_dir, the storage directory as the database
+    records it. A root's paths are absolute in memory, so that a tool started in another directory finds
+    the files, but what is stored names them relative to SAQ_HOME. The JSON is free-form (a module's
+    summary, its details, the output of a tool that names its input), so the replacement is textual; it
+    turns any path under the storage directory into the same path relative to SAQ_HOME."""
+    if storage_dir == stored_storage_dir:
+        return json_text
+
+    absolute, stored = json.dumps(storage_dir)[1:-1], json.dumps(stored_storage_dir)[1:-1]
+    if stored.endswith(absolute):
+        # a data directory outside SAQ_HOME: the relative path ends with the absolute one (../../var/...),
+        # and one already stored relative, as a loaded root's are, is not replaced again
+        return re.sub(f"(?<!{re.escape(stored[:-len(absolute)])}){re.escape(absolute)}", lambda _: stored, json_text)
+
+    return json_text.replace(absolute, stored)
 
 RE_NT_DRIVE_LETTER = re.compile(r'^[a-zA-Z]:.+$')
 RE_NT_UNC_PATH = re.compile(r'^\\\\[^\\]+\\.+$')

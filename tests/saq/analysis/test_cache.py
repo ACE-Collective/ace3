@@ -342,6 +342,36 @@ class TestPutCachedDelta:
             _delete_cache_row(delta.cache_key)
 
     @pytest.mark.integration
+    @pytest.mark.parametrize("padding", [0, 32 * 1024], ids=["inline", "spilled"])
+    def test_cached_paths_stay_relative(self, blob_store, root_analysis, padding):
+        """The paths a module keeps in its summary and details are absolute in memory; the cache row,
+        and details spilled to the blob store, name them relative to SAQ_HOME, as data.json does."""
+        module = _make_module()
+        path = os.path.join(root_analysis.storage_dir, "files", "sample.txt")
+        stored_path = os.path.join(root_analysis.stored_storage_dir, "files", "sample.txt")
+        analysis = {
+            "type": "saq.modules.test:Dummy",
+            "summary": f"extracted {path}",
+            "details": {"extracted": [path], "payload": "x" * padding},
+        }
+        delta = _make_delta(module, analysis=analysis)
+        try:
+            assert put_cached_delta(delta, module, blob_store, root=root_analysis) is not None
+            with get_db_connection(DB_ANALYSIS_RESULT_CACHE) as db:
+                cursor = db.cursor()
+                cursor.execute("SELECT delta_zstd FROM analysis_result_cache WHERE cache_key = %s", (delta.cache_key,))
+                stored = json.loads(zstandard.ZstdDecompressor().decompress(cursor.fetchone()[0]).decode("utf-8"))
+
+            assert stored["analysis"]["summary"] == f"extracted {stored_path}"
+            details = stored["analysis"]["details"]
+            if padding:
+                with blob_store.get(details["__blob_ref__"]) as fp:
+                    details = json.loads(fp.read())
+            assert details["extracted"] == [stored_path]
+        finally:
+            _delete_cache_row(delta.cache_key)
+
+    @pytest.mark.integration
     def test_refuses_oversized_delta(self, blob_store, monkeypatch):
         # Drop the cap to something tiny so even a small analysis blows it.
         monkeypatch.setattr(

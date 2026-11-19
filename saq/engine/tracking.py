@@ -210,7 +210,8 @@ class TrackingWriter:
         # a new target implies a new analysis, so any module state is stale
         self.record = TrackingRecord(
             root_uuid=target.uuid,
-            storage_dir=target.storage_dir,
+            # as the database records it; a delayed analysis request's storage_dir comes from there
+            storage_dir=target.stored_storage_dir if isinstance(target, RootAnalysis) else target.storage_dir,
             worker_name=self.worker_name,
             pid=os.getpid(),
             target_start_time=datetime.now().isoformat(),

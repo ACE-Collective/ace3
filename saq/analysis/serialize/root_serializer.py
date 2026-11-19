@@ -10,6 +10,7 @@ from saq.analysis.module_execution_delta import ModuleExecutionDelta
 from saq.constants import EventTimeSource
 from saq.json_encoding import _JSONEncoder
 from saq.util import parse_event_time
+from saq.util.filesystem import store_storage_paths_relative
 
 # json keys
 KEY_ANALYSIS_MODE = 'analysis_mode'
@@ -199,7 +200,9 @@ class RootAnalysisSerializer:
         # Now encode and save the main JSON with retry logic
         # Use a temporary file to deal with very large JSON files taking a long time to encode
         temp_path = '{}.tmp'.format(root_analysis.json_path)
-        encoded_json = json.dumps(RootAnalysisSerializer.serialize(root_analysis), sort_keys=True, cls=_JSONEncoder)
+        encoded_json = store_storage_paths_relative(
+            json.dumps(RootAnalysisSerializer.serialize(root_analysis), sort_keys=True, cls=_JSONEncoder),
+            root_analysis.storage_dir, root_analysis.stored_storage_dir)
         
         # Skip writing if already written (no changes)
         with open(temp_path, 'w') as fp:

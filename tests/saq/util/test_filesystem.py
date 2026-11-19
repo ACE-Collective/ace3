@@ -1,9 +1,10 @@
 import hashlib
+import json
 import os
 
 import pytest
 
-from saq.util.filesystem import NAME_MAX_BYTES, is_path_under, shorten_basename_for_suffix
+from saq.util.filesystem import NAME_MAX_BYTES, is_path_under, shorten_basename_for_suffix, store_storage_paths_relative
 
 
 class TestShortenBasenameForSuffix:
@@ -91,3 +92,31 @@ class TestIsPathUnder:
         # and a symlinked root still contains what is inside it
         os.symlink(root, tmp_path / "root_link")
         assert is_path_under(str(root / "b.txt"), str(tmp_path / "root_link"))
+
+
+class TestStoreStoragePathsRelative:
+    def _store(self, value, storage_dir, stored_storage_dir):
+        return json.loads(store_storage_paths_relative(json.dumps(value), storage_dir, stored_storage_dir))
+
+    @pytest.mark.unit
+    def test_data_inside_saq_home(self):
+        storage_dir, stored = "/opt/ace/data/node/abc/abc-uuid", "data/node/abc/abc-uuid"
+        value = {"summary": f"extracted {storage_dir}/files/a.txt", "files": [f"{storage_dir}/files/b.txt"],
+                 "other": "/opt/ace/data/node/def/def-uuid/files/c.txt", "stored": f"{stored}/files/d.txt"}
+        assert self._store(value, storage_dir, stored) == {
+            "summary": f"extracted {stored}/files/a.txt", "files": [f"{stored}/files/b.txt"],
+            # another root's storage directory is not this root's to rewrite
+            "other": "/opt/ace/data/node/def/def-uuid/files/c.txt",
+            "stored": f"{stored}/files/d.txt"}
+
+    @pytest.mark.unit
+    def test_data_outside_saq_home(self):
+        """The relative path ends with the absolute one; one already stored is not rewritten again."""
+        storage_dir, stored = "/var/data/node/abc/abc-uuid", "../../var/data/node/abc/abc-uuid"
+        value = {"new": f"{storage_dir}/files/a.txt", "stored": f"{stored}/files/b.txt"}
+        assert self._store(value, storage_dir, stored) == {"new": f"{stored}/files/a.txt", "stored": f"{stored}/files/b.txt"}
+
+    @pytest.mark.unit
+    def test_an_absolute_storage_dir_is_stored_as_it_is(self):
+        storage_dir = "/var/work/abc-uuid"
+        assert self._store({"path": f"{storage_dir}/files/a.txt"}, storage_dir, storage_dir) == {"path": f"{storage_dir}/files/a.txt"}

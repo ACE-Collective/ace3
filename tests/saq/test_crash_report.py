@@ -139,6 +139,8 @@ def test_record_exception_crash(root_analysis):
     assert metadata["module_path"] == "saq.modules.test:BasicTestAnalysis"
     assert metadata["module_name"] == "basic_test"
     assert metadata["root_uuid"] == root_analysis.uuid
+    # as the database records it, relative to SAQ_HOME
+    assert metadata["root_storage_dir"] == root_analysis.stored_storage_dir
     assert metadata["analysis_mode"] == root_analysis.analysis_mode
     assert metadata["exception_type"] == "ValueError"
     assert metadata["exception_message"] == "kaboom"

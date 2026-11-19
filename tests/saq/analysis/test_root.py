@@ -626,3 +626,47 @@ def test_paths_resolve_outside_saq_home(root_analysis, tmp_path, monkeypatch):
 
     output = root_analysis.create_output_file("output.txt")
     assert os.path.isabs(output) and os.path.isfile(output)
+
+
+class ExtractedPathAnalysis(Analysis):
+    def generate_summary(self):
+        return f"extracted {self.details['extracted'][0]}"
+
+
+@pytest.mark.unit
+def test_stored_paths_stay_relative(root_analysis):
+    """A module keeps the absolute paths ACE gives it in its summary and details (an extracted file, a
+    tool's output that names its input), but what is written to disk names them relative to SAQ_HOME,
+    under the storage directory as the database records it."""
+    path = root_analysis.create_file_path("sample.txt")
+    with open(path, "w") as fp:
+        fp.write("content")
+    file_observable = root_analysis.add_file_observable(path)
+    analysis = file_observable.add_analysis(ExtractedPathAnalysis())
+    analysis.details = {"extracted": [file_observable.full_path]}
+    root_analysis.save()
+
+    stored_path = os.path.join(root_analysis.stored_storage_dir, "files", "sample.txt")
+    details_path = os.path.join(root_analysis.storage_dir, ".ace", analysis.external_details_path)
+
+    def assert_stored_relative():
+        for written in (root_analysis.json_path, details_path):
+            with open(written) as fp:
+                content = fp.read()
+            # here the data directory is outside SAQ_HOME, and the relative path ends with the absolute one
+            assert root_analysis.storage_dir not in content.replace(stored_path, "")
+            assert stored_path in content
+
+        # by the storage directory the database records, as the engine loads it
+        reloaded = load_root(root_analysis.stored_storage_dir)
+        reloaded_analysis = reloaded.get_observable(file_observable.uuid).get_and_load_analysis(ExtractedPathAnalysis)
+        assert reloaded_analysis.summary == f"extracted {stored_path}"
+        assert reloaded_analysis.details == {"extracted": [stored_path]}
+        return reloaded, reloaded_analysis
+
+    assert_stored_relative()
+    # saved again with the relative paths it loaded, which are not made relative a second time
+    reloaded, reloaded_analysis = assert_stored_relative()
+    reloaded_analysis.details_modified = True
+    reloaded.save()
+    assert_stored_relative()

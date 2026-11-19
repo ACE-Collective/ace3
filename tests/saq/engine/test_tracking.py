@@ -50,9 +50,11 @@ MODULE_PATH = "saq.modules.test:BasicTestAnalysis"
 
 
 def _target(uuid=ROOT_UUID, storage_dir="/data/root"):
+    """A root whose storage directory the database records as storage_dir."""
     target = Mock(spec=RootAnalysis)
     target.uuid = uuid
-    target.storage_dir = storage_dir
+    target.stored_storage_dir = storage_dir
+    target.storage_dir = os.path.join("/opt/ace", storage_dir)
     return target
 
 
@@ -145,11 +147,12 @@ def test_deadline_is_none_without_a_module_or_a_limit():
 
 @pytest.mark.unit
 def test_tracking_a_target_writes_the_worker_file(writer, reader):
-    writer.track_current_work_target(_target())
+    writer.track_current_work_target(_target(storage_dir="data/root"))
 
     record = reader.read_worker_record("any-0")
     assert record.root_uuid == ROOT_UUID
-    assert record.storage_dir == "/data/root"
+    # as the database records it, not the root's absolute path
+    assert record.storage_dir == "data/root"
     assert record.worker_name == "any-0"
     assert record.pid == os.getpid()
     assert not record.has_module
