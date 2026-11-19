@@ -8,14 +8,15 @@
 #   - local: a link to the main checkout's local/, so what is written there outlives the worktree
 #   - a copy of each path in .worktreeinclude, which Claude Code copies into a worktree it creates
 #     and other tools do not
-#   - .claude/skills/<name>: a link to each skill in the main checkout and in ~/.claude/skills that
-#     the worktree does not have, because a worktree gets only the skills git tracks
+#   - .agents/skills/<name>: a link to each skill in the main checkout and in ~/.claude/skills that
+#     the worktree does not have, because a worktree gets only the skills git tracks. Codex reads
+#     .agents/skills, and Claude Code reads it through the tracked link .claude/skills
 #
 # and removes the integration repositories' records of worktrees that have since been deleted.
 #
-# Run by the SessionStart hook in .claude/settings.json; safe to run by hand. It does nothing in
-# the main checkout, changes nothing that already exists, and prints only what it created, which
-# the hook hands to Claude as context.
+# Run by the SessionStart hooks in .claude/settings.json and .codex/hooks.json; safe to run by
+# hand. It does nothing in the main checkout, changes nothing that already exists, and prints only
+# what it created, which the hook hands to the agent as context.
 #
 
 # as a hook (--hook), set up the directory the session works in, which the hook input names as "cwd":
@@ -109,11 +110,11 @@ case $worktree in
         # at /opt/ace
         up=$(printf '%s' "${worktree#"$main"/}" | sed 's|[^/][^/]*|..|g')
         local_target=$up/local
-        skills_target=../../$up/.claude/skills
+        skills_target=../../$up/.agents/skills
         ;;
     *)
         local_target=$main/local
-        skills_target=$main/.claude/skills
+        skills_target=$main/.agents/skills
         ;;
 esac
 
@@ -123,21 +124,21 @@ if [ ! -e "$worktree/local" ] && [ ! -L "$worktree/local" ]; then
 fi
 
 # the main checkout's come first, so that it wins over the user for a skill they both have
-mkdir -p "$worktree/.claude/skills"
+mkdir -p "$worktree/.agents/skills"
 linked=0
 names=
-for skill in "$main"/.claude/skills/*/ "$HOME"/.claude/skills/*/; do
+for skill in "$main"/.agents/skills/*/ "$HOME"/.claude/skills/*/; do
     skill=${skill%/}
     name=$(basename "$skill")
     # this also skips a dangling link and a directory that is not a skill
     [ -e "$skill/SKILL.md" ] || continue
-    [ -e "$worktree/.claude/skills/$name" ] || [ -L "$worktree/.claude/skills/$name" ] && continue
+    [ -e "$worktree/.agents/skills/$name" ] || [ -L "$worktree/.agents/skills/$name" ] && continue
 
     case $skill in
         "$main"/*) target=$skills_target/$name ;;
         *) target=$skill ;;
     esac
-    if ln -s "$target" "$worktree/.claude/skills/$name"; then
+    if ln -s "$target" "$worktree/.agents/skills/$name"; then
         linked=$((linked + 1))
         names="$names $name"
     else
@@ -146,7 +147,7 @@ for skill in "$main"/.claude/skills/*/ "$HOME"/.claude/skills/*/; do
 done
 # Claude Code lists these from a session's second turn, so this is how its first turn learns of them
 [ $linked -gt 0 ] && echo "skills: linked $linked from $main and ~/.claude/skills, which a session that" \
-    "is already running lists from its next turn. Until then, read .claude/skills/<name>/SKILL.md to" \
+    "is already running lists from its next turn. Until then, read .agents/skills/<name>/SKILL.md to" \
     "use one:$names"
 
 if [ -f "$main/.worktreeinclude" ]; then

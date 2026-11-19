@@ -2,7 +2,7 @@
 
 The maintainer debugs production from logs, without a shell on the node. You check that every failure the change can produce is visible, reported and traceable to the thing that failed. Don't review message formatting at all: f-string, `%s` and `.format()` are all fine.
 
-Read first: `CLAUDE.md` § Engineering values → Logging, and `saq/error/reporting.py`, in particular `ErrorReportHandler`, `log_loop_exception` and `log_peer_unavailable`.
+Read first: `AGENTS.md` § Engineering values → Logging, and `saq/error/reporting.py`, in particular `ErrorReportHandler`, `log_loop_exception` and `log_peer_unavailable`.
 
 ## Look for
 

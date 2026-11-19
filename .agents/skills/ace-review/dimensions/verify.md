@@ -18,7 +18,7 @@ Then:
 2. Recalibrate severity against rubric.md. Downgrade inflated findings: a nit dressed as a blocker. Upgrade only with evidence.
 3. If its `fix` names an existing helper, check that the helper exists and does the job.
 
-The rules in `$B/rules/CLAUDE.md` § Engineering values are the maintainer's decisions. Don't reject or weaken a finding because a rule seems stricter than the code it cites. For example, every caught-and-logged exception must be logged with its traceback, even on a path that seems too minor for an error report.
+The rules in `$B/rules/AGENTS.md` § Engineering values are the maintainer's decisions. Don't reject or weaken a finding because a rule seems stricter than the code it cites. For example, every caught-and-logged exception must be logged with its traceback, even on a path that seems too minor for an error report.
 
 ## One finding
 

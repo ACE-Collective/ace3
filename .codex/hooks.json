@@ -1,0 +1,22 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup|resume|clear|compact",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$(git rev-parse --show-toplevel)\"/bin/setup-worktree.sh --hook",
+            "timeout": 120,
+            "statusMessage": "Setting up the worktree"
+          },
+          {
+            "type": "command",
+            "command": "\"$(git rev-parse --show-toplevel)\"/bin/print-local-instructions.sh",
+            "statusMessage": "Reading AGENTS.local.md"
+          }
+        ]
+      }
+    ]
+  }
+}

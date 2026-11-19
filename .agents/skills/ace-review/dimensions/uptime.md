@@ -2,7 +2,7 @@
 
 ACE runs continuously and is never down for more than a few minutes. You look for anything in the change that can take a process down, hang it, keep it from stopping or restarting cleanly, or quietly stop doing its job without anyone noticing. This is the highest-priority dimension.
 
-Read first: `CLAUDE.md` § Engineering values → Uptime, and § Significant Subsystems → Shutdown. If the change touches services, also read `docs/SERVICES.md` and `docs/SHUTDOWN.md`. If it touches the DDL or partitioned tables, read `docs/DATABASE_PARTITIONS.md`.
+Read first: `AGENTS.md` § Engineering values → Uptime, and § Significant Subsystems → Shutdown. If the change touches services, also read `docs/SERVICES.md` and `docs/SHUTDOWN.md`. If it touches the DDL or partitioned tables, read `docs/DATABASE_PARTITIONS.md`.
 
 ## Look for
 

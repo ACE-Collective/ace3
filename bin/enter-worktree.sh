@@ -21,7 +21,7 @@
 # while the worktree or one of its integration worktrees has uncommitted changes or commits no branch
 # holds; -f deletes it anyway. To keep the worktree for later, close the shell instead.
 #
-# The worktree is created in dev, so its git works only in dev (CLAUDE.md).
+# The worktree is created in dev, so its git works only in dev (AGENTS.md).
 
 if [ "${BASH_SOURCE[0]}" = "$0" ]; then
     echo "source this script instead of running it: source $0 <branch> [<start point>] | --pr <number>" >&2
@@ -79,7 +79,7 @@ _ace_wt_enter() {
             return 1
         fi
         # a directory git finds the main checkout from is not necessarily a worktree of it, and git
-        # cannot read a worktree created on the host at all here (CLAUDE.md)
+        # cannot read a worktree created on the host at all here (AGENTS.md)
         if [ "$(git -C "$worktree" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" != "$common_dir" ] ||
             [ "$(git -C "$worktree" rev-parse --show-toplevel 2>/dev/null)" != "$worktree" ]; then
             echo "$worktree already exists and is not a worktree of $main that git can read here" \

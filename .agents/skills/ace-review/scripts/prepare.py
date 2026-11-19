@@ -26,10 +26,10 @@ one is redone in place. The bundle gets:
                        through their tests/test_external_integration_<name> symlink)
     unmarked.txt       test functions in changed test files with no unit/integration/system marker
     cov_sources.txt    --cov arguments for the pytest run
-    rules/CLAUDE.md    core's CLAUDE.md from the base, which the change is judged by
-                       (rules/repo-CLAUDE.md is the reviewed repo's own, for a repo other
-                       than core)
-    rule-changes.patch what the change does to the CLAUDE.md rule sections or to the
+    rules/AGENTS.md    core's AGENTS.md from the base, which the change is judged by
+                       (rules/repo-AGENTS.md is the reviewed repo's own, for a repo other
+                       than core; either is the repo's CLAUDE.md where it has no AGENTS.md)
+    rule-changes.patch what the change does to the AGENTS.md rule sections or to the
                        skill itself, when it does anything
     leads.json         added lines that match a mechanical check, functions the change adds
                        that repeat another function's body, and doc lines that name a path,
@@ -59,8 +59,12 @@ import yaml
 
 SAQ_HOME = os.environ.get("SAQ_HOME", "/opt/ace")
 RUN_MARKERS = {"unit", "integration", "system"}
-SKILL_DIR = ".claude/skills/ace-review"
-# the CLAUDE.md sections that state rules rather than facts about the code
+SKILL_DIR = ".agents/skills/ace-review"
+# the file a repo's rules are in: AGENTS.md, or CLAUDE.md in a repo, or a base revision, that has
+# no AGENTS.md (an integration repo, or core before the rename). Where both exist CLAUDE.md is the
+# one-line @AGENTS.md import.
+RULES_FILES = ("AGENTS.md", "CLAUDE.md")
+# the AGENTS.md sections that state rules rather than facts about the code
 RULE_SECTIONS = ("## Engineering values", "## Conventions")
 DIFF_FLAGS = ["--no-color", "--no-ext-diff", "--src-prefix=a/", "--dst-prefix=b/", "-M"]
 DISMISSING_ANSWERS = {"wrong", "intentional", "didn't matter"}
@@ -111,6 +115,14 @@ def show(repo: str, rev: str, path: str) -> str | None:
     """A file's content at a revision, or None where it doesn't exist there."""
     result = subprocess.run(["git", "-C", repo, "show", f"{rev}:{path}"], capture_output=True, text=True, errors="replace")
     return result.stdout if result.returncode == 0 else None
+
+
+def read_file(path: str) -> str | None:
+    """A file's content on disk, or None where there is no file."""
+    if not os.path.isfile(path):
+        return None
+    with open(path, encoding="utf-8", errors="replace") as fp:
+        return fp.read()
 
 
 def load_json(path: str, default):
@@ -351,8 +363,17 @@ def section(text: str | None, heading: str) -> str:
     return "".join(out)
 
 
+def read_rules(read) -> tuple[str, str | None]:
+    """The name and text of the rules file that read(path) finds first; (AGENTS.md, None) if none."""
+    for name in RULES_FILES:
+        text = read(name)
+        if text is not None:
+            return name, text
+    return RULES_FILES[0], None
+
+
 def snapshot_rules(core: str, repo: str, rules_rev: str | None, out: str, accepted: str | None = None) -> dict[str, str]:
-    """Write the CLAUDE.md files the change is judged by into out/rules/, from the base.
+    """Write the AGENTS.md files the change is judged by into out/rules/, from the base.
 
     The reviewed repo's copy comes from its base, so a change that adds or edits one isn't
     judged by it, until the user accepts those edits: then `accepted` is the edited copy.
@@ -361,20 +382,20 @@ def snapshot_rules(core: str, repo: str, rules_rev: str | None, out: str, accept
     """
     rules = os.path.join(out, "rules")
     os.makedirs(rules)
-    copies = [(core, rules_rev if repo == core else detect_base(core), "CLAUDE.md")]
+    copies = [(core, rules_rev if repo == core else detect_base(core), "AGENTS.md")]
     if repo != core:
-        copies.append((repo, rules_rev, "repo-CLAUDE.md"))
+        copies.append((repo, rules_rev, "repo-AGENTS.md"))
     sources = {}
     for source_repo, rev, name in copies:
         if source_repo == repo and accepted is not None:
             text, origin = accepted, "working tree (rule changes accepted)"
         else:
-            text, origin = (show(source_repo, rev, "CLAUDE.md"), rev) if rev else (None, None)
-        path = os.path.join(source_repo, "CLAUDE.md")
-        if text is None and source_repo != repo and os.path.exists(path):
+            text = read_rules(lambda path: show(source_repo, rev, path))[1] if rev else None
+            origin = rev if text is not None else None
+        if text is None and source_repo != repo:
             # core isn't the repo under review, so its working tree is fair to judge by
-            with open(path, encoding="utf-8", errors="replace") as fp:
-                text, origin = fp.read(), "working tree"
+            text = read_rules(lambda path: read_file(os.path.join(source_repo, path)))[1]
+            origin = "working tree" if text is not None else None
         if text is not None:
             with open(os.path.join(rules, name), "w") as fp:
                 fp.write(text)
@@ -390,15 +411,18 @@ def unified(path: str, before: str | None, after: str | None) -> list[str]:
 def rule_changes(repo: str, kind: str, merge_base: str, changed_paths: set[str], head_text) -> tuple[list[str], str]:
     """What the change does to the rules it is reviewed by: a name per change, and a patch."""
     names, patch = [], []
-    if "CLAUDE.md" in changed_paths:
-        before, after = show(repo, merge_base, "CLAUDE.md"), head_text("CLAUDE.md")
-        # another repo's CLAUDE.md has no known rule sections, so all of it counts
+    if changed_paths & set(RULES_FILES):
+        # the base may keep the rules in CLAUDE.md and the head in AGENTS.md: the same rules in
+        # either file are no change
+        before = read_rules(lambda path: show(repo, merge_base, path))[1]
+        name, after = read_rules(head_text)
+        # another repo's rules file has no known rule sections, so all of it counts
         for heading in RULE_SECTIONS if kind == "core" else (None,):
             old = section(before, heading) if heading else before
             new = section(after, heading) if heading else after
             if (old or "") != (new or ""):
-                names.append(f"CLAUDE.md § {heading.removeprefix('## ')}" if heading else "CLAUDE.md")
-                patch.extend(unified("CLAUDE.md", old, new))
+                names.append(f"{name} § {heading.removeprefix('## ')}" if heading else name)
+                patch.extend(unified(name, old, new))
     if kind == "core":
         for path in sorted(p for p in changed_paths if p.startswith(SKILL_DIR + "/")):
             names.append(path)
@@ -866,11 +890,7 @@ def main() -> None:
     def head_text(path: str) -> str | None:
         if not include_worktree:
             return show(repo, head, path)
-        full = os.path.join(repo, path)
-        if not os.path.isfile(full):
-            return None
-        with open(full, encoding="utf-8", errors="replace") as fp:
-            return fp.read()
+        return read_file(os.path.join(repo, path))
 
     # diffing against the snapshot tree takes in uncommitted and untracked work
     diff = git(repo, "diff", *DIFF_FLAGS, merge_base, tree)
@@ -945,7 +965,7 @@ def main() -> None:
     digest = hashlib.sha256(rule_patch.encode()).hexdigest()[:16] if rule_patch else None
     previous, rule_answers, history = build_previous(state)
     rule_status = rule_answers.get(digest, "pending") if digest else "none"
-    accepted = head_text("CLAUDE.md") if rule_status == "accepted" else None
+    accepted = read_rules(head_text)[1] if rule_status == "accepted" else None
     rules_sources = snapshot_rules(core, repo, rules_rev, out, accepted)
     if rule_patch:
         write(out, "rule-changes.patch", rule_patch)
