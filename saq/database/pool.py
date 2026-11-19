@@ -248,24 +248,23 @@ class _database_pool:
             try:
                 connection = self.available.pop()
 
-                # 8/5/2022 
-                # make sure the connection is good before we move forward
-
-                try:
-                    connection.rollback()
-                except Exception as e:
-                    # if we can't rollback then toss this connection and get a new one
-                    _log_pool_issue(self.name, "unable to rollback connection on get_connection", e)
-                    self.close_connection(connection)
-                    self.closed_broken += 1
-                    connection = self.open_new_connection()
-
-                # drop old connections
+                # checked before the rollback: after an idle stretch longer than MySQL's wait_timeout the server has
+                # closed the connection, and it is past its lifetime too, so its failed rollback is no fault to report
                 if datetime.now() >= connection.termination_date: # termination_date is a property we add in open_new_connection()
                     logging.info(f"terminating old connection {connection}")
                     self.close_connection(connection)
                     self.closed_expired += 1
                     connection = self.open_new_connection()
+                else:
+                    # make sure the connection is good before we move forward
+                    try:
+                        connection.rollback()
+                    except Exception as e:
+                        # if we can't rollback then toss this connection and get a new one
+                        _log_pool_issue(self.name, "unable to rollback connection on get_connection", e)
+                        self.close_connection(connection)
+                        self.closed_broken += 1
+                        connection = self.open_new_connection()
             except IndexError:
                 connection = self.open_new_connection()
 
