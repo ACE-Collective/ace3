@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta
+import contextlib
 import inspect
 import logging
 import math
@@ -7,6 +8,7 @@ import shutil
 import signal
 import stat
 import subprocess
+import tempfile
 import time
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, Optional, Type, Union
@@ -404,6 +406,7 @@ class AnalysisModule(FileWatcherMixin):
         read_dirs: Sequence[str] = (),
         write_dirs: Sequence[str] = (),
         outputs: Optional[dict[str, str]] = None,
+        workdir: Optional[str] = None,
         cwd: Optional[str] = None,
         env: Optional[dict[str, str]] = None,
         memory_limit: Optional[int] = None,
@@ -414,13 +417,15 @@ class AnalysisModule(FileWatcherMixin):
         (docs/TOOL_SANDBOX.md), and returns what it did; None if it was stopped or could not run.
 
         The tool can read target, read_files and read_dirs, and the directory its program is in, and
-        write only its own empty working directory (its cwd, HOME and TMPDIR, unless cwd names one of
-        write_dirs) and write_dirs, which the module creates for it; no network. A name in args
-        without a directory is relative to the working directory, and an arg that is target or one of
-        read_files or write_dirs is made absolute (one inside a longer arg, like 7z's -o<dir>, is the
-        module's to make absolute). outputs maps names relative to the working directory to where
-        the module keeps them, and each one the tool left as a plain file is moved there once it has
-        finished, whatever its exit status. Nothing is moved from a tool that was stopped.
+        write only its own empty working directory (its HOME and TMPDIR) and write_dirs, which the
+        module creates for it; no network. It runs in ACE's cwd, SAQ_HOME, unless cwd names another,
+        so the paths ACE gives out mean the same file to it as they do to ACE, inside a longer arg
+        too; it cannot read or write anything there that it was not given. A tool that writes a file
+        of its own is told to write it in the working directory: the module makes one with
+        tool_workdir(), names the file by its path there and passes workdir. outputs maps names
+        relative to the working directory to where the module keeps them, and each one the tool left
+        as a plain file is moved there once it has finished, whatever its exit status. Nothing is
+        moved from a tool that was stopped.
 
         It is stopped like run_tool() stops one (at timeout seconds, or before this call to analyze()
         runs out of time), when it writes more than tool_sandbox.max_output_bytes, and when
@@ -456,22 +461,16 @@ class AnalysisModule(FileWatcherMixin):
             self._sandbox_failed(program, target, "the Landlock sandbox is not available on this node")
             return None
 
-        # ACE's paths are often relative to SAQ_HOME, the tool's are relative to its working directory
-        absolute = {path: os.path.abspath(path) for path in [target, *read_files, *write_dirs]}
-        args = [absolute.get(arg, arg) for arg in args]
-        target = absolute[target]
-
         allowed = max(1.0, self.time_left() - TOOL_TIMEOUT_MARGIN_SECONDS)
         seconds = allowed if timeout is None else max(1.0, min(timeout, allowed))
         tool = os.path.basename(program)
-        work_root = os.path.abspath(os.path.join(get_data_dir(), config.work_dir))
-        _sweep_tool_workdirs(work_root)
-        with create_workdir(work_root) as workdir:
+        with self.tool_workdir() if workdir is None else contextlib.nullcontext(workdir) as workdir:
             argv = build_sandbox_argv(
                 [program, *args[1:]], workdir, config, timedelta(seconds=seconds),
-                read_files=[path for path in (target, *(absolute[path] for path in read_files)) if os.path.exists(path)],
-                read_dirs=[*tool_dirs, *read_dirs],
-                write_dirs=[absolute[path] for path in write_dirs],
+                # setpriv opens these from the tool's cwd, which cwd may have moved away from ACE's
+                read_files=[os.path.abspath(path) for path in (target, *read_files) if os.path.exists(path)],
+                read_dirs=[*tool_dirs, *(os.path.abspath(path) for path in read_dirs)],
+                write_dirs=[os.path.abspath(path) for path in write_dirs],
                 # RLIMIT_CPU counts every thread, and john, 7z and the JVM run one per core; the
                 # timeout still bounds the wall time
                 cpu_seconds=math.ceil(seconds * (os.cpu_count() or 1)),
@@ -480,7 +479,7 @@ class AnalysisModule(FileWatcherMixin):
             tool_env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "LANG": "C.UTF-8", "HOME": workdir,
                         "TMPDIR": workdir, **(env or {})}
             try:
-                result = run_sandboxed(argv, None, tool_env, os.path.abspath(cwd) if cwd else workdir,
+                result = run_sandboxed(argv, None, tool_env, os.path.abspath(cwd) if cwd else os.getcwd(),
                                        timedelta(seconds=seconds), config.max_output_bytes, cancel=self.should_stop)
             except SandboxCancelled:
                 logging.info("%s stopped %s on %s: the analysis was stopped", self, tool, target,
@@ -519,6 +518,13 @@ class AnalysisModule(FileWatcherMixin):
                                     extra={"path": target})
 
         return result
+
+    def tool_workdir(self) -> tempfile.TemporaryDirectory:
+        """A fresh, empty working directory for one run_sandboxed_tool() call, to use as a context
+        manager, for a tool that has to be told where to write a file of its own."""
+        work_root = os.path.abspath(os.path.join(get_data_dir(), get_config().tool_sandbox.work_dir))
+        _sweep_tool_workdirs(work_root)
+        return create_workdir(work_root)
 
     def _resolve_tool(self, name: str) -> Optional[str]:
         """The absolute path of the program a tool runs, found the way Popen would find it."""

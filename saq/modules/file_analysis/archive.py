@@ -533,12 +533,12 @@ class ArchiveAnalyzer(AnalysisModule):
                                                 '-x', 'xl/ctrlProps/*.xml',
                       '-d', extracted_path]
         elif is_msi_file(local_file_path):
-            params = ['7z', '-y', '-o{}'.format(os.path.abspath(extracted_path)), 'x', local_file_path]
+            params = ['7z', '-y', '-o{}'.format(extracted_path), 'x', local_file_path]
         elif is_ace_file:
             # what it extracted before it was stopped is still analyzed
             finished = self._run_unace('x', local_file_path, extracted_path) is not None
         else:
-            params = ['7z', '-y', '-pinfected', '-o{}'.format(os.path.abspath(extracted_path)), 'x', local_file_path]
+            params = ['7z', '-y', '-pinfected', '-o{}'.format(extracted_path), 'x', local_file_path]
 
         if params:
             # the extractor writes only extracted_path, whatever names the archive gives its members.

@@ -352,7 +352,7 @@ def test_a_listing_that_times_out_is_killed(root_analysis, hanging_tools, monkey
 
     assert observable.get_analysis(ArchiveAnalysis) is None
     # it ran until it was stopped, and nothing of it is left running. unace runs on a copy of the archive
-    assert any(r.getMessage().startswith(f"ArchiveAnalyzer stopped {tool} on /")
+    assert any(r.getMessage().startswith(f"ArchiveAnalyzer stopped {tool} on ")
                and r.getMessage().endswith(f"/{name}: command timed out after 0:00:01") for r in caplog.records)
     assert hanging_tools() == []
 
@@ -738,7 +738,7 @@ def test_an_extraction_that_times_out_is_killed(root_analysis, tools_that_hang, 
         assert analyzer.execute_analysis(observable) == AnalysisExecutionResult.COMPLETED
 
     # it ran until it was stopped, and nothing of it is left running
-    assert any(r.getMessage() == f"ArchiveAnalyzer stopped 7z on {os.path.abspath(observable.full_path)}: "
+    assert any(r.getMessage() == f"ArchiveAnalyzer stopped 7z on {observable.full_path}: "
                "command timed out after 0:00:01" for r in caplog.records)
     assert pids() == []
     analysis = observable.get_analysis(ArchiveAnalysis)

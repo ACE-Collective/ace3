@@ -115,9 +115,11 @@ def crack_password(module: "AnalysisModule", john_bin_path: str, hash_file: str,
     # john defaults to one session file and one pot for the whole install, where a run refuses to
     # start while another holds the session ("Crash recovery file is locked"). each run has a
     # working directory of its own for them, and the pot is kept for the --show that follows
-    pot = os.path.abspath(f'{hash_file}.pot')
-    result = module.run_sandboxed_tool([john_bin, '--session=john', '--pot=john.pot', mode, hash_file], hash_file,
-                                       read_files=read_files, outputs={'john.pot': pot})
+    pot = f'{hash_file}.pot'
+    with module.tool_workdir() as workdir:
+        result = module.run_sandboxed_tool([john_bin, f"--session={os.path.join(workdir, 'john')}",
+                                            f"--pot={os.path.join(workdir, 'john.pot')}", mode, hash_file], hash_file,
+                                           read_files=read_files, workdir=workdir, outputs={'john.pot': pot})
     if result is None:
         return None
 

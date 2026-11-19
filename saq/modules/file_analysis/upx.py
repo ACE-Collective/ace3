@@ -96,8 +96,9 @@ class UPXAnalyzer(AnalysisModule):
         analysis = self.create_analysis(_file)
         output_path = f'{local_file_path}.upx.exe'
         try:
-            result = self.run_sandboxed_tool(['upx', '-d', '-ounpacked.exe', local_file_path], local_file_path,
-                                             outputs={'unpacked.exe': output_path})
+            with self.tool_workdir() as workdir:
+                result = self.run_sandboxed_tool(['upx', '-d', f"-o{os.path.join(workdir, 'unpacked.exe')}", local_file_path],
+                                                 local_file_path, workdir=workdir, outputs={'unpacked.exe': output_path})
             if result is None:
                 # whatever it wrote is incomplete, and was not kept
                 analysis.error = "upx -d did not finish"

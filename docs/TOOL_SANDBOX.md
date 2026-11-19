@@ -14,8 +14,8 @@ database passwords and `SAQ_ENC`.
   directory its program is in, and the sandbox's fixed allowlist (`/usr`, the Python runtime, a
   few `/etc` files). Nothing else under SAQ_HOME, the data directory, `/auth`, `/home` or `/proc`
   is readable.
-- It writes only a fresh, empty working directory under `tool_sandbox.work_dir` (its cwd, `HOME`
-  and `TMPDIR`) and the `write_dirs` the module creates for it, such as an archive's `.extracted`
+- It writes only a fresh, empty working directory under `tool_sandbox.work_dir` (its `HOME` and
+  `TMPDIR`) and the `write_dirs` the module creates for it, such as an archive's `.extracted`
   directory.
 - It has no network. `tool_sandbox.allowed_tcp_ports` is empty.
 - Its environment holds `PATH`, `LANG`, `HOME`, `TMPDIR` and the module's `env`, never ACE's own.
@@ -24,15 +24,20 @@ database passwords and `SAQ_ENC`.
   john, 7z and the JVM run one per core. When it exits, times out or the analysis is cancelled
   (`should_stop()`), the launcher kills everything it started.
 
-ACE's paths are often relative to SAQ_HOME. An argument equal to `target`, a `read_files` entry or a
-`write_dirs` entry is made absolute. A path inside a longer argument, like 7z's `-o<dir>`, is the
-module's to make absolute.
+ACE runs with SAQ_HOME as its cwd, and the paths it gives out for an alert's files are relative to
+it. A tool runs in the same cwd, so those paths mean the same file to it, alone or inside a longer
+argument like 7z's `-o<dir>`, and the module passes them as they are. Landlock grants access by
+where a file is, not by the path it is opened with, so the tool still cannot list, read or write
+anything under SAQ_HOME it was not given. A module that runs a tool somewhere else passes `cwd`,
+and then makes the paths in its arguments fit it (unace extracts only into its cwd).
 
 ## Outputs
 
-A tool that writes a single file names it relative to its working directory, and the module passes
-`outputs={"name": destination}`. Once the tool has finished, whatever its exit status, each output
-it left as a plain file with one link is moved to its destination. A symlink or a hard link is
+A tool that writes a single file writes it in its working directory. The module makes the directory
+with `tool_workdir()`, gives the tool the file's path in it, and passes `workdir=` and
+`outputs={"name": destination}`, `name` relative to the working directory. A tool told to write a
+relative name writes in SAQ_HOME, which it cannot, and fails. Once the tool has finished, whatever
+its exit status, each output it left as a plain file with one link is moved to its destination. A symlink or a hard link is
 logged and dropped, because ACE would otherwise copy a file of its own into the alert. A tool that
 was stopped keeps nothing. A tool that writes many files (an extractor, Ghostscript rendering
 pages) writes them into a directory the module passes in `write_dirs`, and the module reads that
