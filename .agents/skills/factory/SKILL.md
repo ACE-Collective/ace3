@@ -60,7 +60,7 @@ Pass nothing else from your own context: the task brief and the state are what i
 
 ## Reply
 
-When the driver stops, tell the user in a few lines: the ticket, each PR's link and state, the rounds it took, the last verdict, and why it stopped, with what a human has to do next (answer the questions on the ticket, decide the design flaws in the review, review and merge the PR).
+When the driver stops, tell the user in a few lines: the ticket, each PR's link and state, the rounds it took, the last verdict, and why it stopped, with what a human has to do next (answer the questions on the ticket, decide the design flaws in the review, review and merge the PR), and the issues and work items the reviews filed.
 
 ## `/factory retro`
 

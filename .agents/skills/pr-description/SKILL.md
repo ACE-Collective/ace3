@@ -1,6 +1,6 @@
 ---
 name: pr-description
-description: Write the PR description for a finished ACE bug fix or feature, in local/ for your own work or straight onto the PR for a /factory run. Covers the file naming convention, what to include (including the Testing section), the repo-scoping rules that decide how many descriptions to write (a working tree spans the public ace3 core plus the separately versioned integrations/ and signatures/ repos), what detail each repo may carry, and the length limit on internal-repo PRs.
+description: Write the PR description for a finished ACE bug fix or feature and put it on the PR, through factory.py in a /factory run. Covers what to include (including the Testing section), the repo-scoping rules that decide how many descriptions to write (a working tree spans the public ace3 core plus the separately versioned integrations/ and signatures/ repos), what detail each repo may carry, and the length limit on internal-repo PRs.
 ---
 
 # PR descriptions
@@ -9,8 +9,10 @@ A finished bug fix or feature gets a Markdown description of the change, one per
 
 ## Where it goes
 
-- **Your own work:** write it into the gitignored `local/` directory, named `<YYYYMMDD>-<repo name>-<branch>.md`: today's date, the repo the changes land in (`ace3` for the core, the integration or signatures repo's name otherwise), and the branch with `/` replaced by `-`. Branch `jd/skip-empty-value-observables` on 2026-06-05 gives `local/20260605-ace3-jd-skip-empty-value-observables.md`. You open the PR with it yourself.
-- **A `/factory` run:** write it to a scratch file and hand it to `factory.py pr-create` or `factory.py pr-body`, which check it for internal detail and put it on the PR. There is no `local/` copy.
+Write it to a scratch file and hand it to whatever opens the PR. Don't keep a copy in `local/`: the PR is where the description lives.
+
+- **A `/factory` run:** `factory.py pr-create` or `factory.py pr-body`, which check it for internal detail and put it on the PR.
+- **Outside the factory:** `gh pr create --body-file <file>` for ace3, after `python3 .agents/skills/factory/scripts/public_text.py --file <file>` finds no internal term in it; `az repos pr create --description` for an internal repo.
 
 ## Content
 
