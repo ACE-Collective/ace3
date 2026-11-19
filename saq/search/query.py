@@ -47,6 +47,7 @@ from saq.database.pool import get_db
 from saq.database.util.index import tag_key
 from saq.error.reporting import log_loop_exception
 from saq.gui.filter_query import build_alert_query, filter_alert_uuids
+from saq.gui.observable_pattern import ObservablePatternError
 from saq.qdrant_client import get_qdrant_client
 from saq.search import index
 from saq.search.lexical import apply_sql_filters, candidates_from_terms, lexical_search
@@ -615,19 +616,23 @@ def search_alerts(request: SearchRequest, *, post_filter: Optional[PostFilter] =
         return SearchResponse(query=query, total=0, offset=request.offset, limit=request.limit)
 
     filters, test_filters = leave_out_test_alerts(filters, request.include_test_alerts)
-    response = _run_search(query, parsed, filters, request, limit=request.limit, offset=request.offset,
-                           include_hits=request.include_hits, post_filter=post_filter, client=client,
-                           model=model, timings=timings)
+    try:
+        response = _run_search(query, parsed, filters, request, limit=request.limit, offset=request.offset,
+                               include_hits=request.include_hits, post_filter=post_filter, client=client,
+                               model=model, timings=timings)
 
-    if test_filters is not None:
-        response.excluded_test_alerts = 0
-        if _any_test_alerts():
-            # the same search over the test queue alone; its total is what was left out
-            start = time.time()
-            response.excluded_test_alerts = _run_search(
-                query, parsed, test_filters, request, limit=0, offset=0, include_hits=False,
-                post_filter=post_filter, client=client, model=model, timings={}).total
-            timings["excluded_test_alerts"] = int((time.time() - start) * 1000)
+        if test_filters is not None:
+            response.excluded_test_alerts = 0
+            if _any_test_alerts():
+                # the same search over the test queue alone; its total is what was left out
+                start = time.time()
+                response.excluded_test_alerts = _run_search(
+                    query, parsed, test_filters, request, limit=0, offset=0, include_hits=False,
+                    post_filter=post_filter, client=client, model=model, timings={}).total
+                timings["excluded_test_alerts"] = int((time.time() - start) * 1000)
+    except ObservablePatternError as e:
+        # an Observable Pattern filter that matches too much is a term that cannot be honored
+        return SearchResponse(query=query, total=0, offset=request.offset, limit=request.limit, errors=(str(e),))
 
     return response
 
@@ -662,16 +667,20 @@ def similar_alerts(
     left out and counted as search_alerts() does."""
     timings: dict[str, int] = {}
     filters, test_filters = leave_out_test_alerts(filters, include_test_alerts)
-    response = _similar(alert_uuid, filters, limit=limit, offset=offset, include_hits=include_hits,
-                        post_filter=post_filter, client=client, timings=timings)
+    try:
+        response = _similar(alert_uuid, filters, limit=limit, offset=offset, include_hits=include_hits,
+                            post_filter=post_filter, client=client, timings=timings)
 
-    if test_filters is not None:
-        response.excluded_test_alerts = 0
-        if _any_test_alerts():
-            start = time.time()
-            response.excluded_test_alerts = _similar(
-                alert_uuid, test_filters, limit=0, offset=0, include_hits=False, post_filter=post_filter,
-                client=client, timings={}).total
-            timings["excluded_test_alerts"] = int((time.time() - start) * 1000)
+        if test_filters is not None:
+            response.excluded_test_alerts = 0
+            if _any_test_alerts():
+                start = time.time()
+                response.excluded_test_alerts = _similar(
+                    alert_uuid, test_filters, limit=0, offset=0, include_hits=False, post_filter=post_filter,
+                    client=client, timings={}).total
+                timings["excluded_test_alerts"] = int((time.time() - start) * 1000)
+    except ObservablePatternError as e:
+        # see search_alerts
+        return SearchResponse(query=f"similar:{alert_uuid}", total=0, offset=offset, limit=limit, errors=(str(e),))
 
     return response

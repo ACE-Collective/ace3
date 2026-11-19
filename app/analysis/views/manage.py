@@ -5,7 +5,7 @@ from urllib.parse import urlencode
 import pytz
 from flask import flash, make_response, redirect, render_template, request, session, url_for
 from flask_login import current_user
-from sqlalchemy import distinct, func
+from sqlalchemy import distinct, false, func
 from sqlalchemy.orm import selectinload
 
 from aceapi_v2.observable_types.service import get_observable_types
@@ -31,6 +31,7 @@ from app.analysis.views.session.filters import (
 )
 from saq.gui.filter_names import DATE_RANGE_FILTER_NAMES
 from saq.gui.filter_query import get_analysis_type_labels
+from saq.gui.observable_pattern import ObservablePatternError
 from saq.gui.filter_url import (
     FilterQueryError,
     decode_filter_query,
@@ -92,7 +93,15 @@ def build_manage_list_context() -> dict:
     # create alert view by joining required tables, applying the session filters and
     # scoping to the alerts visible from this node
     effective_filters = get_effective_filters()
-    query = build_alert_query(effective_filters)
+    # An Observable Pattern that cannot be run (it matches too many observables, or its lookup
+    # ran too long) lists nothing and says why. Listing without it would show more alerts than
+    # the analyst asked for.
+    filter_errors: list[str] = []
+    try:
+        query = build_alert_query(effective_filters)
+    except ObservablePatternError as e:
+        filter_errors.append(str(e))
+        query = build_alert_query([]).filter(false())
 
     #query = query.options(selectinload('workload'))
     query = query.options(selectinload(GUIAlert.workload))
@@ -154,32 +163,37 @@ def build_manage_list_context() -> dict:
                 post_filter=post_filter,
             )
 
-        response = run_search(page_offset)
-        # A query the parser could not honor searched nothing at all, so the analyst has to be
-        # told why rather than shown an empty list. The "did you mean" line covers a bare
-        # indicator: it is free text, so it never runs an exact lookup.
-        search_notices = list(response.errors)
-        if not search_notices and search_mode != SEARCH_MODE_SIMILAR:
-            hint = parse_search_query(search_query).hint()
-            if hint:
-                search_notices.append(hint)
-
-        total_alerts = response.total
-        if page_offset >= total_alerts:
-            # the page the session remembers is past the end of this result set (the search
-            # changed, or a filter narrowed it): clamp like the unsearched path and re-page
-            clamped = max((total_alerts // session['page_size']) * session['page_size'], 0)
-            if clamped != page_offset:
-                page_offset = clamped
-                response = run_search(page_offset)
-
-        page_uuids = response.alert_uuids
-        search_excluded_test_alerts = response.excluded_test_alerts
-        search_result_mapping = {result.alert_uuid: result for result in response.results}
-        if page_uuids:
-            query = query.filter(GUIAlert.uuid.in_(page_uuids)).group_by(GUIAlert.id)
+        if filter_errors:
+            # nothing to search within: the filters themselves could not be run
+            total_alerts = 0
+            page_offset = 0
         else:
-            query = query.filter(GUIAlert.id == None) # noqa: E711  (an empty page)
+            response = run_search(page_offset)
+            # A query the parser could not honor searched nothing at all, so the analyst has to be
+            # told why rather than shown an empty list. The "did you mean" line covers a bare
+            # indicator: it is free text, so it never runs an exact lookup.
+            search_notices = list(response.errors)
+            if not search_notices and search_mode != SEARCH_MODE_SIMILAR:
+                hint = parse_search_query(search_query).hint()
+                if hint:
+                    search_notices.append(hint)
+
+            total_alerts = response.total
+            if page_offset >= total_alerts:
+                # the page the session remembers is past the end of this result set (the search
+                # changed, or a filter narrowed it): clamp like the unsearched path and re-page
+                clamped = max((total_alerts // session['page_size']) * session['page_size'], 0)
+                if clamped != page_offset:
+                    page_offset = clamped
+                    response = run_search(page_offset)
+
+            page_uuids = response.alert_uuids
+            search_excluded_test_alerts = response.excluded_test_alerts
+            search_result_mapping = {result.alert_uuid: result for result in response.results}
+            if page_uuids:
+                query = query.filter(GUIAlert.uuid.in_(page_uuids)).group_by(GUIAlert.id)
+            else:
+                query = query.filter(GUIAlert.id == None) # noqa: E711  (an empty page)
     else:
         # get total number of alerts
         count_query = query.statement.with_only_columns(func.count(distinct(GUIAlert.id)))
@@ -286,6 +300,8 @@ def build_manage_list_context() -> dict:
         'search_query': search_query,
         'search_mode': search_mode,
         'search_notices': search_notices,
+        # in the filter bar, which the 30 second refresh re-renders, unlike the search notices
+        'filter_errors': filter_errors,
         'search_excluded_test_alerts': search_excluded_test_alerts,
         'search_include_tests': search_include_tests,
         'saved_filters': saved_filters,

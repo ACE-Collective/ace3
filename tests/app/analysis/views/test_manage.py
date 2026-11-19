@@ -1,3 +1,4 @@
+import hashlib
 import html as html_lib
 import json
 import re
@@ -5,9 +6,13 @@ import re
 import pytest
 from flask import url_for
 
+from aceapi_v2.saved_filters import service as saved_filters_service
+from aceapi_v2.saved_filters.schemas import SavedFilterCreate
+from aceapi_v2.sync import run_async_with_session
 from saq.constants import DISPOSITION_OPEN, QUEUE_DEFAULT
-from saq.database.model import Alert
+from saq.database.model import Alert, Observable, ObservableMapping
 from saq.database.pool import get_db
+from saq.gui import filter_query
 
 
 def _insert_alert(uuid, description):
@@ -739,3 +744,103 @@ def test_the_flask_saved_filter_routes_are_gone(app):
                     "set_quick_filters", "saved_filter_link", "saved_filters_modal_body"):
         assert f"analysis.{removed}" not in endpoints
     assert "analysis.select_filter" in endpoints
+
+
+def _attach_fqdn(alert, value):
+    db = get_db()
+    observable = Observable(type="fqdn", value=value.encode(), sha256=hashlib.sha256(value.encode()).digest())
+    db.add(observable)
+    db.flush()
+    db.add(ObservableMapping(observable_id=observable.id, alert_id=alert.id))
+    db.commit()
+
+
+PATTERN_FILTER = [{"name": "Observable Pattern", "inverted": False, "values": [["fqdn", "*.evil.com"]]}]
+
+
+@pytest.mark.integration
+def test_observable_pattern_filter_on_the_manage_page(web_client, analyst):
+    """The list shows the alerts the pattern matches, the bar shows the pattern, and the editor
+    offers it in a type and value pair like the exact Observable filter."""
+    _attach_fqdn(_insert_alert('manage-pattern-match', 'evil subdomain'), "mail.evil.com")
+    _attach_fqdn(_insert_alert('manage-pattern-nomatch', 'lookalike'), "evil.com.attacker.net")
+
+    response = web_client.post(url_for("analysis.set_filters"), data={"filters": json.dumps(PATTERN_FILTER)})
+    assert response.status_code == 204
+
+    body = web_client.get(url_for("analysis.manage")).data.decode()
+    assert 'alert_row_manage-pattern-match' in body
+    assert 'alert_row_manage-pattern-nomatch' not in body
+    assert '>fqdn:*.evil.com</span>' in body
+    assert 'placeholder="*.evil.com or https://evil.com/*"' in body
+    assert 'value="*.evil.com"' in body
+
+
+@pytest.mark.integration
+def test_a_pattern_with_a_wildcard_at_both_ends_is_refused_when_applied(web_client, analyst):
+    for route in ("analysis.set_filters", "analysis.apply_temp_filter"):
+        response = web_client.post(url_for(route), data={"filters": json.dumps(
+            [{"name": "Observable Pattern", "inverted": False, "values": [["fqdn", "*evil*"]]}])})
+        assert response.status_code == 400
+        assert "both ends" in response.data.decode()
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("route", ["analysis.manage", "analysis.manage_refresh"])
+def test_a_pattern_that_cannot_be_run_lists_nothing_and_says_why(web_client, analyst, monkeypatch, route):
+    """Listing the alerts without the filter would show more than the analyst asked for."""
+    _attach_fqdn(_insert_alert('manage-pattern-toomany', 'evil subdomain'), "mail.evil.com")
+    _insert_alert('manage-pattern-other', 'no observables')
+    monkeypatch.setattr(filter_query, "MAX_PATTERN_OBSERVABLES", 0)
+
+    with web_client.session_transaction() as sess:
+        _seed_manage_session(sess, analyst, filters=PATTERN_FILTER)
+
+    response = web_client.get(url_for(route))
+    assert response.status_code == 200
+    html = response.data.decode()
+    assert 'alert_row_manage-pattern-toomany' not in html
+    assert 'alert_row_manage-pattern-other' not in html
+    assert 'matches more than 0 observables; make it more specific' in html_lib.unescape(html)
+
+
+@pytest.mark.integration
+def test_a_pattern_that_cannot_be_run_skips_the_search(web_client, analyst, monkeypatch):
+    def search(*args, **kwargs):
+        raise AssertionError("the search ran")
+
+    monkeypatch.setattr("app.analysis.views.manage.search_alerts", search)
+    _attach_fqdn(_insert_alert('manage-pattern-search', 'evil subdomain'), "mail.evil.com")
+    monkeypatch.setattr(filter_query, "MAX_PATTERN_OBSERVABLES", 0)
+
+    with web_client.session_transaction() as sess:
+        _seed_manage_session(sess, analyst, filters=PATTERN_FILTER)
+        sess['search'] = {'mode': 'query', 'query': 'evil'}
+
+    html = html_lib.unescape(web_client.get(url_for("analysis.manage")).data.decode())
+    assert 'matches more than 0 observables' in html
+    assert '0 matching alerts' in html
+    assert 'alert_row_manage-pattern-search' not in html
+
+
+@pytest.mark.integration
+def test_a_badge_whose_pattern_cannot_be_run_has_no_dot(web_client, analyst, monkeypatch):
+    """The badge count runs on every page render; it must not take the page down."""
+    _attach_fqdn(_insert_alert('manage-pattern-badge', 'evil subdomain'), "mail.evil.com")
+    run_async_with_session(
+        saved_filters_service.create_saved_filter, analyst,
+        SavedFilterCreate(name="evil subdomains", filters=PATTERN_FILTER, quick_filter=True,
+                          quick_filter_indicator=True),
+        screen='alerts')
+
+    with web_client.session_transaction() as sess:
+        _seed_manage_session(sess, analyst)
+
+    dot = 'title="1 evil subdomains alert(s)"'
+    assert dot in web_client.get(url_for("analysis.manage")).data.decode()
+
+    monkeypatch.setattr(filter_query, "MAX_PATTERN_OBSERVABLES", 0)
+    response = web_client.get(url_for("analysis.manage"))
+    assert response.status_code == 200
+    html = response.data.decode()
+    assert 'evil subdomains' in html and dot not in html

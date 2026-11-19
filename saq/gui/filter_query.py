@@ -20,13 +20,16 @@ genuinely tied to a Flask request.
 
 import datetime
 import hashlib
+import logging
 from functools import cached_property
 
 import pytz
-from sqlalchemy import LABEL_STYLE_TABLENAME_PLUS_COL, and_, exists, false, func, not_, or_, distinct
+from sqlalchemy import LABEL_STYLE_TABLENAME_PLUS_COL, String, and_, exists, false, func, not_, or_, distinct, select, true, type_coerce
+from sqlalchemy.exc import OperationalError
 
 from saq.constants import VALID_DISPOSITION_REVIEWS
 from saq.database.model import (
+    OBSERVABLE_VALUE_REV_LENGTH,
     Alert,
     AnalysisMapping,
     AnalysisType,
@@ -51,11 +54,9 @@ from saq.detection_verdicts.effective import has_unconfirmed_detections
 from saq.disposition import get_dispositions
 from saq.gui.filter_entry import UNCONFIRMED_DETECTIONS_OPTIONS
 from saq.gui.detection_point_value import parse_detection_point_value
+from saq.gui.observable_pattern import ANY_OBSERVABLE_TYPE, WILDCARD, ObservablePatternError, check_observable_pattern
 from saq.observables.type_hierarchy import get_all_valid_types
 from saq.util.relative_time import parse_date_range
-
-# the TypeValueFilter option meaning "any observable type with this value"
-ANY_OBSERVABLE_TYPE = 'Any'
 
 # sentinel distinguishing "scope to this node" (the default) from an explicit "do not scope"
 _DEFAULT_LOCATIONS = object()
@@ -321,6 +322,153 @@ class TypeValueFilter(SelectFilter):
         return query.filter(or_(*conditions))
 
 
+# An Observable Pattern filter refuses a pattern matching more observables than this. Its alerts
+# are found with an IN list of the observables' ids over observable_mapping, whose cost grows with
+# the mapping rows they have: the 500 most common of 1.25M observables (67k of 5M mapping rows)
+# took 65 to 160 ms per query, either way round.
+MAX_PATTERN_OBSERVABLES = 500
+
+# How long the lookup of a pattern's observables may run. Anchored patterns are range scans that
+# take milliseconds; this bounds the ones that are not selective, such as a pattern for a rare type
+# that only a common type's values match.
+PATTERN_LOOKUP_TIMEOUT_MS = 1000
+
+# MAX_EXECUTION_TIME stopped the statement
+ER_QUERY_TIMEOUT = 3024
+
+# The LIKE escape character. Not the default backslash, which is in every Windows path an analyst
+# types and whose meaning in a string literal depends on the server's sql_mode.
+LIKE_ESCAPE = "!"
+
+
+def _escape_like(data: bytes) -> bytes:
+    for special in (LIKE_ESCAPE.encode(), b"%", b"_"):
+        data = data.replace(special, LIKE_ESCAPE.encode() + special)
+    return data
+
+
+def value_like_pattern(pattern: str) -> bytes:
+    """The LIKE pattern for `observables.value`: the literal text escaped, each `*` a `%`."""
+    return b"%".join(_escape_like(part.encode("utf8", errors="ignore")) for part in pattern.split(WILDCARD))
+
+
+def value_rev_like_pattern(pattern: str) -> bytes | None:
+    """The LIKE pattern for `observables.value_rev` when the pattern starts with a wildcard and
+    ends with text, else None (i_obs_value serves a pattern that starts with text).
+
+    It is the trailing text reversed, cut to what value_rev keeps of a value's end, so it only
+    narrows the index range; value_like_pattern() is still checked against the whole value."""
+    if not pattern.startswith(WILDCARD) or pattern.endswith(WILDCARD):
+        return None
+
+    trailing = pattern.rsplit(WILDCARD, 1)[1].encode("utf8", errors="ignore")
+    return _escape_like(trailing[::-1][:OBSERVABLE_VALUE_REV_LENGTH]) + b"%"
+
+
+def normalize_observable_pattern(observable_type: str, pattern: str) -> str:
+    """The pattern as the type's own class would store it, when that only changes its case.
+
+    The exact Observable filter normalizes a value through its class, which is what makes
+    `email_address:Bob@Example.com` find the stored `bob@example.com`. A pattern is not a value,
+    so the class may reject it (`*.evil.com` is not a valid fqdn) or rewrite it into something
+    else (a user value loses its `DOMAIN\\`); the pattern is then matched as typed. The match is
+    against the stored bytes and so case-sensitive, as the exact filter is, for every type whose
+    class keeps the case it was given.
+    """
+    if observable_type == ANY_OBSERVABLE_TYPE:
+        return pattern
+
+    try:
+        identity = resolve_observable_identity(observable_type, pattern)
+    except InvalidDetectionValue:
+        # the usual case for a pattern: it is not a valid value of its type
+        return pattern
+
+    return identity.value if identity.value.casefold() == pattern.casefold() else pattern
+
+
+def resolve_observable_pattern(observable_type: str, pattern: str) -> list[int]:
+    """The ids of the observables of this type (or any type) whose value matches the pattern.
+
+    Raises ObservablePatternError when no index can serve the pattern, when it matches more than
+    MAX_PATTERN_OBSERVABLES observables, or when the lookup runs past PATTERN_LOOKUP_TIMEOUT_MS.
+    A partial answer is never returned: it would quietly leave alerts out of the list.
+    """
+    pattern = normalize_observable_pattern(observable_type, check_observable_pattern(pattern))
+
+    # type_coerce rather than a LIKE on the BLOB column itself, which SQLAlchemy deprecates; it
+    # changes nothing in the SQL
+    conditions = [type_coerce(Observable.value, String).like(value_like_pattern(pattern), escape=LIKE_ESCAPE)]
+    reversed_pattern = value_rev_like_pattern(pattern)
+    if reversed_pattern is not None:
+        conditions.append(type_coerce(Observable.value_rev, String).like(reversed_pattern, escape=LIKE_ESCAPE))
+    if observable_type != ANY_OBSERVABLE_TYPE:
+        conditions.append(Observable.type == observable_type)
+
+    statement = select(Observable.id).where(*conditions).limit(MAX_PATTERN_OBSERVABLES + 1) \
+        .prefix_with(f"/*+ MAX_EXECUTION_TIME({PATTERN_LOOKUP_TIMEOUT_MS}) */")
+
+    try:
+        ids = list(get_db().execute(statement).scalars())
+    except OperationalError as e:
+        if e.orig is None or e.orig.args[0] != ER_QUERY_TIMEOUT:
+            raise
+
+        # the analyst is told why; this is for whoever tunes PATTERN_LOOKUP_TIMEOUT_MS
+        logging.info("observable pattern lookup stopped at %d ms", PATTERN_LOOKUP_TIMEOUT_MS,
+                     extra={"observable_type": observable_type, "observable_pattern": pattern})
+        raise ObservablePatternError(
+            f"observable pattern {observable_type}:{pattern} took too long to look up; "
+            f"make its text longer or pick a type") from e
+
+    if len(ids) > MAX_PATTERN_OBSERVABLES:
+        raise ObservablePatternError(
+            f"observable pattern {observable_type}:{pattern} matches more than {MAX_PATTERN_OBSERVABLES} "
+            f"observables; make it more specific")
+
+    return ids
+
+
+class ObservablePatternFilter(TypeValueFilter):
+    """Alerts carrying an observable of a given type (or any type) whose value matches a `*`
+    pattern anchored at one end (saq/gui/observable_pattern.py).
+
+    In two steps rather than one EXISTS that joins observables: the pattern's observable ids are
+    looked up first, bounded in count and time, and the alerts are then found through
+    observable_mapping's primary key. Joined, a pattern that matches many observables made MySQL
+    materialize every mapping row of every match, twice per page (the list and its count).
+
+    Raises ObservablePatternError when it is applied, so a caller must say why the list is empty
+    rather than show an empty or unfiltered one.
+    """
+
+    def apply(self, query, values):
+        ids: set[int] = set()
+        for value in values:
+            if not isinstance(value, (list, tuple)) or len(value) != 2:
+                raise ObservablePatternError(f"observable pattern must be a [type, pattern] pair, got {value!r}")
+            ids.update(resolve_observable_pattern(value[0], value[1]))
+
+        # each value is capped, and so is their union, which is the IN list of the subquery
+        if len(ids) > MAX_PATTERN_OBSERVABLES:
+            raise ObservablePatternError(
+                f"these observable patterns match more than {MAX_PATTERN_OBSERVABLES} observables "
+                f"together; make them more specific")
+
+        if not ids:
+            return query.filter(true() if self.inverted else false())
+
+        # FORCE INDEX: inverted, MySQL plans the anti-join as a scan of all of observable_mapping
+        # filtered by the IN list instead of a range scan of its primary key, which took 3.7
+        # seconds rather than 0.15 at 5M mapping rows (the exact Observable filter's constant
+        # lookup does not have the problem)
+        subquery = select(true()).select_from(ObservableMapping) \
+            .with_hint(ObservableMapping, "FORCE INDEX (PRIMARY)", "mysql") \
+            .where(ObservableMapping.alert_id == self.entity.id, ObservableMapping.observable_id.in_(ids)) \
+            .correlate(self.entity).exists()
+        return query.filter(not_(subquery) if self.inverted else subquery)
+
+
 # exact match, drop down menu for value selection that defaults to True, False and uses 1, 0 for querying
 # Custom menu values for True/False can be defined using arg option_names
 #       Ex. my_filter = BoolFilter(my_column, option_names={'True': 'Custom_true_value', 'False': 'Custom_false_value'})
@@ -387,6 +535,7 @@ def create_filter(filter_name: str, inverted: bool = False, *, tz=None, entity=N
         'Disposition Date': lambda: DateRangeFilter(entity.disposition_time, tz=tz, inverted=inverted),
         'Event Date': lambda: DateRangeFilter(entity.event_time, tz=tz, inverted=inverted),
         'Observable': lambda: TypeValueFilter(Observable.type, Observable.value, Observable.sha256, options=sorted(get_all_valid_types()), inverted=inverted, entity=entity),
+        'Observable Pattern': lambda: ObservablePatternFilter(Observable.type, Observable.value, options=sorted(get_all_valid_types()), inverted=inverted, entity=entity),
         'Owner': lambda: SelectFilter(Owner.display_name, nullable=True, inverted=inverted),
         'Queue': lambda: SelectFilter(entity.queue, inverted=inverted),
         'Reviewed': lambda: MultiSelectFilter(entity.disposition_review, nullable=False, options=list(VALID_DISPOSITION_REVIEWS), inverted=inverted),

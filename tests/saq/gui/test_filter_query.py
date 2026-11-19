@@ -6,9 +6,14 @@ no current_user and no request context -- that is most of what this file asserts
 
 import hashlib
 from datetime import datetime
+from types import SimpleNamespace
 
+import pymysql
 import pytest
 import pytz
+from sqlalchemy import func, select
+from sqlalchemy.exc import OperationalError
+from sqlalchemy.orm import aliased
 
 from saq.database.model import (
     Alert,
@@ -21,6 +26,7 @@ from saq.database.model import (
     TagMapping,
 )
 from saq.database.pool import get_db
+from saq.gui import filter_query
 from saq.gui.filter_query import (
     ANY_OBSERVABLE_TYPE,
     AnalysisFilter,
@@ -29,6 +35,7 @@ from saq.gui.filter_query import (
     filter_alert_uuids,
     get_analysis_type_labels,
 )
+from saq.gui.observable_pattern import ObservablePatternError
 from tests.saq.helpers import insert_alert, insert_alert_with_detections
 
 pytestmark = pytest.mark.integration
@@ -297,6 +304,175 @@ class TestAnalysisFilter:
         assert get_analysis_type_labels([]) == {}
 
 
+# a suffix longer than observables.value_rev keeps of a value's end (OBSERVABLE_VALUE_REV_LENGTH)
+LONG_SUFFIX = " --payload " + "A" * 300
+
+
+def _pattern(*pairs, inverted=False):
+    return [{"name": "Observable Pattern", "inverted": inverted, "values": [list(pair) for pair in pairs]}]
+
+
+@pytest.fixture
+def patterned():
+    """Alerts whose observables tell each kind of pattern apart."""
+    subdomain, lookalike, shouty, literal, plain = (insert_alert() for _ in range(5))
+    _attach(subdomain, "fqdn", "mail.evil.com")
+    _attach(subdomain, "url", "https://evil.com/login?next=1")
+    _attach(subdomain, "file_path", "C:\\Users\\bob\\AppData\\evil.exe")
+    _attach(lookalike, "fqdn", "evil.com.attacker.net")
+    _attach(lookalike, "email_address", "bob@evil.com")
+    _attach(lookalike, "command_line", "powershell -nop" + LONG_SUFFIX)
+    # the fqdn class keeps the case it is given, so this is its own observable
+    _attach(shouty, "fqdn", "Mail.EVIL.com")
+    # LIKE's own wildcards and the escape character, as literal text
+    _attach(literal, "file_name", "50%_off!.exe")
+    _attach(literal, "file_name", "50ab_off!.exe")
+    # the same last 255 bytes as lookalike's command line, but not the same suffix
+    _attach(literal, "command_line", "cmd /c" + "B" + LONG_SUFFIX[1:])
+    return SimpleNamespace(subdomain=subdomain, lookalike=lookalike, shouty=shouty, literal=literal, plain=plain)
+
+
+class TestObservablePatternFilter:
+    def test_value_rev_is_the_value_reversed(self, patterned):
+        """The migration's generated column: what the suffix index is built from."""
+        value_rev = get_db().query(Observable.value_rev).filter(Observable.value == b"mail.evil.com").scalar()
+        assert value_rev == b"moc.live.liam"
+
+    def test_value_rev_keeps_the_end_of_a_long_value(self, patterned):
+        value = ("powershell -nop" + LONG_SUFFIX).encode()
+        value_rev = get_db().query(Observable.value_rev).filter(Observable.value == value).scalar()
+        assert value_rev == value[::-1][:255]
+
+    def test_suffix(self, patterned):
+        assert _uuids(_pattern(["fqdn", "*.evil.com"])) == {patterned.subdomain.uuid}
+
+    def test_prefix(self, patterned):
+        assert _uuids(_pattern(["url", "https://evil.com/*"])) == {patterned.subdomain.uuid}
+
+    def test_text_at_both_ends_with_a_wildcard_between(self, patterned):
+        assert _uuids(_pattern(["fqdn", "evil.com*.net"])) == {patterned.lookalike.uuid}
+
+    def test_windows_backslashes_are_literal(self, patterned):
+        assert _uuids(_pattern(["file_path", "C:\\Users\\*\\evil.exe"])) == {patterned.subdomain.uuid}
+
+    def test_the_type_must_match(self, patterned):
+        assert _uuids(_pattern(["hostname", "*.evil.com"])) == set()
+
+    def test_any_type(self, patterned):
+        assert _uuids(_pattern([ANY_OBSERVABLE_TYPE, "*evil.com"])) == {patterned.subdomain.uuid, patterned.lookalike.uuid}
+
+    def test_the_match_keeps_case_for_a_type_whose_class_keeps_it(self, patterned):
+        """As the exact Observable filter does: fqdn stores what it was given."""
+        assert _uuids(_pattern(["fqdn", "*.EVIL.com"])) == {patterned.shouty.uuid}
+        assert _uuids(_pattern(["fqdn", "*.Evil.com"])) == set()
+
+    def test_the_pattern_is_lowercased_for_a_type_whose_class_lowercases(self, patterned):
+        """email_address stores addresses lowercased, so its pattern is lowercased too."""
+        assert _uuids(_pattern(["email_address", "*@Evil.COM"])) == {patterned.lookalike.uuid}
+
+    def test_like_wildcards_and_the_escape_character_are_literal(self, patterned):
+        """Unescaped, `50%_off!*` would also match 50ab_off!.exe."""
+        observables = get_db().query(Observable.value).filter(
+            Observable.id.in_(filter_query.resolve_observable_pattern("file_name", "50%_off!*")))
+        assert [row[0] for row in observables] == [b"50%_off!.exe"]
+
+    def test_a_suffix_longer_than_value_rev_is_checked_against_the_whole_value(self, patterned):
+        """The index matches only its last 255 bytes; both command lines share those."""
+        assert _uuids(_pattern(["command_line", "*nop" + LONG_SUFFIX])) == {patterned.lookalike.uuid}
+
+    def test_values_within_one_entry_are_ored(self, patterned):
+        found = _uuids(_pattern(["fqdn", "*.evil.com"], ["fqdn", "*.net"]))
+        assert found == {patterned.subdomain.uuid, patterned.lookalike.uuid}
+
+    def test_separate_entries_are_anded(self, patterned):
+        both = _pattern(["fqdn", "*.net"]) + _pattern(["email_address", "*@evil.com"])
+        assert _uuids(both) == {patterned.lookalike.uuid}
+        assert _uuids(both + _pattern(["fqdn", "*.evil.com"])) == set()
+
+    def test_inverted_keeps_alerts_with_no_observables_at_all(self, patterned):
+        found = _uuids(_pattern(["fqdn", "*.evil.com"], inverted=True))
+        assert patterned.plain.uuid in found and patterned.shouty.uuid in found
+        assert patterned.subdomain.uuid not in found
+
+    def test_a_pattern_that_matches_nothing(self, patterned):
+        assert _uuids(_pattern(["fqdn", "*.not-there.example"])) == set()
+        assert patterned.plain.uuid in _uuids(_pattern(["fqdn", "*.not-there.example"], inverted=True))
+
+    def test_the_mapping_lookup_forces_its_primary_key(self, patterned):
+        """Without the hint MySQL scans all of observable_mapping for the inverted form (3.7 s
+        against 0.15 s at 5M rows); a test database is too small to show it in a plan."""
+        for inverted in (False, True):
+            query = build_alert_query(_pattern(["fqdn", "*.evil.com"], inverted=inverted), entity=Alert,
+                                      tz=pytz.utc, locations=None)
+            assert "observable_mapping FORCE INDEX (PRIMARY)" in str(query.statement.compile(dialect=get_db().bind.dialect))
+
+    def test_count_alerts(self, patterned):
+        assert count_alerts(_pattern(["fqdn", "*.evil.com"], ["fqdn", "*.net"]), entity=Alert, tz=pytz.utc,
+                            locations=None) == 2
+
+    def test_a_wildcard_at_both_ends_raises(self, patterned):
+        """FilterEntry refuses it at write time; a filter list that never went through it (a
+        caller of build_alert_query) must still not scan every observable."""
+        with pytest.raises(ObservablePatternError, match="both ends"):
+            _uuids(_pattern(["fqdn", "*evil*"]))
+
+    def test_a_value_that_is_not_a_pair_raises(self, patterned):
+        with pytest.raises(ObservablePatternError, match="pair"):
+            _uuids([{"name": "Observable Pattern", "inverted": False, "values": ["*.evil.com"]}])
+
+    def test_a_pattern_that_matches_too_many_observables_raises(self, patterned, monkeypatch):
+        """Refused rather than cut short: a partial list of ids would silently drop alerts."""
+        monkeypatch.setattr(filter_query, "MAX_PATTERN_OBSERVABLES", 1)
+        with pytest.raises(ObservablePatternError, match="matches more than 1 observables;"):
+            filter_query.resolve_observable_pattern(ANY_OBSERVABLE_TYPE, "*evil.com")
+        with pytest.raises(ObservablePatternError):
+            _uuids(_pattern([ANY_OBSERVABLE_TYPE, "*evil.com"]))
+
+    def test_patterns_that_match_too_many_observables_together_raise(self, patterned, monkeypatch):
+        monkeypatch.setattr(filter_query, "MAX_PATTERN_OBSERVABLES", 1)
+        assert _uuids(_pattern(["fqdn", "*.net"])) == {patterned.lookalike.uuid}
+        with pytest.raises(ObservablePatternError, match="together"):
+            _uuids(_pattern(["fqdn", "*.net"], ["email_address", "*@evil.com"]))
+
+    def test_a_lookup_that_runs_past_its_time_limit_raises(self, patterned, monkeypatch, caplog):
+        """MySQL stops the statement (MAX_EXECUTION_TIME) with error 3024."""
+        statements = []
+
+        def execute(statement, *args, **kwargs):
+            statements.append(str(statement.compile()))
+            raise OperationalError("SELECT ...", {}, pymysql.err.OperationalError(
+                3024, "Query execution was interrupted, maximum statement execution time exceeded"))
+
+        monkeypatch.setattr(get_db(), "execute", execute)
+        with pytest.raises(ObservablePatternError, match="took too long"):
+            filter_query.resolve_observable_pattern("fqdn", "*.evil.com")
+        assert f"MAX_EXECUTION_TIME({filter_query.PATTERN_LOOKUP_TIMEOUT_MS})" in statements[0]
+        record = next(r for r in caplog.records if r.getMessage().startswith("observable pattern lookup stopped"))
+        assert record.levelname == "INFO" and record.observable_pattern == "*.evil.com"
+
+    def test_a_real_time_limit_leaves_the_session_usable(self, patterned):
+        """The error the hint raises is a statement error, not a broken connection or transaction:
+        the page goes on to run its other queries on the same session."""
+        db = get_db()
+        a, b, c = (aliased(Observable) for _ in range(3))
+        # SLEEP() alone is cut short without an error; a statement still reading rows when the
+        # limit passes gets 3024. This one reads a few hundred rows, sleeping 1 ms on each.
+        statement = select(func.count()).select_from(a).join(b, b.id >= a.id).join(c, c.id >= b.id) \
+            .where(func.sleep(0.001) == 0).prefix_with("/*+ MAX_EXECUTION_TIME(5) */")
+        with pytest.raises(OperationalError) as error:
+            db.execute(statement)
+        assert error.value.orig.args[0] == filter_query.ER_QUERY_TIMEOUT
+        assert _uuids(_pattern(["fqdn", "*.evil.com"])) == {patterned.subdomain.uuid}
+
+    def test_another_database_error_is_not_mistaken_for_a_time_limit(self, monkeypatch):
+        def execute(statement, *args, **kwargs):
+            raise OperationalError("SELECT ...", {}, pymysql.err.OperationalError(2013, "Lost connection"))
+
+        monkeypatch.setattr(get_db(), "execute", execute)
+        with pytest.raises(OperationalError):
+            filter_query.resolve_observable_pattern("fqdn", "*.evil.com")
+
+
 class TestOtherFilters:
     def test_tag(self, corpus):
         _, tagged, _ = corpus
@@ -368,6 +544,10 @@ class TestAliasedEntity:
     def test_detection_point(self, detections):
         v1, v2, _, _ = detections
         assert self._aliased_uuids(_detection_filter(SIGNATURE_UUID)) == {v1.uuid, v2.uuid}
+
+    def test_observable_pattern(self, patterned):
+        assert self._aliased_uuids(_pattern(["fqdn", "*.evil.com"])) == {patterned.subdomain.uuid}
+        assert patterned.subdomain.uuid not in self._aliased_uuids(_pattern(["fqdn", "*.evil.com"], inverted=True))
 
     def test_analysis(self, analyzed):
         qr, qr_and_urls, _, _ = analyzed

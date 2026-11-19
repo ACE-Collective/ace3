@@ -7,6 +7,7 @@ by a field term; everything else is free text for the semantic lanes.
     ipv4:10.20.30.40                 an observable, by type shorthand
     signature_id:6f3a…               ditto -- any registered observable type works
     observable:url:https://evil.com  the explicit form, for values containing colons
+    observable_pattern:fqdn:*.evil.com  a value with * wildcards, anchored at one end (any: for any type)
     uuid:1f2e3d4c-…                  an alert uuid (a prefix of one also works)
     queue:default                    a narrowing filter
     detection_point:<sig uuid>[:<v>] alerts with a detection point from that signature (version)
@@ -47,11 +48,14 @@ from saq.database.util.observable_detection import (
 )
 from saq.gui.detection_point_value import normalize_detection_point_value
 from saq.gui.filter_names import DATE_RANGE_FILTER_NAMES, FILTER_NAMES_BY_SLUG
+from saq.gui.observable_pattern import ANY_OBSERVABLE_TYPE, ObservablePatternError, check_observable_pattern
 from saq.observables.type_hierarchy import get_all_valid_types
 from saq.util.relative_time import RelativeTimeError, parse_date_range
 
 # canonical field names that produce exact lookups rather than narrowing filters
 FIELD_OBSERVABLE = "observable"
+# not an exact lookup: the Observable Pattern filter, a SQL narrowing filter like any other
+FIELD_OBSERVABLE_PATTERN = "observable_pattern"
 FIELD_TAG = "tag"
 FIELD_ALERT_UUID = "uuid"
 
@@ -228,6 +232,9 @@ def _parse_term(token: str, quoted: list[str], errors: list[str]) -> tuple[bool,
 
         return True, _observable_term(pairs, inverted, errors)
 
+    if field == FIELD_OBSERVABLE_PATTERN:
+        return True, _observable_pattern_term(_split_values(raw_value, quoted), inverted, errors)
+
     if _is_observable_type(field):
         return True, _observable_term(
             [(field, value) for value in _split_values(raw_value, quoted)], inverted, errors)
@@ -261,6 +268,34 @@ def _observable_term(pairs: list, inverted: bool, errors: list[str]) -> Optional
         resolved.append((identity.type, identity.value))
 
     return FieldTerm(FIELD_OBSERVABLE, tuple(resolved), inverted) if resolved else None
+
+
+def _observable_pattern_term(values: list[str], inverted: bool, errors: list[str]) -> Optional[FieldTerm]:
+    """observable_pattern:<type>:<pattern>, where the type may also be `any`. Split at the first
+    colon, as observable: is."""
+    types = {observable_type.casefold(): observable_type for observable_type in get_all_valid_types()}
+    types[ANY_OBSERVABLE_TYPE.casefold()] = ANY_OBSERVABLE_TYPE
+
+    pairs = []
+    for value in values:
+        observable_type, separator, pattern = value.partition(":")
+        if not separator or not pattern:
+            errors.append(f"{FIELD_OBSERVABLE_PATTERN}:{value!r} must be written "
+                          f"{FIELD_OBSERVABLE_PATTERN}:<type>:<pattern>")
+            continue
+
+        canonical_type = types.get(observable_type.casefold())
+        if canonical_type is None:
+            errors.append(f"{FIELD_OBSERVABLE_PATTERN}:{value!r}: {observable_type!r} is not an observable type "
+                          f"(or {ANY_OBSERVABLE_TYPE})")
+            continue
+
+        try:
+            pairs.append((canonical_type, check_observable_pattern(pattern)))
+        except ObservablePatternError as e:
+            errors.append(str(e))
+
+    return FieldTerm(FIELD_OBSERVABLE_PATTERN, tuple(pairs), inverted) if pairs else None
 
 
 def _filter_term(field: str, values: list[str], inverted: bool, errors: list[str]) -> Optional[FieldTerm]:
@@ -323,7 +358,8 @@ def _to_filter_entry(term: FieldTerm) -> dict:
     so it must never reach here. _parse_term rejects an inverted `uuid:` outright, which is the
     only way one could.
     """
-    values = [list(value) for value in term.values] if term.field == FIELD_OBSERVABLE else list(term.values)
+    pair_fields = (FIELD_OBSERVABLE, FIELD_OBSERVABLE_PATTERN)
+    values = [list(value) for value in term.values] if term.field in pair_fields else list(term.values)
     return {
         "name": FILTER_NAMES_BY_SLUG[term.field],
         "inverted": term.inverted,

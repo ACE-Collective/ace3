@@ -18,6 +18,7 @@ from sqlalchemy import (
     VARBINARY,
     BigInteger,
     Boolean,
+    Computed,
     DateTime,
     Enum,
     FetchedValue,
@@ -2869,6 +2870,11 @@ class CollectorStatus(Base):
 
     last_update: Mapped[datetime] = mapped_column(DATETIME, nullable=False)
 
+# how many bytes of a value's end Observable.value_rev keeps; a longer suffix is matched by its
+# last this-many bytes in the index and rechecked against the whole value
+OBSERVABLE_VALUE_REV_LENGTH = 255
+
+
 class Observable(Base):
 
     __tablename__ = 'observables'
@@ -2877,6 +2883,7 @@ class Observable(Base):
         Index('i_obs_type', 'type'),
         Index('i_obs_sha256', 'sha256'),
         Index('i_obs_value', 'value', mysql_length=767),
+        Index('i_obs_value_rev', 'value_rev'),
     )
 
     id: Mapped[int] = mapped_column(
@@ -2894,6 +2901,15 @@ class Observable(Base):
     value: Mapped[bytes] = mapped_column(
         BLOB,
         nullable=False)
+
+    # The value's bytes reversed, so a pattern anchored at the END of the value
+    # (`*.evil.com`) is a range scan of i_obs_value_rev the way one anchored at the start is a
+    # range scan of i_obs_value (saq/gui/observable_pattern.py). VIRTUAL: computed from `value`,
+    # stored only in the index. Deferred so loading an Observable never computes it.
+    value_rev: Mapped[Optional[bytes]] = mapped_column(
+        VARBINARY(OBSERVABLE_VALUE_REV_LENGTH),
+        Computed(f"LEFT(REVERSE(`value`), {OBSERVABLE_VALUE_REV_LENGTH})", persisted=False),
+        deferred=True)
 
     #
     # unused columns: detections live in observable_detections

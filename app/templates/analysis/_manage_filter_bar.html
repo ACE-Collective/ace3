@@ -39,4 +39,9 @@
     {# The share link is self-describing, so copying it is a pure string build with no
        round trip. It keeps working after this filter is edited or deleted. #}
     <button id="btn-copy-filter" type="button" class="btn btn-outline-dark btn-xs" data-share-url="{{ share_url }}" title="Copy a link to this filter" onclick="copy_filter_link(this)"><span class="bi bi-copy"></span></button>
+    {# a filter that could not be run, so nothing is listed: here rather than with the search
+       notices because the refresh re-renders this bar and the list can start failing between polls #}
+    {% for error in filter_errors %}
+    <small class="text-danger d-block filter-error">{{ error }}</small>
+    {% endfor %}
 </div>

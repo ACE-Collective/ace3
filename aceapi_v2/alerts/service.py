@@ -59,6 +59,7 @@ from saq.gui.alert import GUIAlert
 from saq.gui.filter_query import resolve_filter_list, uses_filter_sentinels
 from saq.gui.filter_screens import ALERTS_SCREEN
 from saq.gui.filter_url import FilterQueryError, decode_filter_query
+from saq.gui.observable_pattern import ObservablePatternError
 from saq.json_encoding import _JSONEncoder
 from saq.logging import log_audit
 from saq.observables.file import FileObservable
@@ -775,7 +776,11 @@ def prepare_alert_listing(
         timezone=tz,
     )
 
-    query = build_listing_query(filters)
+    try:
+        query = build_listing_query(filters)
+    except ObservablePatternError as e:
+        raise InvalidListingRequest(str(e)) from e
+
     order = LISTING_ORDER_ID
     if changed_since is not None:
         order = LISTING_ORDER_UPDATED
