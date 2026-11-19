@@ -60,11 +60,11 @@ class ShodanAnalysis(Analysis):
 
     def generate_summary(self):
         if self.shodan_results:
-            if self.observable.type in [ F_IP, F_IPV4 ]:
+            if self.observable.is_a(F_IP, F_IPV4):
                 result = f"Shodan Results: dns ({','.join(self.dns)}) open ports ({','.join(map(str, self.open_ports))})"
                 if self.vulns:
                     result += f" vulns ({', '.join(self.vulns)})"
-            elif self.observable.type == F_SHA1:
+            elif self.observable.is_a(F_SHA1):
                 result = "Shodan Results: certificate"
 
             return result
@@ -97,9 +97,9 @@ class ShodanAnalyzer(AnalysisModule):
 
         # Query Shodan depending on the type of observable
         try:
-            if observable.type in [ F_IP, F_IPV4 ]:
+            if observable.is_a(F_IP, F_IPV4):
                 analysis.shodan_results = self.search_host(observable.value)
-            elif observable.type == F_SHA1:
+            elif observable.is_a(F_SHA1):
                 analysis.shodan_results = self.search_cert(observable.value)
         except shodan.APIError as e:
             # Shodan's own answer (no information for the host, a bad key, a rate limit, or it could not be
@@ -124,7 +124,7 @@ class ShodanAnalyzer(AnalysisModule):
             file_observable.exclude_analysis(FileHashAnalyzer)
 
         try:
-            if observable.type == F_IPV4:
+            if observable.is_a(F_IPV4):
                 summary_detail = f'{observable.value}\n\n'
                 if 'domains' in analysis.shodan_results:
                     summary_detail += 'domains'
@@ -155,7 +155,7 @@ class ShodanAnalyzer(AnalysisModule):
                         for idx, cert in enumerate(data['ssl']['chain']):
                             self._add_cert_observable(analysis, f"{observable.value}.{idx}", cert)
 
-            elif observable.type == F_SHA1:
+            elif observable.is_a(F_SHA1):
                 for match in analysis.shodan_results['matches']:
                     if 'ssl' in match and 'chain' in match['ssl']:
                         for cert in match['ssl']['chain']:

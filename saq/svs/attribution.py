@@ -56,7 +56,6 @@ from saq.database.model import SVSAttribution, SVSMaintenanceWindow, SVSRun, SVS
 from saq.database.private_session import private_transaction, run_private_transaction
 from saq.environment import get_local_timezone
 from saq.observables.file import FileObservable
-from saq.observables.type_hierarchy import get_type_hierarchy
 from saq.svs.constants import (
     ROUTER_ACTOR,
     RUN_SIGNATURES,
@@ -469,15 +468,14 @@ class AlertHosts:
 
 def alert_hosts(root: RootAnalysis) -> AlertHosts:
     """The hostname and fqdn observables (and their subtypes) and the ipv4 observables of an alert."""
-    hierarchy = get_type_hierarchy()
     result = AlertHosts()
     for observable in root.all_observables:
-        if hierarchy.is_subtype(observable.type, F_HOSTNAME) or hierarchy.is_subtype(observable.type, F_FQDN):
+        if observable.is_a(F_HOSTNAME, F_FQDN):
             try:
                 result.names.add(split_hostname(str(observable.value)))
             except InvalidTestHost:
                 pass
-        elif hierarchy.is_subtype(observable.type, F_IPV4):
+        elif observable.is_a(F_IPV4):
             try:
                 result.ips.add(normalize_ip(str(observable.value)))
             except InvalidTestHost:

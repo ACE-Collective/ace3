@@ -4,7 +4,7 @@ import logging
 import pytest
 
 from saq.analysis.root import load_root
-from saq.constants import F_EMAIL_ADDRESS, F_USER
+from saq.constants import F_EMAIL_ADDRESS, F_EMAIL_FROM, F_USER
 from saq.engine.core import Engine
 from saq.engine.enums import EngineExecutionMode
 from saq.modules import user as user_module
@@ -91,6 +91,17 @@ def test_email_address_of_the_top_user_is_executive(root_analysis, directory):
 
 
 @pytest.mark.integration
+def test_subtype_of_email_address_is_looked_up_as_an_email_address(root_analysis, directory):
+    # email_from extends email_address, so the engine hands it to this module
+    observable, analysis = _analyze(root_analysis, F_EMAIL_FROM, "the.boss@company.com")
+
+    assert directory[0] == "the.boss@company.com"
+    assert isinstance(analysis, UserAnalysis)
+    assert observable.has_tag("executive")
+    assert [u.value for u in analysis.get_observables_by_type(F_USER)] == ["theboss"]
+
+
+@pytest.mark.integration
 def test_user_adds_normalized_email_address(root_analysis, directory):
     _, analysis = _analyze(root_analysis, F_USER, "theboss")
 
@@ -128,6 +139,7 @@ def test_missing_manager_is_logged(root_analysis, directory, caplog):
 @pytest.mark.parametrize("observable_type, value, looked_up", [
     # external addresses are never looked up
     (F_EMAIL_ADDRESS, "someone@external.example", False),
+    (F_EMAIL_FROM, "someone@external.example", False),
     (F_USER, "nobody", True),
 ])
 @pytest.mark.integration

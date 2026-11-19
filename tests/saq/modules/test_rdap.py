@@ -12,6 +12,7 @@ from whoisit.errors import (
     UnsupportedError,
 )
 
+from saq.analysis.observable import Observable
 from saq.configuration.config import get_analysis_module_config
 from saq.constants import (
     ANALYSIS_MODULE_APEX_DOMAIN_ANALYZER,
@@ -401,15 +402,11 @@ def test_rdap_analyzer_custom_requirement_looks_up_subdomain_when_apex_not_added
 @pytest.mark.unit
 def test_rdap_analyzer_custom_requirement_unparseable_ip():
     # IPObservable validates its value, so this can't happen through the
-    # normal observable path — defensive branch only.
-    class _FakeObservable:
-        type = F_IP
-        value = "not-an-ip"
-
+    # normal observable path (the base class does not) — defensive branch only.
     analyzer = RdapAnalyzer(
         config=get_analysis_module_config(ANALYSIS_MODULE_RDAP_ANALYZER)
     )
-    assert analyzer.custom_requirement(_FakeObservable()) is True
+    assert analyzer.custom_requirement(Observable(type=F_IP, value="not-an-ip")) is True
 
 
 # ---------------------------------------------------------------------------

@@ -559,3 +559,20 @@ def test_get_and_load_analysis_by_type(tmp_path):
     loaded = load_root(root.storage_dir).get_observable(observable.uuid)
     (analysis,) = loaded.get_and_load_analysis_by_type(_WantedAnalysis)
     assert analysis.details == {"found": True}
+
+
+@pytest.mark.unit
+def test_is_a_follows_the_type_hierarchy():
+    root = RootAnalysis()
+    email_from = root.add_observable_by_spec(F_EMAIL_FROM, "alice@company.com")
+
+    assert email_from.is_a(F_EMAIL_FROM)
+    # email_from extends email_address in etc/observable_types.yaml
+    assert email_from.is_a(F_EMAIL_ADDRESS)
+    assert email_from.is_a(F_USER, F_EMAIL_ADDRESS)
+    assert not email_from.is_a(F_USER)
+    assert not email_from.is_a()
+
+    # a parent is not one of its subtypes
+    email_address = root.add_observable_by_spec(F_EMAIL_ADDRESS, "bob@company.com")
+    assert not email_address.is_a(F_EMAIL_FROM)

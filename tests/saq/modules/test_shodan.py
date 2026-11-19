@@ -13,7 +13,7 @@ from cryptography.x509.oid import NameOID
 from saq import x509
 from saq.analysis.root import load_root
 from saq.configuration.config import get_analysis_module_config, get_config
-from saq.constants import F_FILE, F_IPV4, F_SHA1
+from saq.constants import F_EMAIL_FIRST_HOP_IP, F_FILE, F_IPV4, F_SHA1
 from saq.engine.core import Engine
 from saq.engine.enums import EngineExecutionMode
 from saq.modules.file_analysis import FileHashAnalyzer
@@ -152,6 +152,19 @@ def test_host_without_vulns(root_analysis, fake_shodan):
 
     analysis = observable.get_and_load_analysis(ShodanAnalysis)
     assert analysis.summary == "Shodan Results: dns () open ports (22)"
+
+
+@pytest.mark.integration
+def test_subtype_of_ip_is_queried_as_a_host(root_analysis, fake_shodan):
+    # email_first_hop_ip extends ip, so the engine hands it to this module
+    fake_shodan.host_result = {"domains": ["example.com"], "ports": [25], "data": []}
+
+    _, observable = _analyze(root_analysis, F_EMAIL_FIRST_HOP_IP, "198.51.100.9")
+
+    assert fake_shodan.calls == [("host", "198.51.100.9")]
+    analysis = observable.get_and_load_analysis(ShodanAnalysis)
+    assert analysis.error is None
+    assert analysis.summary == "Shodan Results: dns (example.com) open ports (25)"
 
 
 @pytest.mark.integration
