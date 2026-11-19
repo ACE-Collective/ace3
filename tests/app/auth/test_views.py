@@ -1,4 +1,5 @@
 import logging
+import re
 from unittest.mock import Mock
 from urllib.parse import parse_qs, urlparse
 
@@ -79,7 +80,17 @@ class TestLogin:
             assert response.status_code == 200
             assert b'Username' in response.data
             assert b'Password' in response.data
-    
+            assert b'Invalid username or password' not in response.data
+
+    def test_login_get_request_does_not_look_up_a_user(self, app, monkeypatch):
+        """Opening the login page runs no user query."""
+        get_db_mock = Mock()
+        monkeypatch.setattr("app.auth.views.get_db", get_db_mock)
+        with app.test_client() as client:
+            response = client.get(url_for('auth.login'))
+            assert response.status_code == 200
+        get_db_mock.assert_not_called()
+
     def test_login_valid_credentials(self, app, test_user):
         """Test successful login with valid credentials."""
         with app.test_client() as client:
@@ -95,6 +106,9 @@ class TestLogin:
     def test_login_invalid_username(self, app):
         """Test login with non-existent username."""
         with app.test_client() as client:
+            response = client.get(url_for('auth.login'))
+            assert b'Invalid username or password' not in response.data
+
             response = client.post(url_for('auth.login'), data={
                 'username': 'nonexistentuser',
                 'password': 'password123'
@@ -103,6 +117,49 @@ class TestLogin:
             assert response.status_code == 200
             assert b'Invalid username or password' in response.data
     
+    def test_login_missing_password(self, app, test_user, monkeypatch):
+        """A form posted without a password is refused without looking the user up."""
+        get_db_mock = Mock()
+        monkeypatch.setattr("app.auth.views.get_db", get_db_mock)
+        with app.test_client() as client:
+            response = client.post(url_for('auth.login'), data={'username': 'testuser'})
+
+            assert response.status_code == 200
+            assert b'Invalid username or password' in response.data
+            assert 'username=' not in response.headers.get('Set-Cookie', '')
+        get_db_mock.assert_not_called()
+
+    def test_login_with_csrf_token(self, app, test_user):
+        """With CSRF on, as in production, the form the page renders logs the user in."""
+        app.config["WTF_CSRF_ENABLED"] = True
+        with app.test_client() as client:
+            page = client.get(url_for('auth.login')).get_data(as_text=True)
+            token = re.search(r'name="csrf_token" type="hidden" value="([^"]+)"', page).group(1)
+
+            response = client.post(url_for('auth.login'), data={
+                'csrf_token': token,
+                'username': 'testuser',
+                'password': 'TestPass123!',
+            })
+
+            assert response.status_code == 302
+            assert 'username=testuser' in response.headers.get('Set-Cookie', '')
+
+    def test_login_without_csrf_token(self, app, test_user, caplog):
+        """A login posted without the form's CSRF token (an expired or stale form) is refused,
+        and says why."""
+        app.config["WTF_CSRF_ENABLED"] = True
+        with app.test_client() as client, caplog.at_level(logging.WARNING):
+            response = client.post(url_for('auth.login'), data={
+                'username': 'testuser',
+                'password': 'TestPass123!',
+            })
+
+            assert response.status_code == 200
+            assert b'The login form expired. Please sign in again.' in response.data
+            assert 'username=testuser' not in response.headers.get('Set-Cookie', '')
+        assert any(r.getMessage().startswith("login refused: form expired") for r in caplog.records)
+
     def test_login_lookup_failure_is_reported(self, app, monkeypatch, caplog):
         """A user lookup that raises is an ACE error, reported, while the login form only
         says the credentials are invalid."""

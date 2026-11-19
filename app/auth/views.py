@@ -64,7 +64,18 @@ def get_safe_next_url():
 def login():
 
     form = LoginForm()
-    user = None
+
+    if not form.validate_on_submit():
+        if form.is_submitted():
+            # validating the form checks its CSRF token, which expires (WTF_CSRF_TIME_LIMIT)
+            # or is lost with the session, so a login page left open is refused for that alone
+            if 'csrf_token' in form.errors:
+                logging.warning(f"login refused: form expired for {form.username.data} from {get_remote_ipv4()}: {form.errors['csrf_token']}")
+                flash('The login form expired. Please sign in again.')
+            else:
+                flash('Invalid username or password.')
+
+        return render_template('auth/login.html', form=form)
 
     try:
         user = get_db().query(User).filter_by(username=form.username.data).one_or_none()
@@ -77,7 +88,7 @@ def login():
         flash('Invalid username or password.')
         return render_template('auth/login.html', form=form)
 
-    if user is not None and user.verify_password(form.password.data):
+    if user.verify_password(form.password.data):
         # TODO: This is temporary and should be removed once every user is migrated to bcrypt
         # Commit any changes made by verify_password (e.g., password hash migration)
         get_db().commit()
