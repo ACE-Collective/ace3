@@ -39,6 +39,7 @@ from saq.modules.email.lure import (
     score_candidates,
     sender_domains,
 )
+from saq.modules.email.constants import KEY_PARTS
 from saq.modules.email.rfc822 import EmailAnalysis
 from saq.modules.file_analysis.pdf import PDFAnalysis, PDFLinkTextAnalysis
 from saq.modules.file_analysis.qrcode import QRCodeAnalysis
@@ -918,6 +919,29 @@ def test_collector_pdf_analysis_without_links(root_analysis, tmp_path):
     assert portal.anchor is None and portal.pdf_name is None
     score_candidates([portal], set(), SETTINGS)
     assert "clickable link in a PDF" in portal.reasons
+
+
+@pytest.mark.integration
+def test_collector_reads_the_recorded_part_roles(root_analysis, tmp_path):
+    """The parts EmailAnalyzer recorded decide which file is the body and whether it is html, not
+    their file names."""
+    email_file, email_analysis, _ = _email_tree(root_analysis, tmp_path)
+    body = _file(email_analysis, tmp_path, "part-without-a-marker", LURE_HTML)
+    _extracted(body, LURE)
+    attachment = _file(email_analysis, tmp_path, "statement.unknown_text_html_000.html",
+                       "<a href='https://attached.example.org/b'>b</a>")
+    _extracted(attachment, "https://attached.example.org/b")
+    email_analysis.details[KEY_PARTS] = [
+        {"uuid": body.uuid, "content_type": "text/html", "role": "body"},
+        {"uuid": attachment.uuid, "content_type": "text/html", "role": "attachment"},
+    ]
+
+    candidates = {c.observable.value: c for c in CandidateCollector().collect(email_analysis)}
+
+    assert candidates[LURE].sources == {SOURCE_BODY}
+    assert candidates[LURE].anchor == Anchor("Review Document", True)
+    assert candidates["https://attached.example.org/b"].sources == {SOURCE_ATTACHMENT}
+    assert candidates["https://attached.example.org/b"].attachments == ["statement.unknown_text_html_000.html"]
 
 
 @pytest.mark.integration

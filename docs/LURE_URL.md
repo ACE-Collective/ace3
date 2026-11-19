@@ -35,7 +35,7 @@ found:
 
 | Source | Where |
 |---|---|
-| `body` | an unnamed `text/html` or `text/plain` part (`*.unknown_text_html*`, `*.unknown_text_plain*`) |
+| `body` | an unnamed `text/html` or `text/plain` part, as `EmailAnalyzer` recorded it in the `parts` details (an email analyzed before that tells them by name: `*.unknown_text_html*`, `*.unknown_text_plain*`) |
 | `qr` | anything under a `QRCodeAnalysis`, in the body or an attachment |
 | `attachment` | any other part: PDF, HTML, Office, archives |
 

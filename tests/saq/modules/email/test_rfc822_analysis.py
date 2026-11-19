@@ -9,6 +9,7 @@ import pytest
 from saq.analysis.root import load_root
 from saq.constants import (
     DIRECTIVE_ORIGINAL_EMAIL,
+    F_FILE,
     F_EMAIL_X_AUTH_ID,
     F_EMAIL_X_MAILER,
     F_EMAIL_X_ORIGINAL_SENDER,
@@ -18,6 +19,7 @@ from saq.constants import (
 )
 from saq.engine.core import Engine
 from saq.engine.enums import EngineExecutionMode
+from saq.modules.email.constants import KEY_EMAIL, KEY_PARTS
 from saq.modules.email.rfc822 import EmailAnalysis
 from saq.util.uuid import get_storage_dir
 
@@ -216,3 +218,107 @@ def test_empty_analysis_accessors():
     assert analysis.mail_to == []
     assert analysis.cc == []
     assert analysis.x_sender is None
+
+
+# an attachment whose sender-chosen name looks like the name EmailAnalyzer gives an unnamed body
+# part, placed before the real body
+DECOY_BODY_NAME_EMAIL = b"""\
+From: Sender <sender@example.com>
+To: Recipient <recipient@example.org>
+Subject: decoy body name
+Message-ID: <synthetic-decoy-body-name@example.com>
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="OUTER"
+
+--OUTER
+Content-Type: text/html; name="notes.unknown_text_html_000.html"
+Content-Disposition: attachment; filename="notes.unknown_text_html_000.html"
+
+<html><body><p>the attachment</p></body></html>
+--OUTER
+Content-Type: multipart/alternative; boundary="INNER"
+
+--INNER
+Content-Type: text/plain; charset="utf-8"
+
+the plain text body
+--INNER
+Content-Type: text/html; charset="utf-8"
+
+<html><body><p>the html body</p></body></html>
+--INNER--
+--OUTER--
+"""
+
+
+@pytest.mark.integration
+def test_a_named_attachment_is_never_a_body_part(root_analysis):
+    """The role of each part is what the analyzer recorded, not what its file name looks like."""
+    _, analysis = _analyze(root_analysis, DECOY_BODY_NAME_EMAIL, file_name="message.eml")
+    assert isinstance(analysis, EmailAnalysis)
+
+    attachment = analysis.find_observable(
+        lambda o: o.type == F_FILE and o.file_name == "notes.unknown_text_html_000.html")
+    assert attachment is not None
+    assert not analysis.is_body_part(attachment)
+    assert not analysis.is_html_body_part(attachment)
+
+    assert [o.file_name for o in analysis.body_parts] == ["message.eml.unknown_text_plain_000.txt",
+                                                          "message.eml.unknown_text_html_000.html"]
+    assert [analysis.is_html_body_part(o) for o in analysis.body_parts] == [False, True]
+    assert analysis.body.file_name == "message.eml.unknown_text_html_000.html"
+    assert "<p>the html body</p>" in analysis.body_html
+    assert analysis.body_text.strip() == "the plain text body"
+
+
+def _email_analysis_with_files(root_analysis, tmp_path, names: list[str]):
+    """An EmailAnalysis built by hand, with a file observable for each name."""
+    def _file(analysis, name):
+        path = tmp_path / name
+        path.write_text(f"<p>{name}</p>" if name.endswith(".html") else name)
+        return analysis.add_file_observable(str(path))
+
+    analysis = EmailAnalysis()
+    _file(root_analysis, "message.email.rfc822").add_analysis(analysis)
+    analysis.details[KEY_EMAIL] = {}
+    return analysis, [_file(analysis, name) for name in names]
+
+
+@pytest.mark.integration
+def test_an_email_analyzed_before_parts_were_recorded_reads_the_file_names(root_analysis, tmp_path):
+    """An alert analyzed before EmailAnalysis recorded its parts tells its body parts by name."""
+    analysis, (plain, html, attachment) = _email_analysis_with_files(root_analysis, tmp_path, [
+        "message.email.rfc822.unknown_text_plain_000.txt",
+        "message.email.rfc822.unknown_text_html_000.html",
+        "invoice.html"])
+
+    assert analysis.body_parts == [plain, html]
+    assert analysis.is_html_body_part(html) and not analysis.is_html_body_part(plain)
+    assert not analysis.is_body_part(attachment)
+    assert analysis.body is html
+    assert analysis.body_html == "<p>message.email.rfc822.unknown_text_html_000.html</p>"
+    assert analysis.body_text == "message.email.rfc822.unknown_text_plain_000.txt"
+
+
+@pytest.mark.integration
+def test_recorded_parts_are_not_second_guessed_by_file_name(root_analysis, tmp_path):
+    """Once the parts are recorded, a file named like a body part that was not recorded as one is not one."""
+    analysis, (named_like_a_body,) = _email_analysis_with_files(root_analysis, tmp_path, [
+        "message.email.rfc822.unknown_text_html_000.html"])
+    analysis.details[KEY_PARTS] = []
+
+    assert analysis.body_parts == []
+    assert not analysis.is_body_part(named_like_a_body)
+    assert analysis.body is None
+    assert analysis.body_html == ""
+    assert analysis.body_text == ""
+
+
+@pytest.mark.integration
+def test_a_single_plain_text_part_is_the_body(root_analysis):
+    _, analysis = _analyze(root_analysis, SENDER_HEADERS_EMAIL, file_name="message.eml")
+
+    assert [o.file_name for o in analysis.body_parts] == ["message.eml.unknown_text_plain_000.txt"]
+    assert analysis.body is analysis.body_parts[0]
+    assert analysis.body_text.strip() == "body"
+    assert analysis.body_html == ""
