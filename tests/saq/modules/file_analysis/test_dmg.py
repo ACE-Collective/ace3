@@ -1,4 +1,5 @@
 import logging
+import os
 import zipfile
 from pathlib import Path
 
@@ -28,21 +29,14 @@ def _analyze(root_analysis, path: Path):
 
 
 @pytest.fixture
-def fake_dmg2img(monkeypatch):
-    """dmg2img converts the image; here it writes an archive 7z can list in its place."""
-    real_run = DMGAnalyzer.run_sandboxed_tool
-
-    def _run(self, args, target, **kwargs):
-        if args[0] == "dmg2img":
-            [image] = kwargs["outputs"].values()
-            with zipfile.ZipFile(image, "w") as zip_fp:
-                zip_fp.writestr("Installer/", "")
-                zip_fp.writestr("Installer/payload.app", b"payload" * 100)
-                zip_fp.writestr("Installer/.DS_Store", b"ds")
-            return SandboxResult(0, "dmg2img converted", "")
-        return real_run(self, args, target, **kwargs)
-
-    monkeypatch.setattr(DMGAnalyzer, "run_sandboxed_tool", _run)
+def fake_dmg2img(fake_tools):
+    """dmg2img converts the image; here it copies an archive 7z can list to the path it is given,
+    from the directory it is in, which the sandbox lets it read."""
+    tool_dir = fake_tools({"dmg2img": 'printf "dmg2img converted"\ncp "$(dirname "$0")/image.zip" "$2"'})
+    with zipfile.ZipFile(os.path.join(tool_dir, "image.zip"), "w") as zip_fp:
+        zip_fp.writestr("Installer/", "")
+        zip_fp.writestr("Installer/payload.app", b"payload" * 100)
+        zip_fp.writestr("Installer/.DS_Store", b"ds")
 
 
 @pytest.mark.integration
