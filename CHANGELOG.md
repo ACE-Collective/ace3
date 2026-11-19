@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project (tries to) adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.143] - 2026-11-19
+
+- [Run sandboxed tools in ACE's cwd](https://github.com/ACE-Collective/ace3/pull/1273)
+- [Look up the login user only for a submitted form](https://github.com/ACE-Collective/ace3/pull/1272)
+- [Add Observable.is_a() so module code tests types the way dispatch does](https://github.com/ACE-Collective/ace3/pull/1270)
+- [Accept a same-site path as the login next URL](https://github.com/ACE-Collective/ace3/pull/1269)
+- [Pass NetworkSemaphoreService.wait_for_start's timeout and result through](https://github.com/ACE-Collective/ace3/pull/1267)
+- [Retire an expired pooled connection before rolling it back](https://github.com/ACE-Collective/ace3/pull/1266)
+- [Test deobfuscate_file()'s copy of the DOM snapshot](https://github.com/ACE-Collective/ace3/pull/1265)
+- [Give a shared file collection to an alert still waiting on it](https://github.com/ACE-Collective/ace3/pull/1264)
+- [Write tag and observable AUDIT records after the change is saved](https://github.com/ACE-Collective/ace3/pull/1262)
+- [Give the celery managers and ACE's clients one broker setting](https://github.com/ACE-Collective/ace3/pull/1261)
+- [Remove AnalysisEventBus](https://github.com/ACE-Collective/ace3/pull/1260)
+- [Keep each correlate alert's original_events to its own group](https://github.com/ACE-Collective/ace3/pull/1257)
+- [Remove the remaining S3 support from ACE core](https://github.com/ACE-Collective/ace3/pull/1254)
+- [Record where journaled mail went and what a remediator acted on](https://github.com/ACE-Collective/ace3/pull/1253)
+
 ## [3.0.142] - 2026-11-18
 
 - [Reduce the email archive database to Message-ID -> digest](https://github.com/ACE-Collective/ace3/pull/1249)
