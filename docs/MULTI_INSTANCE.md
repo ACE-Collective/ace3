@@ -142,11 +142,11 @@ Keep it short: a long path can push a unix socket under the data directory past 
 
 They find the stack by asking compose (`docker compose ps -q <service>`), which means they
 resolve whichever compose file that checkout would use by default. A deployment that runs its
-own compose file rather than the one at the repo root — `integrations/bv_ace/docker-compose.yml`,
+own compose file rather than the one at the repo root — `integrations/<name>/docker-compose.yml`,
 for instance — points them at it by exporting `COMPOSE_FILE`:
 
 ```bash
-export COMPOSE_FILE=integrations/bv_ace/docker-compose.yml
+export COMPOSE_FILE=integrations/<name>/docker-compose.yml
 bin/attach-container.sh
 ```
 
