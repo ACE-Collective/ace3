@@ -269,6 +269,35 @@ def test_expired_idle_connections_are_closed_by_the_next_return():
 
 
 @pytest.mark.integration
+def test_an_expired_connection_the_server_closed_is_retired_without_a_warning(caplog):
+    # a process idle for longer than MySQL's wait_timeout finds the connection it pooled closed by the server, and
+    # by then past its lifetime as well: retiring it is routine, not a failed rollback
+    database_pool = get_pool()
+    database_pool.clear()
+
+    connection = database_pool.get_connection()
+    thread_id = connection.thread_id()
+    database_pool.return_connection(connection)
+    connection.termination_date = datetime.now() - timedelta(seconds=1)
+
+    # through the ORM session, which has a pool of its own, so the raw pool's idle connection stays where it is
+    def _server_thread_ids():
+        return {row[0] for row in get_db().execute(text("SELECT id FROM information_schema.processlist"))}
+
+    get_db().execute(text(f"KILL {int(thread_id)}"))
+    wait_for_condition(lambda: thread_id not in _server_thread_ids())
+
+    with get_db_connection() as db:
+        assert db is not connection
+        cursor = db.cursor()
+        cursor.execute("SELECT 1")
+        assert cursor.fetchone() == (1,)
+
+    assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
+    assert (database_pool.closed_expired, database_pool.closed_broken) == (1, 0)
+
+
+@pytest.mark.integration
 def test_opening_past_the_soft_cap_warns_at_each_new_peak(monkeypatch, caplog):
     monkeypatch.setattr(pool, "POOL_SIZE", 1)
     monkeypatch.setattr(pool, "POOL_MAX_OVERFLOW", 1)
