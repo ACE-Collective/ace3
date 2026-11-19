@@ -14,6 +14,8 @@ A working tree usually spans more than one upstream repo. This repo is the open-
 
 Known flaws in ACE's design that changes have had to work around are GitHub issues labeled `design flaw` (`gh issue list --label "design flaw"`), each describing the workaround that first ran into it. `/ace-review` files them. Before you write a workaround, check whether it is for one of them, and if so, follow the workaround its issue describes rather than inventing another.
 
+`/factory` (`.agents/skills/factory/`) carries one issue a maintainer has labeled `factory:ready` to a ready-for-review PR: it implements it in a worktree of its own, opens a draft PR, reviews it with `/ace-review`, reworks the findings, and marks it ready on a ship verdict. A human always merges. Each internal repo commits a `.factory/` directory for it: `config.toml` (its Azure DevOps coordinates and checks) and `public-denylist.toml`, the terms that must never reach this public repo, which `/factory` checks every public write against.
+
 ## Environment
 
 Development happens **inside the `dev` container**, where `SAQ_HOME=/opt/ace`, Python 3.14 is in `/venv` and the user is `ace`. The agent runs either in that container or on the host, where the Claude desktop app runs it in a git worktree under `.claude/worktrees/`. On a macOS host the shell is zsh, which fails a command whose glob matches nothing, so quote patterns (`grep --include='*.py'`), and there is no `timeout` command.

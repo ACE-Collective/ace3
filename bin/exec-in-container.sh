@@ -94,6 +94,7 @@ path_in_container() {
 # of its own (docs/MULTI_INSTANCE.md). Run there, with SAQ_HOME and PYTHONPATH on it, so the command
 # runs this checkout's code rather than the main checkout's.
 WORKDIR=/opt/ace
+GIT_ENV=()
 common_dir=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)
 if [ "$common_dir" != "$(git rev-parse --path-format=absolute --git-dir 2>/dev/null)" ]; then
     checkout=$(pwd -P)
@@ -109,6 +110,10 @@ if [ "$common_dir" != "$(git rev-parse --path-format=absolute --git-dir 2>/dev/n
                      "the dev service in $main/docker-compose.override.yml and recreate dev (docs/MULTI_INSTANCE.md)" >&2
                 exit 1
             fi
+            # the mount's files show up owned by root in dev, so git there refuses the worktree as
+            # dubiously owned; trust it and the integration worktrees in it, and nothing else
+            GIT_ENV=(-e GIT_CONFIG_COUNT=2 -e GIT_CONFIG_KEY_0=safe.directory -e "GIT_CONFIG_VALUE_0=$WORKDIR"
+                     -e GIT_CONFIG_KEY_1=safe.directory -e "GIT_CONFIG_VALUE_1=$WORKDIR/*")
             ;;
     esac
 fi
@@ -122,5 +127,5 @@ fi
 # they are, as docker exec passes them, so a shell construct (a pipe, &&, a redirect) inside the container
 # needs an explicit bash -c '...'. ./ because the dev container's PATH has /opt/ace on it, and source
 # searches PATH first, so a bare `source load_environment` would source the main checkout's.
-docker exec $INTERACTIVE $TTY -u $USER -w "$WORKDIR" -e SAQ_HOME="$WORKDIR" -e PYTHONPATH="$WORKDIR" "$CONTAINER" \
+docker exec $INTERACTIVE $TTY -u $USER -w "$WORKDIR" -e SAQ_HOME="$WORKDIR" -e PYTHONPATH="$WORKDIR" "${GIT_ENV[@]}" "$CONTAINER" \
     bash -c 'source ./load_environment && source /venv/bin/activate && exec "$@"' bash "$@"

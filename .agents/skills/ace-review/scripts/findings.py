@@ -12,6 +12,8 @@ counted here, not judged.
     findings.py file BUNDLE FID            file a new design flaw as a GitHub issue
     findings.py stats [STATE_DIR] [--since YYYY-MM-DD]
                                            what became of the findings of every finished round
+    findings.py factory BUNDLE --verdict VERDICT
+                                           write factory.json, the round's result for /factory
 
 collect reads findings-*.json into candidates.json and plan.json. A new blocker gets
 BLOCKER_VOTES verifiers and stays a blocker only if a majority confirms it at that
@@ -48,6 +50,14 @@ it: the only write to GitHub the review makes. The issue's body is the flaw, the
 fix and the workaround that ran into it, and the review never changes the issue again;
 its state is the user's to keep.
 
+factory writes factory.json for a /factory run, which posts it on the PR: the round, the
+head it reviewed, the verdict the lead gave, the ids of the findings still to fix (the
+act-on ones and those still open from earlier rounds), and the bundle's name under
+local/ace-review/. It refuses a verdict better than the floor, which is at least fix-first
+while the rule changes are pending or rejected or the selected tests did not run and pass,
+and it refuses a round whose reviewed tree is not the head's, since the PR's head is what
+was reviewed.
+
 ANSWER is fixed, wrong, intentional or "didn't matter"; for ID "rules", the rule changes
 in target.json, it is accepted or rejected.
 
@@ -79,6 +89,8 @@ ORIGINS = ("new", "pre-existing")
 BUCKETS = ("act on", "consider", "noted")
 ANSWERS = ("fixed", "wrong", "intentional", "didn't matter")
 RULE_ANSWERS = ("accepted", "rejected")
+# best first, so a verdict may never come before the floor
+VERDICTS = ("ship", "fix-first", "rework")
 FLAW_SIZES = ("small", "medium", "large")
 FLAW_RECOMMENDATIONS = ("stop", "keep going")
 FLAW_LABEL = "design flaw"
@@ -442,6 +454,48 @@ def finish(bundle: str) -> dict:
     return summary
 
 
+def tests_passed(bundle: str) -> bool:
+    """Whether the round's selected tests ran and passed; a round that selected none has nothing to fail."""
+    selected = os.path.join(bundle, "tests.txt")
+    if not os.path.exists(selected) or not open(selected).read().strip():
+        return True
+    try:
+        with open(os.path.join(bundle, "pytest.txt")) as fp:
+            exits = re.findall(r"^exit=(\d+)$", fp.read(), re.MULTILINE)
+    except OSError:
+        return False
+    return bool(exits) and exits[-1] == "0"
+
+
+def factory_result(bundle: str, verdict: str) -> dict:
+    summary = load(os.path.join(bundle, "summary.json"))
+    if summary is None:
+        sys.exit(f"{bundle} is not finished: run finish first")
+    if verdict not in VERDICTS:
+        sys.exit(f"the verdict is one of {', '.join(VERDICTS)}")
+    target = load(os.path.join(bundle, "target.json"), {})
+    floor, why = summary["verdict_floor"], "its findings"
+    # the rubric's two other reasons a round may not ship, which the findings alone don't count
+    if floor == "ship" and target.get("rule_changes_status") in ("pending", "rejected"):
+        floor, why = "fix-first", f"its rule changes are {target['rule_changes_status']}"
+    if floor == "ship" and not tests_passed(bundle):
+        floor, why = "fix-first", "its tests did not run and pass"
+    if VERDICTS.index(verdict) < VERDICTS.index(floor):
+        sys.exit(f"the verdict {verdict} is better than this round's floor, {floor} ({why})")
+    # prepare.py snapshots the working tree; a clean worktree's snapshot is the head's own tree
+    if target.get("tree") != tree_of(target.get("repo", ""), target.get("head")):
+        sys.exit("this round reviewed uncommitted work; commit and push, then review the PR's head")
+    verified = load(os.path.join(bundle, "verified.json"), [])
+    still_open = [f["id"] for f in summary["still_open"]]
+    result = {"round": target.get("round"), "head": target.get("head"), "branch": target.get("branch"),
+              "verdict": verdict, "floor": floor,
+              "open": [f["id"] for f in verified if f["origin"] == "new" and f.get("bucket") == "act on"] + still_open,
+              # where rework finds the round: local/ace-review/<this>
+              "bundle": f"{os.path.basename(os.path.dirname(os.path.abspath(bundle)))}/{os.path.basename(os.path.abspath(bundle))}"}
+    dump(os.path.join(bundle, "factory.json"), result)
+    return result
+
+
 def answer(bundle: str, fid: str, value: str, note: str | None = None) -> dict:
     target = load(os.path.join(bundle, "target.json"), {})
     if fid == "rules":
@@ -580,6 +634,9 @@ def main() -> None:
     command = sub.add_parser("file")
     command.add_argument("bundle")
     command.add_argument("id")
+    command = sub.add_parser("factory")
+    command.add_argument("bundle")
+    command.add_argument("--verdict", required=True)
     command = sub.add_parser("stats")
     command.add_argument("state", nargs="?", default=STATE_DIR)
     command.add_argument("--since", help="only rounds finished on or after this date, YYYY-MM-DD")
@@ -598,6 +655,8 @@ def main() -> None:
             result = known(args.bundle)
         elif args.command == "file":
             result = file_flaw(args.bundle, args.id)
+        elif args.command == "factory":
+            result = factory_result(args.bundle, args.verdict)
         else:
             result = answer(args.bundle, args.id, args.answer, args.note)
     except RuntimeError as e:
