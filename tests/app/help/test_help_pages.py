@@ -5,7 +5,9 @@ from flask import url_for
 from markupsafe import escape
 
 from app.help.guides import GUIDE_SETS
+from saq.configuration.config import get_config
 from saq.constants import QUEUE_DEFAULT
+from saq.database.util.alert import ALERT
 from saq.database.util.user_management import add_user, delete_user
 
 pytestmark = pytest.mark.integration
@@ -104,3 +106,128 @@ def test_svs_tabs_and_signatures_hub_link_the_guides(web_client):
     guides = url_for("help.guide_set", set_slug="svs").encode()
     assert guides in web_client.get(url_for("svs.runs")).data
     assert guides in web_client.get(url_for("signatures.signatures_hub")).data
+
+
+# ---------------------------------------------------------------------------------------- playbooks
+
+@pytest.fixture
+def playbooks_dir(tmp_path, monkeypatch):
+    monkeypatch.setattr(get_config().global_settings, "playbooks_dir", str(tmp_path))
+    (tmp_path / "assets" / "oauth").mkdir(parents=True)
+    (tmp_path / "assets" / "oauth" / "shot.png").write_bytes(b"\x89PNG\r\n\x1a\n")
+    (tmp_path / "oauth.md").write_text(
+        "---\ntitle: OAuth phishing\n---\n# OAuth phishing\n\nSee [other](other.md) ![s](assets/oauth/shot.png)\n")
+    return tmp_path
+
+
+def test_playbook_pages_require_login(app, playbooks_dir):
+    with app.test_client() as client:
+        for url in (url_for("help.playbook", name="oauth.md"),
+                    url_for("help.playbook_asset", filename="oauth/shot.png")):
+            resp = client.get(url)
+            assert resp.status_code == 302
+            assert "login" in resp.location
+
+
+def test_playbook_pages_need_only_a_login(playbooks_dir, no_permissions_client):
+    for url in (url_for("help.playbook", name="oauth.md"), url_for("help.playbook_asset", filename="oauth/shot.png")):
+        assert no_permissions_client.get(url).status_code == 200, url
+
+
+def test_playbook_page_renders(playbooks_dir, web_client):
+    resp = web_client.get(url_for("help.playbook", name="oauth.md"))
+    assert resp.status_code == 200
+    assert url_for("help.playbook", name="other.md").encode() in resp.data
+    assert url_for("help.playbook_asset", filename="oauth/shot.png").encode() in resp.data
+
+
+def test_missing_playbook_is_a_404(playbooks_dir, web_client):
+    assert web_client.get(url_for("help.playbook", name="nope.md")).status_code == 404
+
+
+def test_playbook_symlinked_out_of_the_directory_is_a_404(playbooks_dir, web_client, tmp_path_factory):
+    outside = tmp_path_factory.mktemp("outside") / "secret.md"
+    outside.write_text("# secret")
+    (playbooks_dir / "link.md").symlink_to(outside)
+    assert web_client.get(url_for("help.playbook", name="link.md")).status_code == 404
+
+
+def test_playbook_asset_is_served_and_cannot_leave_the_directory(playbooks_dir, web_client, tmp_path_factory):
+    (playbooks_dir / "secret.png").write_bytes(b"x")
+    outside = tmp_path_factory.mktemp("outside") / "secret.png"
+    outside.write_bytes(b"x")
+    (playbooks_dir / "assets" / "oauth" / "link.png").symlink_to(outside)
+    resp = web_client.get(url_for("help.playbook_asset", filename="oauth/shot.png"))
+    assert resp.status_code == 200
+    assert resp.data.startswith(b"\x89PNG")
+    assert resp.headers["Content-Type"] == "image/png"
+    assert resp.headers["X-Content-Type-Options"] == "nosniff"
+    for url in ("/help/playbooks/assets/../secret.png", "/help/playbooks/assets/%2e%2e/secret.png",
+                url_for("help.playbook_asset", filename="oauth/link.png")):
+        assert web_client.get(url).status_code == 404, url
+
+
+def test_playbook_asset_serves_only_raster_images(playbooks_dir, web_client):
+    for name in ("evil.svg", "page.html", "notes.txt", "noext"):
+        (playbooks_dir / "assets" / "oauth" / name).write_text("<svg onload=alert(1)>")
+        assert web_client.get(url_for("help.playbook_asset", filename=f"oauth/{name}")).status_code == 404, name
+
+
+def test_alert_page_survives_a_playbook_that_cannot_be_rendered(web_client, root_analysis, playbooks_dir, caplog):
+    (playbooks_dir / "broken.md").write_bytes(b"\xff\xfe not utf-8")
+    root_analysis.playbook = "broken.md"
+    root_analysis.playbook_url = "https://example.com/playbook"
+    root_analysis.save()
+    ALERT(root_analysis)
+
+    resp = web_client.get(url_for("analysis.index", direct=root_analysis.uuid))
+    assert resp.status_code == 200
+    assert "could not be rendered" in resp.text
+    assert 'href="https://example.com/playbook"' in resp.text
+    assert any(r.message == "unable to render playbook" and r.exc_info for r in caplog.records)
+
+
+def test_alert_page_shows_the_playbook_in_a_collapsed_section(web_client, root_analysis, playbooks_dir):
+    root_analysis.playbook = "oauth.md"
+    root_analysis.save()
+    ALERT(root_analysis)
+
+    resp = web_client.get(url_for("analysis.index", direct=root_analysis.uuid))
+    assert resp.status_code == 200
+    assert '<details class="alert-playbook">' in resp.text
+    assert "OAuth phishing" in resp.text
+    assert url_for("help.playbook_asset", filename="oauth/shot.png") in resp.text
+
+
+def test_alert_page_names_a_missing_playbook(web_client, root_analysis, playbooks_dir):
+    root_analysis.playbook = "gone.md"
+    root_analysis.save()
+    ALERT(root_analysis)
+
+    resp = web_client.get(url_for("analysis.index", direct=root_analysis.uuid))
+    assert resp.status_code == 200
+    assert "gone.md" in resp.text
+    assert "is not in the playbooks directory" in resp.text
+
+
+def test_alert_page_shows_both_playbook_and_playbook_url(web_client, root_analysis, playbooks_dir):
+    root_analysis.playbook = "oauth.md"
+    root_analysis.playbook_url = "https://example.com/playbook"
+    root_analysis.save()
+    ALERT(root_analysis)
+
+    resp = web_client.get(url_for("analysis.index", direct=root_analysis.uuid))
+    assert resp.status_code == 200
+    assert '<details class="alert-playbook">' in resp.text
+    assert 'href="https://example.com/playbook"' in resp.text
+
+
+def test_alert_page_still_links_a_legacy_playbook_url(web_client, root_analysis):
+    root_analysis.playbook_url = "https://example.com/playbook"
+    root_analysis.save()
+    ALERT(root_analysis)
+
+    resp = web_client.get(url_for("analysis.index", direct=root_analysis.uuid))
+    assert resp.status_code == 200
+    assert 'href="https://example.com/playbook"' in resp.text
+    assert "alert-playbook" not in resp.text

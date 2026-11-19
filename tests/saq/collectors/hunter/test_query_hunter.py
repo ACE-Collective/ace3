@@ -13,6 +13,7 @@ from sqlalchemy import select
 import saq.collectors.hunter.base_hunter as hunter_base
 import saq.collectors.hunter.query_hunter as query_hunter_module
 import saq.util.time as saq_time
+from saq.analysis.root import KEY_PLAYBOOK
 from saq.collectors.hunter import HunterService, HuntManager, read_persistence_data
 from saq.collectors.hunter.correlation.schema import CorrelateConfig
 from saq.collectors.hunter.query_hunter import (
@@ -4283,6 +4284,23 @@ def test_create_root_analysis_skips_unresolved_playbook_url(monkeypatch, tmpdir,
     # field present — playbook_url is set
     root = hunt.create_root_analysis({"playbook_id": "pb42"})
     assert root.extensions[KEY_PLAYBOOK_URL] == "https://playbooks.example.com/pb42"
+
+
+@pytest.mark.unit
+def test_create_root_analysis_records_playbook(monkeypatch, tmpdir, hunt_manager):
+    """the hunt's playbook file name goes on the root for the alert page to render"""
+    monkeypatch.setattr(query_hunter_module, "local_time", mock_local_time)
+    monkeypatch.setattr(query_hunter_module, "get_staging_tmp_dir", lambda: str(tmpdir))
+
+    hunt = default_hunt(manager=hunt_manager, name="playbook_test", analysis_mode=ANALYSIS_MODE_CORRELATION,
+                        playbook="oauth-phishing.md")
+    root = hunt.create_root_analysis({})
+    assert root.extensions[KEY_PLAYBOOK] == "oauth-phishing.md"
+    assert root.playbook == "oauth-phishing.md"
+
+    hunt = default_hunt(manager=hunt_manager, name="no_playbook_test", analysis_mode=ANALYSIS_MODE_CORRELATION)
+    root = hunt.create_root_analysis({})
+    assert KEY_PLAYBOOK not in (root.extensions or {})
 
 
 @pytest.mark.unit

@@ -1,0 +1,17 @@
+{% extends "base.html" %}
+
+{% block page_content %}
+<div class="row help-page">
+    <div class="col-12">
+        <p class="text-muted small mb-2">
+            Playbook <code>{{ playbook.name }}</code>
+            {% if playbook.source_url %}
+            &middot; <a href="{{ playbook.source_url }}" target="_blank" rel="noopener noreferrer">source page</a>
+            {% endif %}
+        </p>
+        <article class="help-guide playbook-body">
+            {{ playbook.html }}
+        </article>
+    </div>
+</div>
+{% endblock %}

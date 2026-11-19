@@ -71,7 +71,11 @@ rule:
   # supports event interpolation (Jinja)
   tags: []
 
-  # optional playbook URL for this hunt
+  # optional playbook for this hunt: a Markdown file name in global.playbooks_dir,
+  # rendered in a collapsible section on the alert page
+  #playbook: hunt-name.md
+
+  # optional playbook URL for this hunt, shown as a link (alongside playbook when both are set)
   # supports event interpolation (Jinja)
   #playbook_url: https://wiki.example.com/playbooks/hunt_name
 
@@ -398,9 +402,23 @@ Controls which ACE queue alerts are assigned to. If not set then the default que
 
 Controls the maximum number of events returned by a hunt. The default varies by system.
 
+### `playbook` (string, optional)
+
+The file name of the analyst playbook for this hunt, a Markdown file in `global.playbooks_dir` (`signatures/playbooks` by default, relative to `SAQ_HOME`): `playbook: oauth-phishing.md`. It must be a bare `.md` file name, not a path; the hunt fails to load otherwise. The alert page renders the file in a collapsible **Playbook** section, read when the page is viewed, so an edited playbook shows on alerts that already exist. A playbook named but missing from the directory is shown as missing on the alert. Not interpolated.
+
+The file is rendered like a help guide, with these differences, because it is analyst content rather than ACE's:
+
+- YAML frontmatter is stripped; its `title:` titles the section, and `source_url:` is linked from the standalone page (`/help/playbooks/<name>`).
+- Raw HTML is shown as text, and a link or image whose URL has a scheme other than `http`, `https` or `mailto` loses the URL.
+- An image under `assets/` (`![x](assets/oauth-phishing/shot.png)`) is served from `global.playbooks_dir/assets/`, and a link to another playbook (`[x](other.md)`) opens that playbook's page.
+- GitHub alert syntax (`> [!NOTE]`) becomes a callout.
+- Lists nest the way GitHub nests them (2 spaces under `-`, 3 under `1.`), and a fenced code block inside a list item (a query in a numbered triage step) stays in that item.
+
+A hunt can set both `playbook` and `playbook_url`; the alert page shows each, the rendered playbook and the link.
+
 ### `playbook_url` (string, optional, interpolated)
 
-An optional URL that should reference a playbook to consider when reviewing the alert. Supports [Field Value Interpolation](#field-value-interpolation).
+An optional URL that should reference a playbook to consider when reviewing the alert, shown as a link on the alert page. Supports [Field Value Interpolation](#field-value-interpolation). It is independent of `playbook`: set either, or both.
 
 ### `pivot_links` (list of dicts, optional)
 

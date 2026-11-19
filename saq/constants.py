@@ -737,6 +737,10 @@ CONFIG_GLOBAL = "global"
 
 # global names
 CONFIG_GLOBAL_ANALYST_DATA_DIR = "analyst_data_dir"
+
+# a hunt names its playbook by file name alone (`oauth-phishing.md`), never a path, so a name taken
+# from an alert cannot reach a file outside global.playbooks_dir
+PLAYBOOK_NAME_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9._-]*\.md$"
 CONFIG_GLOBAL_CHECK_WATCHED_FILES_FREQUENCY = "check_watched_files_frequency"
 CONFIG_GLOBAL_COMPANY_ID = "company_id"
 CONFIG_GLOBAL_COMPANY_NAME = "company_name"

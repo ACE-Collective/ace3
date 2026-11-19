@@ -28,6 +28,8 @@ if TYPE_CHECKING:
 
 # supported extension keys
 KEY_PLAYBOOK_URL = 'playbook_url'
+# the file name of the alert's playbook in global.playbooks_dir
+KEY_PLAYBOOK = 'playbook'
 KEY_TRANSACTION_ID = 'transaction_id'
 # the template the GUI renders the alert with
 KEY_ALERT_TEMPLATE = 'alert_template'
@@ -259,6 +261,18 @@ class RootAnalysis(Analysis):
     @playbook_url.setter
     def playbook_url(self, value):
         self.set_extension(KEY_PLAYBOOK_URL, value)
+
+    @property
+    def playbook(self) -> Optional[str]:
+        """The file name of this alert's playbook in global.playbooks_dir, or None if not defined."""
+        if not self._extensions:
+            return None
+
+        return self._extensions.get(KEY_PLAYBOOK, None)
+
+    @playbook.setter
+    def playbook(self, value: Optional[str]):
+        self.set_optional_extension(KEY_PLAYBOOK, value)
 
     @property
     def transaction_id(self):

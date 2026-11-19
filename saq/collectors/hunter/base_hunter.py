@@ -28,6 +28,7 @@ import logging
 import os
 import os.path
 import pickle
+import re
 import shutil
 import threading
 import time
@@ -40,7 +41,7 @@ from pydantic import BaseModel, Field, field_validator
 
 from saq.collectors.hunter.loader import load_from_yaml
 from saq.configuration.config import get_config
-from saq.constants import ANALYSIS_MODE_CORRELATION, QUEUE_DEFAULT, ExecutionMode
+from saq.constants import ANALYSIS_MODE_CORRELATION, PLAYBOOK_NAME_PATTERN, QUEUE_DEFAULT, ExecutionMode
 from saq.environment import get_data_dir
 from saq.error.remote import RemoteApiError
 from saq.gui.icon import IconConfiguration
@@ -78,6 +79,7 @@ class HuntConfig(BaseModel):
     queue: str = Field(default=QUEUE_DEFAULT, description="The queue to submit alerts to.")
     suppression: Optional[str] = Field(default=None, description="The suppression of the hunt. This is the time to suppress alerts after one fires. Can be specified in HH:MM:SS format.")
     playbook_url: Optional[str] = Field(default=None, description="This is the url of the playbook that will be used to investigate the alert.")
+    playbook: Optional[str] = Field(default=None, description="The file name of the Markdown playbook in global.playbooks_dir that the alert page renders for analysts (e.g. oauth-phishing.md).")
     tags: list[str] = Field(default_factory=list, description="These are tags that will be added to the alert in ACE when it is displayed.")
     pivot_links: list[dict] = Field(default_factory=list, description="These are links that will be displayed in ACE when the alert is displayed.")
     icon_configuration: Optional[IconConfiguration] = Field(default=None, description="The icon to use for the hunt.")
@@ -91,6 +93,13 @@ class HuntConfig(BaseModel):
             return []
         if isinstance(value, str):
             return [value]
+        return value
+
+    @field_validator("playbook")
+    @classmethod
+    def validate_playbook(cls, value: Optional[str]) -> Optional[str]:
+        if value is not None and not re.match(PLAYBOOK_NAME_PATTERN, value):
+            raise ValueError("playbook must be a .md file name in the playbooks directory, not a path")
         return value
 
     @field_validator("frequency")
@@ -304,6 +313,10 @@ class Hunt:
     @property
     def playbook_url(self) -> Optional[str]:
         return self.config.playbook_url
+
+    @property
+    def playbook(self) -> Optional[str]:
+        return self.config.playbook
 
     @property
     def tags(self) -> list[str]:

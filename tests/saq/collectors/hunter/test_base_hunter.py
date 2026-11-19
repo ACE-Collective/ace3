@@ -42,6 +42,15 @@ def default_hunt_config(**kwargs):
 
 
 @pytest.mark.unit
+def test_hunt_config_playbook_is_a_bare_md_file_name():
+    assert default_hunt_config(playbook="oauth-phishing.md").playbook == "oauth-phishing.md"
+    assert default_hunt_config().playbook is None
+    for bad in ("../secret.md", "sub/p.md", "/etc/passwd", "p.txt", "https://example.com/playbook"):
+        with pytest.raises(ValidationError, match="playbook must be a .md file name"):
+            default_hunt_config(playbook=bad)
+
+
+@pytest.mark.unit
 def test_hunt_config_rejects_extra_field():
     with pytest.raises(ValidationError) as exc_info:
         default_hunt_config(typo_field="oops")

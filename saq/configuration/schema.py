@@ -31,6 +31,7 @@ class GlobalConfig(BaseModel):
     debug: bool = Field(..., description="forces the entire application to run under a single thread")
     data_dir: str = Field(..., description="global data directory that has all the things (relative to SAQ_HOME)")
     analyst_data_dir: str = Field(..., description="analyst data directory that has files that analysts can control through an external git repository")
+    playbooks_dir: str = Field(default="signatures/playbooks", description="directory of the Markdown playbooks hunts name in rule.playbook, rendered on the alert page (relative to SAQ_HOME unless absolute)")
     tmp_dir: Optional[str] = Field(default=None, description="if you need to override the default temp directory, set this to the path; if the path is relative, it is relative to the SAQ_HOME directory")
     compiled_hunt_dir: str = Field(default="var/compiled_hunts", description="directory for compiled hunt temp files (relative to DATA_DIR); must be on a filesystem that allows execution")
     error_reporting_dir: str = Field(..., description="directory that contains any stack traces for review (relative to DATA_DIR)")

@@ -8,10 +8,13 @@ read correctly where the repository is browsed. Any logged-in user may read ever
 # Imported first so its before_request guard is registered on the blueprint.
 from app.help.views import access  # noqa: F401
 from app.help.views.guides import guide, guide_image, guide_set, help_index
+from app.help.views.playbooks import playbook, playbook_asset
 
 __all__ = [
     'guide',
     'guide_image',
     'guide_set',
     'help_index',
+    'playbook',
+    'playbook_asset',
 ]

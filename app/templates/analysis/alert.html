@@ -65,6 +65,28 @@
         </td>
     </tr>
     {% endif %}
+    {% if alert.root_analysis.playbook %}
+    {% set alert_playbook = load_playbook(alert.root_analysis.playbook) %}
+    <tr>
+        <td class="col-md-2">Playbook</td>
+        <td class="col-md-10">
+            {% if alert_playbook %}
+            <details class="alert-playbook">
+                <summary>
+                    <span class="fw-semibold">{{ alert_playbook.title }}</span>
+                    <a href="{{ url_for('help.playbook', name=alert_playbook.name) }}" target="_blank" class="ms-2" title="Open the playbook in a new tab"><i class="bi bi-box-arrow-up-right"></i></a>
+                </summary>
+                <article class="help-guide playbook-body alert-playbook-body">
+                    {{ alert_playbook.html }}
+                </article>
+            </details>
+            {% else %}
+            <span class="text-danger">{{ alert.root_analysis.playbook }}</span>
+            <span class="text-muted">is not in the playbooks directory</span>
+            {% endif %}
+        </td>
+    </tr>
+    {% endif %}
     {% if alert.root_analysis.playbook_url %}
     <tr>
         <td class="col-md-2">Playbook URL</td>
@@ -76,7 +98,7 @@
     <tr>
         <td class="col-md-2">Alert Type</td>
         <td class="col-md-10">
-        {% if alert.wiki and not alert.root_analysis.playbook_url %}
+        {% if alert.wiki and not alert.root_analysis.playbook_url and not alert.root_analysis.playbook %}
             <a target="_blank" href="{{ alert.wiki }}">{{ alert.alert_type }}</a>
         {% else %}
             {{alert.alert_type}}

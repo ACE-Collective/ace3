@@ -18,6 +18,7 @@ from pydantic import Field, model_validator
 from saq.analysis.observable import Observable
 from saq.analysis.root import (
     KEY_ALERT_TEMPLATE,
+    KEY_PLAYBOOK,
     KEY_PLAYBOOK_URL,
     KEY_TRANSACTION_ID,
     RootAnalysis,
@@ -482,6 +483,9 @@ class QueryHunt(Hunt):
                 url_value = None
             if url_value:
                 extensions[KEY_PLAYBOOK_URL] = url_value
+
+        if self.playbook:
+            extensions[KEY_PLAYBOOK] = self.playbook
 
         if self.icon_configuration:
             extensions[KEY_ICON_CONFIGURATION] = self.icon_configuration.model_dump()

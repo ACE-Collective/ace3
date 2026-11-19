@@ -482,13 +482,6 @@
     line-height: 1.6;
 }
 
-[data-ace-theme=sepia] .help-callout {
-    background-color: var(--bs-tertiary-bg);
-}
-[data-ace-theme=sepia] .help-guide blockquote {
-    color: var(--bs-secondary-color);
-}
-
 /* tags keep Bootstrap's own colors, whichever theme draws the page around them */
 [data-ace-theme=sepia] .badge[class*="text-bg-"] {
     --bs-primary-rgb: 13, 110, 253;
@@ -1508,10 +1501,12 @@ span.multiselect-native-select select {
 .help-guide th, .help-guide td { padding: 0.35rem 0.6rem; border: 1px solid var(--bs-border-color); vertical-align: top; }
 .help-guide th { background-color: var(--bs-tertiary-bg); }
 .help-guide pre { padding: 0.75rem 1rem; background-color: var(--bs-tertiary-bg); border: 1px solid var(--bs-border-color); border-radius: 0.25rem; }
-.help-guide :not(pre) > code { padding: 0.1rem 0.25rem; background-color: var(--bs-tertiary-bg); border-radius: 0.2rem; color: #a3195b; }
-.help-guide blockquote { padding-left: 1rem; border-left: 3px solid var(--bs-border-color); color: #495057; }
+.help-guide :not(pre) > code { padding: 0.1rem 0.25rem; background-color: var(--bs-tertiary-bg); border-radius: 0.2rem; color: var(--bs-code-color); }
+/* Bootstrap's light code pink is under 4.5:1 on the tertiary background; sepia sets its own */
+[data-bs-theme=light]:not([data-ace-theme=sepia]) .help-guide { --bs-code-color: #a3195b; }
+.help-guide blockquote { padding-left: 1rem; border-left: 3px solid var(--bs-border-color); color: var(--bs-secondary-color); }
 /* GitHub-style alerts (> [!TIP]); plain bordered blocks, not badges */
-.help-callout { margin: 1rem 0; padding: 0.6rem 1rem; border: 1px solid var(--bs-border-color); border-left-width: 4px; border-radius: 0.25rem; background-color: #f8f9fa; }
+.help-callout { margin: 1rem 0; padding: 0.6rem 1rem; border: 1px solid var(--bs-border-color); border-left-width: 4px; border-radius: 0.25rem; background-color: var(--bs-tertiary-bg); }
 .help-callout > :last-child { margin-bottom: 0; }
 .help-callout-title { margin-bottom: 0.25rem; font-weight: 600; }
 .help-callout-note      { border-left-color: #3d6fb4; }
@@ -1519,6 +1514,13 @@ span.multiselect-native-select select {
 .help-callout-important { border-left-color: #6f42c1; }
 .help-callout-warning   { border-left-color: #997404; }
 .help-callout-caution   { border-left-color: #b02a37; }
+
+/* the alert page's collapsible playbook (analysis/alert.html); its body is a help-guide */
+.alert-playbook > summary { cursor: pointer; }
+.alert-playbook-body { margin-top: 0.75rem; max-width: 64rem; }
+.alert-playbook-body > h1:first-child { display: none; } /* repeats the title in the summary */
+/* a playbook's lists are often loose (a paragraph per item); keep them as tight as a plain list */
+.playbook-body li > p { margin-bottom: 0.25rem; }
 
 /* a badge outline that is black on the light themes and a normal border on dark, where a
    white ring around every badge would be glaring */

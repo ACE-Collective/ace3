@@ -41,6 +41,9 @@ global:
   # analyst data directory that has files that analysts can control through an external git repository. these files can
   # then be used by analysis modules or collectors instead of needing to edit ACE config.
   analyst_data_dir: signatures/analyst_data
+  # directory of the Markdown playbooks a hunt names with rule.playbook (relative to SAQ_HOME unless
+  # absolute). the alert page renders the named file; docs/HUNTS.md
+  playbooks_dir: signatures/playbooks
   # if you need to override the default temp directory, set this to the path
   # if the path is relative, it is relative to the SAQ_HOME directory
   #tmp_dir: /tmp/ace
