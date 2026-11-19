@@ -102,6 +102,8 @@ def build_manage_list_context() -> dict:
     except ObservablePatternError as e:
         filter_errors.append(str(e))
         query = build_alert_query([]).filter(false())
+    # the search's post_filter runs this again per batch, and building it looks each pattern up
+    filtered_query = query
 
     #query = query.options(selectinload('workload'))
     query = query.options(selectinload(GUIAlert.workload))
@@ -141,7 +143,7 @@ def build_manage_list_context() -> dict:
 
         def post_filter(uuids: list[str]) -> list[str]:
             # the filter list is authoritative: keep only fused matches it lets through
-            visible = {row[0] for row in build_alert_query(effective_filters).with_entities(GUIAlert.uuid).filter(GUIAlert.uuid.in_(uuids)).distinct()}
+            visible = {row[0] for row in filtered_query.with_entities(GUIAlert.uuid).filter(GUIAlert.uuid.in_(uuids)).distinct()}
             return [alert_uuid for alert_uuid in uuids if alert_uuid in visible]
 
         search_filters = effective_filters_to_search_filters(effective_filters)

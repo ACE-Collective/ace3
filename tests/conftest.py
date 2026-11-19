@@ -411,6 +411,10 @@ def global_function_setup(request):
     threat_types_router = sys.modules.get("aceapi_v2.threat_types.router")
     if threat_types_router is not None:
         threat_types_router._cache.clear()
+    # a refused observable pattern is remembered per process, and a test expects its own lookup
+    filter_query = sys.modules.get("saq.gui.filter_query")
+    if filter_query is not None:
+        filter_query.clear_refused_patterns()
     # each work root is swept once per process
     base_module._SWEPT_WORK_ROOTS.clear()
     # a cause is reported once per window, and a test expects its own report

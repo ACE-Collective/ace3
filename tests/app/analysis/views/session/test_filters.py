@@ -5,11 +5,14 @@ The config-driven quick-filter subsystem this module used to test is gone: quick
 are per-user saved filters now, covered by tests/aceapi_v2/saved_filters/.
 """
 
+from types import SimpleNamespace
+
 import pytest
 
 import app.analysis.views.session.filters as filters_mod
 from app.analysis.views.session.filters import (
     getFilters,
+    get_quick_filter_display_data,
     overlay_filters,
     resolve_filter_sentinels,
     resolve_saved_filter,
@@ -173,3 +176,13 @@ def test_overlay_does_not_mutate_the_filter_in_effect():
     overlay_filters(base, [_observable(("ipv4", "5.6.7.8"))])
 
     assert base == [_observable(("ipv4", "1.2.3.4"))]
+
+
+@pytest.mark.unit
+def test_only_pinned_saved_filters_are_badges():
+    """The saved filter list holds every named filter; a badge is only a pinned one, in the
+    analyst's order."""
+    pinned = SimpleNamespace(uuid="u1", name="pinned", quick_filter_order=0, quick_filter_indicator=False)
+    unpinned = SimpleNamespace(uuid="u2", name="unpinned", quick_filter_order=None, quick_filter_indicator=False)
+    assert get_quick_filter_display_data([pinned, unpinned]) == [
+        {"uuid": "u1", "label": "pinned", "indicator_count": 0, "indicator_error": None}]

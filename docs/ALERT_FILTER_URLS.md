@@ -101,7 +101,12 @@ How it is matched (`ObservablePatternFilter`, `saq/gui/filter_query.py`):
   them (`MAX_PATTERN_OBSERVABLES`) or take longer than one second (`PATTERN_LOOKUP_TIMEOUT_MS`,
   enforced by MySQL's `MAX_EXECUTION_TIME`). A partial list of ids would quietly leave alerts
   out. The API answers 422 with the same reason, the search box returns it as an error, and a
-  quick filter badge whose pattern cannot be run shows no dot.
+  quick filter badge whose pattern cannot be run shows a warning mark whose tooltip is the
+  reason, rather than looking like a filter with no alerts.
+- **A refusal is remembered.** A pattern refused for either limit is refused again without a
+  lookup for five minutes (`PATTERN_REFUSAL_TTL_SECONDS`), in that process, because a pinned
+  badge and an open manage page run it on every refresh. A pattern that was looked up is not
+  remembered: a new observable can match it at any time.
 
 ### Analysis
 

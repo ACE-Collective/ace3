@@ -441,20 +441,23 @@ def get_quick_filter_display_data(saved_filters: list) -> list:
     the alert list uses, so the dot cannot disagree with what you get when you click it.
     Each count is a full joined query, so this is only ever called from a real page render
     -- see the note in build_manage_list_context()."""
-    return [
-        {
-            "uuid": saved_filter.uuid,
-            "label": saved_filter.name,
-            "indicator_count": _indicator_count(saved_filter) if saved_filter.quick_filter_indicator else 0,
-        }
-        for saved_filter in saved_filters
-        if saved_filter.quick_filter_order is not None
-    ]
+    badges = []
+    for saved_filter in saved_filters:
+        if saved_filter.quick_filter_order is None:
+            continue
 
-def _indicator_count(saved_filter) -> int:
+        count, error = _indicator(saved_filter) if saved_filter.quick_filter_indicator else (0, None)
+        badges.append({"uuid": saved_filter.uuid, "label": saved_filter.name,
+                       "indicator_count": count, "indicator_error": error})
+
+    return badges
+
+def _indicator(saved_filter) -> tuple[int, str | None]:
+    """The badge's alert count, or why it cannot be counted."""
     try:
-        return count_alerts(resolve_saved_filter([e.model_dump() for e in saved_filter.filters]))
-    except ObservablePatternError:
-        # The badge gets no dot. Clicking it applies the filter, and the alert list then says
-        # why it cannot be run; that is the analyst's to fix, not an operator's, so nothing is logged.
-        return 0
+        return count_alerts(resolve_saved_filter([e.model_dump() for e in saved_filter.filters])), None
+    except ObservablePatternError as e:
+        # The badge is marked with the reason instead of a dot: without the mark it would look
+        # like a filter with no alerts. That is the analyst's to fix, not an operator's, so
+        # nothing is logged.
+        return 0, str(e)

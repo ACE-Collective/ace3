@@ -21,7 +21,6 @@ from saq.database.model import (
     AnalysisType,
     DetectionPoint,
     Observable,
-    ObservableMapping,
     Tag,
     TagMapping,
 )
@@ -36,7 +35,7 @@ from saq.gui.filter_query import (
     get_analysis_type_labels,
 )
 from saq.gui.observable_pattern import ObservablePatternError
-from tests.saq.helpers import insert_alert, insert_alert_with_detections
+from tests.saq.helpers import attach_observable, insert_alert, insert_alert_with_detections
 
 pytestmark = pytest.mark.integration
 
@@ -45,25 +44,6 @@ QR_CODE_ANALYSIS = "saq.modules.file_analysis.qrcode:QRCodeAnalysis"
 URL_EXTRACTION_ANALYSIS = "saq.modules.file_analysis.url_extraction:URLExtractionAnalysis"
 SPLUNK_SESSION_ACTIVITY = "saq.modules.splunk:SplunkAPIAnalysis:session_activity"
 OTHER_SIGNATURE_UUID = "9b21c3d4-aaaa-bbbb-cccc-ddddeeeeffff"
-
-
-def _attach(alert: Alert, observable_type: str, value: str, sha256: bytes | None = None) -> None:
-    """Maps an observable to an alert, reusing the catalog row if it already exists.
-
-    `observables` is an append-only catalog with a unique key on (type, sha256): the same
-    observable on two alerts is one row and two observable_mapping rows.
-    """
-    db = get_db()
-    digest = sha256 or hashlib.sha256(value.encode()).digest()
-    observable = db.query(Observable).filter(
-        Observable.type == observable_type, Observable.sha256 == digest).one_or_none()
-    if observable is None:
-        observable = Observable(type=observable_type, value=value.encode(), sha256=digest)
-        db.add(observable)
-        db.flush()
-
-    db.add(ObservableMapping(observable_id=observable.id, alert_id=alert.id))
-    db.commit()
 
 
 def _tag(alert: Alert, name: str) -> None:
@@ -113,9 +93,9 @@ def corpus():
     db.execute(Alert.__table__.update().where(Alert.id == tagged.id).values(insert_date=datetime(2026, 2, 1)))
     db.commit()
 
-    _attach(signed, "signature_id", SIGNATURE_UUID)
-    _attach(signed, "ipv4", "10.20.30.40")
-    _attach(tagged, "ipv4", "203.0.113.7")
+    attach_observable(signed, "signature_id", SIGNATURE_UUID)
+    attach_observable(signed, "ipv4", "10.20.30.40")
+    attach_observable(tagged, "ipv4", "203.0.113.7")
     _tag(tagged, "credential-harvest")
     # a tag of another name, which the Tag filter must tell apart
     _tag(signed, "phishing")
@@ -139,7 +119,7 @@ class TestObservableFilter:
         """Matching on (type, sha256) after resolve_observable_identity(), not on the raw
         value BLOB: an email address is stored lowercased, so both spellings have to find it."""
         signed, _, _ = corpus
-        _attach(signed, "email_address", "bob@example.com")
+        attach_observable(signed, "email_address", "bob@example.com")
         for spelling in ("bob@example.com", "Bob@Example.com"):
             assert _uuids([{"name": "Observable", "inverted": False,
                             "values": [["email_address", spelling]]}]) == {signed.uuid}
@@ -316,19 +296,19 @@ def _pattern(*pairs, inverted=False):
 def patterned():
     """Alerts whose observables tell each kind of pattern apart."""
     subdomain, lookalike, shouty, literal, plain = (insert_alert() for _ in range(5))
-    _attach(subdomain, "fqdn", "mail.evil.com")
-    _attach(subdomain, "url", "https://evil.com/login?next=1")
-    _attach(subdomain, "file_path", "C:\\Users\\bob\\AppData\\evil.exe")
-    _attach(lookalike, "fqdn", "evil.com.attacker.net")
-    _attach(lookalike, "email_address", "bob@evil.com")
-    _attach(lookalike, "command_line", "powershell -nop" + LONG_SUFFIX)
+    attach_observable(subdomain, "fqdn", "mail.evil.com")
+    attach_observable(subdomain, "url", "https://evil.com/login?next=1")
+    attach_observable(subdomain, "file_path", "C:\\Users\\bob\\AppData\\evil.exe")
+    attach_observable(lookalike, "fqdn", "evil.com.attacker.net")
+    attach_observable(lookalike, "email_address", "bob@evil.com")
+    attach_observable(lookalike, "command_line", "powershell -nop" + LONG_SUFFIX)
     # the fqdn class keeps the case it is given, so this is its own observable
-    _attach(shouty, "fqdn", "Mail.EVIL.com")
+    attach_observable(shouty, "fqdn", "Mail.EVIL.com")
     # LIKE's own wildcards and the escape character, as literal text
-    _attach(literal, "file_name", "50%_off!.exe")
-    _attach(literal, "file_name", "50ab_off!.exe")
+    attach_observable(literal, "file_name", "50%_off!.exe")
+    attach_observable(literal, "file_name", "50ab_off!.exe")
     # the same last 255 bytes as lookalike's command line, but not the same suffix
-    _attach(literal, "command_line", "cmd /c" + "B" + LONG_SUFFIX[1:])
+    attach_observable(literal, "command_line", "cmd /c" + "B" + LONG_SUFFIX[1:])
     return SimpleNamespace(subdomain=subdomain, lookalike=lookalike, shouty=shouty, literal=literal, plain=plain)
 
 
@@ -369,6 +349,13 @@ class TestObservablePatternFilter:
     def test_the_pattern_is_lowercased_for_a_type_whose_class_lowercases(self, patterned):
         """email_address stores addresses lowercased, so its pattern is lowercased too."""
         assert _uuids(_pattern(["email_address", "*@Evil.COM"])) == {patterned.lookalike.uuid}
+
+    def test_a_class_that_rewrites_more_than_case_is_not_used(self):
+        """The user class drops a `DOMAIN\\`, which would turn the anchored `CORP\\*evil*` into
+        `*evil*` after its shape was checked: a pattern no index serves."""
+        assert filter_query.normalize_observable_pattern("user", "CORP\\*evil*") == "CORP\\*evil*"
+        attach_observable(insert_alert(), "user", "xevilx")
+        assert _uuids(_pattern(["user", "CORP\\*evil*"])) == set()
 
     def test_like_wildcards_and_the_escape_character_are_literal(self, patterned):
         """Unescaped, `50%_off!*` would also match 50ab_off!.exe."""
@@ -449,6 +436,56 @@ class TestObservablePatternFilter:
         assert f"MAX_EXECUTION_TIME({filter_query.PATTERN_LOOKUP_TIMEOUT_MS})" in statements[0]
         record = next(r for r in caplog.records if r.getMessage().startswith("observable pattern lookup stopped"))
         assert record.levelname == "INFO" and record.observable_pattern == "*.evil.com"
+
+    def _time_out(self, monkeypatch) -> list:
+        statements = []
+
+        def execute(statement, *args, **kwargs):
+            statements.append(statement)
+            raise OperationalError("SELECT ...", {}, pymysql.err.OperationalError(
+                3024, "Query execution was interrupted, maximum statement execution time exceeded"))
+
+        monkeypatch.setattr(get_db(), "execute", execute)
+        return statements
+
+    def test_a_refused_pattern_is_not_looked_up_again_for_a_while(self, monkeypatch):
+        """A pinned badge and an open manage page run their filter on every 30 second refresh;
+        a lookup that runs to the time limit costs a second of MySQL each time."""
+        statements = self._time_out(monkeypatch)
+        for _ in range(3):
+            with pytest.raises(ObservablePatternError, match="took too long"):
+                filter_query.resolve_observable_pattern("user", "*.com")
+        assert len(statements) == 1
+
+        # only that pattern of that type
+        with pytest.raises(ObservablePatternError):
+            filter_query.resolve_observable_pattern("fqdn", "*.com")
+        assert len(statements) == 2
+
+    def test_a_refusal_expires(self, monkeypatch):
+        """A lookup that timed out under load may not the next time."""
+        monkeypatch.setattr(filter_query, "PATTERN_REFUSAL_TTL_SECONDS", 0)
+        statements = self._time_out(monkeypatch)
+        for _ in range(2):
+            with pytest.raises(ObservablePatternError):
+                filter_query.resolve_observable_pattern("user", "*.com")
+        assert len(statements) == 2
+
+    def test_a_pattern_over_the_cap_is_remembered_too(self, patterned, monkeypatch):
+        monkeypatch.setattr(filter_query, "MAX_PATTERN_OBSERVABLES", 1)
+        with pytest.raises(ObservablePatternError, match="matches more than 1"):
+            filter_query.resolve_observable_pattern(ANY_OBSERVABLE_TYPE, "*evil.com")
+        statements = self._time_out(monkeypatch)
+        with pytest.raises(ObservablePatternError, match="matches more than 1"):
+            filter_query.resolve_observable_pattern(ANY_OBSERVABLE_TYPE, "*evil.com")
+        assert statements == []
+
+    def test_a_pattern_that_was_looked_up_is_not_remembered(self, patterned):
+        """Its observables can be added to at any time; only a refusal is remembered."""
+        assert _uuids(_pattern(["fqdn", "*.evil.com"])) == {patterned.subdomain.uuid}
+        later = insert_alert()
+        attach_observable(later, "fqdn", "www.evil.com")
+        assert _uuids(_pattern(["fqdn", "*.evil.com"])) == {patterned.subdomain.uuid, later.uuid}
 
     def test_a_real_time_limit_leaves_the_session_usable(self, patterned):
         """The error the hint raises is a statement error, not a broken connection or transaction:

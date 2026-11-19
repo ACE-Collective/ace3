@@ -1,19 +1,18 @@
 """GET /api/v2/alerts/count: how many alerts GET /alerts lists for a set of filters (and, for an
 Observable Pattern that cannot be run, the 422 every alert listing gives)."""
 
-import hashlib
 import json
 
 import pytest
 from httpx import AsyncClient
 
 from saq.constants import DISPOSITION_FALSE_POSITIVE, DISPOSITION_OPEN
-from saq.database.model import Alert, Observable, ObservableMapping, User
+from saq.database.model import Alert, User
 from saq.database.pool import get_db
 from saq.gui import filter_query
 from saq.gui.alert import GUIAlert
 from saq.gui.filter_url import encode_filter_query
-from tests.saq.helpers import insert_alert
+from tests.saq.helpers import attach_observable, insert_alert
 
 pytestmark = pytest.mark.integration
 
@@ -91,15 +90,6 @@ async def test_reset_filter_count_matches_the_gui(client: AsyncClient):
     assert response.json()["count"] == filter_query.count_alerts(filters, entity=GUIAlert)
 
 
-def _attach_fqdn(alert: Alert, value: str) -> None:
-    db = get_db()
-    observable = Observable(type="fqdn", value=value.encode(), sha256=hashlib.sha256(value.encode()).digest())
-    db.add(observable)
-    db.flush()
-    db.add(ObservableMapping(observable_id=observable.id, alert_id=alert.id))
-    db.commit()
-
-
 def _pattern(pattern: str) -> dict:
     return {"f": encode_filter_query([{"name": "Observable Pattern", "inverted": False,
                                        "values": [["fqdn", pattern]]}])}
@@ -107,8 +97,8 @@ def _pattern(pattern: str) -> dict:
 
 @pytest.mark.asyncio
 async def test_counts_an_observable_pattern(client: AsyncClient):
-    _attach_fqdn(insert_alert(), "mail.evil.com")
-    _attach_fqdn(insert_alert(), "evil.com.attacker.net")
+    attach_observable(insert_alert(), "fqdn", "mail.evil.com")
+    attach_observable(insert_alert(), "fqdn", "evil.com.attacker.net")
 
     response = await client.get("/alerts/count", params=_pattern("*.evil.com"))
     assert response.status_code == 200 and response.json() == {"count": 1}
@@ -124,7 +114,7 @@ async def test_a_wildcard_at_both_ends_is_422(client: AsyncClient):
 @pytest.mark.parametrize("path", ["/alerts/count", "/alerts/", "/alerts/export/csv"])
 async def test_a_pattern_that_matches_too_many_observables_is_422(client: AsyncClient, monkeypatch, path):
     """Refused, rather than counting or listing alerts without the filter."""
-    _attach_fqdn(insert_alert(), "mail.evil.com")
+    attach_observable(insert_alert(), "fqdn", "mail.evil.com")
     monkeypatch.setattr(filter_query, "MAX_PATTERN_OBSERVABLES", 0)
 
     response = await client.get(path, params=_pattern("*.evil.com"))

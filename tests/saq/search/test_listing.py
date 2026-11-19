@@ -11,35 +11,16 @@ from datetime import datetime
 
 import pytest
 
-from saq.database.model import Alert, DetectionPoint, Observable, ObservableMapping
+from saq.database.model import Alert, DetectionPoint
 from saq.database.pool import get_db
 from saq.search.query import filter_listing, search_alerts
 from saq.search.types import SearchFilters, SearchRequest
-from tests.saq.helpers import insert_alert
+from tests.saq.helpers import attach_observable, insert_alert
 
 pytestmark = pytest.mark.integration
 
 SIGNATURE_UUID = "6f3a1b2c-1111-2222-3333-444455556666"
 OTHER_SIGNATURE_UUID = "1a2b3c4d-9999-8888-7777-666655554444"
-
-
-def _attach(alert: Alert, observable_type: str, value: str, sha256: bytes | None = None) -> None:
-    """Maps an observable to an alert, reusing the catalog row if it already exists.
-
-    `observables` is an append-only catalog with a unique key on (type, sha256): the same
-    observable on two alerts is one row and two observable_mapping rows.
-    """
-    db = get_db()
-    digest = sha256 or hashlib.sha256(value.encode()).digest()
-    observable = db.query(Observable).filter(
-        Observable.type == observable_type, Observable.sha256 == digest).one_or_none()
-    if observable is None:
-        observable = Observable(type=observable_type, value=value.encode(), sha256=digest)
-        db.add(observable)
-        db.flush()
-
-    db.add(ObservableMapping(observable_id=observable.id, alert_id=alert.id))
-    db.commit()
 
 
 def _signature_filters(signature_uuid=SIGNATURE_UUID, **kwargs) -> SearchFilters:
@@ -60,10 +41,10 @@ def corpus():
     db.commit()
 
     for alert in alerts:
-        _attach(alert, "signature_id", SIGNATURE_UUID)
+        attach_observable(alert, "signature_id", SIGNATURE_UUID)
 
     unrelated = insert_alert()
-    _attach(unrelated, "signature_id", OTHER_SIGNATURE_UUID)
+    attach_observable(unrelated, "signature_id", OTHER_SIGNATURE_UUID)
     return alerts, unrelated
 
 
@@ -163,7 +144,7 @@ def test_a_listing_leaves_out_test_alerts_and_counts_them(corpus):
     how many it left out; naming a queue, or asking for test alerts, brings them back."""
     db = get_db()
     test_alert = insert_alert()
-    _attach(test_alert, "signature_id", SIGNATURE_UUID)
+    attach_observable(test_alert, "signature_id", SIGNATURE_UUID)
     db.execute(Alert.__table__.update().where(Alert.id == test_alert.id).values(queue="svs"))
     db.commit()
 

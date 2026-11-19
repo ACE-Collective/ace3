@@ -21,6 +21,7 @@ genuinely tied to a Flask request.
 import datetime
 import hashlib
 import logging
+import time
 from functools import cached_property
 
 import pytz
@@ -336,6 +337,29 @@ PATTERN_LOOKUP_TIMEOUT_MS = 1000
 # MAX_EXECUTION_TIME stopped the statement
 ER_QUERY_TIMEOUT = 3024
 
+# How long a refused pattern stays refused before it is looked up again. A pinned badge and an
+# open manage page run their filter on every 30 second refresh, and a lookup that runs to the time
+# limit costs PATTERN_LOOKUP_TIMEOUT_MS of MySQL each time. Observables are never deleted, so a
+# pattern over the cap stays over it; one that timed out under load gets another try after this.
+PATTERN_REFUSAL_TTL_SECONDS = 300
+
+# (type, pattern) -> (why it was refused, when that expires on time.monotonic()), per process.
+# Only refusals: a pattern that was looked up can match a new observable at any time.
+_refused_patterns: dict[tuple[str, str], tuple[str, float]] = {}
+
+
+def clear_refused_patterns():
+    _refused_patterns.clear()
+
+
+def _refuse(key: tuple[str, str], reason: str) -> ObservablePatternError:
+    now = time.monotonic()
+    for expired in [k for k, (_, expires) in _refused_patterns.items() if expires <= now]:
+        del _refused_patterns[expired]
+
+    _refused_patterns[key] = (reason, now + PATTERN_REFUSAL_TTL_SECONDS)
+    return ObservablePatternError(reason)
+
 # The LIKE escape character. Not the default backslash, which is in every Windows path an analyst
 # types and whose meaning in a string literal depends on the server's sql_mode.
 LIKE_ESCAPE = "!"
@@ -391,10 +415,15 @@ def resolve_observable_pattern(observable_type: str, pattern: str) -> list[int]:
     """The ids of the observables of this type (or any type) whose value matches the pattern.
 
     Raises ObservablePatternError when no index can serve the pattern, when it matches more than
-    MAX_PATTERN_OBSERVABLES observables, or when the lookup runs past PATTERN_LOOKUP_TIMEOUT_MS.
+    MAX_PATTERN_OBSERVABLES observables, or when the lookup runs past PATTERN_LOOKUP_TIMEOUT_MS,
+    and for PATTERN_REFUSAL_TTL_SECONDS after either of the last two without looking it up again.
     A partial answer is never returned: it would quietly leave alerts out of the list.
     """
     pattern = normalize_observable_pattern(observable_type, check_observable_pattern(pattern))
+    key = (observable_type, pattern)
+    refused = _refused_patterns.get(key)
+    if refused is not None and refused[1] > time.monotonic():
+        raise ObservablePatternError(refused[0])
 
     # type_coerce rather than a LIKE on the BLOB column itself, which SQLAlchemy deprecates; it
     # changes nothing in the SQL
@@ -417,14 +446,12 @@ def resolve_observable_pattern(observable_type: str, pattern: str) -> list[int]:
         # the analyst is told why; this is for whoever tunes PATTERN_LOOKUP_TIMEOUT_MS
         logging.info("observable pattern lookup stopped at %d ms", PATTERN_LOOKUP_TIMEOUT_MS,
                      extra={"observable_type": observable_type, "observable_pattern": pattern})
-        raise ObservablePatternError(
-            f"observable pattern {observable_type}:{pattern} took too long to look up; "
-            f"make its text longer or pick a type") from e
+        raise _refuse(key, f"observable pattern {observable_type}:{pattern} took too long to look up; "
+                           f"make its text longer or pick a type") from e
 
     if len(ids) > MAX_PATTERN_OBSERVABLES:
-        raise ObservablePatternError(
-            f"observable pattern {observable_type}:{pattern} matches more than {MAX_PATTERN_OBSERVABLES} "
-            f"observables; make it more specific")
+        raise _refuse(key, f"observable pattern {observable_type}:{pattern} matches more than "
+                           f"{MAX_PATTERN_OBSERVABLES} observables; make it more specific")
 
     return ids
 
