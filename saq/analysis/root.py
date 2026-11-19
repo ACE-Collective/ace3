@@ -12,7 +12,6 @@ from saq.analysis.analysis import Analysis
 from saq.analysis.analysis_tree.analysis_tree_manager import AnalysisTreeManager
 from saq.analysis.dependency import AnalysisDependency
 from saq.analysis.detection_point import DetectionPoint
-from saq.analysis.event_bus import AnalysisEventBus
 from saq.analysis.file_manager.file_manager_factory import create_file_manager
 from saq.analysis.module_execution_delta import ModuleExecutionDelta
 from saq.analysis.module_path import MODULE_PATH
@@ -106,12 +105,6 @@ class RootAnalysis(Analysis):
         # per-module execution deltas recorded by the executor
         self._module_executions: list[ModuleExecutionDelta] = []
 
-        # centralized event management system
-        self.event_bus = AnalysisEventBus()
-        
-        # set up global event propagation using the event bus
-        self.event_bus.setup_global_event_propagation(self)
-
         # XXX: refactor - the RootAnalysis should depend entirely on the FileManager for storage_dir stuff
         # so it should not know about the storage_dir at all
 
@@ -126,7 +119,6 @@ class RootAnalysis(Analysis):
 
         # initialize analysis tree manager
         self._analysis_tree_manager = AnalysisTreeManager(
-            self.event_bus,
             self.file_manager,
             self
         )
@@ -142,10 +134,6 @@ class RootAnalysis(Analysis):
     def record_module_execution(self, delta: ModuleExecutionDelta):
         self._module_executions.append(delta)
 
-    def _fire_global_events(self, source, event_type, *args, **kwargs):
-        """Fires EVENT_GLOBAL_* events. Delegates to the AnalysisEventBus."""
-        self.event_bus.fire_global_events(source, event_type, *args, **kwargs)
-        
     #
     # the json property is used for internal storage
     #

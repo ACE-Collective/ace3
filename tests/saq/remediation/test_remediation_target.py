@@ -1,11 +1,12 @@
 import pytest
 
-from saq.constants import F_TEST
+from saq.constants import F_EMAIL_DELIVERY, F_TEST
 from saq.database.model import Observable, ObservableRemediationMapping, Remediation
 from saq.database.pool import get_db
 from saq.configuration.config import get_config
 from saq.remediation.target import DefaultObservableRemediationInterface, ObservableRemediationInterface, RemediationTarget, get_observable_remediation_interfaces, register_observable_remediation_interface
-from saq.remediation.types import RemediationAction, RemediationStatus
+from saq.remediation.database import queue_remediation, removal_covers
+from saq.remediation.types import RemediationAction, RemediationStatus, RemediatorStatus
 
 @pytest.mark.integration
 def test_queue_remediation():
@@ -106,3 +107,30 @@ def test_register_observable_remediation_interface_prevents_duplicate_types():
     observable = create_observable(F_URL, "http://example.com")
     targets = get_observable_remediation_targets(observable)
     assert len(targets) == 1
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("action, status, result, covers", [
+    (RemediationAction.REMOVE, RemediationStatus.NEW, None, True),
+    (RemediationAction.REMOVE, RemediationStatus.IN_PROGRESS, RemediatorStatus.DELAYED, True),
+    (RemediationAction.REMOVE, RemediationStatus.COMPLETED, RemediatorStatus.SUCCESS, True),
+    (RemediationAction.REMOVE, RemediationStatus.COMPLETED, RemediatorStatus.NOT_FOUND, True),
+    # a removal that failed leaves the message where it was, so another target must act
+    (RemediationAction.REMOVE, RemediationStatus.COMPLETED, RemediatorStatus.FAILED, False),
+    (RemediationAction.REMOVE, RemediationStatus.COMPLETED, RemediatorStatus.ERROR, False),
+    (RemediationAction.REMOVE, RemediationStatus.COMPLETED, RemediatorStatus.CANCELLED, False),
+    # the latest action put it back
+    (RemediationAction.RESTORE, RemediationStatus.COMPLETED, RemediatorStatus.SUCCESS, False),
+])
+def test_removal_covers(action, status, result, covers):
+    target = RemediationTarget("office365_email", F_EMAIL_DELIVERY, "<m@x>|owner@x")
+    assert not removal_covers(target)
+
+    remediation_id = queue_remediation(target, action, get_config().global_settings.automation_user_id)
+    get_db().execute(Remediation.__table__.update().where(Remediation.id == remediation_id).values(
+        status=status.value, result=result.value if result else None))
+    get_db().commit()
+
+    assert removal_covers(target) is covers
+    # another remediator's row for the same key is not this target's
+    assert not removal_covers(RemediationTarget("other", F_EMAIL_DELIVERY, "<m@x>|owner@x"))

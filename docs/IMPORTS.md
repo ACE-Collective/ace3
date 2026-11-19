@@ -15,7 +15,7 @@ These rules come from the October 2026 import work:
 1. **A package `__init__.py` imports nothing heavier than one of its modules.**
    - Importing any module of a package runs its `__init__.py` first. A re-export there loads what it re-exports into everything that imports one module from it.
    - A name from a module that loads more stays importable from the package through a PEP 562 `__getattr__` that imports the defining module on first use: `__getattr__ = lazy_getattr(__name__, _EXPORTS)` (`saq/lazy_exports.py`). Examples: `saq/analysis/__init__.py`, `saq/gui/__init__.py`, `saq/database/__init__.py`, `saq/modules/file_analysis/__init__.py`, `saq/collectors/hunter/__init__.py`.
-   - A light re-export can stay. `saq/storage/__init__.py` re-exports its interfaces and leaves out `S3Storage`, which loads boto3.
+   - A light re-export can stay: `saq/storage/__init__.py` re-exports its interfaces and its local backend.
    - Don't export a name that is also a submodule's name. Importing the submodule rebinds the name to the module (`saq.database.retry`).
    - An observable type's class is named in `observable_types.classes` (`etc/saq.default.yaml`) as `module:Class`, and `create_observable()` imports it the first time it builds an observable of that type, so `saq/observables/__init__.py` imports nothing either.
    - The `__init__.py` of `aceapi_v2/`, `aceapi_ai/` and `app/` has nothing to re-export, and imports nothing at all.

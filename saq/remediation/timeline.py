@@ -24,7 +24,10 @@ from datetime import datetime, timedelta, timezone
 import logging
 from typing import TYPE_CHECKING, Optional, Protocol, runtime_checkable
 
-from saq.constants import F_EMAIL_DELIVERY, parse_email_delivery
+from saq.constants import F_EMAIL_DELIVERY, R_DELIVERED_TO, parse_email_delivery
+from saq.email import describe_undelivered
+from saq.modules.email.constants import DELIVERY_TAG_REASONS
+from saq.remediation.types import RemediationAction, RemediationStatus
 
 if TYPE_CHECKING:
     from saq.analysis.root import RootAnalysis
@@ -307,12 +310,27 @@ def _gather_ace_email_remediation_events(
     """
     from saq.database.model import Remediation, RemediationHistory
     from saq.database.pool import get_db
+    # coverage imports the ORM models, which this module keeps out of non-DB contexts
+    from saq.remediation.coverage import journal_explains
 
-    keys = sorted({
-        obs.value for obs in root.find_observables(lambda o: o.type == F_EMAIL_DELIVERY)
-    })
+    deliveries = root.find_observables(lambda o: o.type == F_EMAIL_DELIVERY)
+    keys = sorted({obs.value for obs in deliveries})
     if not keys:
         return []
+
+    # the delivery tag EmailAnalyzer put on an address the journal did not deliver to under
+    # its own address; it is on the observable, so nothing is read from disk
+    undelivered = {
+        obs.value: reason
+        for obs in deliveries
+        for tag, reason in DELIVERY_TAG_REASONS.items()
+        if obs.has_tag(tag)
+    }
+    # ... and the mailboxes that got its mail, which EmailAnalyzer linked it to
+    delivered_to = {
+        obs.value: [_recipient(r.target.value) for r in obs.get_relationships_by_type(R_DELIVERED_TO)]
+        for obs in deliveries if obs.value in undelivered
+    }
 
     db = get_db()
 
@@ -355,6 +373,19 @@ def _gather_ace_email_remediation_events(
         except (ValueError, TypeError, AttributeError):
             pass
 
+        resolved_target = h.resolved_target
+        if resolved_target and resolved_target != target:
+            # the remediator acted on another target than the key named, e.g. the mailbox that
+            # owns an alias address; its message (the row's tooltip) says why
+            description = f"{description} via {resolved_target}"
+            target = f"{target} \u2192 {resolved_target}" if target else resolved_target
+        elif (action == RemediationAction.REMOVE.value and h.status == RemediationStatus.COMPLETED.value
+              and journal_explains(undelivered.get(rem.key), result)):
+            # the journal says this address did not get its own copy, so this is not a
+            # failed remediation
+            note = describe_undelivered(undelivered[rem.key], delivered_to.get(rem.key, []))
+            description = f"{action.capitalize()} ({note})"
+
         events.append(RemediationEvent(
             source="ACE",
             event_type=f"ace_{action}".lower() if action else "ace",
@@ -369,10 +400,18 @@ def _gather_ace_email_remediation_events(
                 "status": h.status,
                 "result": h.result,
                 "message": h.message,
+                "resolved_target": resolved_target,
             },
         ))
 
     return events
+
+
+def _recipient(email_delivery: str) -> str:
+    try:
+        return parse_email_delivery(email_delivery)[1] or email_delivery
+    except ValueError:
+        return email_delivery
 
 
 def _gather_external_check_events(root: "RootAnalysis") -> list[RemediationEvent]:

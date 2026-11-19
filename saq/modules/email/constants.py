@@ -3,6 +3,7 @@ KEY_CC = 'cc'
 KEY_COMPAUTH_REASON = 'compauth_reason'
 KEY_COMPAUTH_RESULT = 'compauth_result'
 KEY_DECODED_SUBJECT = 'decoded_subject'
+KEY_DELIVERIES = 'deliveries'
 KEY_DKIM_RESULT = 'dkim_result'
 KEY_DKIM_SIGNING_DOMAINS = 'dkim_signing_domains'
 KEY_DMARC_RESULT = 'dmarc_result'
@@ -45,3 +46,18 @@ KEY_X_SENDER_ID = 'x-sender-id'
 KEY_X_AUTH_ID = 'x-auth-id'
 KEY_X_ORIGINAL_SENDER = 'x-original-sender'
 KEY_X_SENDER_IP = 'x-sender-ip'
+
+# where a recipient's copy went, from an Office 365 journal report (EmailAnalysis.deliveries)
+DELIVERY_DELIVERED = 'delivered'          # the address has its own Recipient: line
+DELIVERY_FORWARDED = 'forwarded'          # a Forwarded: annotation links it to the mailbox that received it
+DELIVERY_EXPANDED = 'expanded'            # an Expanded: annotation names it as a distribution list
+DELIVERY_NOT_JOURNALED = 'not_journaled'  # in the headers, but no Recipient: line accounts for it
+
+# the tag EmailAnalyzer puts on an email_delivery the journal did not deliver to under its own
+# address; the observable tag index stores it per alert, so coverage reads it from the database
+DELIVERY_TAGS = {
+    DELIVERY_FORWARDED: 'delivery_forwarded',
+    DELIVERY_EXPANDED: 'delivery_expanded',
+    DELIVERY_NOT_JOURNALED: 'delivery_not_journaled',
+}
+DELIVERY_TAG_REASONS = {tag: reason for reason, tag in DELIVERY_TAGS.items()}

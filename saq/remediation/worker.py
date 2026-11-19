@@ -55,11 +55,13 @@ class RemediationWorker(QueueWorker[RemediationWorkItem]):
             remediation_id = target.id,
             result = remediator_result.status.value,
             message = remediator_result.message,
+            resolved_target = remediator_result.resolved_target,
             status = remediator_result.status.remediation_status.value,
         )
         get_db().add(remediation_history)
         get_db().commit()
 
         # log result
-        logging.info(f"{remediator_result.status} {target.action.value[:-1]}ing {target.type} {target.key}")
+        resolved = f" (acted on {remediator_result.resolved_target})" if remediator_result.resolved_target else ""
+        logging.info(f"{remediator_result.status} {target.action.value[:-1]}ing {target.type} {target.key}{resolved}")
         return remediator_result

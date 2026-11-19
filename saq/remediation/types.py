@@ -57,6 +57,7 @@ class RemediatorResult(BaseModel):
     status: RemediatorStatus = Field(..., description="The status of the remediation result.")
     message: Optional[str] = Field(default=None, description="The message of the remediation result.")
     restore_key: Optional[str] = Field(default=None, description="The restore key of the remediation result.")
+    resolved_target: Optional[str] = Field(default=None, description="What the remediator acted on when it was not the key itself, such as the mailbox that owns an alias address.")
 
 class RemediationWorkItem(BaseModel):
     id: int = Field(..., description="The database id of the remediation.")

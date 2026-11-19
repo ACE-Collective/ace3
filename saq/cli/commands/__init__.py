@@ -39,7 +39,6 @@ COMMANDS = {
     "debug": "misc",
     "event": "misc",
     "git": "misc",
-    "s3": "misc",
     "node": "node",
     "perm": "permissions",
     "phishkit": "phishkit",

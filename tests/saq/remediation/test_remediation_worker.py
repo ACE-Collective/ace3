@@ -162,3 +162,35 @@ def test_worker_loop_recovers_after_failed_commit(worker, caplog):
     assert any(f"remediation {deleted.id} " in r.getMessage() for r in errors)
 
 
+
+@pytest.mark.integration
+def test_remediate_records_the_resolved_target(worker, caplog):
+    class _redirecting_remediator(Remediator):
+        def remove(self, target: RemediationWorkItem) -> RemediatorResult:
+            return RemediatorResult(status=RemediatorStatus.SUCCESS, message="removed from the owner", resolved_target="owner@x")
+        def restore(self, target: RemediationWorkItem) -> RemediatorResult:
+            return RemediatorResult(status=RemediatorStatus.SUCCESS, message="restored")
+
+    remediation_id = RemediationTarget("custom", F_TEST, "alias").queue_remediation(RemediationAction.REMOVE, get_config().global_settings.automation_user_id)
+    remediation = get_db().query(Remediation).filter(Remediation.id == remediation_id).first()
+    worker = RemediationWorker(_redirecting_remediator(RemediatorConfig(
+        name="custom",
+        display_name="Custom Remediator",
+        description="Custom remediator for testing",
+        observable_type=F_TEST,
+        python_module="value",
+        python_class="value"
+    )))
+    with caplog.at_level(logging.INFO):
+        worker.remediate(create_remediation_work_item(remediation))
+
+    history = get_db().query(RemediationHistory).filter(RemediationHistory.remediation_id == remediation_id).one()
+    assert history.resolved_target == "owner@x"
+    assert "removing test alias (acted on owner@x)" in caplog.text
+
+    # a remediator that acts on the key itself leaves it empty
+    remediation_id = RemediationTarget("custom", F_TEST, "plain").queue_remediation(RemediationAction.RESTORE, get_config().global_settings.automation_user_id)
+    remediation = get_db().query(Remediation).filter(Remediation.id == remediation_id).first()
+    worker.remediate(create_remediation_work_item(remediation))
+    history = get_db().query(RemediationHistory).filter(RemediationHistory.remediation_id == remediation_id).one()
+    assert history.resolved_target is None

@@ -12,6 +12,16 @@
         <td class="col-md-10">{{analysis.env_rcpt_to}}</td>
     </tr>
     {% endif %}
+    {% if analysis.deliveries %}
+    <tr>
+        <td class="col-md-2">Delivered to</td>
+        <td class="col-md-10">{{ analysis.delivered_mailboxes | join(', ') }}
+            {% for address, note in analysis.delivery_notes %}
+            <br><small class="text-muted">{{ address }}: {{ note }}</small>
+            {% endfor %}
+        </td>
+    </tr>
+    {% endif %}
     {% if analysis.mail_from %}
     <tr>
         <td class="col-md-2">From</td>

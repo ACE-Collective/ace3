@@ -1100,24 +1100,20 @@ gains two constructors — `narrow(root, observable, module)` and
 snapshot it received. Narrow snapshots are the common case and stay
 cheap; wide is opt-in.
 
-### A7. Forward-compatibility with S3 storage and Lambda execution
+### A7. Pluggable blob store backends
 
-The hardlink-based blob store from §A2 is local-filesystem-specific and
-will not survive two roadmap items:
+The hardlink-based blob store from §A2 is local-filesystem-specific: it
+works only where every reader shares the writer's filesystem, and object
+storage has no hardlinks, so "reference count via `st_nlink`" does not
+carry over to a remote backend.
 
-1. **ACE storage moves from local disk to S3.** Hardlinks don't exist
-   in object storage. "Reference count via `st_nlink`" goes away. Alert
-   storage dirs become S3 prefixes. File observables become S3 keys.
-2. **Analysis modules move to Lambda.** Lambdas have no shared
-   filesystem. Every invocation is cold with respect to disk. Anything
-   a module needs to read must come from S3; anything it produces must
-   be written to S3 before the invocation returns.
-
-The caching design survives this migration cleanly if we do one thing
-up front: **factor blob storage behind an interface, with the local
-hardlink implementation being one backend and an S3 backend being the
-other.** The cache logic, the delta writer, and the replay path all
-talk to the interface, not the filesystem.
+The caching design stays backend-agnostic by doing one thing up front:
+**blob storage sits behind an interface, with the local hardlink
+implementation as the built-in backend.** The cache logic, the delta
+writer and the replay path all talk to the interface, not the
+filesystem. ACE ships no object store client; a site that needs a remote
+backend supplies one from an integration through `BlobStoreSpec` below
+(as `saq/storage` does with `storage.target: custom`).
 
 #### `BlobStore` interface
 
@@ -1156,21 +1152,21 @@ class BlobStore(ABC):
     @abstractmethod
     def materialize(self, sha256: str, dest_path: str) -> None:
         """Escape hatch: make the blob available at a local filesystem
-        path. Local backend hardlinks; S3 backend downloads to /tmp."""
+        path. Local backend hardlinks; a remote backend downloads to a temp file."""
 ```
 
 `reference()`/`unreference()` are explicit on *both* backends. We don't
 lean on `st_nlink` as a free refcount even for the local backend,
-because that free-lunch semantics diverges from S3's and would force a
-second code path at migration time. Uniformity is worth the small cost.
+because that free-lunch semantics has no equivalent on a remote backend
+and would force a second code path. Uniformity is worth the small cost.
 
 **Two-tier maintenance.** Earlier drafts had a single `gc(grace_period)`
 method, which conflated two genuinely different operations. The durable
-tier (filesystem for `LocalHardlinkBlobStore`; the S3 bucket for the
-future `S3BlobStore`) is the source of truth, mutated by one node only;
+tier (the filesystem for `LocalHardlinkBlobStore`; the remote store for
+a remote backend) is the source of truth, mutated by one node only;
 GC against it is global state mutation. The local cache tier — only
-meaningful for backends like S3 that keep a per-node read cache over a
-remote durable tier — is per-node state, evictable on every node
+meaningful for backends that keep a per-node read cache over a remote
+durable tier — is per-node state, evictable on every node
 independently. The two operations have different node-scope semantics
 and different inputs (a `grace_period` for durable GC; a `LocalCacheBudget`
 of `max_age`/`max_bytes` for local eviction). Splitting them keeps the
@@ -1197,21 +1193,17 @@ When the field is unset, the default is `LocalHardlinkBlobStore` rooted at
 analysis_cache:
   blob_store_dir: null   # resolves to <data_dir>/blob_store
 
-# S3 backend (example downstream integration) — pure config switch, no core code change
+# remote backend (example downstream integration) — pure config switch, no core code change
 analysis_cache:
   blob_store:
-    python_module: your_integration.s3_blob_store
-    python_class: S3BlobStore
+    python_module: your_integration.remote_blob_store
+    python_class: RemoteBlobStore
     config:
-      s3_bucket: env:ACE_ANALYSIS_CACHE_S3_BUCKET
-      s3_region: env:AWS_REGION
-      enable_s3_gc: false              # prefer S3 bucket lifecycle policies
-      verify_s3_before_evict: false    # skip per-eviction head_object (saves $)
+      bucket: env:ACE_ANALYSIS_CACHE_BUCKET
 ```
 
-This is what the original §A7 "factor blob storage behind an interface"
-line implied without spelling out — the configuration plumbing that makes
-the migration a config edit instead of a code change.
+This is the configuration plumbing that makes changing backends a config
+edit instead of a code change.
 
 #### Multi-node safety
 
@@ -1223,9 +1215,9 @@ row itself is in the shared database. To make this hard to deploy by
 accident, `warn_if_blob_store_not_multi_node_safe()` runs at engine
 startup: when the `nodes` table has more than one row and no pluggable
 backend is configured, it emits a WARNING pointing operators at
-`analysis_cache.blob_store`. Multi-node deployments need a global backend
-(S3 once available, or a shared-filesystem backend if a deployment is
-willing to maintain one).
+`analysis_cache.blob_store`. Multi-node deployments need a global backend:
+a custom class over an object store, or a shared-filesystem backend if a
+deployment is willing to maintain one.
 
 #### Reference-counting table (both backends)
 
@@ -1261,210 +1253,57 @@ Backends:
   the grace period. `maintain_local()` is a no-op — the local FS *is*
   the durable tier. `materialize()` hardlinks into the target path when
   same-FS, falls back to copy otherwise.
-- **`S3BlobStore`** (a backend a downstream integration can implement via the
-  `BlobStoreSpec` mechanism above — sketched here as the canonical example of a
-  remote durable tier): stores bytes at `s3://<bucket>/<sha256>`
-  with no path-shard prefix (S3 already partitions internally; the local
-  cache tier preserves the 3-char shard layout). Wraps a
+- **A remote backend** (implemented by a downstream integration through
+  `BlobStoreSpec`) keeps the durable tier in a remote store and wraps a
   `LocalHardlinkBlobStore` as a per-node **write-through / read-through
-  cache** — so a blob spilled by one worker survives a `maintain_local`
-  eviction by re-downloading from S3 on the next read, and conversely a
-  blob still being uploaded to S3 stays available locally during the
-  upload window.
-  - `put()` writes the bytes through the local cache first, then issues
-    `head_object` + `upload_file` to S3. Uploads are **fail-soft**: a
-    transient S3 outage logs a warning but doesn't fail the cache write,
-    because the bytes are already in the local cache and the
-    `_LOCAL_EVICT_MIN_AGE_SECONDS` floor (5 minutes) keeps
-    `maintain_local` from evicting them out from under an in-flight
-    upload.
-  - `get()` / `materialize()` check the local cache first; on miss,
-    `download_file` from S3 into a tempfile, then `put()` it through the
-    local cache (re-hashing in the process — catches a corrupted S3
-    transfer).
-  - `reference()` / `unreference()` delegate to the embedded local
-    store, but those operations are pure DB writes against `blob_refs`
-    and are backend-independent anyway.
-  - `maintain_global()` is **opt-in** via `enable_s3_gc` and **defaults
-    off**, deferring object lifetime to an S3 **bucket lifecycle
-    policy** on the blob-key prefix. The opt-in path paginates the
-    entire bucket via `list_objects_v2`, batches sha256s through
-    `blob_refs`, and `delete_objects` orphans older than the grace
-    period — costs money (LIST + DELETE are metered) and scales with
-    bucket size, so the default of "let lifecycle policies handle it"
-    is the recommended posture.
-  - `maintain_local()` evicts entries from the per-node cache tier by
-    the configured `LocalCacheBudget(max_age, max_bytes)`, oldest-mtime
-    first when over the size budget. Blobs younger than
-    `_LOCAL_EVICT_MIN_AGE_SECONDS` (5 min) are always retained to
-    protect in-flight uploads. Opt-in `verify_s3_before_evict` issues a
-    `head_object` per candidate to confirm the durable copy exists in
-    S3 — costs money, leave off unless paranoid.
-  - `materialize()` ensures the blob is in the local cache (downloading
-    from S3 on miss), then delegates to `LocalHardlinkBlobStore.materialize`
-    for the hardlink-into-place.
+  cache**, so a blob spilled by one worker survives a `maintain_local`
+  eviction by being fetched again on the next read, and a blob still
+  being uploaded stays available locally during the upload window.
+  - `put()` writes through the local cache first, then uploads. A
+    failed upload should be **fail-soft**: the bytes are already in the
+    local cache, and the `_LOCAL_EVICT_MIN_AGE_SECONDS` floor (5 minutes)
+    keeps `maintain_local` from evicting them out from under an
+    in-flight upload.
+  - `get()` / `materialize()` check the local cache first; on a miss they
+    download into a tempfile and `put()` it through the local cache,
+    re-hashing it on the way, which catches a corrupted transfer.
+  - `reference()` / `unreference()` are DB writes against `blob_refs` and
+    are backend-independent.
+  - `maintain_global()` lists the remote store, batches sha256s through
+    `blob_refs` and deletes orphans older than the grace period. A store
+    with its own object lifecycle rules can leave that to them instead.
+  - `maintain_local()` evicts from the per-node cache tier by the
+    configured `LocalCacheBudget(max_age, max_bytes)`, oldest-mtime first
+    when over the size budget, always keeping blobs younger than
+    `_LOCAL_EVICT_MIN_AGE_SECONDS` to protect in-flight uploads.
 
-This shape — local cache as durability buffer plus read coalescer — is
-slightly richer than the pure "read cache over remote durable tier"
-that §A7 originally implied. The two-tier maintenance contract still
-holds (`maintain_global` is primary-only / mutates global state;
-`maintain_local` is per-node), but the local tier additionally serves
-as the fail-soft staging area for writes.
+The two-tier maintenance contract holds for both (`maintain_global` is
+primary-only and mutates global state; `maintain_local` is per-node), and
+in a remote backend the local tier is also the fail-soft staging area for
+writes. Moving an existing deployment to a remote backend is a config
+switch plus a one-time backfill (walk local `data/blob_store/`, upload
+each blob, leave the `blob_refs` rows untouched).
 
-Migration then becomes a single config switch plus a one-time backfill
-script (walk local `data/blob_store/`, upload to S3, leave the
-`blob_refs` rows untouched).
-
-#### Alert storage dirs on S3
-
-Today every alert has a `storage_dir` on local disk containing
-`root.json` plus file observable payloads. After S3 migration the
-storage dir becomes an S3 prefix like `s3://ace3-data/alerts/<uuid>/`.
-Two design choices, and the caching design strongly favors one:
-
-- **Duplicate bytes per alert.** Each alert stores its own copy of
-  every file observable under its prefix. Simple; transparent to legacy
-  code that does `open(path)`. Storage cost scales with (alerts ×
-  observable size). No dedup. *Not the right choice.*
-- **Alert prefix holds manifests; file observable payloads live only
-  in the blob store.** Each alert's prefix contains `root.json` and
-  small per-alert metadata. Every file observable is a pointer
-  (`{sha256, filename, mime, size}`). Consumers that need bytes call
-  `blob_store.get(sha256)` or `blob_store.materialize(sha256, tmp_path)`.
-  Storage cost scales with (unique file content), not (alerts ×
-  observables). Natural dedup across alerts and across cache hits.
-
-The second choice is what makes the caching design pay off in S3. It
-does require a shim in ACE3's file I/O layer — `FileObservable.path`
-becomes a lazy property that calls `materialize()` on first access,
-downloading from S3 to `/tmp` on demand. Modules that iterate over
-bytes transparently work; modules that pass `path` to subprocesses
-(yara, clamav) also work because the materialized path is real.
-
-Worth doing this shim *before* the S3 migration, as part of Phase 2,
-even while the backend is still local — that way we shake out modules
-that assume a specific path layout while we still have a local FS to
-fall back on. Phase 2 ships with `LocalHardlinkBlobStore` and every
-file observable going through the shim; the S3 migration later swaps
-only the backend.
-
-#### Lambda execution model
-
-The intended Lambda architecture is **one Lambda invocation per root
-analysis**, not one per module. A single Lambda receives a
-`RootAnalysis`, runs the full `AnalysisExecutor` loop internally
-(all modules, all observables, full work-stack), and returns the
-completed root. This is architecturally simpler and avoids per-module
-invocation overhead.
-
-This shapes the caching design in several important ways:
-
-1. **Cache lookups happen inside the Lambda, not on the
-   orchestrator.** The Lambda runs the same `_execute_module_analysis`
-   code path that runs locally today — including the cache-hit
-   short-circuit from Phase 3. When the executor encounters a
-   (module, observable) pair with a cache hit, it skips that module's
-   `analyze()` call and applies the cached delta. Same code, same
-   logic, just executing inside a Lambda process.
-
-   The orchestrator does not need to know about individual modules,
-   cache keys, or deltas. It submits a root, gets back a completed
-   root. All per-module caching intelligence lives in the executor,
-   which is the same code in both environments.
-
-2. **The Lambda needs DB and blob store access.** Since cache lookups
-   happen inside the Lambda, it must reach MySQL (for
-   `analysis_result_cache`) and the blob store (S3). This is a
-   networking/IAM concern — Lambda in a VPC with RDS access is
-   standard — not a design concern. But it does mean the Lambda is
-   not a pure compute function; it has storage dependencies.
-
-3. **Request/response shape is simple.** The orchestrator sends the
-   serialized `RootAnalysis` (or an S3 reference to it). The Lambda
-   returns the completed root plus a manifest of new blobs it
-   uploaded to S3:
-
-   ```
-   request  = { root_analysis_ref }
-   response = { completed_root, new_blob_sha256s: [...] }
-   ```
-
-   The Lambda uploads file observable payloads and spilled
-   `analysis.details` blobs directly to S3 during execution. The
-   orchestrator receives the finished root, persists it, and
-   registers `blob_refs` for the new sha256s.
-
-   Optionally the Lambda can also return the full list of
-   `ModuleExecutionDelta` objects it recorded, so the orchestrator
-   can persist them in `root.json` for attribution — or the
-   completed root already contains `_module_executions` from
-   Phase 1.
-
-4. **The caching payoff changes shape.** A cache hit inside the
-   Lambda avoids one `module.analyze()` call — the same CPU/time
-   savings as local execution. You still pay for the Lambda
-   invocation itself. The savings are in module execution time
-   (which can be huge: sandbox detonation, LLM inference, yara on
-   large binaries), not in Lambda startup. This is still very much
-   worth doing — the expensive modules are why caching exists.
-
-   Contrast with a per-module-Lambda model (not our plan) where a
-   cache hit would avoid an entire invocation including cold start
-   and network round-trip. Our whole-root model doesn't get that
-   benefit, but it avoids the complexity of orchestrating hundreds
-   of per-module Lambda calls with dependency ordering, which is a
-   worthwhile trade.
-
-5. **`BlobStore.materialize()` and `/tmp` budget.** When a module
-   inside the Lambda needs a file observable, `materialize()`
-   downloads from S3 to `/tmp`. On a cache hit that references
-   file blobs, the replay path may also need to materialize if
-   downstream modules in the *same invocation* need those files.
-   Lambda `/tmp` is up to 10 GiB, which should be fine for
-   typical alert sizes but could be tight for roots with many
-   large file observables (multi-GB PCAPs, sample collections).
-   Mitigation: stream through `/tmp` and clean up between modules;
-   or flag roots with estimated total file size > threshold for
-   local (non-Lambda) execution.
-
-6. **Cache-hit correctness.** The cacheability contract (§A1)
-   remains load-bearing: if a module's output depends on the
-   Lambda runtime environment (wall-clock time, cold-start state,
-   random seed), caching replays stale results. The CI-time lint
-   fixture from §A4 should run against the Lambda packaging
-   pipeline too.
-
-#### Summary: what the main design changes to accommodate S3/Lambda
+#### Summary: what the main design does to stay backend-agnostic
 
 - **Phase 2 gains a `BlobStore` interface** with `LocalHardlinkBlobStore`
-  as initial implementation. File observable I/O routes through the
-  interface via a `materialize()` shim on `FileObservable.path`.
+  as the built-in implementation.
 - **Phase 2 adds the `blob_refs` table**, used by the local backend
   from day one. No free `st_nlink` refcount — explicit everywhere.
 - **Phase 3 cache logic calls `blob_store.reference()` /
   `blob_store.unreference()`** around cache-row lifecycle instead of
   relying on filesystem link counts.
 - **Phase 3 cache lookup path is backend-agnostic** — same code
-  whether the blob store is local or S3.
-- **S3 backend** (the canonical pluggable backend for `analysis.details`
-  spill): an `S3BlobStore` implemented in a downstream integration wires
-  through the `BlobStoreSpec` mechanism (§A7 "Backend selection") with no edits
-  to core ACE3. It runs the local hardlink store as a per-node write-through /
-  read-through cache in front of S3 and defers durable-tier object lifetime to
-  an S3 bucket lifecycle policy by default. Alert `storage_dir` migration to S3
-  prefixes and the file observable shim are still future work — none of which
-  requires changes to the delta format, the cache schema, or the replay logic.
-- **Post-Lambda migration** (also out of scope): cache lookup stays
-  on the orchestrator; Lambda returns deltas rather than mutated
-  roots; same `ModuleExecutionDelta` serialization flows end-to-end.
+  whether the blob store is local or remote.
+- **A remote backend** wires in through `BlobStoreSpec` (§A7 "Backend
+  selection") with no edits to core ACE3, and needs no change to the
+  delta format, the cache schema or the replay logic.
 
-The forward-compatibility cost paid up front is: (a) write the
-`BlobStore` interface and the `blob_refs` table in Phase 2 instead of
-relying on hardlinks, and (b) route file observable I/O through a
-materialization shim. Both are modest. The alternative — shipping a
-hardlink-native Phase 2 and rewriting it later — would mean redoing
-the GC story, the cache-row lifecycle, and potentially the delta
-schema after the migration lands. Worth eating the small cost now.
+The cost paid up front is writing the `BlobStore` interface and the
+`blob_refs` table in Phase 2 instead of relying on hardlinks. The
+alternative — shipping a hardlink-native Phase 2 and rewriting it later —
+would mean redoing the GC story, the cache-row lifecycle, and potentially
+the delta schema. Worth eating the small cost now.
 
 ### A8. Expiring cache rows: mechanism and scheduling
 
@@ -2771,13 +2610,13 @@ the Step 3.6 tool-version helper shipped in the same change.
   - *Mixed-version fleet*: file-bearing rows are only written by builds
     that also carry the YAML opt-in (same artifact); an older node
     reading one hits its read-time refusal (silent no-op replay).
-  - *S3 blob store backends* need no code change — Phase 4 consumes only
+  - *Remote blob store backends* need no code change — Phase 4 consumes only
     the `BlobStore` interface. Operationally: a bucket lifecycle policy
-    (the recommended GC posture) must expire objects no sooner than the
+    (if the backend leaves GC to one) must expire objects no sooner than the
     longest file-capable `cache_ttl` + GC grace, or live rows degrade to
     `blob_missing` misses; per-node local-cache size budgets may need
-    revisiting now that blobs include multi-MB files, and a `head_object`
-    per file spec is paid on cold lookups.
+    revisiting now that blobs include multi-MB files, and a remote existence
+    check per file spec is paid on cold lookups.
   - *Yara*: deferred, for reasons beyond versioning (the ruleset IS
     fingerprintable — `YaraScanner_v3_4.signature_dir` exposes the
     configured rules directory, and an nrd-style mtime+size walk would
@@ -2967,9 +2806,9 @@ from the outline above.
   production bake — plumbing only. `phishkit` is the intended first opt-in
   but that crossover happens in Phase 3 alongside the read path, when we
   can measure hit rate and correctness together.
-- **`BlobStore` included up front** (§A7 forward-compat argument). Both
+- **`BlobStore` included up front** (§A7). Both
   `LocalHardlinkBlobStore` and the `blob_refs` table ship in Phase 2 so
-  the S3 migration later is a pure backend swap.
+  moving to a remote backend later is a pure backend swap.
 - **`FileObservable.materialize()` shim deferred to Phase 4.** Phase 2
   only needs the blob store for `analysis.details` spill, not for file
   observable I/O. Adding the shim pre-emptively would have been disruptive
@@ -3221,7 +3060,7 @@ through config — picking a different backend required code edits to
   if reconciliation drift is observed.
 - Explicit operator guidance on `local_cache_max_bytes` — a
   `saq.default.yaml` comment is still missing (it only matters once a
-  two-tier remote backend like S3 is configured).
+  two-tier remote backend is configured).
 - Phase 4 file-observable hardlink backing — separate workstream.
 
 ## Phase 3 implementation notes
@@ -3334,14 +3173,14 @@ activity, so non-cacheable modules pay no byte cost.
 > lookup cost goes. `cache_lookup_db_ms_sum` (the SELECT),
 > `cache_lookup_decode_ms_sum` (zstd decompress + JSON + `from_dict`), and
 > `cache_lookup_blob_ms_sum` (spilled-details inline + per-file
-> `blob_store.exists` — the S3 round-trip cost) are sub-intervals of the timed
+> `blob_store.exists` — a remote backend's round-trip cost) are sub-intervals of the timed
 > region and together stay `<= cache_lookup_ms_sum` (each is floored to whole ms
 > and the region also holds untimed glue). `cache_lookup_key_ms_sum` is
 > **separate and additive**: `generate_cache_key` (which probes each module's
 > external tools via `extended_version`) runs *before* the `lookup_ms` timer, so
 > it was previously invisible — true per-lookup cost ≈
 > `cache_lookup_ms_sum + cache_lookup_key_ms_sum`. Stack the four per module to
-> tell blob-store I/O (S3) apart from cache-key/tool-probe cost apart from DB.
+> tell blob-store I/O apart from cache-key/tool-probe cost apart from DB.
 
 > **Semantics change (2026-06-10):** `cache_lookup_ms_sum`/`_max` now
 > accumulate on **misses as well as hits** (and are emitted whenever there

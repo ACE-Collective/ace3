@@ -1,7 +1,9 @@
 from typing import Optional
 
 from sqlalchemy import func
-from saq.database.model import FileCollection, FileCollectionHistory
+from sqlalchemy.dialects.mysql import insert
+
+from saq.database.model import FileCollection, FileCollectionHistory, FileCollectionWaiter
 from saq.database.pool import get_db
 from saq.file_collection.types import FileCollectionStatus, FileCollectorStatus
 
@@ -58,6 +60,8 @@ def resolve_duplicate_pending_file_collection(collection_id: int) -> int:
     The just-queued request is only deleted while it is still NEW and unlocked.
     If the collector loop already picked it up, it is kept (a brief duplicate is
     preferable to deleting a row the worker is about to record history against).
+    When it is deleted, its alert is recorded as waiting on the older request
+    (wait_on_file_collection()).
     """
     own = get_file_collection(collection_id)
     if own is None:
@@ -84,10 +88,30 @@ def resolve_duplicate_pending_file_collection(collection_id: int) -> int:
         return collection_id
 
     if own.status == FileCollectionStatus.NEW.value and own.lock is None:
+        if own.alert_uuid is not None:
+            _add_waiter(earlier.id, own.alert_uuid)
+        # commits the waiter with the delete
         delete_file_collection(collection_id)
         return earlier.id
 
     return collection_id
+
+
+def wait_on_file_collection(collection_id: int, alert_uuid: str):
+    """Records that the alert waits on the given collection, which another alert may have queued
+    (get_pending_file_collection_by_observable() without an alert uuid). If the alert that queued
+    it is deleted before it is collected, the collector gives it to the alert that has waited
+    longest and still exists, instead of failing it. Recording the same alert twice, or a
+    collection that no longer exists, does nothing."""
+    _add_waiter(collection_id, alert_uuid)
+    get_db().commit()
+
+
+def _add_waiter(collection_id: int, alert_uuid: str):
+    # IGNORE: an alert already waiting, and a collection deleted since it was looked up (the
+    # foreign key), are both nothing to record
+    get_db().execute(insert(FileCollectionWaiter).prefix_with("IGNORE").values(
+        file_collection_id=collection_id, alert_uuid=alert_uuid))
 
 
 def _has_alert(with_alert: bool):
@@ -153,6 +177,8 @@ def get_pending_file_collection_by_observable(
         observable_value: The observable value.
         alert_uuid: Optional alert UUID to filter by. When None, pending requests
             from any alert are considered.
+            A caller that waits on a request another alert queued records that
+            with wait_on_file_collection().
         with_alert: False to consider only requests no alert asked for (an API
             caller's) instead. A request with an alert never converges on one without,
             or the other way round: their files are kept in different places for

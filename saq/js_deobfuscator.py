@@ -5,13 +5,9 @@ worker that runs each sample in a throwaway scanner container. A scan takes
 seconds, so ``deobfuscate_file`` waits for it rather than delaying analysis
 the way phishkit's client does.
 
-Tasks go to the broker that js_deobfuscator/js_deobfuscator.py builds its
-app with: the user ace3, the host rabbitmq and the password in
-/auth/passwords/rabbitmq. This is on purpose. The manager's container never
-sees ACE's configuration, so the two sides agree only while both use that
-fixed broker. That is why this client doesn't apply ACE's ``rabbitmq``
-configuration, although saq/phishkit.py applies it to phishkit's app.
-Issue #1100 covers giving both sides one broker setting.
+Tasks are sent through the manager module's own app, which the manager
+container and ACE's containers both build from the ACE_RABBITMQ_* variables
+compose gives them, so they go to the broker the manager consumes from.
 """
 
 import os

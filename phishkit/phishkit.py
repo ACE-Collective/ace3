@@ -18,6 +18,7 @@ from subprocess import PIPE, Popen, TimeoutExpired
 import uuid
 from celery import Celery
 from celery.signals import worker_ready, worker_shutting_down
+from kombu.utils.url import maybe_sanitize_url
 import shutil
 from yaml import load, SafeLoader
 import magic
@@ -622,12 +623,24 @@ if os.path.exists("/auth/passwords/rabbitmq"):
 else:
     rabbitmq_password = ""
 
+# The broker comes from the environment. Compose gives this container and every ACE container
+# the same ACE_RABBITMQ_* variables, and ACE's client sends tasks through this module's app, so the
+# two sides build the same URL. The defaults are the stack's own rabbitmq.
+rabbitmq_user = os.environ.get("ACE_RABBITMQ_USER", "ace3")
+rabbitmq_host = os.environ.get("ACE_RABBITMQ_HOST", "rabbitmq")
+rabbitmq_port = os.environ.get("ACE_RABBITMQ_PORT", "5672")
+
 app = Celery(
     "phishkit",
     backend=f"redis://ace3:{redis_password}@redis:6379/7",
-    broker=f"pyamqp://ace3:{rabbitmq_password}@rabbitmq//")
+    broker=f"pyamqp://{rabbitmq_user}:{rabbitmq_password}@{rabbitmq_host}:{rabbitmq_port}//")
 
 app.conf.broker_transport_options = {"global_keyprefix": "phishkit"}
+# once per process. this is for ACE's side: its clients import this module after ACE has set up logging.
+# celery worker imports it before logging is configured, so in a manager the record is dropped and the
+# broker shows in celery's startup banner instead
+logger.info("celery broker %s", maybe_sanitize_url(app.conf.broker_url))
+
 
 # Celery's task time limits are the safety net only — per-attempt duration is
 # enforced by subprocess.communicate(timeout=scanner_timeout) inside _run_scanner.

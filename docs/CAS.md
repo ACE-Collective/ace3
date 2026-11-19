@@ -1,9 +1,8 @@
 # Content-Addressed Storage (CAS)
 
 > **Status: implemented in `saq/cas/`** for the `held`, `ttl` and `permanent` retention modes with
-> the `local` and `custom` backends, and optional gzip compression. Deferred, and recorded below
-> where it applies: an object-store (S3) backend (`backend:` accepts `local | custom`; an
-> integration can provide one as `custom`). The design was settled during the SVS design review (`docs/SVS_REVIEW.md` §7); bracketed IDs such as
+> the `local` and `custom` backends, and optional gzip compression. ACE ships no object store
+> backend: `backend:` accepts `local | custom`, and an integration provides one as `custom`. The design was settled during the SVS design review (`docs/SVS_REVIEW.md` §7); bracketed IDs such as
 > `[CAS-4]` point at the item there that records the reasoning. The first consumer is SVS
 > (`docs/SVS.md`).
 
@@ -15,7 +14,7 @@ own key scheme, retention mechanism and failure modes:
 |---|---|---|---|
 | Alert `hardcopies/` | `<storage_dir>/hardcopies/<sha256>` | no | life of the alert |
 | Analysis-cache blobs (`saq/analysis/blob_store.py`) | `<root>/<sha[:3]>/<sha>` + `blob_refs` | no | references expire with a ~35-day partition |
-| Email archive (`saq/email_archive/`, before the `email_archive` pool) | `<sha[:2]>/<sha>.gz.e`; S3 key = sha | AES-GCM, system key | 30 days (S3 copies never deleted) |
+| Email archive (`saq/email_archive/`, before the `email_archive` pool) | `<sha[:2]>/<sha>.gz.e` | AES-GCM, system key | 30 days |
 | Crash report bytes | per crash directory | no | 30 days |
 | YARA `qa_dir` (before the `yara_qa` pool) | `var/qa/<rule>/<file>-<sha>` | no | never cleaned |
 
@@ -256,8 +255,8 @@ mail compresses well.
   random nonce doesn't defeat dedup.
 - **Object names are plain** (`<sha[:2]>/<sha[2:4]>/<sha>`). A reader who can list the bucket
   learns which hashes ACE holds; this was accepted. [CAS-5]
-- **SSE on S3 complements this; it doesn't replace it.** SSE protects the disks, not the bucket
-  credentials.
+- **An object store's server-side encryption complements this; it doesn't replace it.** It
+  protects the disks, not the bucket credentials.
 
 ## Backends
 
@@ -284,13 +283,12 @@ anyway; and `exists` was added for `put`'s check under the row lock. (`saq/cas/b
   `root`), relative to the data directory. Supports `link`, which keeps the analysis cache's
   hardlink trick available: a plaintext object in a local pool is verified by re-hashing and then
   hardlinked out (`materialize`) or read in place (`open`), with no copy.
-- **S3.** Not implemented yet. When it is, it uses `saq.storage.s3.get_s3_client()`, which honors
-  `s3.secure`, `s3.cert_check` and `s3.region` (as the storage factory now does too [F-13]).
-  - Conditional writes (`If-None-Match: *`) avoid redundant uploads. Where the object store
-    doesn't support them, a redundant upload of identical content is harmless, because the index
-    decides existence.
 - **Custom.** `python_module` / `python_class` / `config`, following the pattern `saq/storage` and
-  the analysis cache already use. The class declares `node_local` and `get_config_class()`.
+  the analysis cache already use. The class declares `node_local` and `get_config_class()`. This is
+  how a pool reaches an object store.
+  - An object store backend can use conditional writes (`If-None-Match: *`) to avoid redundant
+    uploads. Where the store doesn't support them, a redundant upload of identical content is
+    harmless, because the index decides existence.
 - **Sharing between nodes.** A node-local backend (`local`, or a custom class that says
   `node_local`) means a **single-node install**. The index is shared and the bytes are on one disk,
   so the two agree only when there is one node. The maintenance commands rely on that: `gc`,
@@ -452,11 +450,8 @@ Steps 1, 2 and 5 are built; the rest are not scheduled. [CAS-8]
 ## Prerequisites (phase 0)
 
 - The two `saq/crypto` fixes above shipped with the CAS. [F-20]
-- The `saq/storage` defects are fixed separately (the CAS does not use `saq/storage`): the
-  storage factory honors `s3.secure`, `s3.cert_check` and `s3.region`; `S3Storage.object_exists`
-  reports False only for a missing object and raises on a 403, a server error or a connection
-  failure; the local backend writes atomically and confines every path to its bucket.
-  [F-13, F-18, F-19]
+- The `saq/storage` defects are fixed separately (the CAS does not use `saq/storage`): the local
+  backend writes atomically and confines every path to its bucket. [F-19]
 
 ## Left for implementation
 

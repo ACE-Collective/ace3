@@ -2,7 +2,7 @@
 import pytest
 
 from saq.constants import F_FILE_LOCATION
-from saq.database.model import FileCollection
+from saq.database.model import FileCollection, FileCollectionWaiter
 from saq.database.pool import get_db
 from saq.file_collection.database import (
     cancel_file_collection,
@@ -14,6 +14,7 @@ from saq.file_collection.database import (
     queue_file_collection,
     resolve_duplicate_pending_file_collection,
     retry_file_collection,
+    wait_on_file_collection,
 )
 from saq.file_collection.types import FileCollectionStatus, FileCollectorStatus
 
@@ -411,6 +412,95 @@ def test_resolve_duplicate_pending_file_collection_keeps_alert_and_alertless_apa
     # the later alert-less request attaches to the earlier alert-less one, not to the alert's
     assert resolve_duplicate_pending_file_collection(later_alertless_id) == alertless_id
     assert get_file_collection(later_alertless_id) is None
+
+
+def _waiters(collection_id: int) -> list[str]:
+    get_db().expire_all()
+    return [waiter.alert_uuid for waiter in get_db().query(FileCollectionWaiter)
+            .filter(FileCollectionWaiter.file_collection_id == collection_id)
+            .order_by(FileCollectionWaiter.id)]
+
+
+@pytest.mark.integration
+def test_wait_on_file_collection():
+    """Each alert is recorded once, in the order they started waiting."""
+    collection_id = queue_file_collection(
+        collector_name="test_collector",
+        observable_type=F_FILE_LOCATION,
+        observable_value="host@/path/to/waited_on",
+        alert_uuid="alert-uuid-owner",
+    )
+
+    wait_on_file_collection(collection_id, "alert-uuid-waiter-1")
+    wait_on_file_collection(collection_id, "alert-uuid-waiter-2")
+    wait_on_file_collection(collection_id, "alert-uuid-waiter-1")
+
+    assert _waiters(collection_id) == ["alert-uuid-waiter-1", "alert-uuid-waiter-2"]
+
+    # deleting the collection takes its waiters with it
+    assert delete_file_collection(collection_id)
+    assert _waiters(collection_id) == []
+
+
+@pytest.mark.integration
+def test_wait_on_file_collection_that_no_longer_exists():
+    """A collection deleted between the lookup and the wait leaves nothing to record."""
+    collection_id = queue_file_collection(
+        collector_name="test_collector",
+        observable_type=F_FILE_LOCATION,
+        observable_value="host@/path/to/deleted",
+        alert_uuid="alert-uuid-owner",
+    )
+    assert delete_file_collection(collection_id)
+
+    wait_on_file_collection(collection_id, "alert-uuid-waiter")
+
+    assert _waiters(collection_id) == []
+
+
+@pytest.mark.integration
+def test_resolve_duplicate_pending_file_collection_records_the_waiter():
+    """The alert whose duplicate is folded into the older request waits on it; a duplicate that is
+    kept, and one no alert asked for, record no one."""
+    older_id = queue_file_collection(
+        collector_name="test_collector",
+        observable_type=F_FILE_LOCATION,
+        observable_value="host@/path/to/resolve_waiter",
+        alert_uuid="alert-uuid-older",
+    )
+    newer_id = queue_file_collection(
+        collector_name="test_collector",
+        observable_type=F_FILE_LOCATION,
+        observable_value="host@/path/to/resolve_waiter",
+        alert_uuid="alert-uuid-newer",
+    )
+    kept_id = queue_file_collection(
+        collector_name="test_collector",
+        observable_type=F_FILE_LOCATION,
+        observable_value="host@/path/to/resolve_waiter",
+        alert_uuid="alert-uuid-kept",
+    )
+    get_db().query(FileCollection).filter(FileCollection.id == kept_id).update(
+        {FileCollection.status: FileCollectionStatus.IN_PROGRESS.value})
+    get_db().commit()
+
+    assert resolve_duplicate_pending_file_collection(newer_id) == older_id
+    assert resolve_duplicate_pending_file_collection(kept_id) == kept_id
+    assert _waiters(older_id) == ["alert-uuid-newer"]
+    assert _waiters(kept_id) == []
+
+    alertless_id = queue_file_collection(
+        collector_name="test_collector",
+        observable_type=F_FILE_LOCATION,
+        observable_value="host@/path/to/resolve_waiter_alertless",
+    )
+    later_alertless_id = queue_file_collection(
+        collector_name="test_collector",
+        observable_type=F_FILE_LOCATION,
+        observable_value="host@/path/to/resolve_waiter_alertless",
+    )
+    assert resolve_duplicate_pending_file_collection(later_alertless_id) == alertless_id
+    assert _waiters(alertless_id) == []
 
 
 @pytest.mark.integration

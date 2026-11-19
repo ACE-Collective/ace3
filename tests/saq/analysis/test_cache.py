@@ -491,7 +491,7 @@ class TestPutCachedDeltaFileObservables:
         delta = _make_file_delta(module, file_obs)
         try:
             assert put_cached_delta(delta, module, blob_store, root=root) is not None
-            # on S3 a put is an upload; the second write must not make one
+            # on a remote backend a put is an upload; the second write must not make one
             put_spy = Mock(wraps=blob_store.put)
             monkeypatch.setattr(blob_store, "put", put_spy)
             assert put_cached_delta(delta, module, blob_store, root=root) is not None

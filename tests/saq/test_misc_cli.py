@@ -1,8 +1,7 @@
-"""Tests for the `ace event`, `ace git`, `ace debug` and `ace s3` commands."""
+"""Tests for the `ace event`, `ace git` and `ace debug` commands."""
 
-import sys
 from datetime import date, timedelta
-from types import ModuleType, SimpleNamespace
+from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
@@ -195,37 +194,3 @@ def test_git_list(repos, capsys):
         ["signatures", "/repos/signatures", "https://git.example.com/signatures.git", "main", "True", "60"],
         ["hunts", "/repos/hunts", "https://git.example.com/hunts.git", "main", "False", "60"],
     ]
-
-
-@pytest.mark.unit
-@pytest.mark.parametrize("argv, message", [
-    (["--bucket", "b", "--key", "k"], "--file is required"),
-    (["--file", "f", "--key", "k"], "--bucket is required"),
-    (["--file", "f", "--bucket", "b"], "--key is required"),
-    (["--file", "/nonexistent/file", "--bucket", "b", "--key", "k"], "File does not exist: /nonexistent/file"),
-])
-def test_s3_upload_argument_errors(argv, message, caplog):
-    args = _parse("s3", "upload", *argv)
-    assert args.func(args) == 1
-    assert message in caplog.text
-
-
-@pytest.mark.unit
-def test_s3_upload_failure_is_logged_with_traceback(tmp_path, caplog, monkeypatch):
-    client = Mock()
-    client.upload_file.side_effect = RuntimeError("upload refused")
-    # boto3 is not a dependency of open source ACE, so the command's lazy import gets a stand-in, and the
-    # botocore Config it would be handed is stubbed too
-    monkeypatch.setattr("saq.storage.s3.build_boto_config", lambda: None)
-    fake_boto3 = ModuleType("boto3")
-    fake_boto3.client = lambda *args, **kwargs: client
-    monkeypatch.setitem(sys.modules, "boto3", fake_boto3)
-    path = tmp_path / "upload.txt"
-    path.write_text("data")
-    args = _parse("s3", "upload", "--file", str(path), "--bucket", "bucket", "--key", "key")
-
-    assert args.func(args) == 1
-    [record] = [r for r in caplog.records if r.getMessage().startswith("failed to upload")]
-    assert record.getMessage() == f"failed to upload {path} to s3://bucket/key: upload refused"
-    assert record.levelname == "ERROR" and record.exc_info is not None
-    client.upload_file.assert_called_once_with(str(path), "bucket", "key")
