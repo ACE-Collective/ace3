@@ -13,7 +13,7 @@ class NetworkSemaphoreService(ACEServiceInterface):
         self.server.start()
 
     def wait_for_start(self, timeout: float = 5) -> bool:
-        self.server.wait_for_start()
+        return self.server.wait_for_start(timeout)
 
     def start_single_threaded(self):
         raise NotImplementedError("NetworkSemaphoreService does not support single threaded mode")

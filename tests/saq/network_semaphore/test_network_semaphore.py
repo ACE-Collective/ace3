@@ -3,6 +3,7 @@
 
 import logging
 import threading
+import time
 from unittest.mock import Mock
 
 import pytest
@@ -56,10 +57,20 @@ def test_add_semaphore():
 def test_service_start_stop():
     service = NetworkSemaphoreService()
     service.start()
-    service.wait_for_start(timeout=5)
+    try:
+        assert service.wait_for_start(timeout=5) is True
+    finally:
+        service.stop()
+        service.wait()
 
-    service.stop()
-    service.wait()
+@pytest.mark.unit
+def test_service_wait_for_start_honors_timeout():
+    # never started, so the server's events are never set and only the timeout ends the wait
+    service = NetworkSemaphoreService()
+    started = time.monotonic()
+    assert service.wait_for_start(timeout=0.1) is False
+    # the server's default timeout is 5 seconds per event
+    assert time.monotonic() - started < 2
 
 @pytest.mark.system
 def test_acquire_release_undefined_network_semaphore(server):
