@@ -271,6 +271,74 @@ def test_a_named_attachment_is_never_a_body_part(root_analysis):
     assert analysis.body_text.strip() == "the plain text body"
 
 
+_SHARED_HTML_BODY = b"<html><body><p>the html body</p></body></html>"
+
+_SHARED_BODY_ALTERNATIVE = b"""\
+--OUTER
+Content-Type: multipart/alternative; boundary="INNER"
+
+--INNER
+Content-Type: text/plain; charset="utf-8"
+
+the plain text body
+--INNER
+Content-Type: text/html; charset="utf-8"
+
+""" + _SHARED_HTML_BODY + b"""
+--INNER--
+"""
+
+_SHARED_BODY_ATTACHMENT = b"""\
+--OUTER
+Content-Type: text/html; name="copy.html"
+Content-Disposition: attachment; filename="copy.html"
+
+""" + _SHARED_HTML_BODY + b"""
+"""
+
+
+def _email_with_attached_body_copy(attachment_first: bool) -> bytes:
+    """An email whose html body is also attached by name, with the same bytes."""
+    parts = [_SHARED_BODY_ALTERNATIVE, _SHARED_BODY_ATTACHMENT]
+    if attachment_first:
+        parts.reverse()
+
+    return b"""\
+From: Sender <sender@example.com>
+To: Recipient <recipient@example.org>
+Subject: attached body copy
+Message-ID: <synthetic-attached-body-copy@example.com>
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="OUTER"
+
+""" + b"".join(parts) + b"--OUTER--\n"
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("attachment_first", [False, True], ids=["body-first", "attachment-first"])
+def test_a_body_attached_again_under_a_name_keeps_both_roles(root_analysis, attachment_first):
+    """Each part is a file of its own, so the same bytes in the html body and in an attachment are two
+    observables, one recorded as each role, whichever part comes first."""
+    _, analysis = _analyze(root_analysis, _email_with_attached_body_copy(attachment_first), file_name="message.eml")
+    assert isinstance(analysis, EmailAnalysis)
+
+    parts = analysis.details[KEY_PARTS]
+    assert len({part["uuid"] for part in parts}) == len(parts) == 3
+
+    copy = analysis.find_observable(lambda o: o.type == F_FILE and o.file_name == "copy.html")
+    body = analysis.find_observable(
+        lambda o: o.type == F_FILE and o.file_name == "message.eml.unknown_text_html_000.html")
+    assert copy.value == body.value
+    assert copy is not body
+
+    assert not analysis.is_body_part(copy)
+    assert analysis.is_html_body_part(body)
+    assert copy not in analysis.body_parts
+    assert analysis.body is body
+    assert analysis.body_html == _SHARED_HTML_BODY.decode()
+    assert analysis.body_text == "the plain text body"
+
+
 def _email_analysis_with_files(root_analysis, tmp_path, names: list[str]):
     """An EmailAnalysis built by hand, with a file observable for each name."""
     def _file(analysis, name):

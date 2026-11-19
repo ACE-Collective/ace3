@@ -912,15 +912,11 @@ class EmailAnalysis(Analysis):
             return [(o, content_type) for o in files
                     if (content_type := _body_part_type_from_name(o)) is not None]
 
+        # each part is a file of its own (FileObservable identity includes its path), so no observable
+        # is recorded for two parts
         by_uuid = {o.uuid: o for o in files}
-        result = {}
-        # the same bytes in two parts are one observable, and its first part decides its role
-        for part in parts:
-            observable = by_uuid.get(part["uuid"])
-            if observable is not None and observable.uuid not in result:
-                result[observable.uuid] = (observable, part["content_type"] if part["role"] == PART_ROLE_BODY else None)
-
-        return [(o, content_type) for o, content_type in result.values() if content_type is not None]
+        return [(by_uuid[part["uuid"]], part["content_type"]) for part in parts
+                if part["role"] == PART_ROLE_BODY and part["uuid"] in by_uuid]
 
     def is_body_part(self, observable) -> bool:
         return any(o.uuid == observable.uuid for o, _ in self._body_part_types())
