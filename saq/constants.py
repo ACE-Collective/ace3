@@ -997,13 +997,6 @@ CONFIG_QUERY_HUNTER_QUERY_TIMEOUT = "query_timeout"
 CONFIG_EVENTS = "events"
 CONFIG_EVENTS_AUTO_CLOSE_PATH = "auto_close_path"
 
-# celery
-CONFIG_RABBITMQ = "rabbitmq"
-CONFIG_RABBITMQ_USER = "username"
-CONFIG_RABBITMQ_PASSWORD = "password"
-CONFIG_RABBITMQ_HOST = "host"
-CONFIG_RABBITMQ_PORT = "port"
-
 # redis
 CONFIG_REDIS = "redis"
 CONFIG_REDIS_USERNAME = "username"

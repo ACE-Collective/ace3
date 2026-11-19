@@ -6,7 +6,7 @@ The repo-level `../CLAUDE.md` also applies. This file covers the phishkit subsys
 
 ## What this is
 
-Phishkit renders untrusted URLs and files in a real, instrumented Chrome and hands the artifacts back to ACE. It is deliberately **external to ACE**: `phishkit.py` and `scanner.py` must never import from the `saq` namespace. ACE talks to it only over celery.
+Phishkit renders untrusted URLs and files in a real, instrumented Chrome and hands the artifacts back to ACE. It is deliberately **external to ACE**: `phishkit.py` and `scanner.py` must never import from the `saq` namespace. ACE talks to it only over celery, sending through `phishkit.py`'s own app, which both sides build from the `ACE_RABBITMQ_HOST`/`_PORT`/`_USER` variables `docker-compose.yml` gives the manager and every ACE container. Never reconfigure the app from ACE's client.
 
 ## Two images, two roles
 

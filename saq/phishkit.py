@@ -5,21 +5,15 @@ import threading
 import time
 import uuid
 
-from saq.configuration.config import get_config
-
 
 def _phishkit():
-    """The phishkit celery module, with its app pointed at this node's broker.
+    """The phishkit celery module, whose app sends to the broker the manager consumes from (both build
+    it from the ACE_RABBITMQ_* variables compose gives them).
 
     Imported here, on first use, rather than when ACE initializes: celery and the phishkit app are only
-    needed by the processes that scan, and initialize_environment() runs in every one. The broker setting is
-    applied on every call; it is a dict update."""
+    needed by the processes that scan, and initialize_environment() runs in every one."""
     from phishkit import phishkit
 
-    rabbitmq = get_config().rabbitmq
-    phishkit.app.conf.update({
-        "broker_url": f"pyamqp://{rabbitmq.username}:{rabbitmq.password}@{rabbitmq.host}//"
-    })
     return phishkit
 
 # How long a scanner_image_id probe result is reused in this process. The image changes only on

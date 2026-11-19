@@ -238,21 +238,6 @@ def test_phishkit_work_tasks_stay_on_default_queue(task_name):
     assert app.amqp.router.route({}, task_name)["queue"].name != CONTROL_QUEUE
 
 
-@pytest.mark.unit
-def test_the_phishkit_app_is_pointed_at_the_configured_broker(monkeypatch):
-    # set when the app is first used, not when ACE initializes
-    phishkit_app = phishkit_tasks.app
-
-    rabbitmq = saq.phishkit.get_config().rabbitmq
-    monkeypatch.setattr(rabbitmq, "username", "pk-user")
-    monkeypatch.setattr(rabbitmq, "password", "pk-pass")
-    monkeypatch.setattr(rabbitmq, "host", "pk-host")
-    monkeypatch.setitem(phishkit_app.conf, "broker_url", "pyamqp://guest@nowhere//")
-
-    assert saq.phishkit._phishkit().app is phishkit_app
-    assert phishkit_app.conf.broker_url == "pyamqp://pk-user:pk-pass@pk-host//"
-
-
 class FakeResult:
     def __init__(self, value, id="task-id"):
         self.value = value
