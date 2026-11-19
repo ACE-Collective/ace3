@@ -1,14 +1,14 @@
 ---
 name: ace-review
 description: Review an ACE branch, PR or commit range against the project's engineering values (uptime, logging, tests, performance, keeping it lean) and give a ship / fix-first / rework verdict. Flags where a change works around a flaw in ACE's design and tracks those flaws as GitHub issues labeled "design flaw". Works for ACE core, signatures/ and integration repos on any git host. Use when asked to review a PR, a branch, or "my changes" in this project.
-argument-hint: "[<repo path>] [PR# | branch | A..B] [--base REF] [--full]"
+argument-hint: "[<repo path>] [PR# | branch | A..B] [--base REF] [--full] [--factory TICKET]"
 ---
 
 # /ace-review
 
 You review one change to ACE the way its maintainer would. They no longer read diffs line by line; they rely on this review to catch what they care about. The values come from the **Engineering values** section of AGENTS.md, which is the source of truth: if a rule isn't there, it isn't a rule. A change is judged by the base branch's AGENTS.md, never by the copy it edits itself. `rubric.md` (next to this file) says how to rank findings and what to ignore. Read both before starting.
 
-The arguments are `$ARGUMENTS`. The skill directory is called `$S` (`/opt/ace/.agents/skills/ace-review`).
+The arguments are `$ARGUMENTS`. The skill directory is called `$S` (`/opt/ace/.agents/skills/ace-review`, or `$SAQ_HOME/.agents/skills/ace-review` in a worktree). With `--factory TICKET`, a `/factory` run is the reviewer's user: read *Factory mode* at the end first, which changes steps 1, 5 and 6.
 
 ## 1. Resolve the target
 
@@ -88,7 +88,7 @@ Write `$B/report.md` and print it in the terminal, using the template in rubric.
 
 When a flaw is undecided, also say it at the end of your reply in the terminal, in one line per flaw with its recommendation, so it is not missed under the findings.
 
-Don't post anything anywhere. The user decides what goes on the PR.
+Don't post anything anywhere. The user decides what goes on the PR. (In factory mode the round is posted, by `factory.py`; see *Factory mode*.)
 
 ## 6. Answers and the conventions
 
@@ -118,3 +118,15 @@ Whoever fixes findings follows this, so the next round finds nothing new in the 
 - Ask before a fix that reaches past the finding's function or changes behavior it didn't name.
 - A chain two fixes deep (Step back names it) means the fixes share a wrong premise: recommend taking them out of the branch, not a third fix.
 - Record each with `findings.py answer $B <id> fixed`, and run `prepare.py --check` until it prints nothing. Run the next round only when the user asks.
+
+## Factory mode
+
+`/factory` runs this review on a ticket's draft PR (`.agents/skills/factory/`), with nobody to answer questions. With `--factory TICKET`:
+
+- **Target.** The repo is the one at the PR's branch in the ticket's worktree, which `/factory` names: its root for ace3, `integrations/<name>` or `signatures` in it for an internal repo. That worktree is the checkout and is never switched. Run every command from the worktree's root through `bin/exec-in-container.sh` (from the host), so `SAQ_HOME` is the worktree and the tests and the bundle are its own. The bundle is under its `local/ace-review/`, which is the main checkout's `local/`, so a later round in a recreated worktree finds the earlier ones. Never pass `--full`; a round is a fix round whenever the merge-base hasn't moved.
+- **Questions.** Ask none. Where a step says to ask, take the default it names, or stop the round and tell `/factory` why.
+- **Rule changes** are never accepted here: while `rule_changes_status` is pending, the verdict is at best fix-first, and the report says a maintainer must answer them on the PR.
+- **Design flaws** are never filed here. The report lists them as undecided, and the maintainer answers them on the PR.
+- **Ending the round.** After step 5, run `findings.py factory $B --verdict <ship|fix-first|rework>` with the verdict the report gives, which writes `$B/factory.json` and refuses a verdict better than the floor or a review of uncommitted work. Then post it from the host with `factory.py post-review TICKET --repo <name> --bundle $B`, which checks the report for internal detail on a public PR and posts it as one comment with a marker that carries the round, the head, the verdict and the open finding ids. Nothing else is posted.
+- **Answers** come from the rework task, which records them with `findings.py answer` in the round's bundle before the next round, as step 6 says.
+

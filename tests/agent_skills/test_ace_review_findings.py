@@ -839,3 +839,39 @@ def test_touched_means_a_change_within_two_lines(history, path, line, expected):
     repo, first, second = history
 
     assert findings.touched(str(repo), first, second, path, line) is expected
+
+
+def finished_round(bundle, ranked, still_open=(), **target):
+    write_json(bundle / "target.json", {"round": 2, "repo": "/opt/ace", "branch": "factory/12-x", "head": "a" * 40, **target})
+    write_json(bundle / "previous.json", [earlier(fid, "open") for fid in still_open])
+    write_json(bundle / "carried.json", [{"id": fid, "status": "open"} for fid in still_open])
+    write_json(bundle / "ranked.json", ranked)
+    findings.finish(str(bundle))
+
+
+def test_factory_result_lists_the_findings_still_to_fix(bundle):
+    finished_round(bundle, [judged(title="fix me"), judged(title="later", bucket="consider"),
+                            finding(title="old code", origin="pre-existing", severity="nit")], still_open=["R1-1"])
+
+    result = findings.factory_result(str(bundle), "fix-first")
+
+    assert result == {"round": 2, "head": "a" * 40, "branch": "factory/12-x", "verdict": "fix-first", "floor": "fix-first",
+                      "open": ["R2-1", "R1-1"]}
+    assert read_json(bundle / "factory.json") == result
+
+
+def test_factory_result_may_be_worse_than_the_floor_but_not_better(bundle):
+    finished_round(bundle, [judged()])
+
+    assert findings.factory_result(str(bundle), "rework")["verdict"] == "rework"
+    with pytest.raises(SystemExit, match="better than this round's floor, fix-first"):
+        findings.factory_result(str(bundle), "ship")
+
+
+def test_factory_result_refuses_an_unfinished_round_and_uncommitted_work(bundle, tmp_path):
+    with pytest.raises(SystemExit, match="not finished"):
+        findings.factory_result(str(bundle), "ship")
+
+    finished_round(bundle, [], includes_uncommitted=True)
+    with pytest.raises(SystemExit, match="uncommitted work"):
+        findings.factory_result(str(bundle), "ship")
