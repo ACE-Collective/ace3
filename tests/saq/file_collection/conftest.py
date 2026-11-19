@@ -8,8 +8,7 @@ from saq.database.pool import get_db
 from saq.util.uuid import storage_dir_from_uuid
 
 
-@pytest.fixture
-def db_alert():
+def create_db_alert() -> Alert:
     """Creates a minimal Alert record in the database for testing."""
     alert_uuid = str(uuid.uuid4())
     alert = Alert(
@@ -24,3 +23,13 @@ def db_alert():
     get_db().add(alert)
     get_db().commit()
     return alert
+
+
+@pytest.fixture
+def db_alert():
+    return create_db_alert()
+
+
+@pytest.fixture
+def other_db_alert():
+    return create_db_alert()
