@@ -3,6 +3,7 @@
 import logging
 import os
 import time
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -61,6 +62,38 @@ def test_deobfuscate_file_is_sent_to_the_managers_broker(divergent_rabbitmq_conf
     assert shared_path.startswith(str(shared_input)) and os.path.basename(shared_path) == "sample.js"
     assert sent[0]["kwargs"] == {"timeout": 4}
     assert results == [str(tmp_path / "collected" / "deobfuscated.js")]
+
+
+def _send_records_dom_snapshot(monkeypatch, result):
+    """Replace deobfuscate.delay with one that records what sits at `<input>.dom.json` when the task is sent."""
+    seen = []
+
+    def _delay(shared_path, **kwargs):
+        dom_path = Path(shared_path + ".dom.json")
+        seen.append(dom_path.read_bytes() if dom_path.exists() else None)
+        return SimpleNamespace(get=lambda timeout: result)
+
+    monkeypatch.setattr(manager.deobfuscate, "delay", _delay)
+    return seen
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("with_snapshot", [True, False])
+def test_deobfuscate_file_stages_the_dom_snapshot_beside_the_script(monkeypatch, tmp_path, with_snapshot):
+    monkeypatch.setattr(saq.js_deobfuscator, "SHARED_INPUT_DIR", str(tmp_path / "shared-input"))
+    result_dir = tmp_path / "result"
+    result_dir.mkdir()
+    sample = tmp_path / "sample.js"
+    sample.write_text("document.getElementById('a').href")
+    snapshot = tmp_path / "snapshot.json"
+    snapshot.write_bytes(b'{"elements": [{"id": "a", "href": "https://example.com/x"}]}')
+    seen = _send_records_dom_snapshot(monkeypatch, str(result_dir))
+
+    deobfuscate_file(
+        str(sample), str(tmp_path / "collected"), dom_snapshot_path=str(snapshot) if with_snapshot else None
+    )
+
+    assert seen == [snapshot.read_bytes() if with_snapshot else None]
 
 
 @pytest.mark.unit
