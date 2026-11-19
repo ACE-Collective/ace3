@@ -38,9 +38,7 @@ def add_tag():
         return redirection
 
     failed_count = 0
-
-    log_audit("user %s added tags %s to alerts %s", current_user.username, tags, uuids,
-              auth=current_user_auth(), alert_uuids=uuids, tags=tags)
+    changed = []
 
     for uuid in uuids:
         logging.debug("attempting to lock alert {} for tagging".format(uuid))
@@ -63,14 +61,23 @@ def add_tag():
                 alert.root_analysis.add_tag(tag)
 
             alert.sync()
+            changed.append(uuid)
 
         except Exception as e:
             logging.exception(f"unable to add tag to {alert}: {e}")
+            # a failed commit leaves the session unusable until it is rolled back (#852), and the
+            # next alert's lookup runs on it
+            get_db().rollback()
             failed_count += 1
 
         finally:
             if alert.lock_uuid:
                 release_lock(str(alert.uuid), alert.lock_uuid)
+
+    # written after the loop so that it names only the alerts that changed
+    if changed:
+        log_audit("user %s added tags %s to alerts %s", current_user.username, tags, changed,
+                  auth=current_user_auth(), alert_uuids=changed, tags=tags)
 
     if failed_count:
         flash("unable to modify alert: alert is currently being analyzed")
@@ -108,9 +115,7 @@ def remove_tag():
         return redirection
 
     failed_count = 0
-
-    log_audit("user %s removed tags %s from alerts %s", current_user.username, tags, uuids,
-              auth=current_user_auth(), alert_uuids=uuids, tags=tags)
+    changed = []
 
     for uuid in uuids:
         logging.debug("attempting to lock alert {} for tagging".format(uuid))
@@ -133,14 +138,23 @@ def remove_tag():
                 alert.root_analysis.remove_tag(tag)
 
             alert.sync()
+            changed.append(uuid)
 
         except Exception as e:
             logging.exception(f"unable to remove tag from {alert}: {e}")
+            # a failed commit leaves the session unusable until it is rolled back (#852), and the
+            # next alert's lookup runs on it
+            get_db().rollback()
             failed_count += 1
 
         finally:
             if alert.lock_uuid:
                 release_lock(str(alert.uuid), alert.lock_uuid)
+
+    # written after the loop so that it names only the alerts that changed
+    if changed:
+        log_audit("user %s removed tags %s from alerts %s", current_user.username, tags, changed,
+                  auth=current_user_auth(), alert_uuids=changed, tags=tags)
 
     if failed_count:
         flash("unable to modify alert: alert is currently being analyzed")

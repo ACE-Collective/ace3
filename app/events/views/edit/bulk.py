@@ -40,7 +40,9 @@ def _event_redirect(event_id: str | None):
     return redirect(url_for('events.manage'))
 
 
-def _apply_tags(alert_uuids: list[str], tags: list[str], add: bool) -> int:
+def _apply_tags(alert_uuids: list[str], tags: list[str], add: bool) -> tuple[list[str], int]:
+    """Returns the uuids of the alerts changed and the number that could not be."""
+    changed = []
     failed_count = 0
     for uuid in alert_uuids:
         alert = get_db().query(GUIAlert).filter(GUIAlert.uuid == uuid).one_or_none()
@@ -63,16 +65,20 @@ def _apply_tags(alert_uuids: list[str], tags: list[str], add: bool) -> int:
                     alert.root_analysis.remove_tag(tag)
 
             alert.sync()
+            changed.append(uuid)
 
         except Exception as e:
             logging.exception(f"unable to modify tags on {alert}: {e}")
+            # a failed commit leaves the session unusable until it is rolled back (#852), and the
+            # next alert's lookup runs on it
+            get_db().rollback()
             failed_count += 1
 
         finally:
             if alert.lock_uuid:
                 release_lock(str(alert.uuid), alert.lock_uuid)
 
-    return failed_count
+    return changed, failed_count
 
 
 @events.route('/bulk_add_tag', methods=['POST'])
@@ -90,9 +96,11 @@ def bulk_add_tag():
         flash("you must specify one or more tags to add")
         return redirection
 
-    log_audit("user %s added tags %s to alerts %s", current_user.username, tags, alert_uuids,
-              auth=current_user_auth(), alert_uuids=alert_uuids, tags=tags)
-    if _apply_tags(alert_uuids, tags, add=True):
+    changed, failed_count = _apply_tags(alert_uuids, tags, add=True)
+    if changed:
+        log_audit("user %s added tags %s to alerts %s", current_user.username, tags, changed,
+                  auth=current_user_auth(), alert_uuids=changed, tags=tags)
+    if failed_count:
         flash("unable to modify some alerts: alert is currently being analyzed")
 
     return redirection
@@ -113,9 +121,11 @@ def bulk_remove_tag():
         flash("you must specify one or more tags to remove")
         return redirection
 
-    log_audit("user %s removed tags %s from alerts %s", current_user.username, tags, alert_uuids,
-              auth=current_user_auth(), alert_uuids=alert_uuids, tags=tags)
-    if _apply_tags(alert_uuids, tags, add=False):
+    changed, failed_count = _apply_tags(alert_uuids, tags, add=False)
+    if changed:
+        log_audit("user %s removed tags %s from alerts %s", current_user.username, tags, changed,
+                  auth=current_user_auth(), alert_uuids=changed, tags=tags)
+    if failed_count:
         flash("unable to modify some alerts: alert is currently being analyzed")
 
     return redirection
