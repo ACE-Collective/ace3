@@ -6,12 +6,10 @@ from saq.analysis.analysis import Analysis
 from saq.analysis.analysis_tree.analysis_tree_persistence import AnalysisTreePersistenceManager
 from saq.analysis.analysis_tree.analysis_tree_query import AnalysisTreeQueryEngine
 from saq.analysis.dependency_manager import AnalysisDependencyManager
-from saq.analysis.event_bus import AnalysisEventBus
 from saq.analysis.file_manager.file_manager_interface import FileManagerInterface
 from saq.analysis.module_path import MODULE_PATH
 from saq.analysis.observable import Observable
 from saq.analysis.observable_registry import ObservableRegistry
-from saq.constants import EVENT_ANALYSIS_ADDED, EVENT_ANALYSIS_DELETED, EVENT_OBSERVABLE_ADDED
 
 if TYPE_CHECKING:
     from saq.analysis.root import RootAnalysis
@@ -23,22 +21,19 @@ class AnalysisTreeManager:
     - Provides an interface to query the analysis tree."""
 
     def __init__(
-        self, 
-        event_bus: AnalysisEventBus, 
+        self,
         file_manager: FileManagerInterface,
         root_analysis: "RootAnalysis"
     ):
         """Initialize the AnalysisTreeManager.
 
         Args:
-            event_bus: The AnalysisEventBus instance
             file_manager: The FileManagerInterface instance
             root_analysis: The RootAnalysis instance this manager belongs to
         """
         # this gets set once and cannot be changed
         self.observable_registry = ObservableRegistry()
         self.dependency_manager = AnalysisDependencyManager(self.observable_registry)
-        self.event_bus = event_bus
         self.file_manager = file_manager
         self.root_analysis = root_analysis
         
@@ -150,9 +145,6 @@ class AnalysisTreeManager:
         # modify the analysis tree
         analysis.add_observable_to_tree(observable)
 
-        # notify the event bus
-        self.event_bus.fire_event(analysis, EVENT_OBSERVABLE_ADDED, observable)
-
         return observable
 
     def add_analysis(self, observable: Observable, analysis: Analysis) -> Analysis:
@@ -180,7 +172,6 @@ class AnalysisTreeManager:
 
         observable.add_analysis_to_tree(analysis, observable)
         logging.debug("added analysis {} key {} to observable {}".format(analysis, analysis.module_path, observable))
-        self.event_bus.fire_event(observable, EVENT_ANALYSIS_ADDED, analysis)
 
         return analysis
 
@@ -249,8 +240,6 @@ class AnalysisTreeManager:
         # delete the external details file for every analysis we unlinked
         for removed in removed_analysis:
             self.reset_analysis_details(removed)
-
-        self.event_bus.fire_event(observable, EVENT_ANALYSIS_DELETED, analysis)
 
     # persistence manager facade
     # ------------------------------------------------------------------------

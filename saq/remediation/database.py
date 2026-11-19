@@ -116,3 +116,17 @@ def get_current_restore_key(target: RemediationTarget) -> Optional[str]:
         return None
 
     return db_result.restore_key
+
+def removal_covers(target: RemediationTarget) -> bool:
+    """Whether the target's own latest remediation is a removal that is under way or found
+    nothing left to remove. A remediator that resolves its key to another target (an alias
+    to the mailbox that owns it) leaves the message to that target's removal instead of
+    acting twice."""
+    remediation = get_current_remediation(target)
+    if remediation is None or remediation.action != RemediationAction.REMOVE.value:
+        return False
+
+    if remediation.status != RemediationStatus.COMPLETED.value:
+        return True
+
+    return remediation.result in (RemediatorStatus.SUCCESS.value, RemediatorStatus.NOT_FOUND.value)

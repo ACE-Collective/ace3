@@ -171,7 +171,7 @@ def test_initialization_does_not_import_what_only_some_processes_need(tmp_path):
                        ["saq.observables.base", "saq.observables.generator", "saq.modules.base_module",
                         "saq.engine.core", "saq.database.model",
                         "saq.analysis.root", "saq.gui.alert", "flask", "werkzeug", "urlfinderlib", "requests",
-                        "celery", "phishkit", "botocore", "boto3", "sqlalchemy"],
+                        "celery", "phishkit", "sqlalchemy"],
                        timeout=180)
 
 
@@ -319,8 +319,7 @@ def test_the_email_archive_and_phishkit_clients_load_their_libraries_on_use():
     # every process that reads an alert imports the email archive (its analysis modules do); only
     # archiving or reading an email needs the CAS and the ORM models, and only scanning needs celery
     _assert_loads_none("import saq.email_archive, saq.storage, saq.phishkit\n",
-                       ["saq.cas", "saq.database.model", "sqlalchemy", "boto3", "botocore", "saq.storage.s3",
-                        "celery", "phishkit"])
+                       ["saq.cas", "saq.database.model", "sqlalchemy", "celery", "phishkit"])
 
 
 # modules whose import closures loop back through saq.analysis.presenter, imported first so a re-export
@@ -390,7 +389,7 @@ LIGHT_SERVICES = ["saq.network_semaphore.service", "saq.git", "saq.monitoring.se
                   "saq.remediation.service", "saq.remediation.external.service", "saq.yara_scanning.service",
                   "saq.svs.service"]
 HEAVY_PACKAGES = ["aceapi_v2", "aceapi_ai", "app", "fastapi", "flask", "werkzeug", "qdrant_client", "numpy", "grpc",
-                  "celery", "botocore", "pandas", "cv2", "torch", "saq.observables.base", "saq.observables.generator",
+                  "celery", "pandas", "cv2", "torch", "saq.observables.base", "saq.observables.generator",
                   "urlfinderlib", "requests"]
 
 # these need no database either, so neither the models nor the analysis framework

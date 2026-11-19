@@ -92,9 +92,6 @@ def add_observable():
         flash("unable to modify alert: alert is currently locked")
         return redirection
 
-    log_audit("user %s added observable (%s,%s,%s) to alert %s", current_user.username, o_type, o_value, o_time, alert,
-              auth=current_user_auth(), alert_uuid=alert.uuid, observable_type=o_type, observable_value=o_value)
-
     try:
         try:
             alert.load()
@@ -108,20 +105,21 @@ def add_observable():
         already_existed = alert.root_analysis.get_observable_by_spec(o_type, o_value, None if o_time == '' else o_time) is not None
 
         observable = alert.root_analysis.add_observable_by_spec(o_type, o_value, None if o_time == '' else o_time)
+        if observable is None:
+            # the type rejected the value, or the alert holds as many observables of the type as it may
+            flash("unable to add observable: invalid value or too many observables of that type")
+            return redirection
 
         # track who manually added this observable and when
-        if observable and not already_existed:
+        if not already_existed:
             observable.added_by = current_user.username
             observable.added_time = local_time()
 
         # apply directives to the observable
-        if observable and directives:
+        if directives:
             for directive in directives:
                 if directive in VALID_DIRECTIVES:
                     observable.add_directive(directive)
-            log_audit("user %s added directives %s to observable %s", current_user.username, directives, observable,
-                      auth=current_user_auth(), alert_uuid=alert.uuid, observable_uuid=observable.uuid,
-                      directives=directives)
 
         # switch back into correlation mode (we may be in a different post-correlation mode at this point)
         request_analyst_analysis(alert.root_analysis)
@@ -132,6 +130,14 @@ def add_observable():
             logging.exception(f"unable to sync alert {uuid}", extra={"alert_uuid": uuid})
             flash("internal error")
             return redirection
+
+        # audited only once the observable is saved
+        log_audit("user %s added observable (%s,%s,%s) to alert %s", current_user.username, o_type, o_value, o_time,
+                  alert, auth=current_user_auth(), alert_uuid=alert.uuid, observable_type=o_type, observable_value=o_value)
+        if directives:
+            log_audit("user %s added directives %s to observable %s", current_user.username, directives, observable,
+                      auth=current_user_auth(), alert_uuid=alert.uuid, observable_uuid=observable.uuid,
+                      directives=directives)
 
         add_workload(alert.root_analysis)
 

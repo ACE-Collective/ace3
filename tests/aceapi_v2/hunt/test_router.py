@@ -984,8 +984,8 @@ def test_validate_hunt_response_includes_original_events(hunt_api, auth_headers,
     # correlation filtered one event out
     assert len(data["roots"]) == 1
     assert data["roots"][0]["details"]["events"] == [{"src": "1.2.3.4", "tag": "keep"}]
-    # the per-root details also carry the originals (set by process_query_results)
-    assert data["roots"][0]["details"]["original_events"] == captured
+    # the per-root details carry the root's own originals (set by process_query_results)
+    assert data["roots"][0]["details"]["original_events"] == [captured[0]]
     assert data["correlation_trace"] is not None
 
 

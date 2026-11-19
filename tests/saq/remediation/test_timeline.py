@@ -7,9 +7,11 @@ import pytest
 
 from saq.analysis.analysis import Analysis
 from saq.configuration.config import get_config
-from saq.constants import F_EMAIL_DELIVERY, F_TEST
+from saq.analysis.root import load_root
+from saq.constants import F_EMAIL_DELIVERY, F_TEST, R_DELIVERED_TO
 from saq.database.model import ExternalRemediationCheck, Remediation, RemediationHistory
 from saq.database.pool import get_db
+from saq.modules.email.rfc822 import EmailAnalysis
 from saq.remediation import timeline
 from saq.remediation.coverage import assemble_coverage
 from saq.remediation.timeline import (
@@ -694,3 +696,81 @@ class TestPendingRows:
         events = gather_remediation_events(root, fallback_event_time=_utc(_T0), coverage=coverage)
 
         assert [(e.source, e.pending) for e in events] == [("ACE", False), ("Alpha", True)]
+
+
+@pytest.mark.integration
+class TestJournalAndResolvedTargets:
+    """#1199: a removal that found nothing where the journal shows no copy was delivered is not
+    a failed remediation, and a remediator that acted on another target says which. The reason
+    comes from the delivery tag on the observable, so nothing is read from disk."""
+
+    def _root(self, tags: dict, delivered_to: dict = None):
+        # the EmailAnalysis is there so a timeline that read its details from disk would be seen
+        root = _root(analyses=[EmailAnalysis()], email_deliveries=list(tags))
+        deliveries = {o.value: o for o in root.get_observables_by_type(F_EMAIL_DELIVERY)}
+        for value, observable in deliveries.items():
+            if tags[value]:
+                observable.add_tag(tags[value])
+        for value, targets in (delivered_to or {}).items():
+            for target in targets:
+                deliveries[value].add_relationship(R_DELIVERED_TO, deliveries[target])
+        root.save()
+        return load_root(root.storage_dir)
+
+    def test_an_undelivered_address_is_labelled_from_its_tag(self):
+        ts = datetime(2026, 5, 6, 12, 30, tzinfo=timezone.utc)
+        _remediation_history(_remediation("<m1@x>|former@x"), ts, result="NOT_FOUND")
+        _remediation_history(_remediation("<m1@x>|fwd@x"), ts, result="NOT_FOUND")
+        _remediation_history(_remediation("<m1@x>|dl@x"), ts, result="FAILED")
+        _remediation_history(_remediation("<m1@x>|other@x"), ts, result="FAILED")
+        _remediation_history(_remediation("<m1@x>|manager@x"), ts, result="NOT_FOUND")
+        _remediation_history(_remediation("<m1@x>|fwd-unlinked@x"), ts, result="FAILED")
+        _remediation_history(_remediation("<m1@x>|fwd-error@x"), ts, result="ERROR")
+        root = self._root({
+            "<m1@x>|former@x": "delivery_not_journaled",
+            "<m1@x>|fwd@x": "delivery_forwarded",
+            "<m1@x>|fwd-unlinked@x": "delivery_forwarded",
+            "<m1@x>|fwd-error@x": "delivery_forwarded",
+            "<m1@x>|dl@x": "delivery_expanded",
+            "<m1@x>|other@x": "delivery_not_journaled",
+            "<m1@x>|manager@x": None,
+            "<m1@x>|member@x": None,
+        }, delivered_to={
+            "<m1@x>|fwd@x": ["<m1@x>|manager@x"],
+            "<m1@x>|fwd-error@x": ["<m1@x>|manager@x"],
+            "<m1@x>|dl@x": ["<m1@x>|manager@x", "<m1@x>|member@x"],
+        })
+        assert root.get_analysis_by_type(EmailAnalysis)
+
+        with patch.object(EmailAnalysis, "load_details") as load_details:
+            events = {e.target: e.description for e in gather_remediation_events(root)}
+
+        load_details.assert_not_called()
+        assert events == {
+            "former@x": "Remove (no journal record of a copy delivered to this address)",
+            "fwd@x": "Remove (not delivered to this address; forwarded to manager@x)",
+            "fwd-unlinked@x": "Remove (not delivered to this address; forwarded to another mailbox)",
+            # an ERROR says nothing about the address, and a forwarding mailbox may keep a copy
+            "fwd-error@x": "Remove (Error)",
+            "dl@x": "Remove (distribution list; its members' copies are their own deliveries: manager@x, member@x)",
+            # the journal does not name it, but another report might: a failure stays a failure
+            "other@x": "Remove (Failed)",
+            # the journal delivered it here, so finding nothing is a real result
+            "manager@x": "Remove (Not_found)",
+        }
+
+    def test_resolved_target_is_shown_with_the_remediator_message(self):
+        rem = _remediation("<m1@x>|former@x")
+        history = _remediation_history(rem, datetime(2026, 5, 6, 12, 30, tzinfo=timezone.utc), result="NOT_FOUND",
+                                       message="former@x is an alias of manager@x, which has its own removal")
+        history.resolved_target = "manager@x"
+        get_db().commit()
+        root = self._root({"<m1@x>|former@x": "delivery_not_journaled"})
+
+        [event] = gather_remediation_events(root)
+
+        assert event.target == "former@x \u2192 manager@x"
+        # what the remediator did wins over the journal's account
+        assert event.description == "Remove (Not_found) via manager@x"
+        assert event.metadata["resolved_target"] == "manager@x"
+        assert event.metadata["message"] == "former@x is an alias of manager@x, which has its own removal"

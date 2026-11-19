@@ -10,7 +10,7 @@ import os
 import os.path
 import re
 from tempfile import mkstemp
-from typing import Callable, Optional, TypeVar
+from typing import Any, Callable, Optional, TypeVar
 
 import pytz
 from pydantic import Field, model_validator
@@ -835,6 +835,43 @@ class QueryHunt(Hunt):
             summary = summary[: _EVENT_SUMMARY_MAX_LEN - 1] + "…"
         return summary
 
+    def _original_events_by_submission(
+        self,
+        submissions: list[Submission],
+        submission_origin_indices: dict[int, set[int]],
+        submissions_by_group: dict[Any, list[Submission]],
+    ) -> dict[int, list[dict]]:
+        """The pre-correlation events of each submission's own group, keyed by id(submission): those
+        its alerted events came from, and those whose group_by value is its group_value. Never
+        another group's: svs attribution judges every marker in root.details against the alert's
+        hosts, so one group's marker would be a mismatch on every other group's alert (#1255)."""
+        originals = self.original_query_results
+        if self.group_by == "ALL":
+            return {id(submission): originals for submission in submissions}
+
+        indices: dict[int, set[int]] = {id(submission): set() for submission in submissions}
+
+        # after a stream reset the alerted events are indexed into the new stream, not the originals
+        stream_reset = self.correlation_trace is not None and any(
+            stream_event.event_type == "stream_reset" for stream_event in self.correlation_trace.stream_events)
+        if not stream_reset:
+            for key, origins in submission_origin_indices.items():
+                indices[key].update(origins)
+
+        if self.group_by is not None:
+            for index, event in enumerate(originals):
+                value = event.get(self.group_by)
+                for group_value in value if isinstance(value, list) else [value]:
+                    try:
+                        owners = submissions_by_group.get(group_value, [])
+                    except TypeError:
+                        # an unhashable value (a dict) can't be any submission's group_value
+                        continue
+                    for owner in owners:
+                        indices[id(owner)].add(index)
+
+        return {key: [originals[i] for i in sorted(found)] for key, found in indices.items()}
+
     def key_suppression(self, submissions: list[Submission]):
         """Sets each grouped submission's suppression_key, which the suppression check and the
         manager's last alert times use: its group_value, or during an svs run or maintenance window
@@ -1195,18 +1232,16 @@ class QueryHunt(Hunt):
                 "frequency": str(self.frequency) if self.frequency else None,
             }
 
-        # Attach correlation trace to each submission's details for alert persistence.
-        # Each alert should see the EventTraces that contributed to it (origins) plus any
-        # filter/stop EventTraces from the same group_by value (extra_origins) — so an
-        # analyst sees the rejection context for "this user / this msg_id / etc." without
-        # importing unrelated events from sibling alerts in the same run. Stream events
-        # stay shared (timeouts/resets are hunt-run-level context).
-        if hasattr(self, "correlation_trace") and self.correlation_trace is not None:
-            submission_origin_indices: dict[int, set[int]] = {}
-            # Per-submission map from a pre-correlation event_index to that event's position in
-            # the submission's details["events"] list. Lets the trace UI surface the full
-            # structured property value (untruncated) by indexing back into details["events"].
-            events_pos_by_origin: dict[int, dict[int, int]] = {}
+        # Which events of the correlation engine's input stream (an EventTrace's event_index) each
+        # alert's own events came from, and the alerts of each group value. The correlation trace
+        # and original_events below both decide from these which events belong to which alert.
+        submission_origin_indices: dict[int, set[int]] = {}
+        # Per-submission map from a pre-correlation event_index to that event's position in
+        # the submission's details["events"] list. Lets the trace UI surface the full
+        # structured property value (untruncated) by indexing back into details["events"].
+        events_pos_by_origin: dict[int, dict[int, int]] = {}
+        submissions_by_group: dict[Any, list[Submission]] = {}
+        if self.config.correlate is not None:
             for post_correlation_index in sorted(event_submission_map):
                 if post_correlation_index >= len(alert_event_origin_indices):
                     continue
@@ -1217,6 +1252,18 @@ class QueryHunt(Hunt):
                     if origin_index not in sub_pos_map:
                         sub_pos_map[origin_index] = len(sub_pos_map)
 
+            for submission in submissions:
+                group_value = getattr(submission, "group_value", None)
+                if group_value is not None:
+                    submissions_by_group.setdefault(group_value, []).append(submission)
+
+        # Attach correlation trace to each submission's details for alert persistence.
+        # Each alert should see the EventTraces that contributed to it (origins) plus any
+        # filter/stop EventTraces from the same group_by value (extra_origins) — so an
+        # analyst sees the rejection context for "this user / this msg_id / etc." without
+        # importing unrelated events from sibling alerts in the same run. Stream events
+        # stay shared (timeouts/resets are hunt-run-level context).
+        if hasattr(self, "correlation_trace") and self.correlation_trace is not None:
             # reverse mapping from pre-correlation event_index (used by EventTrace) back to
             # the post-correlation index (used by query_results / per_event_observables).
             origin_to_post = {origin: post for post, origin in enumerate(alert_event_origin_indices)}
@@ -1240,11 +1287,6 @@ class QueryHunt(Hunt):
                         for submission in submissions:
                             extra_origins_by_sub.setdefault(id(submission), set()).add(et.event_index)
                 else:
-                    submissions_by_group: dict[any, list[Submission]] = {}
-                    for sub in submissions:
-                        gv = getattr(sub, "group_value", None)
-                        if gv is not None:
-                            submissions_by_group.setdefault(gv, []).append(sub)
                     for et in self.correlation_trace.event_traces:
                         if et.outcome not in ("filter", "stop"):
                             continue
@@ -1308,8 +1350,10 @@ class QueryHunt(Hunt):
         # Attach the pre-correlation events to each correlated alert so hunt authors can inspect
         # what came back from the data source before correlation filtered/transformed it.
         if self.config.correlate is not None and self.original_query_results is not None:
+            original_events = self._original_events_by_submission(
+                submissions, submission_origin_indices, submissions_by_group)
             for submission in submissions:
-                submission.root.details[QUERY_DETAILS_ORIGINAL_EVENTS] = self.original_query_results
+                submission.root.details[QUERY_DETAILS_ORIGINAL_EVENTS] = original_events[id(submission)]
 
         # Attach step provenance to each correlated alert so the GUI can group the
         # Analysis Overview by the hunt step that produced each observable. We walk each

@@ -191,7 +191,7 @@ class TestGetCachedDelta:
     def test_hit_components_decompose_lookup_ms(self, tmp_path, monkeypatch):
         """lookup_ms is the timed region, and db_ms/decode_ms/blob_ms are
         sub-intervals of it: they never sum past it. A file blob whose
-        existence check takes 20 ms (the S3 cost) shows up in blob_ms, once.
+        existence check takes 20 ms (a remote backend's cost) shows up in blob_ms, once.
         The cache module's clock only moves inside that check."""
         clock = {"ns": 0}
 

@@ -223,7 +223,8 @@
                                 <td{% if event.pending and event.metadata.email_delivery %} title="{{ event.metadata.email_delivery }}"{% endif %}>{{ event.target or '' }}</td>
                                 <td>{{ event.duration_display or '' }}</td>
                                 <td>{{ event.source[:1]|upper }}{{ event.source[1:] }}</td>
-                                <td>{% if event.pending %}<span class="badge text-bg-secondary">pending</span> {% endif %}{{ event.description }}</td>
+                                {# ACE's rows carry what the remediator said, which explains a result such as one acted on through another target #}
+                                <td{% if event.metadata.message %} title="{{ event.metadata.message }}"{% endif %}>{% if event.pending %}<span class="badge text-bg-secondary">pending</span> {% endif %}{{ event.description }}</td>
                                 <td>{% if event.portal_url %}<a href="{{ event.portal_url }}" target="_blank" rel="noopener">open</a>{% endif %}</td>
                             </tr>
                             {% endfor %}

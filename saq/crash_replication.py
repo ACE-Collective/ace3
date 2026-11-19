@@ -11,19 +11,17 @@ by crash id, and any node can serve any report. The report then survives the own
 
 This lives outside ``saq/crash_report.py`` on purpose. That module is imported by the engine's
 crash paths and by the API, and it deliberately keeps heavy dependencies out of its import graph
-(see its lazy ``saq.database`` import). ``saq.storage`` pulls in boto3, which is not even a core
-dependency, so the same discipline applies: it is imported lazily, from inside functions, behind
-the config check.
+(see its lazy ``saq.database`` import), and imports this module only on the crash path.
 
 **Nothing here may raise or block the crash path.** Two rules follow:
 
 *Never raise* -- every public function swallows and logs, the same contract ``record_module_crash``
 holds itself to.
 
-*Never block* -- uploads happen on a daemon thread that is **never joined**. S3 requests are
-bounded (``saq/storage/s3.py`` sets connect/read timeouts and caps retries), but bounded is not
-instant: a report is several objects, each a multipart transfer of several requests, and the
-caller here is an engine worker holding a work item lock. Seconds of object store round trip still
+*Never block* -- uploads happen on a daemon thread that is **never joined**. A network backend
+bounds its own requests (``saq/storage/interface.py``), but bounded is not instant: a report is
+several objects, each possibly a multipart transfer of several requests, and the caller here is an
+engine worker holding a work item lock. Seconds of object store round trip still
 have no business on the crash path. The local report is already durable before any of this starts,
 so replication is pure best-effort and ``ace crash sync`` is the catch-up.
 
@@ -40,6 +38,7 @@ from typing import Optional
 
 from saq.crash_report import METADATA_FILE, is_valid_crash_id
 from saq.logging import utf8_safe
+from saq.storage import get_storage_system
 
 # How many replication threads may be in flight per process. Acquired non-blocking: if the budget
 # is gone we skip and let `ace crash sync` catch up, rather than queueing work onto the crash path.
@@ -73,20 +72,12 @@ def _bucket() -> str:
     return get_config().crash_reporting.storage_bucket
 
 
-def _storage():
-    # imported here rather than at module level: saq.storage pulls in boto3, which is not a core
-    # dependency, and this module is imported from the engine's crash path
-    from saq.storage import get_storage_system
-
-    return get_storage_system()
-
-
 def object_key(crash_id: str, relative_path: str) -> str:
     """The object key for one file of one report. Derivable from the crash id, which is why this
     feature needs no database column and no migration.
 
     The report keeps the crashed file under the observable's own name, which need not be UTF-8
-    (ACE decodes it with ``surrogateescape``), and an S3 key must be: botocore refuses to send it.
+    (ACE decodes it with ``surrogateescape``), and an object store key generally must be.
     Such a name is escaped (``utf8_safe``), so a fetched report has that file under the escaped
     name. Only for keys being written: a file listed in storage is read and deleted by
     ``_listed_key``, because a report replicated before keys were escaped holds the raw name."""
@@ -131,7 +122,7 @@ def replicate_report(crash_dir: str, crash_id: str) -> bool:
             logging.warning("crash report directory %s no longer exists", crash_dir)
             return False
 
-        storage = _storage()
+        storage = get_storage_system()
         bucket = _bucket()
 
         relative_paths = _iter_report_files(crash_dir)
@@ -209,7 +200,7 @@ def remote_report_exists(crash_id: str) -> bool:
         if not is_valid_crash_id(crash_id):
             return False
 
-        return bool(_storage().object_exists(_bucket(), object_key(crash_id, METADATA_FILE)))
+        return bool(get_storage_system().object_exists(_bucket(), object_key(crash_id, METADATA_FILE)))
     except Exception as e:
         logging.warning("unable to check shared storage for crash report %s: %s", crash_id, e)
         return False
@@ -222,7 +213,7 @@ def list_remote_files(crash_id: str) -> list[str]:
             return []
 
         prefix = f"{crash_id}/"
-        keys = _storage().list_objects(_bucket(), prefix=prefix, recursive=True) or []
+        keys = get_storage_system().list_objects(_bucket(), prefix=prefix, recursive=True) or []
         results = []
         for key in keys:
             key = getattr(key, "object_name", key)
@@ -246,7 +237,7 @@ def fetch_report(crash_id: str, dest_parent: str) -> Optional[str]:
         if not relative_paths:
             return None
 
-        storage = _storage()
+        storage = get_storage_system()
         bucket = _bucket()
         crash_dir = os.path.join(dest_parent, crash_id)
 
@@ -271,7 +262,7 @@ def fetch_metadata(crash_id: str, dest_parent: str) -> Optional[dict]:
             return None
 
         local_path = os.path.join(dest_parent, f"{crash_id}-{METADATA_FILE}")
-        _storage().download_file(_bucket(), object_key(crash_id, METADATA_FILE), local_path)
+        get_storage_system().download_file(_bucket(), object_key(crash_id, METADATA_FILE), local_path)
         try:
             with open(local_path) as fp:
                 return json.load(fp)
@@ -292,7 +283,7 @@ def remote_file_sizes(crash_id: str) -> dict[str, int]:
     """Sizes for this report's remote files, so the API's file inventory stays populated."""
     sizes = {}
     try:
-        storage = _storage()
+        storage = get_storage_system()
         bucket = _bucket()
         for relative_path in list_remote_files(crash_id):
             info = storage.get_object_info(bucket, _listed_key(crash_id, relative_path))
@@ -320,7 +311,7 @@ def list_replicated_files() -> dict[str, set[str]]:
     after a delete, so a deleted report would keep showing up as replicated forever.
     """
     try:
-        keys = _storage().list_objects(_bucket(), prefix="", recursive=True) or []
+        keys = get_storage_system().list_objects(_bucket(), prefix="", recursive=True) or []
         results: dict[str, set[str]] = {}
         for key in keys:
             key = getattr(key, "object_name", key)
@@ -358,7 +349,7 @@ def delete_report(crash_id: str) -> bool:
         if not is_valid_crash_id(crash_id):
             return False
 
-        storage = _storage()
+        storage = get_storage_system()
         bucket = _bucket()
         relative_paths = list_remote_files(crash_id)
         if not relative_paths:

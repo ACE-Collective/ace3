@@ -62,15 +62,15 @@ cas:
     email_archive:
       backend: custom
       custom:
-        python_module: my_integration.cas_s3
-        python_class: S3Backend
+        python_module: my_integration.cas_backend
+        python_class: ObjectStoreBackend
         config: { bucket: my-email-archive }
       shared: true
 ```
 
-S3 archiving through `email_archive.target: s3` was removed. A configuration that still sets it
-fails to load, so an S3 site does not fall back to local storage without anyone noticing. Such a
-site configures its integration's backend for this pool before it upgrades.
+The old `email_archive.target` setting was removed. A configuration that sets it to anything but
+`local` fails to load, so a site that archived remotely does not fall back to local storage without
+anyone noticing. Such a site configures its integration's backend for this pool before it upgrades.
 
 ## Migrating from the old archive
 

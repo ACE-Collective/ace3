@@ -6,14 +6,15 @@ import pytest
 from sqlalchemy import func, text
 
 from saq.constants import F_FILE_LOCATION
-from saq.database.model import FileCollection
+from saq.database.model import Alert, FileCollection
 from saq.database.pool import get_db
-from saq.file_collection.collector import FileCollectionCollector
+from saq.file_collection.collector import FileCollectionCollector, hand_over
 from saq.file_collection.database import (
     get_pending_file_collection_by_observable,
     queue_file_collection,
     resolve_duplicate_pending_file_collection,
     retry_file_collection,
+    wait_on_file_collection,
 )
 from saq.file_collection.storage import unattached_storage_dir
 from saq.file_collection.types import FileCollectionStatus, FileCollectionWorkItem, FileCollectorStatus
@@ -88,6 +89,8 @@ def test_collect_work_item_with_missing_alert(caplog):
         observable_value="host@/path/to/file",
         alert_uuid=alert_uuid,
     )
+    # an alert that waited on it and is gone as well is no one to give it to
+    wait_on_file_collection(collection_id, str(uuid4()))
 
     collector = FileCollectionCollector()
     listener = TestFileCollectionListener()
@@ -112,6 +115,98 @@ def test_collect_work_item_with_missing_alert(caplog):
     assert warnings[0].file_collection_id == collection_id
     assert warnings[0].alert_uuid == alert_uuid
     assert not [r for r in caplog.records if r.levelno >= logging.ERROR]
+
+
+@pytest.mark.integration
+def test_collect_hands_a_shared_collection_to_the_alert_still_waiting_on_it(db_alert, other_db_alert, caplog):
+    """Two alerts ask for the same file and the second one's request is folded into the first's.
+    Once the first alert is deleted, the collection is the second's: its file goes in the second
+    alert's storage directory instead of the collection failing."""
+    owner_id = queue_file_collection(
+        collector_name="custom",
+        observable_type=F_FILE_LOCATION,
+        observable_value="host@/path/to/shared",
+        alert_uuid=db_alert.uuid,
+    )
+    duplicate_id = queue_file_collection(
+        collector_name="custom",
+        observable_type=F_FILE_LOCATION,
+        observable_value="host@/path/to/shared",
+        alert_uuid=other_db_alert.uuid,
+    )
+    assert resolve_duplicate_pending_file_collection(duplicate_id) == owner_id
+
+    deleted_uuid = db_alert.uuid
+    get_db().query(Alert).filter(Alert.uuid == deleted_uuid).delete()
+    get_db().commit()
+
+    collector = FileCollectionCollector()
+    collector.register_listener("custom", TestFileCollectionListener())
+    with caplog.at_level(logging.INFO):
+        tasks = collector.collect_work_items()
+
+    assert [task.id for task in tasks] == [owner_id]
+    assert tasks[0].alert_uuid == other_db_alert.uuid
+    assert tasks[0].storage_dir == other_db_alert.storage_dir
+
+    # discards anything the collector did not commit
+    get_db().rollback()
+    row = get_db().query(FileCollection).filter(FileCollection.id == owner_id).one()
+    assert row.alert_uuid == other_db_alert.uuid
+    assert row.status == FileCollectionStatus.IN_PROGRESS.value
+    assert row.result is None
+    assert row.lock == tasks[0].lock
+
+    records = [r for r in caplog.records if getattr(r, "file_collection_id", None) == owner_id]
+    assert len(records) == 1
+    assert records[0].levelno == logging.INFO
+    assert records[0].alert_uuid == other_db_alert.uuid
+    assert records[0].previous_alert_uuid == deleted_uuid
+    assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
+
+
+@pytest.mark.integration
+def test_collect_hands_a_collection_to_the_oldest_waiting_alert_that_exists(db_alert, other_db_alert):
+    collection_id = queue_file_collection(
+        collector_name="custom",
+        observable_type=F_FILE_LOCATION,
+        observable_value="host@/path/to/file",
+        alert_uuid=str(uuid4()),
+    )
+    wait_on_file_collection(collection_id, str(uuid4()))
+    wait_on_file_collection(collection_id, other_db_alert.uuid)
+    wait_on_file_collection(collection_id, db_alert.uuid)
+
+    collector = FileCollectionCollector()
+    collector.register_listener("custom", TestFileCollectionListener())
+    tasks = collector.collect_work_items()
+
+    assert [(task.id, task.alert_uuid, task.storage_dir) for task in tasks] == [
+        (collection_id, other_db_alert.uuid, other_db_alert.storage_dir)]
+
+
+@pytest.mark.integration
+def test_hand_over_leaves_a_collection_locked_by_another_collector(db_alert):
+    collection_id = queue_file_collection(
+        collector_name="custom",
+        observable_type=F_FILE_LOCATION,
+        observable_value="host@/path/to/file",
+        alert_uuid=str(uuid4()),
+    )
+    wait_on_file_collection(collection_id, db_alert.uuid)
+    get_db().execute(text("UPDATE file_collection SET `lock` = 'ours' WHERE id = :id"), {"id": collection_id})
+    get_db().commit()
+    file_collection = get_db().query(FileCollection).filter(FileCollection.id == collection_id).one()
+    get_db().expunge(file_collection)
+
+    # another collector took the row after its lock timed out
+    get_db().execute(text("UPDATE file_collection SET `lock` = 'theirs' WHERE id = :id"), {"id": collection_id})
+    get_db().commit()
+
+    assert hand_over(file_collection) is None
+    get_db().commit()
+    get_db().expire_all()
+    assert get_db().get(FileCollection, collection_id).alert_uuid == file_collection.alert_uuid
 
 
 @pytest.mark.integration

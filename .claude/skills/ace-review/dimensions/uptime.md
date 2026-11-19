@@ -8,7 +8,7 @@ Read first: `CLAUDE.md` § Engineering values → Uptime, and § Significant Sub
 
 **Hangs and unbounded waits.**
 - `thread.join()`, `process.join()`, `queue.get()`, `event.wait()`, `lock.acquire()` or `subprocess.run()` without a timeout on a run, stop or shutdown path.
-- A network or HTTP call with no timeout (requests, httpx, boto3, pymysql, redis, celery `.get()`).
+- A network or HTTP call with no timeout (requests, httpx, pymysql, redis, celery `.get()`).
 - An unbounded join is acceptable only with a comment naming what bounds it. For example, a service's `wait()` may join its threads without a timeout because `ace service start` bounds the whole call with a deadline, but it needs a comment saying so.
 
 **Shutdown.**

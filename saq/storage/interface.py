@@ -14,7 +14,12 @@ class StorageBackendConfig(BaseModel):
 
 
 class StorageInterface(Protocol):
-    """Protocol defining the interface for storage operations."""
+    """Protocol defining the interface for storage operations.
+
+    A backend that talks to the network bounds every call itself (connect and read timeouts,
+    capped retries): ACE calls these methods synchronously from `ace crash sync`, `ace crash
+    prune` and the crash download API, and has no timeout of its own to put around them.
+    """
 
     @classmethod
     def get_config_class(cls) -> Type[StorageBackendConfig]:
@@ -22,12 +27,12 @@ class StorageInterface(Protocol):
 
         Only pluggable backends loaded through storage.backend need this: the factory
         validates the YAML `config:` sub-dict against it and passes the resulting model
-        as the backend's single constructor argument. The built-in local and s3 backends
-        are constructed directly by the factory and never go through it.
+        as the backend's single constructor argument. The built-in local backend is
+        constructed directly by the factory and never goes through it.
 
-        Defaults to the empty base rather than an unimplemented `...`: LocalStorage and
-        S3Storage inherit from this Protocol explicitly, so an `...` body would give them
-        a method that returns None and turn a misconfiguration into an AttributeError
+        Defaults to the empty base rather than an unimplemented `...`: LocalStorage
+        inherits from this Protocol explicitly, so an `...` body would give it a method
+        that returns None and turn a misconfiguration into an AttributeError
         deep inside the factory.
         """
         return StorageBackendConfig

@@ -81,6 +81,5 @@ def test_local_storage_relative_base_dir_is_under_saq_home(tmp_path, monkeypatch
     monkeypatch.delenv("SAQ_HOME", raising=False)
     get_global_runtime_settings().saq_home = str(tmp_path)
     monkeypatch.setattr(get_config(), "storage", StorageConfig(target="local", base_dir="storage"))
-    monkeypatch.setattr(get_config(), "s3", None)
     adapter = StorageFactory.get_storage_system()
     assert str(adapter._storage.base_dir) == str(tmp_path / "storage")

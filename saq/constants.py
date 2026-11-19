@@ -503,8 +503,6 @@ EVENT_DETAILS_UPDATED = 'details_updated'
 EVENT_DIRECTIVE_ADDED = 'directive_added'
 # fired when we add an Analysis to an Observable
 EVENT_ANALYSIS_ADDED = 'analysis_added'
-# fired when we delete an Analysis from an Observable
-EVENT_ANALYSIS_DELETED = 'analysis_deleted'
 # fired when we add a DetectionPoint ot an Analysis or Observable
 EVENT_DETECTION_ADDED = 'detection_added'
 # fired when an analysis is marked as completed manually
@@ -514,28 +512,16 @@ EVENT_RELATIONSHIP_ADDED = 'relationship_added'
 # fired when we add a context record to an Analysis or Observable
 EVENT_CONTEXT_RECORD_ADDED = 'context_record_added'
 
-# these next two events are intended to be used with the RootAnalysis object
-# fired when we add a tag to any taggable object
-EVENT_GLOBAL_TAG_ADDED = 'global_tag_added'
-# fired when we add an observable to any analysis object
-EVENT_GLOBAL_OBSERVABLE_ADDED = 'global_observable_added'
-# fired when we add an analysis to any observable object
-EVENT_GLOBAL_ANALYSIS_ADDED = 'global_analysis_added'
-
 # list of all valid events
 VALID_EVENTS = [ 
     EVENT_ANALYSIS_MARKED_COMPLETED,
     EVENT_TAG_ADDED,
     EVENT_OBSERVABLE_ADDED,
     EVENT_ANALYSIS_ADDED,
-    EVENT_ANALYSIS_DELETED,
     EVENT_DETECTION_ADDED,
     EVENT_DIRECTIVE_ADDED,
     EVENT_RELATIONSHIP_ADDED,
-    EVENT_DETAILS_UPDATED,
-    EVENT_GLOBAL_TAG_ADDED,
-    EVENT_GLOBAL_OBSERVABLE_ADDED,
-    EVENT_GLOBAL_ANALYSIS_ADDED ]
+    EVENT_DETAILS_UPDATED ]
 
 # available actions for observables
 ACTION_COLLECT_FILE = 'collect_file'
@@ -589,6 +575,8 @@ R_EXTRACTED_FROM = 'extracted_from'
 R_IS_HASH_OF = 'is_hash_of'
 R_LOGGED_INTO = 'logged_into'
 R_REDIRECTED_FROM = 'redirected_from'
+# mail to this address went to that mailbox instead (a forward or a list expansion)
+R_DELIVERED_TO = 'delivered_to'
 
 VALID_RELATIONSHIP_TYPES = [
     R_RELATED_TO,
@@ -598,6 +586,7 @@ VALID_RELATIONSHIP_TYPES = [
     R_IS_HASH_OF,
     R_LOGGED_INTO,
     R_REDIRECTED_FROM,
+    R_DELIVERED_TO,
 ]
 
 TARGET_EMAIL_RECEIVED = 'email.received'
@@ -1007,17 +996,6 @@ CONFIG_QUERY_HUNTER_QUERY_TIMEOUT = "query_timeout"
 # events
 CONFIG_EVENTS = "events"
 CONFIG_EVENTS_AUTO_CLOSE_PATH = "auto_close_path"
-
-# s3-compatible storage
-CONFIG_S3 = "s3"
-CONFIG_S3_HOST = "host"
-CONFIG_S3_PORT = "port"
-CONFIG_S3_ACCESS_KEY = "access_key"
-CONFIG_S3_SECRET_KEY = "secret_key"
-CONFIG_S3_SECURE = "secure"
-CONFIG_S3_CERT_CHECK = "cert_check"
-CONFIG_S3_REGION = "region"
-CONFIG_S3_USE_EC2_METADATA = "use_ec2_metadata"
 
 # redis
 CONFIG_REDIS = "redis"

@@ -13,7 +13,7 @@ from saq.database.pool import get_db
 from saq.database.util.alert import ALERT
 from saq.database.util.locking import acquire_lock, release_lock
 from saq.gui.alert import GUIAlert
-from tests.saq.helpers import audit_actor_of, audit_record, logged_with, the_error_with_traceback
+from tests.saq.helpers import audit_actor_of, audit_record, audit_records, logged_with, the_error_with_traceback
 
 
 @pytest.fixture
@@ -126,6 +126,23 @@ class TestAddObservable:
         assert _saved_root(alert).get_observables_by_type('ipv4') == []
         assert _workload_modes(alert) == []
 
+    def test_invalid_observable_value(self, web_client, alert, basic_form_data, caplog):
+        """A value its type rejects adds nothing, so nothing is audited and the alert is not queued again."""
+        caplog.set_level(logging.INFO)
+        response = web_client.post(url_for('analysis.add_observable'),
+                                   data={**basic_form_data, 'add_observable_value': '999.1.1.1'})
+
+        assert response.status_code == 302
+        with web_client.session_transaction() as sess:
+            assert [message for _category, message in sess.get('_flashes', [])] == [
+                'unable to add observable: invalid value or too many observables of that type']
+        root = _saved_root(alert)
+        assert root.get_observables_by_type('ipv4') == []
+        assert root.analysis_mode == ANALYSIS_MODE_DISPOSITIONED
+        assert _workload_modes(alert) == []
+        assert audit_records(caplog) == []
+        assert _is_unlocked(alert.uuid)
+
     def test_alert_not_found_in_database(self, web_client, caplog):
         """An unknown alert uuid is client input: refused with a WARNING that names it, not an error."""
         missing_uuid = str(uuid4())
@@ -166,22 +183,29 @@ class TestAddObservable:
 
     def test_alert_load_error(self, web_client, alert, basic_form_data, caplog):
         """Test when alert.load() raises an exception."""
+        caplog.set_level(logging.INFO)
         with patch.object(GUIAlert, 'load', side_effect=Exception("Load failed")):
             response = web_client.post(url_for('analysis.add_observable'), data=basic_form_data)
 
         assert response.status_code == 302
         assert 'from filesystem' in the_error_with_traceback(caplog, alert_uuid=alert.uuid).getMessage()
+        # nothing was added, so nothing is audited
+        assert audit_records(caplog) == []
         assert _workload_modes(alert) == []
         assert _is_unlocked(alert.uuid)
 
     def test_alert_sync_error(self, web_client, alert, basic_form_data, caplog):
         """Test when alert.sync() raises an exception."""
+        caplog.set_level(logging.INFO)
         with patch.object(GUIAlert, 'sync', side_effect=Exception("Sync failed")):
-            response = web_client.post(url_for('analysis.add_observable'), data=basic_form_data)
+            response = web_client.post(url_for('analysis.add_observable'), data={
+                **basic_form_data, 'add_observable_directives': 'no_scan'})
 
         assert response.status_code == 302
         assert the_error_with_traceback(caplog, alert_uuid=alert.uuid).getMessage() == f"unable to sync alert {alert.uuid}"
         assert _saved_root(alert).get_observable_by_type('ipv4') is None
+        # neither the observable nor its directives were saved, so neither is audited
+        assert audit_records(caplog) == []
         assert _workload_modes(alert) == []
         assert _is_unlocked(alert.uuid)
 
