@@ -23,7 +23,7 @@ Build one command that drives the real code path and asserts the symptom that wa
 
 - a pytest that reaches the bug (the `tdd` skill's *Where to test*);
 - a real `ace` command, or an HTTP request against the dev stack;
-- a captured input replayed: a file, an email, a request body. Never copy customer data into `tests/` (CLAUDE.md § Test data): build the smallest input that has the same structure;
+- a captured input replayed: a file, an email, a request body. Never copy customer data into `tests/` (AGENTS.md § Test data): build the smallest input that has the same structure;
 - a throwaway script that calls the function with the bad input;
 - for a bug that happens only sometimes: loop the trigger, add threads or load, and shorten timeouts until it fails often enough to work with.
 

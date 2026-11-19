@@ -2,7 +2,7 @@
 
 CI does not run the test suite, so this review is the only place tests get checked. The goal is coverage close to 100%. You judge whether the change is tested well enough that a later change breaking it would be caught.
 
-Read first: `CLAUDE.md` § Testing and § Engineering values → Tests. Then read these files in `$B`:
+Read first: `AGENTS.md` § Testing and § Engineering values → Tests. Then read these files in `$B`:
 
 | File | Contents |
 |---|---|
@@ -30,7 +30,7 @@ Read first: `CLAUDE.md` § Testing and § Engineering values → Tests. Then rea
 - **Failure paths.** For each new `except`, refusal, conflict, timeout or fallback, is there a test that triggers it? Is there a test that asserts its log record (`caplog`, `search_log`, `wait_for_log_count`)?
 - **Assertions that can't fail.** `assert x, 1` (the `1` is the failure message, not a comparison), `assert True`, a test with no assertion, or assertions only on mocks the test itself set up. Also `pytest.raises(Exception)` with no `match=`, which passes on any bug in the code under test unless the code really raises a plain `Exception`, and an `assert` in a thread, which pytest turns into a warning.
 - **Over-mocking.** A test that mocks the code under test, or mocks the database in an `integration` test that could use the real one. In this repo integration tests use the real DB, and `monkeypatch` is preferred over `MagicMock`.
-- **Analysis module tests** follow the standard shape in CLAUDE.md: run the engine, then reload from disk with `load_root` before asserting. Asserting on the in-memory root after an engine run is wrong.
+- **Analysis module tests** follow the standard shape in AGENTS.md: run the engine, then reload from disk with `load_root` before asserting. Asserting on the in-memory root after an engine run is wrong.
 
 **Flakiness.**
 - `time.sleep` used to wait for something. Use `wait_for_condition` or `wait_for_log_count` from `tests/saq/helpers.py`.

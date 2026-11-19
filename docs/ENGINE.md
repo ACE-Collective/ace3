@@ -1570,7 +1570,7 @@ locking, cache-hit behavior, the disposition-check throttle
 execution context (`test_execution_context_merge.py`) and the module-facing
 shutdown signal (`test_module_shutdown_signals.py`).
 
-The standard shape (also in `CLAUDE.md`):
+The standard shape (also in `AGENTS.md`):
 
 ```python
 @pytest.mark.integration

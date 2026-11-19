@@ -1,6 +1,6 @@
-# CLAUDE.md
+# AGENTS.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+This file provides guidance to coding agents (Claude Code and Codex) when working with code in this repository.
 
 ## What this is
 
@@ -10,11 +10,13 @@ ACE (Analysis Correlation Engine) 3.x — a security alert analysis and correlat
 
 A working tree usually spans more than one upstream repo. This repo is the open-source ACE core; `signatures/` and each tree under `integrations/` are gitignored here but separately versioned, so their changes never appear in the outer `git status` and `grep`/`rg` skip them by default. Check them explicitly (`git -C signatures status`) and give them their own commits and PR descriptions. A git worktree gets a worktree of each integration repository of its own (see *From a git worktree* below).
 
+**Agent configuration.** This file is the instructions for both agents: Codex reads it, and Claude Code reads it through `CLAUDE.md`, a one-line `@AGENTS.md` import (`phishkit/` and `js_deobfuscator/` have the same pair). Keep that import: Claude Code skips `AGENTS.md` wherever a `CLAUDE.md` or `CLAUDE.local.md` exists. Skills live in `.agents/skills/`, which Codex reads; `.claude/skills` is a tracked link to it, which is how Claude Code reads them, so a skill is added or edited only under `.agents/skills/`. Codex reads `.codex/config.toml` (which raises its 32 KiB limit on these files, since this one is larger) and `.codex/hooks.json` only once the checkout is a trusted project, and runs a hook only after it has been approved in `/hooks`. In a git worktree, Codex runs the main checkout's `.codex/hooks.json`, with the worktree as the hook's `cwd`. Your own untracked instructions go in `AGENTS.local.md` at the main checkout's root (gitignored), not in `CLAUDE.local.md`: neither tool reads a local file in a worktree, and Codex reads none at all, so both tools' SessionStart hooks run `bin/print-local-instructions.sh`, which hands the main checkout's copy to every session, in the main checkout and in each worktree.
+
 Known flaws in ACE's design that changes have had to work around are GitHub issues labeled `design flaw` (`gh issue list --label "design flaw"`), each describing the workaround that first ran into it. `/ace-review` files them. Before you write a workaround, check whether it is for one of them, and if so, follow the workaround its issue describes rather than inventing another.
 
 ## Environment
 
-Development happens **inside the `dev` container**, where `SAQ_HOME=/opt/ace`, Python 3.14 is in `/venv` and the user is `ace`. Claude Code runs either in that container or on the host, where the desktop app runs it in a git worktree under `.claude/worktrees/`. On a macOS host the shell is zsh, which fails a command whose glob matches nothing, so quote patterns (`grep --include='*.py'`), and there is no `timeout` command.
+Development happens **inside the `dev` container**, where `SAQ_HOME=/opt/ace`, Python 3.14 is in `/venv` and the user is `ace`. The agent runs either in that container or on the host, where the Claude desktop app runs it in a git worktree under `.claude/worktrees/`. On a macOS host the shell is zsh, which fails a command whose glob matches nothing, so quote patterns (`grep --include='*.py'`), and there is no `timeout` command.
 
 **Where a command runs.** Check once per session with `ls /.dockerenv`:
 
@@ -33,12 +35,12 @@ GUI: https://localhost:5000/ace (analyst/analyst).
 
 **A worktree is used from the side that created it.** A worktree's `.git` file names its repository by absolute path, and the host and `dev` see the checkout at different paths, so `git` works in a worktree only on the side where it was created (unless the host checkout is itself at `/opt/ace`). Do its git work there. On the host, `bin/get-dev-container.sh`, and so `bin/exec-in-container.sh` and the Makefile, refuse a worktree created in `dev` rather than run the main checkout's code. A worktree created on the host runs its tests from the host through `bin/exec-in-container.sh`, which needs no `git` in `dev`; from a shell in `dev` it runs them directly, with the environment exported as above.
 
-The SessionStart hook in `.claude/settings.json` runs `bin/setup-worktree.sh`, which adds what git does not track:
+The SessionStart hook in `.claude/settings.json` (Claude Code) and in `.codex/hooks.json` (Codex) runs `bin/setup-worktree.sh`, which adds what git does not track:
 
 - `integrations/<name>`: a detached worktree of each integration repository in the main checkout. Create a branch in it before committing. Its changes do not show in this checkout's `git status`, so check it before deleting the worktree.
 - the `tests/test_external_integration_*` links into those repositories
 - each path in `.worktreeinclude` (`ssl/`), copied from the main checkout
-- `.claude/skills/<name>`: a link to each skill in the main checkout (most of its skills are gitignored) and in `~/.claude/skills` that the worktree does not have. A skill the worktree has wins, then the main checkout's. The session that makes the links does not list them until its second turn, so the hook's output names them for its first.
+- `.agents/skills/<name>`: a link to each skill in the main checkout (most of its skills are gitignored) and in `~/.claude/skills` that the worktree does not have. A skill the worktree has wins, then the main checkout's. The session that makes the links does not list them until its second turn, so the hook's output names them for its first.
 - `local`: a link to the main checkout's `local/`, so PR descriptions written there outlive the worktree. A write through it lands outside the worktree, so auto mode asks about every one unless the main checkout's `local/` is a working directory of the session: add its absolute path to `permissions.additionalDirectories` in the main checkout's `.claude/settings.local.json`. A relative path, or the path of the link, does not count.
 
 It removes the integration repositories' records of deleted worktrees, but only of those under the main checkout or beside this worktree, never `git worktree prune`, which would remove the other side's. Run it by hand in a worktree made with `git worktree add`. A worktree created in `dev` needs nothing more. For a worktree created on the host, `diff-cover` is the exception to the rule above, since it needs `git` in `dev`: mount the main checkout's `.git` at its host path in `docker-compose.override.yml` and recreate `dev`:
@@ -85,7 +87,7 @@ Tests use a data dir under `/var/tmp/ace-unittest/<hash of the checkout path>/`,
 
 ACE "integrations" tests are accessed through the `test_external_integration_*` symlinks. Never try to run these tests using their actual paths, *always* use the symlinks to access ACE integration tests.
 
-There is no configured linter/formatter in the repo. Before asking for a review, `/venv/bin/python .claude/skills/ace-review/scripts/prepare.py --check` lists the lines the branch adds that the review flags (a missing traceback, an unbounded wait, a copied function, an unmarked test), each with its fix, and exits 1 while there are any.
+There is no configured linter/formatter in the repo. Before asking for a review, `/venv/bin/python .agents/skills/ace-review/scripts/prepare.py --check` lists the lines the branch adds that the review flags (a missing traceback, an unbounded wait, a copied function, an unmarked test), each with its fix, and exits 1 while there are any.
 
 **Parallel runs.** `pytest -n auto` (or `-n 4`) runs the suite under pytest-xdist; it is opt-in, the default is serial. Every pytest process has a *slot* (`tests/unittest_session.py`): its xdist worker id (`gw0`, `gw1`, ...) or `main`. The slot decides the process's databases, its data directory `/var/tmp/ace-unittest/<checkout hash>/<slot>/`, its API port (`24443` + index), its network semaphore port (`53560` + index), its Qdrant collection prefix `ace3-alerts-unittest-<checkout hash>-<slot>` and its log file `data/logs/unittest-<slot>.log`, all applied through the `SAQ_UNITTEST_CONFIG_PATHS` overlay. Each worker pays the session start cost (four alembic chains plus seeding, a few seconds).
 
@@ -269,7 +271,7 @@ The `docker-compose.yml` configuration is the open source default configuration.
 
 `phishkit/` is a browser-detonation service that lives outside the `saq` namespace and never imports it: a Celery worker (RabbitMQ broker, Redis backend) that detonates a URL or file in a throwaway Chrome/SeleniumBase container and leaves the artifacts (screenshot, DOM, captured requests and response bodies, metrics) on the shared `ace-phishkit` volume. Its behavior is configured by `etc/phishkit_config.yaml`, which is *not* part of the layered `saq.yaml` config. ACE reaches it only through `saq/phishkit.py`, a thin Celery client plus an `ace phishkit` CLI; the real consumer is `PhishkitAnalyzer` (`saq/modules/phishkit.py`, config block `analysis_module_phishkit_analyzer`), which dispatches asynchronously, polls via delayed analysis, and turns the returned artifacts and the URLs found in them into observables.
 
-Phishkit has it's own CLAUDE.md file available at `phishkit/CLAUDE.md` as needed.
+Phishkit has its own AGENTS.md file available at `phishkit/AGENTS.md` as needed.
 
 #### Crash reports
 
@@ -361,11 +363,11 @@ The GUI's **Documentation** area (`app/help/`, `/ace/help/`, any logged-in user)
 
 `js_deobfuscator/` is a JavaScript sandbox that reports what a sample *did* rather than what it says: it lives outside the `saq` namespace and never imports it, and it is a Celery worker that runs `harness.js` in a throwaway container per sample, exchanging payloads and results only through the shared `ace-js-deobfuscator` volume. The harness executes the sample in a `node:vm` context where browser/Acrobat globals are recording Proxies, and emits a pseudo-JS trace of everything the sample touched. ACE reaches it only through `saq/js_deobfuscator.py`, a thin Celery client; the consumer is `JavaScriptDeobfuscationAnalyzer` (`saq/modules/file_analysis/js.py`, config block `analysis_module_javascript_deobfuscation`), which calls **synchronously** rather than via delayed analysis, and re-emits the trace and any extracted payloads as file observables for URL extraction.
 
-js_deobfuscator has its own CLAUDE.md file available at `js_deobfuscator/CLAUDE.md` as needed.
+js_deobfuscator has its own AGENTS.md file available at `js_deobfuscator/AGENTS.md` as needed.
 
 ## Engineering values
 
-What a change is judged on, in priority order: **uptime, logging, tests, performance**. A bug ranks by what it does to one of those. A change does what its description says, and a bug fix removes the cause, not the symptom. Software-engineering polish matters only as far as it keeps the code understandable, and GUI implementation style does not matter at all. The `/ace-review` skill (`.claude/skills/ace-review/`) reviews a branch against this section as it is on the base branch, so a rule that is not written there is not enforced, and a branch that edits this section is still judged by the old text until the maintainer accepts the edit.
+What a change is judged on, in priority order: **uptime, logging, tests, performance**. A bug ranks by what it does to one of those. A change does what its description says, and a bug fix removes the cause, not the symptom. Software-engineering polish matters only as far as it keeps the code understandable, and GUI implementation style does not matter at all. The `/ace-review` skill (`.agents/skills/ace-review/`) reviews a branch against this section as it is on the base branch, so a rule that is not written there is not enforced, and a branch that edits this section is still judged by the old text until the maintainer accepts the edit.
 
 ### Uptime
 
@@ -427,7 +429,7 @@ Every service, `ace` command, engine worker and API worker holds what its module
 - Comments and docstrings say *why*, not what the code says. Skip the module docstring that retells the design doc.
 - No new module, base class, exception class or config knob without a second caller or a concrete need. A plain function in an existing module is the default.
 - Remove dead code you replace. Don't leave shims for callers that no longer exist.
-- A change that removes or renames a path, function or config key also updates the lines of CLAUDE.md, `docs/` and the skills that name it.
+- A change that removes or renames a path, function or config key also updates the lines of AGENTS.md, `docs/` and the skills that name it.
 
 ### GUI
 

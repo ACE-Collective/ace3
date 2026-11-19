@@ -2,7 +2,7 @@
 
 The maintainer cares most about what the analyst feels: page loads, API latency, search. Second comes engine throughput, which decides how fast alerts appear. You look for work that scales with data size in a place where it hurts.
 
-Read first: `CLAUDE.md` § Engineering values → Performance, and `docs/GUI_ALERT_PAGE_PERFORMANCE.md`. That doc is a case study: one alert page took 31 seconds because of N+1 queries, forks on every render and reloaded roots. If the change touches analysis modules or `saq/engine/executor.py` cache paths, also read `docs/ANALYSIS_CACHING.md`.
+Read first: `AGENTS.md` § Engineering values → Performance, and `docs/GUI_ALERT_PAGE_PERFORMANCE.md`. That doc is a case study: one alert page took 31 seconds because of N+1 queries, forks on every render and reloaded roots. If the change touches analysis modules or `saq/engine/executor.py` cache paths, also read `docs/ANALYSIS_CACHING.md`.
 
 ## Look for
 

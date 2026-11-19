@@ -1,8 +1,8 @@
-# CLAUDE.md
+# AGENTS.md
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-The repo-level `../CLAUDE.md` also applies. This file covers the js_deobfuscator subsystem specifically. It is the sibling of `../phishkit/CLAUDE.md` and follows the same manager/scanner shape.
+The repo-level `../AGENTS.md` also applies. This file covers the js_deobfuscator subsystem specifically. It is the sibling of `../phishkit/AGENTS.md` and follows the same manager/scanner shape.
 
 ## What this is
 

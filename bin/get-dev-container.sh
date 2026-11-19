@@ -9,7 +9,7 @@ cd "$(dirname "${BASH_SOURCE[0]}")/.." || exit 1
 if [ -f .git ] && ! git rev-parse --git-dir >/dev/null 2>&1; then
     echo "Error: git cannot open the worktree $(pwd -P), whose .git names $(sed -n 's/^gitdir: //p' .git)." \
          "It was created on the other side of the dev container's mount (the host or the container)," \
-         "and is used only from there (CLAUDE.md)" >&2
+         "and is used only from there (AGENTS.md)" >&2
     exit 1
 fi
 # a git worktree has no .env or docker-compose.override.yml of its own: its stack is the one of

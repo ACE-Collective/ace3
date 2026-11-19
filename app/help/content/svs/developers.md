@@ -11,7 +11,7 @@ You will learn:
 - how to test a change, update these guides and refresh their screenshots;
 - what is still open.
 
-If you have not used SVS yet, read the [Beginner's guide](beginners.md) first, and keep the [User's guide](users.md) at hand for what each screen does. ACE itself is described in `CLAUDE.md` at the repository root, which also holds the repository conventions this guide assumes.
+If you have not used SVS yet, read the [Beginner's guide](beginners.md) first, and keep the [User's guide](users.md) at hand for what each screen does. ACE itself is described in `AGENTS.md` at the repository root, which also holds the repository conventions this guide assumes.
 
 ## Where to start
 
@@ -405,7 +405,7 @@ The worklist screenshot shows the derived statuses next to the stored resolution
 | `svs-runs` | `RunTimer` | `svs.runs.timer_interval_seconds` | `runs.run_timers`. |
 | `svs-coverage` | `CoverageRefresher` | `svs.coverage.refresh_interval_seconds` | `coverage.refresh_coverage`. |
 
-There are `svs.yara.max_concurrent_validations` workers. Every loop iteration ends with `remove_all_sessions()`, and every failure is logged with `log_loop_exception`, the convention for long-running loops (`CLAUDE.md`, *Shutdown*).
+There are `svs.yara.max_concurrent_validations` workers. Every loop iteration ends with `remove_all_sessions()`, and every failure is logged with `log_loop_exception`, the convention for long-running loops (`AGENTS.md`, *Shutdown*).
 
 **Primary node.** `start()` checks `is_primary_node()` (the `ACE_IS_PRIMARY_NODE` environment variable, `1` by default) and stays idle on any other node, logging why. The queue, the catalog, the runs and coverage are shared, so one node runs them; every timer move and claim is conditional anyway, so a second instance by mistake changes nothing it shouldn't.
 
@@ -527,7 +527,7 @@ Use `-n auto` unless there is a technical reason not to, and never `-p no:cachep
 
 **The two-twin rules.** Where a rule exists as SQL and as Python (effective verdicts, labels), add your case to the agreement test, not only to one side. Where a status is derived by one function (`derive_status`, `needs_attention_condition`), test through that function.
 
-**GUI checks.** Check a GUI change in a browser through the Playwright MCP only when you are asked to, and never add browser tests to the pytest suite (`CLAUDE.md`, *Testing GUI changes*, and `docs/GUI_TESTING.md`). The screenshot script above is a documentation tool, not a test.
+**GUI checks.** Check a GUI change in a browser through the Playwright MCP only when you are asked to, and never add browser tests to the pytest suite (`AGENTS.md`, *Testing GUI changes*, and `docs/GUI_TESTING.md`). The screenshot script above is a documentation tool, not a test.
 
 ## Recipes
 
@@ -577,7 +577,7 @@ The GUI needs no change: `filter_list_page.js` builds the editor from the screen
 4. Read it at the point of use with `get_config().svs.<section>.<name>` (or `get_service_config(SERVICE_SVS)`), not at import time, so tests can change it.
 5. Add a case to `tests/saq/svs/test_config.py`, and document it in the configuration section of the operating document it belongs to (`docs/SVS_RUNS.md`, `docs/SVS_VALIDATION.md`, `docs/SVS_SAMPLES.md` or `docs/SVS_COVERAGE.md`).
 
-Never put integration-specific settings in `saq/configuration/schema.py`; integrations extend core through generic hooks (`CLAUDE.md`, *Conventions*).
+Never put integration-specific settings in `saq/configuration/schema.py`; integrations extend core through generic hooks (`AGENTS.md`, *Conventions*).
 
 ## Known issues
 

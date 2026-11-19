@@ -36,7 +36,7 @@ These rules come from the October 2026 import work:
 5. **A name needed only for a type annotation is imported under `TYPE_CHECKING`.**
 6. **A dependency is in `installer/requirements.txt` because ACE uses it.** Some libraries import an optional dependency whenever it is installed. pytesseract imports pandas, which cost every engine worker and GUI process 27 MB for nothing.
 
-A local import made for rule 4, or to break a cycle, still gets its one-line comment (CLAUDE.md, Conventions).
+A local import made for rule 4, or to break a cycle, still gets its one-line comment (AGENTS.md, Conventions).
 
 ## Enforcement
 

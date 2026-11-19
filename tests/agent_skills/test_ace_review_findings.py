@@ -1,4 +1,4 @@
-"""Tests for the /ace-review verification bookkeeping, .claude/skills/ace-review/scripts/findings.py."""
+"""Tests for the /ace-review verification bookkeeping, .agents/skills/ace-review/scripts/findings.py."""
 
 import datetime
 import importlib.util
@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-SCRIPT_PATH = Path(__file__).resolve().parents[2] / ".claude" / "skills" / "ace-review" / "scripts" / "findings.py"
+SCRIPT_PATH = Path(__file__).resolve().parents[2] / ".agents" / "skills" / "ace-review" / "scripts" / "findings.py"
 
 pytestmark = pytest.mark.unit
 

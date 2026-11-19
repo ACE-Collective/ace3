@@ -7,7 +7,7 @@ description: "Write ACE tests that can fail: red before green, one behavior at a
 
 A test is a claim about what the code does for the code, user or service that calls it. Nobody has evidence for that claim until they have seen the test fail. Most of the test findings /ace-review raises are of two kinds: tests that still pass with the code they cover removed, and failure branches that no test runs. This loop prevents both. Write the test, watch it fail for the reason you expect, make it pass, and put the failure in the PR.
 
-CLAUDE.md § Testing says how to run tests: in the `dev` container, with run markers, one run at a time. § Environment → *Where a command runs* says how: directly in `dev`, through `bin/exec-in-container.sh` only from the host. The commands below are written for `dev`. § Engineering values → Tests says what must be covered.
+AGENTS.md § Testing says how to run tests: in the `dev` container, with run markers, one run at a time. § Environment → *Where a command runs* says how: directly in `dev`, through `bin/exec-in-container.sh` only from the host. The commands below are written for `dev`. § Engineering values → Tests says what must be covered.
 
 Adapted from Matt Pocock's `tdd` skill and the `tdd` and `principle-test-behavior-not-implementation` skills of Lauren Tan's pstack (MIT, see `LICENSE`).
 
@@ -54,7 +54,7 @@ Take expected values from the requirement and write them as literals. Don't comp
 
 | What the change touches | Test it through | Assert on |
 |---|---|---|
-| an analysis module | the standard analysis-module test in CLAUDE.md: the engine in single-shot mode, then `load_root` from disk | the analysis details, observables, tags and detection points on the reloaded root |
+| an analysis module | the standard analysis-module test in AGENTS.md: the engine in single-shot mode, then `load_root` from disk | the analysis details, observables, tags and detection points on the reloaded root |
 | an `aceapi_v2` endpoint | the `client` fixture in `tests/aceapi_v2/conftest.py` | the status, the body, and what a later read returns |
 | a service or a loop | start and stop it, then `wait_for_condition` / `wait_for_log_count` | the effect and its log record |
 | database code | the real per-session database, with an `integration` marker | what the public function returns, or what a later read sees |
@@ -81,7 +81,7 @@ Mock only what ACE doesn't own: network peers and outside services, the clock, r
 ## Before asking for a review
 
 ```bash
-/venv/bin/python .claude/skills/ace-review/scripts/prepare.py --check
+/venv/bin/python .agents/skills/ace-review/scripts/prepare.py --check
 ```
 
 It lists the lines the branch adds that ACE's review flags (a missing traceback, an unbounded wait, a sleep in a test, an assert that cannot fail, a test with no assertion, a copied function, an unmarked test), each with the fix it expects. Fix them or add the comment it asks for, then run it again until it prints nothing.

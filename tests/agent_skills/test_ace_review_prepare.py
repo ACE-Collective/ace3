@@ -1,4 +1,4 @@
-"""Tests for the /ace-review bundle script, .claude/skills/ace-review/scripts/prepare.py, against
+"""Tests for the /ace-review bundle script, .agents/skills/ace-review/scripts/prepare.py, against
 throwaway git repos: rounds and their deltas, the base-branch rules, and the mechanical leads."""
 
 import importlib.util
@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-SCRIPTS = Path(__file__).resolve().parents[2] / ".claude" / "skills" / "ace-review" / "scripts"
+SCRIPTS = Path(__file__).resolve().parents[2] / ".agents" / "skills" / "ace-review" / "scripts"
 
 pytestmark = pytest.mark.unit
 
@@ -26,7 +26,7 @@ def _load_script(name):
 prepare = _load_script("prepare")
 findings = _load_script("findings")
 
-CLAUDE_MD = """# CLAUDE.md
+AGENTS_MD = """# AGENTS.md
 
 ## Layout
 
@@ -64,7 +64,7 @@ def repo(tmp_path, monkeypatch):
     path = (tmp_path / "ace").resolve()
     path.mkdir()
     git(path, "init", "-q", "-b", "main")
-    write(path, "CLAUDE.md", CLAUDE_MD)
+    write(path, "AGENTS.md", AGENTS_MD)
     write(path, "saq/__init__.py", "")
     write(path, "saq/worker.py", "def run():\n    return 1\n")
     commit(path, "base")
@@ -108,7 +108,7 @@ def finding(title, severity="fix-first", origin="new", bucket=None):
 def test_the_first_round_bundles_committed_uncommitted_and_untracked_work(repo, review):
     write(repo, "saq/worker.py", "def run():\n    try:\n        return 1\n    except:\n        return None\n")
     commit(repo)
-    write(repo, "CLAUDE.md", CLAUDE_MD.replace("- Every except logs or re-raises.", "- An except may stay silent."))
+    write(repo, "AGENTS.md", AGENTS_MD.replace("- Every except logs or re-raises.", "- An except may stay silent."))
     write(repo, "saq/new.py", "import time\n\ndef wait(t):\n    t.join()\n")
 
     target = review()
@@ -123,7 +123,7 @@ def test_the_first_round_bundles_committed_uncommitted_and_untracked_work(repo, 
         "tests_selected": 0, "unmarked_tests": 0, "leads": 3, "touches_models": False, "touches_migrations": [],
     }
     assert target["delta"] is False and target["unchanged"] is False
-    assert bundle_file(target, "files.txt").read_text().splitlines() == ["M\tCLAUDE.md", "A\tsaq/new.py", "M\tsaq/worker.py"]
+    assert bundle_file(target, "files.txt").read_text().splitlines() == ["M\tAGENTS.md", "A\tsaq/new.py", "M\tsaq/worker.py"]
     assert "+def wait(t):" in bundle_file(target, "diff.patch").read_text()
     assert [(lead["file"], lead["line"], lead["check"]) for lead in read_json(target, "leads.json")] == [
         ("saq/new.py", 4, "unbounded-wait"), ("saq/worker.py", 4, "bare-except"), ("saq/worker.py", 4, "silent-except"),
@@ -156,14 +156,14 @@ def test_the_snapshot_sees_an_edit_whose_stat_data_git_cannot_tell_apart(repo, r
 
 
 def test_the_change_is_judged_by_the_base_rules_and_its_rule_edits_are_reported(repo, review):
-    write(repo, "CLAUDE.md", CLAUDE_MD.replace("- Every except logs or re-raises.", "- An except may stay silent."))
-    write(repo, ".claude/skills/ace-review/rubric.md", "# rubric\n")
+    write(repo, "AGENTS.md", AGENTS_MD.replace("- Every except logs or re-raises.", "- An except may stay silent."))
+    write(repo, ".agents/skills/ace-review/rubric.md", "# rubric\n")
 
     target = review()
 
-    assert bundle_file(target, "rules/CLAUDE.md").read_text() == CLAUDE_MD
-    assert target["rules"] == {"CLAUDE.md": "main"}
-    assert target["rule_changes"] == ["CLAUDE.md § Engineering values", ".claude/skills/ace-review/rubric.md"]
+    assert bundle_file(target, "rules/AGENTS.md").read_text() == AGENTS_MD
+    assert target["rules"] == {"AGENTS.md": "main"}
+    assert target["rule_changes"] == ["AGENTS.md § Engineering values", ".agents/skills/ace-review/rubric.md"]
     assert target["rule_changes_status"] == "pending"
     patch = bundle_file(target, "rule-changes.patch").read_text()
     assert "-- Every except logs or re-raises.\n+- An except may stay silent.\n" in patch
@@ -172,18 +172,18 @@ def test_the_change_is_judged_by_the_base_rules_and_its_rule_edits_are_reported(
 
 @pytest.mark.parametrize("core_branch, core_source, core_rules", [
     # core's base wins over its working tree
-    ("main", "main", CLAUDE_MD),
+    ("main", "main", AGENTS_MD),
     # no main or master, so core's rules come from its working tree; core isn't under review
-    ("trunk", "working tree", CLAUDE_MD + "\nCore's working tree.\n"),
+    ("trunk", "working tree", AGENTS_MD + "\nCore's working tree.\n"),
 ])
 def test_an_integration_is_judged_by_cores_rules_and_its_own_base_claude_md(tmp_path, monkeypatch, capsys, core_branch, core_source, core_rules):
     core = (tmp_path / "ace").resolve()
     core.mkdir()
     git(core, "init", "-q", "-b", core_branch)
     write(core, ".gitignore", "integrations/\n")
-    write(core, "CLAUDE.md", CLAUDE_MD)
+    write(core, "AGENTS.md", AGENTS_MD)
     commit(core, "core")
-    write(core, "CLAUDE.md", CLAUDE_MD + "\nCore's working tree.\n")
+    write(core, "AGENTS.md", AGENTS_MD + "\nCore's working tree.\n")
     integration = core / "integrations" / "foo"
     integration.mkdir(parents=True)
     (core / "tests").mkdir()
@@ -204,22 +204,22 @@ def test_an_integration_is_judged_by_cores_rules_and_its_own_base_claude_md(tmp_
     target = json.loads(capsys.readouterr().out)
     assert target["kind"] == "integration" and target["integrations"] == ["foo"]
     assert target["bundle"].endswith("foo-mw-foo/round-1")
-    assert target["rules"] == {"CLAUDE.md": core_source, "repo-CLAUDE.md": "main"}
-    assert bundle_file(target, "rules/CLAUDE.md").read_text() == core_rules
-    assert bundle_file(target, "rules/repo-CLAUDE.md").read_text() == "# foo\n\nNever call the vendor twice.\n"
+    assert target["rules"] == {"AGENTS.md": core_source, "repo-AGENTS.md": "main"}
+    assert bundle_file(target, "rules/AGENTS.md").read_text() == core_rules
+    assert bundle_file(target, "rules/repo-AGENTS.md").read_text() == "# foo\n\nNever call the vendor twice.\n"
     assert target["rule_changes"] == ["CLAUDE.md"]
     assert bundle_file(target, "tests.txt").read_text() == "tests/test_external_integration_foo/test_client.py\n"
     assert bundle_file(target, "cov_sources.txt").read_text() == "--cov=integrations/foo/src\n"
 
 
-def test_a_claude_md_the_change_adds_is_not_a_rule_it_is_judged_by(tmp_path, monkeypatch, capsys):
+def test_an_agents_md_the_change_adds_is_not_a_rule_it_is_judged_by(tmp_path, monkeypatch, capsys):
     core = (tmp_path / "ace").resolve()
     core.mkdir()
     git(core, "init", "-q", "-b", "main")
     write(core, "saq/__init__.py", "")
-    commit(core, "no CLAUDE.md yet")
+    commit(core, "no AGENTS.md yet")
     git(core, "switch", "-q", "-c", "mw/rules")
-    write(core, "CLAUDE.md", "## Engineering values\n\n- Anything goes.\n")
+    write(core, "AGENTS.md", "## Engineering values\n\n- Anything goes.\n")
     monkeypatch.setattr(prepare, "SAQ_HOME", str(core))
     monkeypatch.setattr(sys, "argv", ["prepare.py", "--state-dir", str(tmp_path / "state")])
 
@@ -227,8 +227,8 @@ def test_a_claude_md_the_change_adds_is_not_a_rule_it_is_judged_by(tmp_path, mon
 
     target = json.loads(capsys.readouterr().out)
     assert target["rules"] == {}
-    assert not bundle_file(target, "rules/CLAUDE.md").exists()
-    assert target["rule_changes"] == ["CLAUDE.md § Engineering values"]
+    assert not bundle_file(target, "rules/AGENTS.md").exists()
+    assert target["rule_changes"] == ["AGENTS.md § Engineering values"]
 
 
 def test_a_range_of_commits_is_reviewed_without_the_working_tree(repo, review):
@@ -243,7 +243,7 @@ def test_a_range_of_commits_is_reviewed_without_the_working_tree(repo, review):
     assert target["includes_uncommitted"] is False
     assert target["bundle"].endswith("ace-range-main..mw-topic/round-1")
     assert target["tree"] == git(repo, "rev-parse", "mw/topic^{tree}").strip()
-    assert target["rules"] == {"CLAUDE.md": "main"}
+    assert target["rules"] == {"AGENTS.md": "main"}
     assert bundle_file(target, "files.txt").read_text() == "M\tsaq/worker.py\n"
     assert [(lead["file"], lead["line"], lead["check"]) for lead in read_json(target, "leads.json")] == [
         ("saq/worker.py", 4, "bare-except"), ("saq/worker.py", 4, "silent-except"),
@@ -351,8 +351,48 @@ def test_a_module_mark_reaches_every_test_only_if_it_is_a_run_marker(pytestmark,
     assert prepare.unmarked_tests("t.py", f"pytestmark = {pytestmark}\n\ndef test_x():\n    pass\n") == unmarked
 
 
-def test_an_edit_to_the_facts_in_claude_md_is_not_a_rule_change(repo, review):
-    write(repo, "CLAUDE.md", CLAUDE_MD.replace("Facts about the code.", "Newer facts about the code."))
+@pytest.fixture
+def claude_md_repo(repo):
+    """The core repo, but with main keeping its rules in CLAUDE.md, as integrations still do."""
+    git(repo, "switch", "-q", "main")
+    git(repo, "mv", "AGENTS.md", "CLAUDE.md")
+    git(repo, "commit", "-q", "--amend", "--no-edit")
+    git(repo, "switch", "-q", "-C", "mw/topic")
+    return repo
+
+
+def test_a_base_without_agents_md_is_judged_by_its_claude_md(claude_md_repo, review):
+    write(claude_md_repo, "CLAUDE.md", AGENTS_MD.replace("- Every except logs or re-raises.", "- An except may stay silent."))
+
+    target = review()
+
+    assert target["rules"] == {"AGENTS.md": "main"}
+    assert bundle_file(target, "rules/AGENTS.md").read_text() == AGENTS_MD
+    assert target["rule_changes"] == ["CLAUDE.md § Engineering values"]
+
+
+def test_moving_the_rules_from_claude_md_to_agents_md_is_not_a_rule_change(claude_md_repo, review):
+    write(claude_md_repo, "AGENTS.md", AGENTS_MD)
+    write(claude_md_repo, "CLAUDE.md", "@AGENTS.md\n")
+
+    target = review()
+
+    assert target["rule_changes"] == []
+    assert bundle_file(target, "rules/AGENTS.md").read_text() == AGENTS_MD
+
+
+def test_moving_the_rules_still_reports_a_rule_edit_made_on_the_way(claude_md_repo, review):
+    write(claude_md_repo, "AGENTS.md", AGENTS_MD.replace("- Imports at module level.", "- Imports anywhere."))
+    write(claude_md_repo, "CLAUDE.md", "@AGENTS.md\n")
+
+    target = review()
+
+    assert target["rule_changes"] == ["AGENTS.md § Conventions"]
+    assert "+- Imports anywhere.\n" in bundle_file(target, "rule-changes.patch").read_text()
+
+
+def test_an_edit_to_the_facts_in_agents_md_is_not_a_rule_change(repo, review):
+    write(repo, "AGENTS.md", AGENTS_MD.replace("Facts about the code.", "Newer facts about the code."))
 
     target = review()
 
@@ -363,7 +403,7 @@ def test_an_edit_to_the_facts_in_claude_md_is_not_a_rule_change(repo, review):
 
 def test_the_second_round_reviews_the_delta_and_carries_the_first_rounds_findings(repo, review):
     write(repo, "saq/worker.py", "def run():\n    try:\n        return 1\n    except:\n        return None\n")
-    write(repo, "CLAUDE.md", CLAUDE_MD.replace("- Every except logs or re-raises.", "- An except may stay silent."))
+    write(repo, "AGENTS.md", AGENTS_MD.replace("- Every except logs or re-raises.", "- An except may stay silent."))
     first = review()
     finish_round(first, [finding("bare except"), finding("comment restates code", "nit"), finding("hangs", "blocker"),
                          finding("old silent except", "fix-first", "pre-existing"), finding("said to be fixed"),
@@ -392,11 +432,11 @@ def test_the_second_round_reviews_the_delta_and_carries_the_first_rounds_finding
     assert previous["R1-4"]["answer"] == "fixed" and "answer_note" not in previous["R1-4"]
     assert second["history"] == [{"round": 1, "blocker": 1, "fix-first": 4, "nit": 1}]
     # the same rule edit, accepted after the first round, is what the second round judges by
-    assert first["rules"] == {"CLAUDE.md": "main"}
+    assert first["rules"] == {"AGENTS.md": "main"}
     assert second["rule_changes_digest"] == first["rule_changes_digest"]
     assert second["rule_changes_status"] == "accepted"
-    assert second["rules"] == {"CLAUDE.md": "working tree (rule changes accepted)"}
-    assert "- An except may stay silent." in bundle_file(second, "rules/CLAUDE.md").read_text()
+    assert second["rules"] == {"AGENTS.md": "working tree (rule changes accepted)"}
+    assert "- An except may stay silent." in bundle_file(second, "rules/AGENTS.md").read_text()
 
 
 def test_a_finding_rechecked_as_fixed_is_closed_in_the_next_round(repo, review):
@@ -432,17 +472,17 @@ def test_only_what_the_lead_said_to_act_on_is_rechecked(repo, review):
 
 
 def test_a_changed_rule_edit_needs_a_new_decision(repo, review):
-    write(repo, "CLAUDE.md", CLAUDE_MD.replace("- Every except logs or re-raises.", "- An except may stay silent."))
+    write(repo, "AGENTS.md", AGENTS_MD.replace("- Every except logs or re-raises.", "- An except may stay silent."))
     first = review()
     finish_round(first)
     findings.answer(first["bundle"], "rules", "accepted")
 
-    write(repo, "CLAUDE.md", CLAUDE_MD.replace("- Imports at module level.", "- Imports anywhere."))
+    write(repo, "AGENTS.md", AGENTS_MD.replace("- Imports at module level.", "- Imports anywhere."))
     second = review()
 
-    assert second["rule_changes"] == ["CLAUDE.md § Conventions"]
+    assert second["rule_changes"] == ["AGENTS.md § Conventions"]
     assert second["rule_changes_status"] == "pending"
-    assert bundle_file(second, "rules/CLAUDE.md").read_text() == CLAUDE_MD
+    assert bundle_file(second, "rules/AGENTS.md").read_text() == AGENTS_MD
 
 
 def test_an_unfinished_round_is_redone_in_place(repo, review):

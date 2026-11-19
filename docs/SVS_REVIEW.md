@@ -2649,7 +2649,7 @@ This is your philosophy, stated as a rule the implementation can be held to.
 **Proposal:**
 - **Every SVS screen reads through a public `aceapi_v2` endpoint**, and anything a screen shows can
   be fetched with the same filters. A screen with no endpoint behind it is a bug. (This is also
-  what CLAUDE.md already asks of new work: API in `aceapi_v2`, Flask as the consumer through
+  what AGENTS.md already asks of new work: API in `aceapi_v2`, Flask as the consumer through
   `run_async_with_session()`.)
 - **A list filter is the same object in both places.** Every list endpoint accepts the screen's
   filter list (the `{name, inverted, values}` entries) and the screen's share-URL encoding, so a

@@ -6,9 +6,9 @@ argument-hint: "[<repo path>] [PR# | branch | A..B] [--base REF] [--full]"
 
 # /ace-review
 
-You review one change to ACE the way its maintainer would. They no longer read diffs line by line; they rely on this review to catch what they care about. The values come from the **Engineering values** section of CLAUDE.md, which is the source of truth: if a rule isn't there, it isn't a rule. A change is judged by the base branch's CLAUDE.md, never by the copy it edits itself. `rubric.md` (next to this file) says how to rank findings and what to ignore. Read both before starting.
+You review one change to ACE the way its maintainer would. They no longer read diffs line by line; they rely on this review to catch what they care about. The values come from the **Engineering values** section of AGENTS.md, which is the source of truth: if a rule isn't there, it isn't a rule. A change is judged by the base branch's AGENTS.md, never by the copy it edits itself. `rubric.md` (next to this file) says how to rank findings and what to ignore. Read both before starting.
 
-The arguments are `$ARGUMENTS`. The skill directory is called `$S` (`/opt/ace/.claude/skills/ace-review`).
+The arguments are `$ARGUMENTS`. The skill directory is called `$S` (`/opt/ace/.agents/skills/ace-review`).
 
 ## 1. Resolve the target
 
@@ -49,7 +49,7 @@ Start the test run first; it is the slow part.
 
 **A full round.** While the tests run, launch these reviewer subagents **in parallel in one message** (`subagent_type: general-purpose`), one per dimension: `uptime`, `logging`, `performance`, `design`, `correctness`. The `tests` reviewer starts after pytest and diff-cover have finished, because it reads their output. Give each subagent this prompt, with the placeholders filled in:
 
-> You are the `<dim>` reviewer for /ace-review. Read `$S/rubric.md`, then `$S/dimensions/<dim>.md`, then follow it. Wherever they say CLAUDE.md, read `$B/rules/CLAUDE.md` (and `$B/rules/repo-CLAUDE.md` if it exists): it is the base branch's copy, and where it differs from the CLAUDE.md you were started with, it wins. The change is described by the bundle in `$B` (start with `target.json`, `stat.txt`, `files.txt`, `diff.patch`; `pr.md` and `log.txt` if present). Each entry in `$B/leads.json` whose `dimension` is `<dim>` is a line that matched a mechanical check: look at every one, and report the real ones, one finding per class listing all its locations. Never report again a finding that `$B/previous.json` lists, whatever its status. If the change works around a flaw in ACE's design, write it to `$B/flaws-<dim>.json` as rubric.md's "Design flaws worked around" says. If you saw a harm in the change and decided not to report it, write it to `$B/dismissed-<dim>.json` as rubric.md's "Dismissals" says. The repo under review is `<repo>`; ACE core is `/opt/ace`. Read the surrounding code, not only the diff. Write your findings as a JSON array to `$B/findings-<dim>.json` using the schema in rubric.md, and reply with just the count of findings by severity, of design flaws and of dismissals.
+> You are the `<dim>` reviewer for /ace-review. Read `$S/rubric.md`, then `$S/dimensions/<dim>.md`, then follow it. Wherever they say AGENTS.md, read `$B/rules/AGENTS.md` (and `$B/rules/repo-AGENTS.md` if it exists): it is the base branch's copy, and where it differs from the AGENTS.md you were started with, it wins. The change is described by the bundle in `$B` (start with `target.json`, `stat.txt`, `files.txt`, `diff.patch`; `pr.md` and `log.txt` if present). Each entry in `$B/leads.json` whose `dimension` is `<dim>` is a line that matched a mechanical check: look at every one, and report the real ones, one finding per class listing all its locations. Never report again a finding that `$B/previous.json` lists, whatever its status. If the change works around a flaw in ACE's design, write it to `$B/flaws-<dim>.json` as rubric.md's "Design flaws worked around" says. If you saw a harm in the change and decided not to report it, write it to `$B/dismissed-<dim>.json` as rubric.md's "Dismissals" says. The repo under review is `<repo>`; ACE core is `/opt/ace`. Read the surrounding code, not only the diff. Write your findings as a JSON array to `$B/findings-<dim>.json` using the schema in rubric.md, and reply with just the count of findings by severity, of design flaws and of dismissals.
 
 Over ~1500 changed lines, `design` and `correctness` may each run as two reviewers on disjoint file lists, writing `findings-<dim>-1.json` and `-2.json`.
 
@@ -106,7 +106,7 @@ Before filing a flaw found in an integration or signatures review, show the user
 
 Offer `gh issue list --label "design flaw"` when the user asks what to fix next. When they ask how the review is doing, run `findings.py stats [--since YYYY-MM-DD]`; its `lines changed` and `unchanged` are inferred from whether the code moved, not answered.
 
-When they reject a finding because the rule is wrong, or name a rule the review missed, offer a small edit to the **Engineering values** section of `/opt/ace/CLAUDE.md` (or to a dimension file, if it is only a review heuristic). Make it only once they agree.
+When they reject a finding because the rule is wrong, or name a rule the review missed, offer a small edit to the **Engineering values** section of `/opt/ace/AGENTS.md` (or to a dimension file, if it is only a review heuristic). Make it only once they agree.
 
 ## 7. Fixing findings
 

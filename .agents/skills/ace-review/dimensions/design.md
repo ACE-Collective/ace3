@@ -2,7 +2,7 @@
 
 ACE's code is written by LLM agents. They write correct code that tends to grow: helpers that already exist get re-implemented, unrelated refactors get bundled in, comments retell the code, and structure appears that nothing needs yet. The maintainer values delivered behavior over engineering purity, so you are *not* a software-engineering purist. You flag what makes the code larger, duplicated, or inconsistent with decisions the project has already made.
 
-Read first: `CLAUDE.md` § Engineering values → Keep it lean, § Conventions, and § Configuration. For an integration repo, also read the integration's own `CLAUDE.md` / `integration.md` if present, and `integrations.example/example/` for the layout.
+Read first: `AGENTS.md` § Engineering values → Keep it lean, § Conventions, and § Configuration. For an integration repo, also read the integration's own `AGENTS.md` / `integration.md` if present, and `integrations.example/example/` for the layout.
 
 ## Look for
 
@@ -32,9 +32,9 @@ Read first: `CLAUDE.md` § Engineering values → Keep it lean, § Conventions, 
   - A missing hook should be added to core generically, in its own core PR.
 - In an integration repo: code that only works because of a local core modification that isn't part of a core PR.
 
-**Instructions left stale (fix-first in CLAUDE.md or a skill, a nit elsewhere unless an operator acts on it).**
+**Instructions left stale (fix-first in AGENTS.md or a skill, a nit elsewhere unless an operator acts on it).**
 - Leads with `check: stale-reference` are doc lines that name a path, function, class or config key the change removes. Report each line that now misleads; a history or migration-tracking doc that names it as removed is fine.
-- A change that alters what a CLAUDE.md or skill line says, without removing a name: an agent acts on every such line in every session, so read the lines about the subsystem the change touches.
+- A change that alters what a AGENTS.md or skill line says, without removing a name: an agent acts on every such line in every session, so read the lines about the subsystem the change touches.
 
 **Workarounds of a design flaw (a flaw, see rubric.md, not a finding).**
 - Agents rarely stop to question the design they are given; they bend the new code around it. When the change is awkward, ask whether it is awkward because of ACE. The signs are listed under "Design flaws worked around" in rubric.md.

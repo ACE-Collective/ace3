@@ -21,7 +21,7 @@ The maintainer has stopped reading diffs and wants to know whether a change can 
   - It's an N+1 query, OFFSET paging, or per-request heavy work on a user-facing path.
   - It re-implements a helper that already exists.
   - It contains unrelated scope.
-  - It breaks an established pattern in `CLAUDE.md`: Flask instead of aceapi_v2, raw SQL instead of the ORM, a hand-written migration, an integration leaking into core, a config key with no schema field.
+  - It breaks an established pattern in `AGENTS.md`: Flask instead of aceapi_v2, raw SQL instead of the ORM, a hand-written migration, an integration leaking into core, a config key with no schema field.
   - It doesn't do what its description says, or a bug fix has no test that fails without it.
   - It's a real bug with limited blast radius.
 - **nit**: worth one line, never blocks. Examples: a comment or docstring that only restates the code, a needless module or exception class, a small duplication, a misleading name.

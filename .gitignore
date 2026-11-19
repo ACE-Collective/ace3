@@ -180,12 +180,14 @@ integrations/*
 # claude
 .claude/settings.local.json
 .claude/worktrees/
-.claude/skills/*
-!.claude/skills/ace-review/
-!.claude/skills/bug-fix/
-!.claude/skills/tdd/
-!.claude/skills/unslop/
+# skills live in .agents/skills, which Codex reads; .claude/skills is a link to it for Claude Code
+.agents/skills/*
+!.agents/skills/ace-review/
+!.agents/skills/bug-fix/
+!.agents/skills/tdd/
+!.agents/skills/unslop/
 CLAUDE.local.md
+AGENTS.local.md
 
 # local area for hosting local development/testing stuff
 workspace/
