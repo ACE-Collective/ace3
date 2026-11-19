@@ -1,5 +1,6 @@
 import logging
 from unittest.mock import Mock
+from urllib.parse import parse_qs, urlparse
 
 import pytest
 from flask import url_for
@@ -165,18 +166,63 @@ class TestLogin:
 
             assert remember_cookie is not None
     
-    def test_login_with_next_parameter(self, app, test_user):
-        """Test login redirect to next parameter."""
+    def test_login_with_next_parameter(self, app, test_user, caplog):
+        """A deep link opened while logged out lands on that page after login."""
         with app.test_client() as client:
-            next_url = url_for('main.index')
+            manage_url = url_for('analysis.manage')
+            assert manage_url != url_for('main.index')
+
+            response = client.get(manage_url)
+            assert response.status_code == 302
+            login_location = urlparse(response.location)
+            next_url = parse_qs(login_location.query)['next'][0]
+            # Flask-Login sends a path, not a full URL
+            assert next_url == manage_url
+
+            response = client.post(f"{login_location.path}?{login_location.query}", data={
+                'username': 'testuser',
+                'password': 'TestPass123!'
+            })
+
+            assert response.status_code == 302
+            assert response.location == manage_url
+            assert 'unsafe redirect attempt blocked' not in caplog.text
+
+    def test_login_with_same_host_absolute_next_parameter(self, app, test_user):
+        """A full URL on this host is accepted."""
+        with app.test_client() as client:
+            next_url = url_for('analysis.manage', _external=True)
             response = client.post(url_for('auth.login', next=next_url), data={
                 'username': 'testuser',
                 'password': 'TestPass123!'
             })
-            
+
             assert response.status_code == 302
-            assert response.location.endswith(next_url)
-    
+            assert response.location == next_url
+
+    @pytest.mark.parametrize("next_url", [
+        '//malicious-site.com/manage',
+        '/\\malicious-site.com/manage',
+        '\\\\malicious-site.com/manage',
+        '/\t/malicious-site.com/manage',
+        ' //malicious-site.com/manage',
+        'http://malicious-site.com/manage',
+        'ftp://localhost/manage',
+        'http://[malicious-site.com/manage',
+    ])
+    def test_login_with_other_host_next_parameter_blocked(self, app, test_user, caplog, next_url):
+        """A next URL a browser would resolve to another host or scheme is refused and logged."""
+        with app.test_client() as client:
+            with caplog.at_level(logging.WARNING):
+                response = client.post(url_for('auth.login', next=next_url), data={
+                    'username': 'testuser',
+                    'password': 'TestPass123!'
+                })
+
+            assert response.status_code == 302
+            assert response.location == url_for('main.index')
+            assert f"unsafe redirect attempt blocked: {next_url}" in caplog.text
+
     def test_login_with_external_next_parameter_blocked(self, app, test_user):
         """Test that external redirects are blocked."""
         with app.test_client() as client:

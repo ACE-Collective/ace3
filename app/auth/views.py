@@ -1,7 +1,7 @@
 from app.blueprints import auth
 
 import logging
-from urllib.parse import urlparse
+from urllib.parse import urljoin, urlparse
 
 from flask import render_template, redirect, request, url_for, flash, session
 from flask_login import login_user, logout_user, login_required, current_user
@@ -18,30 +18,33 @@ def get_remote_ipv4():
 
 def is_safe_redirect_url(target):
     """
-    Validate that the target URL is safe for redirection.
-    Only allows redirects to the same host and valid schemes.
+    Validate that the target URL is safe for redirection: a path on this site
+    (what Flask-Login sends as next) or an http(s) URL on this host.
     """
     if not target:
         return False
-    
-    # Parse the target URL
+
+    # browsers read a backslash as a slash, so /\\host leads to another host while
+    # urlparse sees a path (urlparse already drops the tabs and newlines browsers drop)
+    if '\\' in target:
+        return False
+
     try:
         target_url = urlparse(target)
-    except Exception:
+        # a path relative to the login page is not something this app sends
+        if not target_url.scheme and not target.startswith('/'):
+            return False
+
+        resolved_url = urlparse(urljoin(request.host_url, target))
+    except ValueError:
+        # malformed URL (an unclosed IPv6 bracket); the caller logs the refusal
         return False
-    
-    # Only allow http and https schemes
-    if target_url.scheme not in ('http', 'https'):
+
+    # no exact scheme match: behind the TLS-terminating proxy request.host_url is http
+    if resolved_url.scheme not in ('http', 'https'):
         return False
-    
-    # Get the current request's host URL for comparison
-    ref_url = urlparse(request.host_url)
-    
-    # Ensure the target URL is for the same host
-    if ref_url.netloc != target_url.netloc:
-        return False
-    
-    return True
+
+    return resolved_url.netloc == urlparse(request.host_url).netloc
 
 def get_safe_next_url():
     """
