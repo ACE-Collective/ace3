@@ -241,7 +241,7 @@ def test_io_count():
     root.save()
     # the details of the root and data.json
     assert _get_io_write_count() == 2
-    root = create_root_analysis()
+    root = create_root_analysis(uuid=root.uuid)
     root.load()
     # and then data.json and the details of the root
     assert _get_io_read_count() == 2
