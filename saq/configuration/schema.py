@@ -315,6 +315,12 @@ class GUIConfig(BaseModel):
     show_root_observables: bool = Field(..., description="enabling this option forces all observables in the root analysis to be visible in the critical analysis view")
     navigation_tabs: str = Field(..., description="a comma separated list of navigation tables visible from this node")
     display_node_list: Optional[list[str]] = Field(default=None, description="a comma separated list of nodes to display alerts for")
+    commonalities_priority_types: list[str] = Field(
+        default_factory=lambda: ["user", "hostname", "email_address", "ipv4", "fqdn", "url", "email_subject",
+                                 "file_name", "file_path"],
+        description="observable types the Commonalities panel of the alert management page lists first, most "
+                    "useful first; a type ranks as its nearest listed ancestor (email_from as email_address), and "
+                    "unlisted types (file hashes, for example) come last")
     manage_auto_refresh_seconds: int = Field(default=30, description="how often (in seconds) the alert management page refreshes its alert list in place (0 disables auto-refresh); the favicon notification-dot poll follows the same cadence, falling back to 30 seconds when this is 0")
 
 class NetworkConfigurationConfig(BaseModel):

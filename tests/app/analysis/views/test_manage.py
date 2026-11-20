@@ -679,6 +679,27 @@ def test_manage_page_renders_the_column_chooser(web_client, analyst):
 
 
 @pytest.mark.integration
+def test_manage_page_renders_the_commonalities_panel(web_client, analyst):
+    """The Commonalities toggle and panel sit outside the polled fragments, a group's checkbox can
+    add to the selection signal, and each row carries the description the panel labels it with."""
+    _insert_alert('commonalities-row', 'payload <b>"one"</b> & more')
+
+    html = web_client.get(url_for("analysis.manage")).data.decode()
+    assert 'id="btn-commonalities"' in html
+    panel = re.search(r'<div id="commonality_panel"[^>]*>', html).group(0)
+    assert 'hidden' in panel
+    assert f'data-apply-url="{url_for("analysis.apply_temp_filter")}"' in panel
+    assert 'js/manage_commonalities.js' in html
+    assert 'data-on:ace-select=' in html
+    row = re.search(r'<tr id="alert_row_commonalities-row"[^>]*>', html).group(0)
+    assert 'data-description="payload &lt;b&gt;&#34;one&#34;&lt;/b&gt; &amp; more"' in row
+
+    refreshed = web_client.get(url_for("analysis.manage_refresh")).data.decode()
+    assert 'commonality_panel' not in refreshed and 'btn-commonalities' not in refreshed
+    assert 'data-description="payload' in refreshed
+
+
+@pytest.mark.integration
 def test_manage_flags_a_page_that_mixes_queues(web_client, analyst):
     """Select-all takes the whole page, so a page with more than one queue says so and
     offers to select one queue's alerts; the rows carry what the bulk-action dialogs read."""

@@ -58,7 +58,8 @@
                         data-frozen="{{ '1' if is_frozen_disposition(alert.disposition) else '0' }}"
                         data-owner-id="{{ alert.owner_id if alert.owner_id is not none else '' }}"
                         data-owner-name="{{ alert.owner.gui_display if alert.owner else '' }}"
-                        data-owner-enabled="{{ '1' if alert.owner and alert.owner.enabled else '0' }}">
+                        data-owner-enabled="{{ '1' if alert.owner and alert.owner.enabled else '0' }}"
+                        data-description="{{ alert.description }}">
                         <td>
                             {% include "analysis/_observable_expand_button.html" %}
                         </td>

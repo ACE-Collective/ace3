@@ -33,7 +33,9 @@ from aceapi_v2.alerts import service
 from aceapi_v2.alerts.schemas import (
     AlertCommentRead,
     AlertCommentUpdate,
+    AlertCommonalities,
     AlertCount,
+    CommonalitiesRequest,
     AlertListPage,
     AlertMeta,
     BulkAddObservableRequest,
@@ -143,6 +145,17 @@ async def set_alert_owner(
               auth.auth_name, ",".join(result.applied), body.owner_id if body.owner_id is not None else "nobody",
               auth=auth, alert_uuids=result.applied, owner_id=body.owner_id)
     return result
+
+
+@router.post("/commonalities", response_model=AlertCommonalities)
+async def alert_commonalities(
+    body: CommonalitiesRequest,
+    _: Annotated[ApiAuthResult, Depends(require_permission("alert", "read"))],
+) -> AlertCommonalities:
+    """Groups the alerts by the observables they share, so an analyst sees which alerts on a page are
+    potentially the same activity (the Commonalities panel of the manage page). Only alerts this node
+    shows are compared. A POST because the list of alerts can be long; nothing is changed."""
+    return await run_db_in_thread(service.alert_commonalities, body.alert_uuids, body.ignore)
 
 
 @router.get("/", response_model=AlertListPage)
