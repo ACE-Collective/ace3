@@ -897,4 +897,5 @@ def test_a_share_link_with_a_value_the_filter_refuses_is_refused(web_client, ana
         messages = [message for _, message in sess.get("_flashes", [])]
     assert len(messages) == 1
     assert messages[0].startswith("That filter link could not be read: ") and reason in messages[0]
-    assert "pydantic" not in messages[0]
+    # the reason as the analyst reads it, without pydantic's framing
+    assert "pydantic" not in messages[0] and "Value error" not in messages[0]
