@@ -26,11 +26,13 @@ from aceapi_v2.svs.expectations.schemas import (
     EXPECTATION_CSV_FIELDS,
     Expectation,
     ExpectationRequest,
+    TestExclusion,
+    TestExclusionRequest,
     TestSettings,
     TestSettingsRequest,
 )
 from aceapi_v2.svs.preconditions import stale_write
-from saq.database.model import SVSExpectation, SVSRun, SVSTestSettings, User
+from saq.database.model import SVSExpectation, SVSRun, SVSTestExclusion, SVSTestSettings, User
 from saq.database.pool import get_db
 from saq.svs import expectations
 from saq.svs.constants import ExpectationState
@@ -217,3 +219,43 @@ def remove_test_settings(guid: str, auth: ApiAuthResult) -> None:
         expectations.remove_test_settings(guid, auth)
     except (expectations.UnknownTest, expectations.UnknownDecision) as e:
         raise decision_errors(e)
+
+
+#
+# exclusions (read: svs:run_read; write: svs:run_manage)
+#
+
+def _exclusion(exclusion: SVSTestExclusion) -> TestExclusion:
+    username = None
+    if exclusion.excluded_by_user_id is not None:
+        username = get_db().execute(select(User.username).where(User.id == exclusion.excluded_by_user_id)).scalar()
+    return TestExclusion(test_guid=exclusion.test_guid, reason=exclusion.reason, excluded_by=username,
+                         excluded_at=exclusion.excluded_at, updated_at=exclusion.updated_at)
+
+
+def get_test_exclusion(guid: str) -> TestExclusion:
+    """404 for an unknown test, or one that isn't excluded."""
+    try:
+        exclusion = expectations.get_exclusion(guid)
+    except expectations.UnknownTest as e:
+        raise decision_errors(e) from e
+    if exclusion is None:
+        raise HTTPException(status_code=404, detail=f"test {guid} is not excluded")
+    return _exclusion(exclusion)
+
+
+def set_test_exclusion(guid: str, body: TestExclusionRequest, auth: ApiAuthResult) -> TestExclusion:
+    require_user(auth.auth_user_id)
+    try:
+        exclusion = expectations.set_exclusion(guid, body.reason, auth)
+    except (expectations.UnknownTest, expectations.InvalidDecision) as e:
+        raise decision_errors(e) from e
+    return _exclusion(exclusion)
+
+
+def remove_test_exclusion(guid: str, auth: ApiAuthResult) -> None:
+    require_user(auth.auth_user_id)
+    try:
+        expectations.remove_exclusion(guid, auth)
+    except (expectations.UnknownTest, expectations.UnknownDecision) as e:
+        raise decision_errors(e) from e

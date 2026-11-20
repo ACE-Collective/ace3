@@ -511,6 +511,8 @@ signatures, and its settings, are changed under it with `svs:run_manage` (*Expec
 | `PUT`, `DELETE /api/v2/svs/tests/{guid}/ignores/{signature_uuid}` | `svs:run_manage` | Ignore a signature during the test's runs on every platform, or stop |
 | `GET /api/v2/svs/tests/{guid}/settings` | `svs:run_read` | The test's settings (404 when it has none) |
 | `PUT`, `DELETE /api/v2/svs/tests/{guid}/settings` | `svs:run_manage` | Set them, or go back to the computed window |
+| `GET /api/v2/svs/tests/{guid}/exclusion` | `svs:run_read` | Who excluded the test, when and why (404 when it isn't excluded) |
+| `PUT`, `DELETE /api/v2/svs/tests/{guid}/exclusion` | `svs:run_manage` | Exclude the test on every platform (*Test exclusions*, below), or bring it back |
 
 ### Fields
 
@@ -526,7 +528,8 @@ signatures, and its settings, are changed under it with `svs:run_manage` (*Expec
 | `first_seen_at` | When the catalog first read it. |
 | `removed_at` | When it disappeared from its repository, or null. A removed test keeps its row and its runs. |
 | `updated_at` | The row's last change. A change to the test's runs, results or state doesn't change it. |
-| `test_state` | Below: `never_run`, or the worst of its platforms' states. |
+| `test_state` | Below: `excluded`, `never_run`, or the worst of its platforms' states. |
+| `excluded_at`, `excluded_by`, `exclusion_reason` | When, by whom (username) and why it was excluded (*Test exclusions*, below); null while it isn't. |
 | `run_count` | Every run registered for it, in any state. |
 | `last_run_id`, `last_run_at` | Its latest run and when it was registered. |
 | `last_reviewed_run_id`, `last_reviewed_at` | Its latest reviewed run, on any platform, and when it was reviewed. |
@@ -545,8 +548,8 @@ as signed off, against what is expected of it there (*Expectations*, below):
 | `stale` | It would be validated, but the test (its `content_hash`) or the rule of an expected signature changed since that run was reviewed. A rule ACE can't read now doesn't count as changed. |
 | `validated` | Its latest reviewed run there hit every expected signature. |
 
-`test_state` is `never_run` when no run was ever registered for the test, else the worst state of
-the platforms it has a run or a decision on: `failing`, `stale`, `awaiting_review`, `validated`,
+`test_state` is `excluded` while the test is excluded, `never_run` when no run was ever registered
+for it, else the worst state of the platforms it has a run or a decision on: `failing`, `stale`, `awaiting_review`, `validated`,
 `no_expectations`, in that order.
 
 The state and history are derived when read, so they aren't filters: the rule hashes behind
@@ -570,11 +573,12 @@ platform: `{"platform", "test_state", "last_reviewed_run_id", "last_reviewed_at"
 | `executor` | Executor | `command_prompt`, `powershell`, `sh`, `bash`, `manual` |
 | `repository` | Repository | text the repository name contains |
 | `removed` | Removed | `true`, `false` |
+| `excluded` | Excluded | `true`, `false` |
 
 ### Incremental pulls
 
 With `changed_since`, a test is returned when it was added, changed, removed or came back at or
-after that time.
+after that time. Excluding a test, or bringing it back, doesn't change its row.
 
 ### Catalog repositories
 
@@ -630,7 +634,7 @@ The lifecycle calls return the run's lifecycle fields: `run_id`, `marker`, `stat
 | 404 | No run has that `run_id`. |
 | 409 | The call doesn't apply to the run's state: `{"detail": {"message", "state"}}`. |
 | 409 | Registering, or starting, a run on a test host another run or a maintenance window holds: `{"detail": {"message", "holders": [{"host", "run_id", "maintenance_id", "state", "until"}]}}`. A run holder has `run_id` and its state, with `until` null while it hasn't started (`docs/SVS_RUNS.md`, *One run per test host*); a window holder has `maintenance_id`, `run_id` null and the state `maintenance`, with `until` when it ends (*Maintenance windows*). No alert. |
-| 422 | The test is not in the catalog or was removed, a target's platform isn't one the test supports, the run's platform can't be decided (the targets' hosts disagree, or none has a platform and the test supports more than one), a host or user name can't be used, too many targets, or `extra` is too large. |
+| 422 | The test is not in the catalog, was removed or is excluded (the detail names who excluded it, when and why), a target's platform isn't one the test supports, the run's platform can't be decided (the targets' hosts disagree, or none has a platform and the test supports more than one), a host or user name can't be used, too many targets, or `extra` is too large. |
 
 The reads answer 400 for a `run_id` that is not a UUID and 404 for an unknown one.
 
@@ -982,6 +986,16 @@ hold its hosts until its attribution window ends rather than its observation win
 defaults. The response adds `set_by` (username) and `updated_at`. Reading needs `svs:run_read`,
 changing `svs:run_manage`.
 
+## Test exclusions
+
+`GET`, `PUT`, `DELETE /api/v2/svs/tests/{guid}/exclusion` (`docs/SVS_RUNS.md`, *Excluded tests*).
+`PUT` takes `{"reason"}` (1 to 4096 characters, not blank) and excludes the test on every platform;
+a second `PUT` replaces who, when and why. `DELETE` brings the test back, and answers 404 when it
+isn't excluded. The response is `{"test_guid", "reason", "excluded_by", "excluded_at",
+"updated_at"}`. Reading needs `svs:run_read`, changing `svs:run_manage` from a user's key (a config
+key gets 422). An excluded test counts toward no coverage row and measures no signature from the
+next refresh, and registering a run of it answers 422; its runs and decisions are kept.
+
 ## Coverage
 
 ATT&CK coverage per technique and platform, as `service_svs` last refreshed it
@@ -1064,6 +1078,7 @@ a technique id is a 400, and a technique without rows that the release doesn't h
 | `manual_signatures` | Each `mitre:` tag naming the technique or a sub-technique: `signature_uuid`, `name`, `family` (`hunt`, `yara`), `declared` (the id in the tag), `technique`, `counts`, and `reason` when it doesn't count: `not_counting` (the signature is disabled, or a YARA rule in QA mode), `unknown_technique`, or `removed` (resolved *remove* on the worklist). |
 | `manual_signatures_error` | Why the tags couldn't be read (a YARA rule location that can't be loaded); `manual_signatures` is then empty and the rest is unaffected. |
 | `removed_tests` | The technique's tests removed from their repository (`guid`, `name`, `technique`, `removed_at`); they don't count. |
+| `excluded_tests` | The technique's tests a person excluded that are still in their repository (`guid`, `name`, `technique`, `excluded_at`, `excluded_by`, `exclusion_reason`); they don't count. |
 
 ### Joins
 
@@ -1164,7 +1179,7 @@ doesn't page the other: 400.
 `GET …/{signature_uuid}` answers `signature_family`, `signature_name`, `rows` (every row of the
 signature, as in the list) and `measured`: each technique it is measured on now, with
 `technique_name` and the `tests` (`guid`, `name`, `platform`) that expect it, ignores applied and
-removed tests left out. `measured` is computed at the request, `rows` at the last refresh.
+removed and excluded tests left out. `measured` is computed at the request, `rows` at the last refresh.
 
 ### Resolving
 

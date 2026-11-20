@@ -64,4 +64,22 @@ class TestSettings(BaseModel):
     updated_at: datetime
 
 
+class TestExclusionRequest(BaseModel):
+    """Why a test is excluded, as svs:run_manage excludes it."""
+
+    __test__ = False
+
+    reason: str = Field(min_length=1, max_length=4096, description="why the test doesn't apply, or isn't worth measuring")
+
+
+class TestExclusion(BaseModel):
+    __test__ = False
+
+    test_guid: str
+    reason: str
+    excluded_by: Optional[str] = Field(default=None, description="who excluded it (username)")
+    excluded_at: datetime
+    updated_at: datetime
+
+
 EXPECTATION_CSV_FIELDS = tuple(Expectation.model_fields)

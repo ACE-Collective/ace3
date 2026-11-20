@@ -10,10 +10,14 @@
   (svs:run_manage) or for every test (global, svs:admin). An ignored signature is never a candidate
   and never missing.
 - A test's **settings** hold an observation window that replaces the computed one.
+- An **exclusion** takes a test out of SVS on every platform (svs:run_manage): it stops counting
+  toward coverage and the worklist from the next refresh, and no run of it can be registered. Its
+  runs, decisions and ignores are kept, so removing the exclusion brings the test back as it was.
 
-Every change marks the affected runs' results stale (saq/svs/result_state.py), so the timers
-recompute them, and is logged as an AUDIT record. svs_expectations, svs_ignores and
-svs_test_settings are written here only.
+Every change to an expectation or an ignore marks the affected runs' results stale
+(saq/svs/result_state.py), so the timers recompute them; an exclusion doesn't change a result.
+Every change is logged as an AUDIT record. svs_expectations, svs_ignores, svs_test_settings and
+svs_test_exclusions are written here only.
 """
 
 from datetime import datetime, timedelta
@@ -31,7 +35,9 @@ from saq.database.model import (
     SVSIgnore,
     SVSRun,
     SVSRunResult,
+    SVSTestExclusion,
     SVSTestSettings,
+    User,
 )
 from saq.database.pool import get_db
 from saq.logging import log_audit
@@ -301,6 +307,68 @@ def remove_test_settings(test_guid: str, auth: ApiAuthResult) -> None:
         raise UnknownDecision(f"test {test.guid} has no settings")
     db.commit()
     log_audit("svs test settings removed", auth=auth, svs_test=test.guid)
+
+
+#
+# exclusions (svs:run_manage)
+#
+
+# the longest reason an exclusion keeps; the API refuses a longer one
+MAX_EXCLUSION_REASON = 4096
+
+
+def get_exclusion(test_guid: str) -> Optional[SVSTestExclusion]:
+    """The test's exclusion, None when it isn't excluded. Raises UnknownTest."""
+    test = _test(test_guid)
+    return get_db().execute(
+        select(SVSTestExclusion).where(SVSTestExclusion.test_guid == test.guid)).scalar_one_or_none()
+
+
+def set_exclusion(test_guid: str, reason: str, auth: ApiAuthResult, *,
+                  now: Optional[datetime] = None) -> SVSTestExclusion:
+    """Excludes the test on every platform. Excluding it again replaces who, when and why. Raises
+    UnknownTest, InvalidDecision."""
+    now = now or datetime.now()
+    test = _test(test_guid)
+    reason = (reason or "").strip()
+    if not reason:
+        raise InvalidDecision("an exclusion needs a reason")
+    if len(reason) > MAX_EXCLUSION_REASON:
+        raise InvalidDecision(f"the reason is longer than {MAX_EXCLUSION_REASON} characters")
+
+    db = get_db()
+    values = {"reason": reason, "excluded_by_user_id": auth.auth_user_id, "excluded_at": now}
+    db.execute(mysql_insert(SVSTestExclusion).values(test_guid=test.guid, **values)
+               .on_duplicate_key_update(**values))
+    db.commit()
+    log_audit("svs test excluded", auth=auth, svs_test=test.guid, reason=reason)
+    return get_exclusion(test.guid)
+
+
+def remove_exclusion(test_guid: str, auth: ApiAuthResult) -> None:
+    """Brings an excluded test back, with its runs, decisions and ignores as they were. Raises
+    UnknownTest, UnknownDecision."""
+    test = _test(test_guid)
+    db = get_db()
+    removed = db.execute(delete(SVSTestExclusion).where(SVSTestExclusion.test_guid == test.guid))
+    if removed.rowcount == 0:
+        db.rollback()
+        raise UnknownDecision(f"test {test.guid} is not excluded")
+    db.commit()
+    log_audit("svs test no longer excluded", auth=auth, svs_test=test.guid)
+
+
+def describe_exclusion(test_guid: str) -> Optional[str]:
+    """Who excluded the test, when and why, as a sentence; None when it isn't excluded."""
+    row = get_db().execute(
+        select(SVSTestExclusion, User.username)
+        .outerjoin(User, User.id == SVSTestExclusion.excluded_by_user_id)
+        .where(SVSTestExclusion.test_guid == test_guid)).one_or_none()
+    if row is None:
+        return None
+    exclusion, username = row
+    return (f"test {test_guid} is excluded from SVS: {username or 'a deleted user'} excluded it at "
+            f"{exclusion.excluded_at.isoformat(sep=' ', timespec='seconds')} UTC: {exclusion.reason}")
 
 
 #

@@ -48,7 +48,7 @@ from saq.svs.constants import ExpectationState
 from saq.svs.coverage import measured_by_signature
 from saq.svs.preconditions import NONE, Precondition, StaleWrite
 from saq.svs.samples import to_utc_naive
-from saq.svs.test_state import evaluate_tests
+from saq.svs.test_state import evaluate_tests, excluded_condition
 from saq.svs.worklist_filters import worklist_filter_conditions
 
 # the listing orders: the screen's, or (updated_at, id) for a changed_since pull
@@ -137,7 +137,8 @@ def worklist_rows_to_csv(rows: list[WorklistRow], *, header: bool) -> str:
 #
 
 def _measured(signature_uuid: str) -> list[MeasuredTechnique]:
-    """What the signature is measured on now: the tests that expect it, ignores applied."""
+    """What the signature is measured on now: the tests that expect it, ignores applied, removed and
+    excluded tests left out."""
     db = get_db()
     guids = db.execute(select(SVSExpectation.test_guid).distinct().where(
         SVSExpectation.signature_uuid == signature_uuid,
@@ -146,7 +147,7 @@ def _measured(signature_uuid: str) -> list[MeasuredTechnique]:
         return []
 
     tests = list(db.execute(select(SVSCatalogTest).where(
-        SVSCatalogTest.guid.in_(guids), SVSCatalogTest.removed_at.is_(None))).scalars())
+        SVSCatalogTest.guid.in_(guids), SVSCatalogTest.removed_at.is_(None), ~excluded_condition())).scalars())
     names = {test.guid: test.name for test in tests}
     catalog = get_attack_catalog()
     measured = measured_by_signature(catalog, tests, evaluate_tests(db, tests)).get(signature_uuid, {})

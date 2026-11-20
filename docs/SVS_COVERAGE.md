@@ -29,8 +29,8 @@ Which techniques have rows:
 - a deprecated or unknown technique, only while a test or a counting tag names it;
 - the parent of each of those.
 
-A row is never deleted. When nothing produces it any more (a test was removed from its repository,
-an ATT&CK upgrade revoked the technique), it gets `retired_at`. It comes back, with `retired_at`
+A row is never deleted. When nothing produces it any more (a test was removed from its repository
+or excluded, an ATT&CK upgrade revoked the technique), it gets `retired_at`. It comes back, with `retired_at`
 cleared, if something produces it again.
 
 ## Platforms
@@ -68,7 +68,8 @@ A row also carries counts over the same tests and signatures as its state:
 - `measured_signatures`, the signatures expected of its tests on the platform;
 - `last_reviewed_at`.
 
-Catalog tests removed from their repository don't count.
+Catalog tests removed from their repository, or excluded by a person (`docs/SVS_RUNS.md`, *Excluded
+tests*), don't count.
 
 ## Roll-up
 
@@ -95,7 +96,7 @@ which include its `mitre_attack` meta.
 ## The worklist
 
 A tag claims a technique; a test measures one. Once a signature is *measured* (expected of a catalog
-test on some platform, ignores applied, removed tests left out), the **declared-vs-measured
+test on some platform, ignores applied, removed and excluded tests left out), the **declared-vs-measured
 worklist** compares the two, so that every tag ends up either confirmed by a test or decided about
 by a person. It is the `svs_technique_worklist` table, one row per (signature, technique), recomputed
 by every coverage refresh (`saq/svs/worklist.py`).
@@ -248,6 +249,7 @@ revoked id opens its successor's page and says so. The page shows:
   expect each;
 - **Manual signatures**: the signatures whose tags name the technique or a sub-technique, and whether
   each counts (a disabled signature, a YARA rule in QA mode, or a tag resolved *remove* doesn't);
+- **Excluded tests**: the technique's tests a person excluded, with who, when and why;
 - **Removed tests**: the technique's tests that left their repositories;
 - **History**: from the daily snapshots of the last year (*Snapshots*), each platform's first state
   and every day it changed, with CSV and NDJSON exports of those snapshot rows.

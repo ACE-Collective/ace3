@@ -421,7 +421,8 @@ class TestSeeding:
         tests = await service.get_saved_filters_for_user(session, test_user.id, screen="svs_tests")
         assert [(f.name, f.quick_filter_order) for f in tests] == [("In the catalog", 0)]
         assert [e.model_dump() for e in tests[0].filters] == [
-            {"name": "Removed", "inverted": False, "values": ["false"]}]
+            {"name": "Removed", "inverted": False, "values": ["false"]},
+            {"name": "Excluded", "inverted": False, "values": ["false"]}]
 
         await service.ensure_default_saved_filters(session, test_user.id, screen="svs_coverage")
         coverage = await service.get_saved_filters_for_user(session, test_user.id, screen="svs_coverage")

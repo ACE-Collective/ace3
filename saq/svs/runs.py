@@ -56,7 +56,7 @@ from saq.database.util.alert import set_dispositions
 from saq.error.reporting import log_loop_exception
 from saq.svs.alert_status import fully_attributed_condition
 from saq.svs.catalog import platform_slugs, supported_platforms
-from saq.svs.expectations import observation_for_test, test_holds_host
+from saq.svs.expectations import describe_exclusion, observation_for_test, test_holds_host
 from saq.svs.constants import ObservationSource, RunEventKind, RunState
 from saq.svs.hosts import InvalidTestHost, TargetMatch, match_target, normalize_username, split_hostname
 from saq.svs.markers import new_marker
@@ -440,6 +440,9 @@ def _validate(registration: Registration) -> tuple[SVSCatalogTest, str]:
         raise InvalidRegistration(f"test {registration.test_guid} is not in the catalog")
     if test.removed_at is not None:
         raise InvalidRegistration(f"test {registration.test_guid} was removed from the catalog at {test.removed_at}")
+    exclusion = describe_exclusion(test.guid)
+    if exclusion is not None:
+        raise InvalidRegistration(exclusion)
 
     if not registration.targets:
         raise InvalidRegistration("a run needs at least one target")
