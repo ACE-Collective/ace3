@@ -140,3 +140,53 @@ class ObservableAnalysisRequested(BaseModel):
 class ClickerSearch(BaseModel):
     name: str = Field(description="the clicker search's configured name")
     url: str = Field(description="the search in the Splunk web interface")
+
+
+# how many alerts one commonalities request may group; a manage page larger than this sends its first ones
+COMMONALITIES_MAX_ALERTS = 500
+
+
+class CommonalitiesRequest(BaseModel):
+    alert_uuids: list[str] = Field(min_length=1, max_length=COMMONALITIES_MAX_ALERTS,
+                                   description="the alerts to compare, in the order the page lists them")
+    ignore: list[str] = Field(default_factory=list, max_length=100,
+                              description="observables (`type:value`) to leave out of the grouping")
+
+
+class CommonalityGroup(BaseModel):
+    alert_uuids: list[str] = Field(description="the group's alerts, the most strongly linked first")
+    intensity: float = Field(description="0 to 1: how much the group's alerts have in common, from its size and "
+                                         "how many observables its pairs of alerts share")
+    shared: int = Field(description="how many observable values every alert of the group has")
+    total: int = Field(description="the most observable values any alert of the group has")
+    near_identical: bool = Field(description="every pair of the group's alerts shares at least 90% of the values of "
+                                             "the one with more")
+
+
+class CommonalityObservable(BaseModel):
+    """One observable value. The alerts may have it under more than one type (an address as both the sender
+    and the return path): `types` lists them, most useful first, and `type` is the first."""
+    type: str
+    types: list[str]
+    value: str
+    alert_uuids: list[str] = Field(description="the requested alerts that have it")
+    group: int = Field(description="index in `groups` of the first group with an alert that has it")
+    groups: list[int] = Field(description="indexes of every group with an alert that has it; more than one "
+                                          "means it links groups")
+
+
+class AlertCommonalities(BaseModel):
+    """The requested alerts grouped by the observables they share. Alerts sharing two or more observables
+    are grouped together; alerts sharing only one are grouped only with alerts no stronger group took."""
+    groups: list[CommonalityGroup]
+    observables: list[CommonalityObservable] = Field(
+        description="every observable value two or more of the alerts have, ordered by group and, within a group, "
+                    "most useful first: values that link groups, then by type (gui.commonalities_priority_types), "
+                    "then by how many of the group's alerts have it")
+    related: dict[str, int] = Field(
+        description="alert uuid -> how many other requested alerts share at least one observable with it")
+    unrelated: int = Field(description="how many requested alerts share nothing with any other")
+    type_ancestors: dict[str, list[str]] = Field(
+        default_factory=dict,
+        description="each type in `observables` -> the types it extends, nearest first (email_from -> "
+                    "[email_address]), so a type without a color of its own takes its parent's")

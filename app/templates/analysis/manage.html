@@ -49,6 +49,11 @@
                     {% include "analysis/_manage_column_chooser.html" %}
                 </div>
             </div>
+            {# shows and hides #commonality_panel (manage_commonalities.js) #}
+            <button type="button" class="btn btn-outline-dark ms-2 text-nowrap" id="btn-commonalities" aria-pressed="false"
+                    title="Show which alerts on this page are potentially related: the observables they have in common">
+                <span class="bi bi-diagram-3"></span> Commonalities <span class="badge rounded-pill text-bg-secondary" id="commonalities-count" hidden></span>
+            </button>
         </div>
     </div>
     {% if search_notices %}
@@ -88,6 +93,10 @@
 {% endblock %}
 
 {% block page_content %}
+{# The Commonalities panel (manage_commonalities.js): outside the morph region, so the poll
+   never resets it; manage_commonalities.js redraws it when the alerts on the page change. #}
+<div id="commonality_panel" class="container-fluid" hidden
+     data-apply-url="{{ url_for('analysis.apply_temp_filter') }}" data-manage-url="{{ url_for('analysis.manage') }}"></div>
 {# Owns the Datastar state and polling for the alert list. This wrapper is NOT part of
    the morph region -- declaring the signals inside it would reset them to the
    server-rendered values on every refresh. $_sel (checkbox selection) and
@@ -102,12 +111,14 @@
    the results are a snapshot -- but the explicit refresh stays: a user-initiated change
    re-runs the search once, which is what the reload it replaced did. The ace-deselect
    event drops its detail.uuids from $_sel (deselect_alerts() in manage_alerts.js dispatches
-   it for the selection guard of the bulk-action dialogs). #}
+   it for the selection guard of the bulk-action dialogs), and ace-select adds them (a group's
+   checkbox in the Commonalities panel). #}
 <div id="manage_page"
      data-signals:_sel='{{ session["checked"] | tojson }}'
      data-signals:_open-comments='[]'
      data-on:ace-refresh="evt.detail && evt.detail.clearSelection && ($_sel = []); !document.querySelector('.modal.show') && @get('{{ url_for('analysis.manage_refresh') }}')"
      data-on:ace-deselect="$_sel = $_sel.filter(uuid => !evt.detail.uuids.includes(uuid))"
+     data-on:ace-select="$_sel = $_sel.concat(evt.detail.uuids.filter(uuid => !$_sel.includes(uuid)))"
      {% if not search_query and ace_config.gui.manage_auto_refresh_seconds > 0 %}
      data-on-interval__duration.{{ ace_config.gui.manage_auto_refresh_seconds }}s="!document.hidden && !document.querySelector('.modal.show') && @get('{{ url_for('analysis.manage_refresh') }}')"
      {% endif %}>
@@ -178,6 +189,7 @@
 <script src="{{ url_for('static', filename='js/saved_filters.js') }}"></script>
 <script src="{{ url_for('static', filename='js/manage_alerts.js') }}"></script>
 <script src="{{ url_for('static', filename='js/manage_columns.js') }}"></script>
+<script src="{{ url_for('static', filename='js/manage_commonalities.js') }}"></script>
 <script>
     // the scripts block renders in <head>, so wait for the chooser markup to exist. A saved
     // column change re-renders the list through the refresh path.
