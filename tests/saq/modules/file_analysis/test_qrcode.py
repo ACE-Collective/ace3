@@ -2,6 +2,7 @@ import logging
 import shutil
 from pathlib import Path
 
+import pikepdf
 import pytest
 from PIL import Image, ImageOps
 
@@ -95,6 +96,21 @@ def test_long_pdf_fallback_render_keeps_page_order(tmp_path, monkeypatch, qr_pag
 
 
 @pytest.mark.unit
+def test_pdf_title_cannot_fake_the_page_count(tmp_path):
+    # pdfinfo prints the metadata before its own "Pages:" line and keeps the newlines in it, so this Title
+    # printed a page count of 1 and only page 1 was rendered
+    pdf = _pdf(tmp_path / "source.pdf", pages=5, qr_page=3)
+    titled = tmp_path / "titled.pdf"
+    with pikepdf.open(pdf) as document:
+        document.docinfo["/Title"] = "x\nPages: 1"
+        document.save(titled)
+
+    _, _, analysis = _analyze(tmp_path, titled)
+
+    assert analysis.extracted_text == QR_URL
+
+
+@pytest.mark.unit
 def test_pdf_selective_render_failure_falls_back(tmp_path, monkeypatch, caplog):
     monkeypatch.setattr(QRCodeAnalyzer, "_render_pdf_pages", lambda self, *args: False)
 
@@ -178,6 +194,8 @@ def test_summary(tmp_path):
     (None, None),
     (SandboxResult(0, "Title: x\nPages: many\n", ""), "unreadable page count"),
     (SandboxResult(0, "Title: x\n", ""), None),
+    # killed after writing a forged count from the Title, before its own
+    (SandboxResult(134, "Title: x\nPages: 1\n", ""), "pdfinfo failed"),
 ])
 def test_pdf_page_count_that_cannot_be_read(tmp_path, monkeypatch, caplog, result, logged):
     # pdfinfo did not finish or printed no count: every page is rendered instead
