@@ -78,7 +78,7 @@ def test_budget_defaults_to_zero_when_missing(root_analysis):
 
 @pytest.mark.integration
 def test_total_analysis_time_seconds_accumulates_across_delayed_analysis():
-    root = create_root_analysis(uuid=str(uuid.uuid4()), analysis_mode='test_groups')
+    root = create_root_analysis(analysis_mode='test_groups')
     root.initialize_storage()
     root.add_observable_by_spec(F_TEST, '0:00|0:10')
     root.save()
@@ -104,7 +104,7 @@ def test_total_analysis_time_seconds_accumulates_across_delayed_analysis():
 def test_total_analysis_time_seconds_resets_for_new_work_item():
     # the budget covers one logical analysis run: a root work item (a mode
     # transition, a disposition pass, analyst requested analysis) starts over
-    root = create_root_analysis(uuid=str(uuid.uuid4()), analysis_mode='test_groups')
+    root = create_root_analysis(analysis_mode='test_groups')
     root.initialize_storage()
     root.add_observable_by_spec(F_TEST, 'test_1')
     root.state[STATE_TOTAL_ANALYSIS_TIME_SECONDS] = 9999
@@ -124,7 +124,7 @@ def test_cumulative_fail_time_trips_across_delayed_analysis():
     # they do -- which is only visible if the first pass is remembered
     get_config().global_settings.maximum_cumulative_analysis_fail_time = 3
 
-    root = create_root_analysis(uuid=str(uuid.uuid4()), analysis_mode='test_groups')
+    root = create_root_analysis(analysis_mode='test_groups')
     root.initialize_storage()
     root.add_observable_by_spec(F_TEST, '2')
     root.save()

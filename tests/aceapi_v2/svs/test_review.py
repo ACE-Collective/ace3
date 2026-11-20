@@ -43,7 +43,7 @@ def setup(no_hunts, yara_dir):
 
 def _ended(signature_uuid=None) -> SVSRun:
     run = started_run(GUID, now=datetime.now() - timedelta(hours=3))
-    root = create_root_analysis(uuid=str(uuid.uuid4()), event_time=datetime.now() - timedelta(hours=2))
+    root = create_root_analysis(event_time=datetime.now() - timedelta(hours=2))
     root.initialize_storage()
     root.add_observable_by_spec(F_HOSTNAME, "win10-01")
     root.details = {"cmd": run.marker}

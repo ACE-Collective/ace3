@@ -35,7 +35,7 @@ def setup(no_hunts):
 
 
 def _alert(*, marker=None, host="win10-01") -> str:
-    root = create_root_analysis(uuid=str(uuid.uuid4()), event_time=datetime.now())
+    root = create_root_analysis(event_time=datetime.now())
     root.initialize_storage()
     root.add_observable_by_spec(F_HOSTNAME, host)
     if marker:

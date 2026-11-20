@@ -70,7 +70,7 @@ def automation(_override_db_session, monkeypatch):
 
 
 def _saved_root():
-    root = create_root_analysis(uuid=str(uuid.uuid4()))
+    root = create_root_analysis()
     root.initialize_storage()
     root.details = {"hello": "world"}
     root.save()

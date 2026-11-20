@@ -241,7 +241,7 @@ def test_io_count():
     root.save()
     # the details of the root and data.json
     assert _get_io_write_count() == 2
-    root = create_root_analysis()
+    root = create_root_analysis(uuid=root.uuid)
     root.load()
     # and then data.json and the details of the root
     assert _get_io_read_count() == 2
@@ -302,7 +302,7 @@ def test_analysis_missing_details():
 
 @pytest.mark.integration
 def test_disposition_history():
-    root = create_root_analysis(uuid=str(uuid.uuid4()))
+    root = create_root_analysis()
     root.initialize_storage()
     observable = root.add_observable_by_spec(F_FQDN, 'localhost.localdomain')
     assert observable
@@ -317,7 +317,7 @@ def test_disposition_history():
     assert disposition_history
     assert disposition_history.history == {'OPEN': 1}
 
-    root = create_root_analysis(uuid=str(uuid.uuid4()))
+    root = create_root_analysis()
     root.initialize_storage()
     observable = root.add_observable_by_spec(F_FQDN, 'localhost.localdomain')
     assert observable
@@ -372,7 +372,7 @@ class ArchiveTestAnalysis(Analysis):
 def test_create_output_file_through_the_module_adapter():
     """Modules reach the root through RootAnalysisAdapter, which must hand the untrusted name to
     the file manager rather than to anything else."""
-    root = create_root_analysis(uuid=str(uuid.uuid4()))
+    root = create_root_analysis()
     root.initialize_storage()
     adapter = RootAnalysisAdapter(root)
 
@@ -390,7 +390,7 @@ def _hardcopy_path(root: RootAnalysis, file_observable: FileObservable) -> str:
 def _archive_test_tree(tmpdir):
     """A root with files that came with it (one under a subdirectory of files/) and files derived
     by an analysis (one sharing its content with a root file)."""
-    root = create_root_analysis(uuid=str(uuid.uuid4()))
+    root = create_root_analysis()
     root.initialize_storage()
 
     def _write(relative_path: str, content: bytes) -> str:
@@ -474,7 +474,7 @@ def test_load_root_with_hash_observable_rejected_after_the_fact(tmpdir, caplog, 
     still load and save. The offending observable is dropped with a warning; everything else
     in the tree survives and the tree stays internally consistent."""
 
-    root = create_root_analysis(uuid=str(uuid.uuid4()))
+    root = create_root_analysis()
     root.initialize_storage()
 
     target_file = tmpdir / "target.bin"

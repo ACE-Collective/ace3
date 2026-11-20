@@ -132,7 +132,7 @@ def test_reset_refuses_a_simulated_alert(root_analysis, tmp_path, caplog):
     alert = ALERT(root_analysis)
     make_simulated(alert)
     storage_dir = get_storage_dir(root_analysis.uuid)
-    other = create_root_analysis(uuid=str(uuid.uuid4()), storage_dir=str(tmp_path / "other"))
+    other = create_root_analysis(storage_dir=str(tmp_path / "other"))
     other.initialize_storage()
     other.state = {"key": "value"}
     other.save()
@@ -352,7 +352,7 @@ def _ace(*argv) -> int:
 
 def _exported_root(tmp_path, name="export") -> RootAnalysis:
     # from another node and company: the import has to replace both
-    root = create_root_analysis(uuid=str(uuid.uuid4()), storage_dir=str(tmp_path / name), location="another-node")
+    root = create_root_analysis(storage_dir=str(tmp_path / name), location="another-node")
     root.company_id = 12345
     root.initialize_storage()
     root.add_observable_by_spec(F_TEST, "imported")

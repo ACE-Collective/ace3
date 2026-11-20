@@ -1,6 +1,5 @@
 """Tests for the per-alert remediation coverage used by the alert list badge."""
 import json
-import uuid
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
@@ -294,7 +293,7 @@ def test_tooltip_truncates_long_recipient_lists():
 
 @pytest.mark.integration
 def test_get_remediation_coverage_reads_all_three_sources():
-    root = create_root_analysis(uuid=str(uuid.uuid4()))
+    root = create_root_analysis()
     root.initialize_storage()
     root.add_observable_by_spec(F_EMAIL_DELIVERY, ALICE)
     root.add_observable_by_spec(F_EMAIL_DELIVERY, BOB)
@@ -303,7 +302,7 @@ def test_get_remediation_coverage_reads_all_three_sources():
     root.save()
     alert = ALERT(root)
 
-    other_root = create_root_analysis(uuid=str(uuid.uuid4()))
+    other_root = create_root_analysis()
     other_root.initialize_storage()
     other_root.save()
     other_alert = ALERT(other_root)
@@ -409,7 +408,7 @@ def test_an_undelivered_address_still_counts_while_pending_or_once_remediated(ro
 
 @pytest.mark.integration
 def test_get_remediation_coverage_reads_the_delivery_tags():
-    root = create_root_analysis(uuid=str(uuid.uuid4()))
+    root = create_root_analysis()
     root.initialize_storage()
     root.add_observable_by_spec(F_EMAIL_DELIVERY, ALICE)
     root.add_observable_by_spec(F_EMAIL_DELIVERY, DL).add_tag("delivery_expanded")

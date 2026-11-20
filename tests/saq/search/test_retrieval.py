@@ -66,7 +66,7 @@ def _user_id() -> int:
 
 
 def _alert(description: str, *, alert_type="phish", build=None, comments=(), tags=()) -> Alert:
-    root = create_root_analysis(uuid=str(uuid.uuid4()), desc=description, alert_type=alert_type)
+    root = create_root_analysis(desc=description, alert_type=alert_type)
     root.initialize_storage()
     for tag in tags:
         root.add_tag(tag)

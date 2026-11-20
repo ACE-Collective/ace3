@@ -1,4 +1,3 @@
-import uuid
 
 import bcrypt
 import pytest
@@ -61,7 +60,7 @@ def test_insert_alert_name_too_long():
 @pytest.mark.integration
 def test_sync_icon_configuration_blueprint():
     # sync() should mirror a blueprint icon configuration into the icon_* columns
-    root_analysis = create_root_analysis(uuid=str(uuid.uuid4()))
+    root_analysis = create_root_analysis()
     root_analysis.initialize_storage()
     root_analysis.set_extension(KEY_ICON_CONFIGURATION, {
         "blueprint_file_location": {"name": "my_blueprint", "path": "images/custom.png"}})
@@ -77,7 +76,7 @@ def test_sync_icon_configuration_blueprint():
 def test_sync_icon_configuration_long_data_url():
     # icon_url must accept data urls well beyond the old 1024 char limit
     long_data_url = "data:image/png;base64," + ("A" * 5000)
-    root_analysis = create_root_analysis(uuid=str(uuid.uuid4()))
+    root_analysis = create_root_analysis()
     root_analysis.initialize_storage()
     root_analysis.set_extension(KEY_ICON_CONFIGURATION, {"url": long_data_url})
     root_analysis.save()
@@ -97,7 +96,7 @@ def test_sync_icon_configuration_none():
 @pytest.mark.integration
 def test_apply_icon_configuration_writes_only_on_change():
     # apply_icon_configuration should not dirty a column when the value is unchanged
-    root_analysis = create_root_analysis(uuid=str(uuid.uuid4()))
+    root_analysis = create_root_analysis()
     root_analysis.initialize_storage()
     root_analysis.set_extension(KEY_ICON_CONFIGURATION, {"url": "https://example.com/icon.png"})
     root_analysis.save()

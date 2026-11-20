@@ -1,7 +1,6 @@
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
-import uuid
 
 import pytest
 
@@ -68,7 +67,7 @@ def _temporary_provider_class():
 
 def _root(*, analyses=(), email_deliveries=()):
     """A saved RootAnalysis with each analysis on its own observable, plus the given email_delivery observables."""
-    root = create_root_analysis(uuid=str(uuid.uuid4()))
+    root = create_root_analysis()
     root.initialize_storage()
     for index, analysis in enumerate(analyses):
         root.add_observable_by_spec(F_TEST, f"provider-{index}").add_analysis(analysis)

@@ -29,7 +29,7 @@ def _path(alert_uuid: str, observable_uuid: str, view: str) -> str:
 def _alert_with_file(tmpdir, file_name: str, content: bytes):
     """An alert holding one file observable and one that is not a file; returns (alert uuid,
     file observable, other observable)."""
-    root = create_root_analysis(uuid=str(uuid.uuid4()))
+    root = create_root_analysis()
     root.initialize_storage()
     target_path = tmpdir / file_name
     target_path.write_binary(content)

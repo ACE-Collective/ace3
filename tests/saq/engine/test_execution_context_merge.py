@@ -212,7 +212,7 @@ def test_cancel_before_the_main_loop_stops_the_analysis(monkeypatch):
 
     monkeypatch.setattr(AnalysisOrchestrator, "_process_work_item", cancel_after_load)
 
-    root = create_root_analysis(uuid=str(uuidlib.uuid4()), analysis_mode="test_groups")
+    root = create_root_analysis(analysis_mode="test_groups")
     root.initialize_storage()
     observable = root.add_observable_by_spec(F_TEST, "test_1")
     root.save()
@@ -237,7 +237,7 @@ def test_module_cancel_lands_on_the_engine_context(monkeypatch):
     """
     captured = _capture_contexts(monkeypatch)
 
-    root = create_root_analysis(uuid=str(uuidlib.uuid4()), analysis_mode="test_groups")
+    root = create_root_analysis(analysis_mode="test_groups")
     root.initialize_storage()
     root.add_observable_by_spec(F_TEST, "test_cancel")
     root.save()
@@ -256,7 +256,7 @@ def test_total_analysis_time_lands_on_the_engine_context(monkeypatch):
     """Per-module timing accumulates on the one context, not a private copy."""
     captured = _capture_contexts(monkeypatch)
 
-    root = create_root_analysis(uuid=str(uuidlib.uuid4()), analysis_mode="test_groups")
+    root = create_root_analysis(analysis_mode="test_groups")
     root.initialize_storage()
     root.add_observable_by_spec(F_TEST, "test_1")
     root.save()
@@ -282,7 +282,7 @@ def test_delayed_request_pass_shares_one_context(monkeypatch):
     """
     captured = _capture_contexts(monkeypatch)
 
-    root = create_root_analysis(uuid=str(uuidlib.uuid4()), analysis_mode="test_groups")
+    root = create_root_analysis(analysis_mode="test_groups")
     root.initialize_storage()
     root.add_observable_by_spec(F_TEST, "0:00|0:01")
     root.save()

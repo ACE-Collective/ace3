@@ -127,7 +127,7 @@ def routed():
 
 
 def _alert(host: str, details: dict, detections=("hunt hit",)) -> RootAnalysis:
-    root = create_root_analysis(uuid=str(uuid.uuid4()), event_time=datetime.now())
+    root = create_root_analysis(event_time=datetime.now())
     root.initialize_storage()
     root.add_observable_by_spec(F_HOSTNAME, host)
     root.details = details

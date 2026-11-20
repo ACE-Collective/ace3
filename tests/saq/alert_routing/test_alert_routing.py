@@ -2,7 +2,6 @@
 stage and queue reconcile."""
 
 import logging
-import uuid
 
 import pytest
 from sqlalchemy import update
@@ -42,7 +41,7 @@ class StageRouter(AlertRouter):
 
 
 def _saved_root(**kwargs) -> RootAnalysis:
-    root = create_root_analysis(uuid=str(uuid.uuid4()), **kwargs)
+    root = create_root_analysis(**kwargs)
     root.initialize_storage()
     root.save()
     return root
@@ -95,7 +94,7 @@ class TestPreInsert:
 
     def test_the_detection_queue_router_runs_for_every_insert_path(self):
         """It used to run only when the engine converted a root; now any ALERT() call routes."""
-        root = create_root_analysis(uuid=str(uuid.uuid4()))
+        root = create_root_analysis()
         root.initialize_storage()
         root.add_detection_point("yara hit", queue="experimental")
         root.save()
@@ -325,7 +324,7 @@ class TestFinalPass:
 
 class TestEngine:
     def test_a_detection_queue_routes_the_alert_the_engine_creates(self):
-        root = create_root_analysis(uuid=str(uuid.uuid4()), analysis_mode="test_single")
+        root = create_root_analysis(analysis_mode="test_single")
         root.initialize_storage()
         root.add_detection_point("yara hit", queue="experimental")
         root.save()

@@ -4,7 +4,6 @@ and reporting."""
 import csv
 import io
 import json
-import uuid
 from datetime import datetime, time, timedelta, timezone
 from zoneinfo import ZoneInfo
 
@@ -301,7 +300,7 @@ class TestFilters:
         observables at all. The manage page's CSV export once inner-joined the observable
         mapping and dropped them, exporting fewer alerts than the analyst was looking at."""
         alert = insert_alert()
-        root = create_root_analysis(uuid=str(uuid.uuid4()))
+        root = create_root_analysis()
         root.initialize_storage()
         root.add_observable_by_spec(F_IPV4, "10.0.0.1")
         root.save()

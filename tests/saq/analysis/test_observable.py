@@ -210,7 +210,7 @@ def test_observable_storage():
     add_observables(root)
     root.save()
 
-    root = create_root_analysis()
+    root = create_root_analysis(uuid=root.uuid)
     root.load()
 
     for o_type in EV_OBSERVABLE_VALUE_MAP.keys():
@@ -387,7 +387,7 @@ def test_display_properties_persist_through_serialization():
 
     # save and reload
     root.save()
-    root = create_root_analysis()
+    root = create_root_analysis(uuid=root.uuid)
     root.load()
 
     # retrieve the observable
@@ -415,7 +415,7 @@ def test_file_observable_display_value():
     assert observable.value == observable.sha256_hash
 
     root.save()
-    root = create_root_analysis()
+    root = create_root_analysis(uuid=root.uuid)
     root.load()
     observable = root.get_observable_by_type(F_FILE)
     assert observable.display_value == "decoded payload (payload.bin)"

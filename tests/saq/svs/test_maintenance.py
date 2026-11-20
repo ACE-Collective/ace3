@@ -64,7 +64,7 @@ def _window(uuid_: str) -> SVSMaintenanceWindow:
 
 
 def _root(*, event_time: datetime, host: str = "win10-01", details=None) -> RootAnalysis:
-    root = create_root_analysis(uuid=str(uuid.uuid4()), event_time=event_time)
+    root = create_root_analysis(event_time=event_time)
     root.initialize_storage()
     root.add_observable_by_spec(F_HOSTNAME, host)
     if details:

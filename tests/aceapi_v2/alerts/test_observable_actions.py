@@ -47,7 +47,7 @@ def _path(alert_uuid: str, observable_uuid: str, action: str) -> str:
 def alert(tmpdir):
     """An alert, dispositioned and in dispositioned mode as an alert an analyst has worked is,
     holding one observable of each type the actions apply to."""
-    root = create_root_analysis(uuid=str(uuid.uuid4()), analysis_mode="dispositioned")
+    root = create_root_analysis(analysis_mode="dispositioned")
     root.initialize_storage()
     target = tmpdir / "landing.html"
     target.write_text("<html></html>", encoding="utf8")
