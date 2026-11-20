@@ -14,6 +14,8 @@ A working tree usually spans more than one upstream repo. This repo is the open-
 
 Known flaws in ACE's design that changes have had to work around are GitHub issues labeled `design flaw` (`gh issue list --label "design flaw"`), each describing the workaround that first ran into it. `/ace-review` files them. Before you write a workaround, check whether it is for one of them, and if so, follow the workaround its issue describes rather than inventing another.
 
+`docs/DESIGN_INVARIANTS.md` lists, by subsystem, the assumptions the code depends on, where breaking one breaks something else, often silently. Read the section of a subsystem before you change it, and update an entry in the same change that breaks or changes its rule.
+
 ## Environment
 
 Development happens **inside the `dev` container**, where `SAQ_HOME=/opt/ace`, Python 3.14 is in `/venv` and the user is `ace`. The agent runs either in that container or on the host, where the Claude desktop app runs it in a git worktree under `.claude/worktrees/`. On a macOS host the shell is zsh, which fails a command whose glob matches nothing, so quote patterns (`grep --include='*.py'`), and there is no `timeout` command.
