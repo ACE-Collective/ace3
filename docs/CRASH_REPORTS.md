@@ -310,7 +310,9 @@ get the shape of what earlier modules produced, not their full output.
 
 `ace crash prune` removes reports past `retention_days` **and their index rows together**, so
 a listing never points at a directory that is gone, and drops any index spool entry for them.
-It also removes stale [pre-kill hang dumps](#pre-kill-hang-dumps).
+It does not remove [pre-kill hang dumps](#pre-kill-hang-dumps): they are named by pid, and the
+cron container's pid namespace has none of the engine's pids. Each engine worker prunes the stale
+ones as it starts (`prune_stale_hang_stacks()`).
 With replication on it also deletes the shared copy, remote first and in lockstep with the local
 one. It runs hourly from `etc/cron/hourly/crash-reports`, followed by `ace crash index` and then `ace crash
 sync`. `ace crash list`, `ace crash prune --dry-run` and `ace crash index [--all] --dry-run` are
