@@ -684,20 +684,21 @@ def test_gh_turns_every_failure_into_one_error(monkeypatch, outcome, message):
         REAL_GH("issue", "list")
 
 
-def test_gh_runs_in_core_with_a_timeout_and_returns_what_it_printed(tmp_path, monkeypatch):
+def test_gh_names_core_with_a_timeout_and_returns_what_it_printed(monkeypatch):
     real_run = subprocess.run
     seen = {}
 
     def run(argv, **kwargs):
-        seen.update(argv=argv, cwd=kwargs["cwd"], timeout=kwargs["timeout"])
+        seen.update(argv=argv, cwd=kwargs.get("cwd"), timeout=kwargs["timeout"])
         # cat stands in for gh, so stdin and the capture go through a real process
         return real_run(["cat"], **kwargs)
     monkeypatch.setattr(findings.subprocess, "run", run)
-    monkeypatch.setattr(findings, "SAQ_HOME", str(tmp_path))
+    # a SAQ_HOME that exists nowhere, as /opt/ace does not on the host
+    monkeypatch.setattr(findings, "SAQ_HOME", "/nonexistent/ace")
 
     assert REAL_GH("issue", "create", stdin="the body\n") == "the body\n"
 
-    assert seen == {"argv": ["gh", "issue", "create"], "cwd": str(tmp_path), "timeout": 60}
+    assert seen == {"argv": ["gh", "issue", "create", "--repo", "ACE-Collective/ace3"], "cwd": None, "timeout": 60}
 
 
 @pytest.mark.parametrize("step, message", [(findings.tally, "run collect first"), (findings.finish, "no ranked.json")])
