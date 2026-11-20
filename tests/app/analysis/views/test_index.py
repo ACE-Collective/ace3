@@ -1171,3 +1171,19 @@ def test_alert_page_collapses_by_the_analysis_modules_own_config(web_client, roo
 
     assert body.count('<ul hidden="until-found">') == 1
     assert re.search(r'<ul hidden="until-found">\s*<li [^>]*data-observable-value="found by searching"', body)
+
+
+@pytest.mark.integration
+def test_index_hides_playbook_url_and_labels_instructions_as_description(web_client, root_analysis):
+    root_analysis.playbook_url = "https://playbooks.example.com/pb42"
+    root_analysis.instructions = "check the sender's other messages"
+    root_analysis.save()
+    ALERT(root_analysis)
+
+    result = web_client.get(url_for("analysis.index"), query_string={"direct": root_analysis.uuid})
+
+    assert result.status_code == 200
+    assert "playbooks.example.com" not in result.text
+    assert "Playbook URL" not in result.text
+    assert re.search(r'<td class="col-md-2">Description</td>\s*<td class="col-md-10"><span class="instructions-text">check the sender&#39;s other messages</span>', result.text)
+    assert '<td class="col-md-2">Instructions</td>' not in result.text

@@ -65,18 +65,10 @@
         </td>
     </tr>
     {% endif %}
-    {% if alert.root_analysis.playbook_url %}
-    <tr>
-        <td class="col-md-2">Playbook URL</td>
-        <td class="col-md-10">
-            <a target="_blank" href="{{alert.root_analysis.playbook_url}}">{{ alert.root_analysis.playbook_url }}</a>
-        </td>
-    </tr>
-    {% endif %}
     <tr>
         <td class="col-md-2">Alert Type</td>
         <td class="col-md-10">
-        {% if alert.wiki and not alert.root_analysis.playbook_url %}
+        {% if alert.wiki %}
             <a target="_blank" href="{{ alert.wiki }}">{{ alert.alert_type }}</a>
         {% else %}
             {{alert.alert_type}}
@@ -167,7 +159,7 @@
 
     {% if alert.root_analysis.instructions %}
     <tr>
-        <td class="col-md-2">Instructions</td>
+        <td class="col-md-2">Description</td>
         <td class="col-md-10"><span class="instructions-text">{{alert.root_analysis.instructions}}</span></td>
     </tr>
     {% endif %}

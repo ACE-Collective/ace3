@@ -400,7 +400,7 @@ Controls the maximum number of events returned by a hunt. The default varies by 
 
 ### `playbook_url` (string, optional, interpolated)
 
-An optional URL that should reference a playbook to consider when reviewing the alert. Supports [Field Value Interpolation](#field-value-interpolation).
+An optional URL that should reference a playbook to consider when reviewing the alert. Supports [Field Value Interpolation](#field-value-interpolation). ACE stores it on the alert, but the GUI does not display it.
 
 ### `pivot_links` (list of dicts, optional)
 
