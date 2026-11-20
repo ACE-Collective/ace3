@@ -19,7 +19,7 @@ bin/exec-in-container.sh /venv/bin/python .agents/skills/ace-review/scripts/find
 
 A finding you are sure is wrong is answered `wrong` (or `intentional`) with `--note` holding the evidence: a run, a test, or `file:line` of the code that settles it. No evidence, no answer: fix it. When two fixes in a row for the same finding each produced a new finding (ace-review's *Step back*), stop with `needs-human`.
 
-Then the definition of done from `implement.md`, step 5, for what changed: `prepare.py --check`, the touched paths' tests, the live check when its area changed.
+Then the definition of done from `implement.md`, step 5, for what changed, with the tests run in the background as `implement.md` says: `prepare.py --check`, the touched paths' tests, the live check when its area changed.
 
 ## 3. Push, update, reply
 
