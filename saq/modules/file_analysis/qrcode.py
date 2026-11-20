@@ -186,18 +186,20 @@ class QRCodeAnalyzer(AnalysisModule):
         if result is None:
             return None
 
-        for line in result.stdout.split("\n"):
-            if line.startswith("Pages:"):
-                try:
-                    return int(line.split(":")[1].strip())
-                except ValueError:
-                    # the count comes from the attacker's PDF (its metadata can print a "Pages:" line of
-                    # its own), so a bad one is the file's problem: no traceback or error report
-                    logging.warning(f"pdfinfo printed an unreadable page count for {pdf_path}: {line}",
-                                    extra={"path": pdf_path})
-                    return None
+        # pdfinfo prints the document's metadata, newlines and all, before its own "Pages:" line, so a Title can
+        # print a "Pages:" line of its own. Nothing pdfinfo prints after its count is free text: the last one is real
+        lines = [line for line in result.stdout.split("\n") if line.startswith("Pages:")]
+        if not lines:
+            return None
 
-        return None
+        try:
+            return int(lines[-1].split(":")[1].strip())
+        except ValueError:
+            # if pdfinfo stops before printing its count, the last line is the metadata's. That is the file's
+            # problem, so no traceback or error report
+            logging.warning(f"pdfinfo printed an unreadable page count for {pdf_path}: {lines[-1]}",
+                            extra={"path": pdf_path})
+            return None
 
     def _render_pdf_pages(self, pdf_path: str, first_page: int, last_page: int, output_pattern: str) -> bool:
         """Render specific PDF pages to PNG using Ghostscript, as output_pattern in the pages directory."""
