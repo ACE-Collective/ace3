@@ -754,7 +754,8 @@ is written there, change the tag to point at it.
   hooks.** Everything for an integration stays under `integrations/<name>/`. [AGENTS.md]
 - **Each new permission needs a `PERMISSION_CATALOG` entry and a copied data-only migration.**
   [#1132]
-- **Tests that write files pass their own `uuid=` to `create_root_analysis()`.** See
-  `tests/saq/helpers.py::create_root_analysis`. [#1130]
+- **`create_root_analysis()` gives each root a fresh uuid, and so a storage directory of its
+  own, because unit tests do not wipe the data directory between tests.** A test passes `uuid=`
+  only to reopen a root it saved. See `tests/saq/helpers.py::create_root_analysis`. [#1130]
 - **Module-level state is reset in `global_function_setup`, because the suite runs in random
   order.** [AGENTS.md]
