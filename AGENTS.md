@@ -14,7 +14,13 @@ A working tree usually spans more than one upstream repo. This repo is the open-
 
 Known flaws in ACE's design that changes have had to work around are GitHub issues labeled `design flaw` (`gh issue list --label "design flaw"`), each describing the workaround that first ran into it. `/ace-review` files them. Before you write a workaround, check whether it is for one of them, and if so, follow the workaround its issue describes rather than inventing another.
 
-`docs/DESIGN_INVARIANTS.md` lists, by subsystem, the assumptions the code depends on, where breaking one breaks something else, often silently. Read the section of a subsystem before you change it, and update an entry in the same change that breaks or changes its rule.
+`docs/DESIGN_INVARIANTS.md` lists, by subsystem, the assumptions the code depends on, where breaking one breaks something else, often silently. Read the section of a subsystem before you change it, and update an entry in the same change that breaks or changes its rule. Five of them hold in every subsystem, and nothing checks them:
+
+- Every ACE process runs with its cwd at `SAQ_HOME`, and most of ACE's paths are relative to it. Only `ace` sets it, so a new entry point starts there or changes to it, and nothing changes it afterwards (`docs/PROCESS_ENVIRONMENT.md`).
+- Every host, container and MySQL session runs on UTC, because naive `datetime.now()` values are compared with the database's `NOW()` (`docs/PROCESS_ENVIRONMENT.md`).
+- A `storage_dir` is the exact `SAQ_HOME`-relative path `storage_dir_from_uuid()` returns. Tables match it by string equality, so an absolute or `./` form of it is never stored or queried (`docs/ENGINE.md` §15).
+- Every `data.json` key is optional on read, and a new field takes its default when its key is absent: old alerts, and roots from a node on another version, load through the same code (`docs/ENGINE.md` §15).
+- Persisted names are never renamed: an Analysis class's `MODULE_PATH` (its module, class and `instance`), and the observable type, directive, disposition and analysis mode strings in `saq/constants.py`. A renamed or moved Analysis class loads as `UnknownAnalysis` in every alert saved before the change (`docs/ENGINE.md` §15, §16.6).
 
 `/factory` (`.agents/skills/factory/`) carries one issue a maintainer has labeled `factory:ready` to a ready-for-review PR: it implements it in a worktree of its own, opens a draft PR, reviews it with `/ace-review`, reworks the findings, files the review's pre-existing findings and new design flaws where their code lives (an ace3 issue, or a work item in an internal repo's Azure DevOps project), and marks it ready on a ship verdict. A human always merges. Each internal repo commits a `.factory/` directory for it: `config.toml` (its Azure DevOps coordinates and checks) and `public-denylist.toml`, the terms that must never reach this public repo, which `/factory` checks every public write against.
 
