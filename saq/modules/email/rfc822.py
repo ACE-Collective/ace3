@@ -101,6 +101,7 @@ from saq.modules.email.constants import (
     KEY_MESSAGE_ID,
     KEY_ORIGINATING_IP,
     KEY_PARSING_ERROR,
+    KEY_PARTS,
     KEY_REPLY_TO,
     KEY_REPLY_TO_ADDRESS,
     KEY_RETURN_PATH,
@@ -620,17 +621,20 @@ def parse_journal_deliveries(recipient_lines: list[str], header_addresses: list[
     return deliveries
 
 
-# the email body parts are the unnamed text parts EmailAnalyzer extracts
-HTML_BODY_PART_MARKER = ".unknown_text_html"
-BODY_PART_MARKERS = (HTML_BODY_PART_MARKER, ".unknown_text_plain")
+# EmailAnalyzer records each part it extracts in EmailAnalysis.details[KEY_PARTS]: its observable,
+# its declared content type and its role. The body parts are its unnamed text and html parts.
+PART_ROLE_BODY = "body"
+PART_ROLE_ATTACHMENT = "attachment"
+BODY_PART_CONTENT_TYPES = ("text/plain", "text/html")
+
+# an email analyzed before the parts were recorded tells its body parts only by the names
+# EmailAnalyzer gives them (<email>.unknown_<type>_<subtype>_NNN<ext>)
+_BODY_PART_MARKERS = {"unknown_text_html": "text/html", "unknown_text_plain": "text/plain"}
 
 
-def is_body_part(observable) -> bool:
-    return any(marker in (observable.file_name or "") for marker in BODY_PART_MARKERS)
-
-
-def is_html_body_part(observable) -> bool:
-    return HTML_BODY_PART_MARKER in (observable.file_name or "")
+def _body_part_type_from_name(observable) -> Optional[str]:
+    file_name = observable.file_name or ""
+    return next((content_type for marker, content_type in _BODY_PART_MARKERS.items() if marker in file_name), None)
 
 
 class EmailAnalysis(Analysis):
@@ -900,38 +904,52 @@ class EmailAnalysis(Analysis):
 
         return None
 
-    @property
-    def body_html(self) -> str:
-        body_observable = next(
-            (o for o in self.observables if o.type == F_FILE and 'unknown_text_html_000' in o.file_name), None)
+    def _body_part_types(self) -> list[tuple[FileObservable, str]]:
+        """(observable, content type) of each body part, in the order they were extracted."""
+        files = [o for o in self.observables if o.type == F_FILE]
+        parts = self.details.get(KEY_PARTS) if self.details else None
+        if parts is None:
+            return [(o, content_type) for o in files
+                    if (content_type := _body_part_type_from_name(o)) is not None]
 
-        if body_observable:
-            path = body_observable.full_path
-            if os.path.exists(path):
-                with open(path, 'rb') as f:
-                    return f.read().decode('utf-8', errors='ignore')
+        # each part is a file of its own (FileObservable identity includes its path), so no observable
+        # is recorded for two parts
+        by_uuid = {o.uuid: o for o in files}
+        return [(by_uuid[part["uuid"]], part["content_type"]) for part in parts
+                if part["role"] == PART_ROLE_BODY and part["uuid"] in by_uuid]
+
+    def is_body_part(self, observable) -> bool:
+        return any(o.uuid == observable.uuid for o, _ in self._body_part_types())
+
+    def is_html_body_part(self, observable) -> bool:
+        return any(o.uuid == observable.uuid and content_type == "text/html"
+                   for o, content_type in self._body_part_types())
+
+    def _first_body_part(self, content_type: str) -> Optional[FileObservable]:
+        return next((o for o, part_type in self._body_part_types() if part_type == content_type), None)
+
+    @staticmethod
+    def _read_body_part(observable: Optional[FileObservable]) -> str:
+        if observable and os.path.exists(observable.full_path):
+            with open(observable.full_path, 'rb') as f:
+                return f.read().decode('utf-8', errors='ignore')
 
         return ''
+
+    @property
+    def body_html(self) -> str:
+        return self._read_body_part(self._first_body_part("text/html"))
 
     @property
     def body_text(self) -> str:
-        body_observable = next(
-            (o for o in self.observables if o.type == F_FILE and 'unknown_text_plain_000' in o.file_name), None)
+        return self._read_body_part(self._first_body_part("text/plain"))
 
-        if body_observable:
-            path = body_observable.full_path
-            if os.path.exists(path):
-                with open(path, 'rb') as f:
-                    return f.read().decode('utf-8', errors='ignore')
-
-        return ''
-    
     @property
     def body_parts(self) -> list[FileObservable]:
         """Every text and html body part of the email, in the order they were extracted. An email can
         have more than one, and they can differ: a mail gateway adds its banner as an html part of
         its own, and the text/plain alternative can say what the html does not."""
-        return [o for o in self.observables if o.type == F_FILE and is_body_part(o)]
+        return [o for o, _ in self._body_part_types()]
 
     @property
     def body(self):
@@ -940,43 +958,17 @@ class EmailAnalysis(Analysis):
         if hasattr(self, '_body'):
             return self._body
 
-        # keep track of the first plain text and html files we find
-        first_html = None
-        first_plain_text = None
+        parts = self._body_part_types()
+        html = [o for o, content_type in parts if content_type == "text/html"]
+        plain_text = [o for o, content_type in parts if content_type == "text/plain"]
 
-        for _file in self.observables:
-            if _file.type != F_FILE:
-                continue
-
-            if '.unknown_' not in _file.file_name:
-                continue
-
-            # if all we have is a single text_plain file then that is the body of the email
-            plain_text_files = list(filter(lambda o: o.type == F_FILE and 'unknown_text_plain' in o.file_name, self.observables))
-            html_files = list(filter(lambda o: o.type == F_FILE and 'unknown_text_html' in o.file_name, self.observables))
-
-            if len(plain_text_files) == 1 and len(html_files) == 0:
-                self._body = plain_text_files[0]
-                return self._body
-
-            # otherwise we always skip this one first
-            if '.unknown_text_plain_000' in _file.file_name:
-                continue
-
-            if first_html is None and 'unknown_text_html' in _file.file_name:
-                first_html = _file
-                continue
-
-            if first_plain_text is None and 'unknown_text_plain' in _file.file_name:
-                first_plain_text = _file
-                continue
-
-        # if we found html then we return that as the body
-        if first_html:
-            self._body = first_html
+        if html:
+            self._body = html[0]
+        elif len(plain_text) == 1:
+            self._body = plain_text[0]
         else:
-            # otherwise we return the plain text
-            self._body = first_plain_text # if there isn't one then it returns None anyways
+            # with more than one plain text part and no html, the first plain text part is skipped
+            self._body = plain_text[1] if plain_text else None
 
         return self._body
 
@@ -1007,8 +999,7 @@ class EmailAnalysis(Analysis):
         """Returns the list of the attachment filenames."""
         return [
             attachment.file_path for attachment in self.attachments
-            if 'unknown_text_plain_000' not in attachment.file_path
-            and 'unknown_text_html_000' not in attachment.file_path
+            if not self.is_body_part(attachment)
             and not attachment.file_path.endswith('rfc822.headers')
         ]
 
@@ -1589,10 +1580,12 @@ class EmailAnalyzer(AnalysisModule):
 
         # (maintype, subtype) -> how many unnamed parts of that type were stored
         unnamed_part_counts = {}
+        analysis.details[KEY_PARTS] = []
 
         def _unnamed_part_name(target, ext: str) -> str:
-            # numbered per type, because EmailAnalysis.body and attachment_names tell the first part of a
-            # type by its _000 (the file manager's own suffix for a taken name would keep the _000)
+            # numbered per type, because EmailAnalysis tells the first part of a type by its _000 in an
+            # email analyzed before KEY_PARTS was recorded (the file manager's own suffix for a taken
+            # name would keep the _000)
             key = (target.get_content_maintype(), target.get_content_subtype())
             index = unnamed_part_counts.get(key, 0)
             unnamed_part_counts[key] = index + 1
@@ -1643,11 +1636,11 @@ class EmailAnalyzer(AnalysisModule):
 
                     file_name = re.sub(r'[\r\n]', '', file_name)
 
-                else:
-                    file_name = _unnamed_part_name(target, unknown_ext)
-
                 if not file_name:
                     file_name = _unnamed_part_name(target, unknown_ext)
+                    unnamed = True
+                else:
+                    unnamed = False
 
                 # figure out what the payload should be
                 if target.get_content_type() == 'message/rfc822':
@@ -1679,6 +1672,12 @@ class EmailAnalyzer(AnalysisModule):
                 if extracted_file:
                     extracted_file.add_directive(DIRECTIVE_EXTRACT_URLS)
                     extracted_file.add_yara_meta("type", "email.attachment")
+                    is_body = unnamed and target.get_content_type() in BODY_PART_CONTENT_TYPES
+                    analysis.details[KEY_PARTS].append({
+                        "uuid": extracted_file.uuid,
+                        "content_type": target.get_content_type(),
+                        "role": PART_ROLE_BODY if is_body else PART_ROLE_ATTACHMENT,
+                    })
 
                     # get_content_type() returns the text/plain default when the
                     # header is missing OR unparseable, and those two cases are not
