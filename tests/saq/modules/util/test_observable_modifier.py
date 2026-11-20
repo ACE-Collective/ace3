@@ -878,7 +878,7 @@ def test_tree_condition_ancestor_match():
     assert target_observable.has_directive("extract_iocs")
 
 
-def _build_email_tree(produce_message_id=False, from_value="hr@bv.com", message_id_value="<abc@bv.com>"):
+def _build_email_tree(produce_message_id=False, from_value="hr@example.com", message_id_value="<abc@example.com>"):
     """Build root -> target url observable with a TestEmailAnalysis (scope self) that
     produces typed observables (email_from, optionally message_id). Returns
     (root, target_observable, module_path)."""
@@ -894,7 +894,7 @@ def _build_email_tree(produce_message_id=False, from_value="hr@bv.com", message_
     analysis.details_modified = True
     target.add_analysis(analysis)
     analysis.add_observable_by_spec(F_EMAIL_FROM, from_value)
-    analysis.add_observable_by_spec(F_EMAIL_TO, "robertsd@bv.com")
+    analysis.add_observable_by_spec(F_EMAIL_TO, "jdoe@example.com")
     if produce_message_id:
         analysis.add_observable_by_spec(F_MESSAGE_ID, message_id_value)
 
@@ -931,9 +931,9 @@ def test_tree_condition_produces_observable_positive():
 @pytest.mark.unit
 def test_tree_condition_produces_observable_value_match():
     """Matches when a produced observable's value matches the value regex."""
-    root, target, module_path = _build_email_tree(from_value="hr@bv.com")
+    root, target, module_path = _build_email_tree(from_value="hr@example.com")
     adapter = _create_analyzer_with_rules(
-        root, _produces_rule(module_path, {"type": "email_from", "value": r"(?i)@bv\.com>?$"}))
+        root, _produces_rule(module_path, {"type": "email_from", "value": r"(?i)@example\.com>?$"}))
     adapter.execute_analysis(target)
     adapter.analyze(target, final_analysis=True)
     assert target.has_directive("matched")
@@ -944,7 +944,7 @@ def test_tree_condition_produces_observable_value_no_match():
     """Does not match when no produced observable's value matches the value regex."""
     root, target, module_path = _build_email_tree(from_value="attacker@evil.com")
     adapter = _create_analyzer_with_rules(
-        root, _produces_rule(module_path, {"type": "email_from", "value": r"(?i)@bv\.com>?$"}))
+        root, _produces_rule(module_path, {"type": "email_from", "value": r"(?i)@example\.com>?$"}))
     adapter.execute_analysis(target)
     adapter.analyze(target, final_analysis=True)
     assert not target.has_directive("matched")
@@ -1001,12 +1001,12 @@ def test_tree_condition_produces_observable_subtype_aware():
     assert target.has_directive("matched")
 
     # a sibling subtype (email_to) of the parent does NOT match the produced email_from
-    root2, target2, module_path2 = _build_email_tree(from_value="hr@bv.com")
+    root2, target2, module_path2 = _build_email_tree(from_value="hr@example.com")
     adapter2 = _create_analyzer_with_rules(
-        root2, _produces_rule(module_path2, {"type": "email_from", "value": r"(?i)^robertsd@"}))
+        root2, _produces_rule(module_path2, {"type": "email_from", "value": r"(?i)^jdoe@"}))
     adapter2.execute_analysis(target2)
     adapter2.analyze(target2, final_analysis=True)
-    # robertsd is the email_to value, not email_from -> no email_from matches that value
+    # jdoe is the email_to value, not email_from -> no email_from matches that value
     assert not target2.has_directive("matched")
 
 

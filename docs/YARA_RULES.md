@@ -460,7 +460,7 @@ scan -j -y myrule.yar /path/to/sample | json_pp
 scan --meta-tags type=email.headers -y myrule.yar /path/to/headers.txt
 
 # compile-only, to check a directory of rules for syntax/perf errors
-scan -c -Y signatures/yara/bv
+scan -c -Y signatures/yara/<rules directory>
 ```
 
 To deploy a rule to a running ACE instance, drop the `.yar` file into a

@@ -96,18 +96,18 @@ def _init_repo_with_commit(path: str) -> str:
 @pytest.mark.unit
 def test_declared_git_repo_dir_yields_a_real_signature_version(tmp_path):
     """End to end over the scanner: a rule directory declared in git_repo_dirs is a
-    *subdirectory* of the repo (signatures/yara/bv, the layout ACE actually uses),
+    *subdirectory* of the repo (signatures/yara/rules, the layout ACE actually uses),
     and a match on its rules carries the repo's commit rather than "unknown"."""
     repo = str(tmp_path / "signatures")
     signature_dir = os.path.join(repo, "yara")
-    rule_dir = os.path.join(signature_dir, "bv")
+    rule_dir = os.path.join(signature_dir, "rules")
     os.makedirs(rule_dir)
     with open(os.path.join(rule_dir, "rules.yar"), "w") as fp:
         fp.write(UUID_RULE)
 
     sha = _init_repo_with_commit(repo)
 
-    scanner = yara_scanner.YaraScanner(signature_dir=signature_dir, git_repo_dirs=["bv"])
+    scanner = yara_scanner.YaraScanner(signature_dir=signature_dir, git_repo_dirs=["rules"])
     scanner.load_rules()
     assert scanner.scan_data(b"signature version marker")
 

@@ -323,10 +323,9 @@ uses it the way the module's fallback scanner does.
 - **Compile the way production loads.** The production loader compiles each file on its own and
   drops only a file that fails; then it compiles the survivors once per namespace, and if that
   fails (two files defining the same rule name, for instance) the whole ruleset is dropped and the
-  service keeps serving the previous generation. The validation does the same two steps, but
-  through `yara.compile()` directly, because `yara_scanner.load_rules()` only logs a failing file
-  and returns `False`, and the direct call gives the error text and the compiler warnings
-  (`Rules.warnings`). The subprocess applies the same `yara.set_config()` limits the library sets
+  service keeps serving the previous generation. The validation does the same two steps the same
+  way, with a `YaraScanner` per namespace and `load_rules()`, and reads the errors, warnings and
+  includes from `scanner.compiled_sources` (`saq/svs/yara/child.py`, `docs/SVS_VALIDATION.md`). The subprocess applies the same `yara.set_config()` limits the library sets
   when it is imported, so the two agree on what compiles. [FR-11, FR-26]
 - **Compile errors are results.** "File X does not compile: its N rules are dropped", or "the
   ruleset would not load: production keeps the previous generation". A validation that compiled a

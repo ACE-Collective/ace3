@@ -38,7 +38,7 @@ PROXY_ROW = {
 
 SAFELINKS = {
     "observable_types": ["url", "fqdn"],
-    "query": 'index=app_defender_hunting sourcetype="urlclick" <O_VALUE> <TIMESPEC>\n'
+    "query": 'index=edr_url_clicks sourcetype="urlclick" <O_VALUE> <TIMESPEC>\n'
              '| table Timestamp AccountUpn ActionType Url NetworkMessageId IPAddress',
     "time_ranges": {"TIMESPEC": {"duration_before": "07:00:00:00", "duration_after": "00:01:00:00"}},
     "use_index_time": False,
@@ -104,7 +104,7 @@ def _run(analyzer, observable):
 
 @pytest.mark.unit
 def test_url_hit_extracts_clickers_and_escalates(test_context):
-    splunk = MockMultiSplunk({"app_defender_hunting": [ROW_ALLOWED, ROW_BLOCKED]})
+    splunk = MockMultiSplunk({"edr_url_clicks": [ROW_ALLOWED, ROW_BLOCKED]})
     with patch("saq.modules.splunk.SplunkClient", return_value=splunk):
         analyzer = _make_analyzer(test_context, URL_CONFIG)
         observable = RootAnalysis().add_observable_by_spec(F_URL, "https://evil.example/landing")
@@ -144,7 +144,7 @@ def test_url_hit_extracts_clickers_and_escalates(test_context):
 
 @pytest.mark.unit
 def test_no_results_summary(test_context):
-    splunk = MockMultiSplunk({"app_defender_hunting": []})
+    splunk = MockMultiSplunk({"edr_url_clicks": []})
     with patch("saq.modules.splunk.SplunkClient", return_value=splunk):
         analyzer = _make_analyzer(test_context, URL_CONFIG)
         observable = RootAnalysis().add_observable_by_spec(F_URL, "https://evil.example/landing")
@@ -157,7 +157,7 @@ def test_no_results_summary(test_context):
 @pytest.mark.unit
 def test_multiple_searches_merge_results(test_context):
     splunk = MockMultiSplunk({
-        "app_defender_hunting": [ROW_ALLOWED],
+        "edr_url_clicks": [ROW_ALLOWED],
         "index=proxy": [PROXY_ROW],
     })
     with patch("saq.modules.splunk.SplunkClient", return_value=splunk):
@@ -192,7 +192,7 @@ def test_escalate_on_any_for_source_without_action_type(test_context):
 
 @pytest.mark.unit
 def test_blocked_only_does_not_escalate(test_context):
-    splunk = MockMultiSplunk({"app_defender_hunting": [ROW_BLOCKED]})
+    splunk = MockMultiSplunk({"edr_url_clicks": [ROW_BLOCKED]})
     with patch("saq.modules.splunk.SplunkClient", return_value=splunk):
         analyzer = _make_analyzer(test_context, URL_CONFIG)
         observable = RootAnalysis().add_observable_by_spec(F_URL, "https://evil.example/landing")
@@ -205,7 +205,7 @@ def test_blocked_only_does_not_escalate(test_context):
 
 @pytest.mark.unit
 def test_url_value_expands_to_child_permutations(test_context):
-    splunk = MockMultiSplunk({"app_defender_hunting": []})
+    splunk = MockMultiSplunk({"edr_url_clicks": []})
     with patch("saq.modules.splunk.SplunkClient", return_value=splunk):
         analyzer = _make_analyzer(test_context, URL_CONFIG)
         observable = RootAnalysis().add_observable_by_spec(
@@ -223,7 +223,7 @@ def test_url_value_expands_to_child_permutations(test_context):
 
 @pytest.mark.unit
 def test_fqdn_hit_extracts_clicked_url_without_crawl(test_context):
-    splunk = MockMultiSplunk({"app_defender_hunting": [ROW_ALLOWED]})
+    splunk = MockMultiSplunk({"edr_url_clicks": [ROW_ALLOWED]})
     with patch("saq.modules.splunk.SplunkClient", return_value=splunk):
         analyzer = _make_analyzer(test_context, URL_CONFIG)
         observable = RootAnalysis().add_observable_by_spec(F_FQDN, "evil.example")
@@ -244,7 +244,7 @@ def test_fqdn_hit_extracts_clicked_url_without_crawl(test_context):
 def test_skipped_phishkit_is_reset_on_hit(test_context):
     from saq.modules.phishkit import PhishkitAnalysis
 
-    splunk = MockMultiSplunk({"app_defender_hunting": [ROW_ALLOWED]})
+    splunk = MockMultiSplunk({"edr_url_clicks": [ROW_ALLOWED]})
     with patch("saq.modules.splunk.SplunkClient", return_value=splunk):
         analyzer = _make_analyzer(test_context, URL_CONFIG)
         observable = RootAnalysis().add_observable_by_spec(F_URL, "https://evil.example/landing")
@@ -260,7 +260,7 @@ def test_skipped_phishkit_is_reset_on_hit(test_context):
 @pytest.mark.unit
 def test_failed_search_is_reported_and_the_rest_still_run(test_context, caplog):
     splunk = MockMultiSplunk({
-        "app_defender_hunting": RuntimeError("splunk said no"),
+        "edr_url_clicks": RuntimeError("splunk said no"),
         "index=proxy": [PROXY_ROW],
     })
     with patch("saq.modules.splunk.SplunkClient", return_value=splunk), caplog.at_level(logging.ERROR):
@@ -287,7 +287,7 @@ def test_failed_search_is_reported_and_the_rest_still_run(test_context, caplog):
 @pytest.mark.unit
 def test_every_failed_search_is_named(test_context):
     splunk = MockMultiSplunk({
-        "app_defender_hunting": RuntimeError("first"),
+        "edr_url_clicks": RuntimeError("first"),
         "index=proxy": RuntimeError("second"),
     })
     with patch("saq.modules.splunk.SplunkClient", return_value=splunk):
@@ -301,7 +301,7 @@ def test_every_failed_search_is_named(test_context):
 
 @pytest.mark.unit
 def test_pending_search_delays_then_times_out(test_context):
-    splunk = MockMultiSplunk({"app_defender_hunting": None, "index=proxy": [PROXY_ROW]})
+    splunk = MockMultiSplunk({"edr_url_clicks": None, "index=proxy": [PROXY_ROW]})
     with patch("saq.modules.splunk.SplunkClient", return_value=splunk):
         analyzer = _make_analyzer(test_context, MULTI_CONFIG)
         observable = RootAnalysis().add_observable_by_spec(F_URL, "https://evil.example/landing")
@@ -325,7 +325,7 @@ def test_pending_search_delays_then_times_out(test_context):
 
 @pytest.mark.unit
 def test_search_removed_from_config_mid_flight_is_skipped(test_context):
-    splunk = MockMultiSplunk({"app_defender_hunting": [ROW_ALLOWED], "index=proxy": [PROXY_ROW]})
+    splunk = MockMultiSplunk({"edr_url_clicks": [ROW_ALLOWED], "index=proxy": [PROXY_ROW]})
     with patch("saq.modules.splunk.SplunkClient", return_value=splunk):
         analyzer = _make_analyzer(test_context, MULTI_CONFIG)
         observable = RootAnalysis().add_observable_by_spec(F_URL, "https://evil.example/landing")
@@ -344,7 +344,7 @@ def test_search_removed_from_config_mid_flight_is_skipped(test_context):
 
 @pytest.mark.unit
 def test_failed_search_link_is_logged_and_left_out(test_context, caplog):
-    splunk = MockMultiSplunk({"app_defender_hunting": [ROW_ALLOWED]})
+    splunk = MockMultiSplunk({"edr_url_clicks": [ROW_ALLOWED]})
     with patch("saq.modules.splunk.SplunkClient", return_value=splunk), caplog.at_level(logging.ERROR):
         analyzer = _make_analyzer(test_context, URL_CONFIG)
         with patch.object(analyzer, "_build_search_link", side_effect=RuntimeError("no link")):

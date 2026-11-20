@@ -14,7 +14,7 @@
 #   question: "Was this domain seen in proxy logs?"
 #   summary: "Proxy correlation"
 #   query: |
-#     index=network_zscaler_web (transport=HTTPS OR transport=HTTP) hostname="<O_VALUE>"
+#     index=proxy (transport=HTTPS OR transport=HTTP) hostname="<O_VALUE>"
 #     | eval full_url = lower(transport) . "://" . url
 #   use_index_time: true
 #   narrow_duration_before: "00:24:00:00"

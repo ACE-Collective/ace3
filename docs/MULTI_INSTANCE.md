@@ -140,13 +140,27 @@ for the bind mounts and uses the deepest one above the worktree, so the destinat
 Keep it short: a long path can push a unix socket under the data directory past the 108-byte
 `AF_UNIX` limit, and a `.` in it makes SVS replay refuse the `work_dir`.
 
+The mounted files show up owned by root in `dev`, and git there refuses a repository it considers
+dubiously owned, so `exec-in-container.sh` marks the worktree and the integration worktrees in it as
+`safe.directory` for the command it runs (through `GIT_CONFIG_*` variables; nothing is written to a
+git config). An integration worktree's `.git` names the integration repository in the main checkout by
+its host path, so git in `dev` reads it only when that repository's `.git` is mounted there too, one
+line per integration (`signatures` the same):
+
+```yaml
+      - ./integrations/<name>/.git:/absolute/host/path/to/the/checkout/integrations/<name>/.git
+```
+
+`/factory`'s `doctor` (`.agents/skills/factory/scripts/factory.py doctor`) reports each mount that is
+missing.
+
 They find the stack by asking compose (`docker compose ps -q <service>`), which means they
 resolve whichever compose file that checkout would use by default. A deployment that runs its
-own compose file rather than the one at the repo root — `integrations/bv_ace/docker-compose.yml`,
+own compose file rather than the one at the repo root — `integrations/<name>/docker-compose.yml`,
 for instance — points them at it by exporting `COMPOSE_FILE`:
 
 ```bash
-export COMPOSE_FILE=integrations/bv_ace/docker-compose.yml
+export COMPOSE_FILE=integrations/<name>/docker-compose.yml
 bin/attach-container.sh
 ```
 

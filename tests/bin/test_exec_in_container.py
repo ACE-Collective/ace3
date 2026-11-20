@@ -131,6 +131,25 @@ def test_worktree_outside_the_checkout_runs_at_its_mount(main, tmp_path):
     assert "PYTHONPATH=/opt/ace-worktrees/wt" in exec_args
 
 
+def test_worktree_outside_the_checkout_is_a_safe_git_directory_there(main, tmp_path):
+    worktree = _worktree(main, tmp_path / "elsewhere" / "wt")
+
+    _, exec_args = _run(tmp_path, worktree, {tmp_path / "elsewhere": "/opt/ace-worktrees"})
+
+    # its files are owned by root in dev, so git refuses it without this; the /* covers its integration worktrees
+    assert "GIT_CONFIG_COUNT=2" in exec_args
+    assert [exec_args[exec_args.index(f"GIT_CONFIG_KEY_{i}=safe.directory") + 2] for i in (0, 1)] == [
+        "GIT_CONFIG_VALUE_0=/opt/ace-worktrees/wt", "GIT_CONFIG_VALUE_1=/opt/ace-worktrees/wt/*"]
+
+
+def test_the_main_checkout_and_worktrees_under_it_set_no_git_config(main, tmp_path):
+    worktree = _worktree(main, main / ".claude" / "worktrees" / "wt")
+
+    for checkout, mounts in ((main, {main: "/opt/ace"}), (worktree, {})):
+        _, exec_args = _run(tmp_path, checkout, mounts)
+        assert not [a for a in exec_args if a.startswith("GIT_CONFIG")]
+
+
 def test_worktree_mounted_directly(main, tmp_path):
     worktree = _worktree(main, tmp_path / "elsewhere" / "wt")
 

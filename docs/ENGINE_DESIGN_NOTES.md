@@ -309,10 +309,12 @@ by the same route `DelayedAnalysisAdapter` already took:
   executor promotes onto the run-level context (§12.2).
 - `saq/engine/shutdown_adapter.py` — `WorkerShutdownAdapter`, wrapping a `Worker`.
   `Worker` grew `is_immediate_shutdown()` / `is_controlled_shutdown()` predicates
-  over its two existing `ACE_MP_CONTEXT.Event`s, and `is_in_shutdown_state()` is
-  now expressed in terms of them. New names were required because
-  `Worker.controlled_shutdown` is already the *setter*. The events are created
-  before the fork, so a worker process reads what the manager set in the parent.
+  over its two shutdown flags, and `is_in_shutdown_state()` is now expressed in
+  terms of them. New names were required because `Worker.controlled_shutdown` is
+  already the *setter*. The flags are created before the fork, so a worker process
+  reads what the manager set in the parent. They were `ACE_MP_CONTEXT.Event`s when
+  this was written and are now lock-free `ACE_MP_CONTEXT.Value(c_bool)`s, for the
+  reason `docs/SHUTDOWN.md` gives for the shutdown mirror.
 - `Worker._create_analysis_executor()` passes `WorkerShutdownAdapter(self)` next
   to `DelayedAnalysisAdapter(self)`; `AnalysisExecutor` carries it as an optional
   keyword and hands it to each `AnalysisModuleContext` it builds in `execute()`.
