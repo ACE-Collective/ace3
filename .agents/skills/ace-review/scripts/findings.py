@@ -94,6 +94,8 @@ VERDICTS = ("ship", "fix-first", "rework")
 FLAW_SIZES = ("small", "medium", "large")
 FLAW_RECOMMENDATIONS = ("stop", "keep going")
 FLAW_LABEL = "design flaw"
+# named, not read from a checkout's remote, so gh runs the same from the host, the container or any worktree
+FLAW_REPO = "ACE-Collective/ace3"
 GH_TIMEOUT = 60
 BLOCKER_VOTES = 3
 SAQ_HOME = os.environ.get("SAQ_HOME", "/opt/ace")
@@ -323,9 +325,10 @@ def tally(bundle: str, allow_missing: bool = False) -> dict:
 
 
 def gh(*args: str, stdin: str | None = None) -> str:
-    """gh run in core, whose GitHub repo holds the design flaws whatever repo is reviewed."""
+    """gh against core's GitHub repo, which holds the design flaws whatever repo is reviewed."""
     try:
-        result = subprocess.run(["gh", *args], cwd=SAQ_HOME, input=stdin, capture_output=True, text=True, timeout=GH_TIMEOUT)
+        result = subprocess.run(["gh", *args, "--repo", FLAW_REPO], input=stdin, capture_output=True, text=True,
+                                timeout=GH_TIMEOUT)
     except (OSError, subprocess.TimeoutExpired) as e:
         raise RuntimeError(f"gh {' '.join(args)}: {e}") from e
     if result.returncode:
