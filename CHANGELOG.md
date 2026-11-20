@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project (tries to) adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.144] - 2026-11-20
+
+- [Update the email part role invariant for the recorded part roles](https://github.com/ACE-Collective/ace3/pull/1296)
+- [Remove apex_domain_analyzer](https://github.com/ACE-Collective/ace3/pull/1295)
+- [Give the correctness reviewer the invariants a change touches](https://github.com/ACE-Collective/ace3/pull/1291)
+- [State the five cross-cutting invariants in AGENTS.md](https://github.com/ACE-Collective/ace3/pull/1290)
+- [Write down the design invariants no doc stated](https://github.com/ACE-Collective/ace3/pull/1289)
+- [Add an index of ACE's design invariants](https://github.com/ACE-Collective/ace3/pull/1288)
+- [Correct four doc lines that no longer match the code](https://github.com/ACE-Collective/ace3/pull/1287)
+- [Record each email part's role and content type in EmailAnalysis](https://github.com/ACE-Collective/ace3/pull/1282)
+- [Add an Observable Pattern filter with * wildcards](https://github.com/ACE-Collective/ace3/pull/1281)
+
 ## [3.0.143] - 2026-11-19
 
 - [Run sandboxed tools in ACE's cwd](https://github.com/ACE-Collective/ace3/pull/1273)
