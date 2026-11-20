@@ -143,15 +143,16 @@ DEFAULT_REMEDIATION_SAVED_FILTERS = (
     },
 )
 
-# What a user starts with on the SVS tests screen: the tests still in their repository, which the
-# Tests tab opens on (docs/SVS_RUNS.md, *Following runs*). A removed test keeps its runs, so it is
-# one filter away rather than gone.
+# What a user starts with on the SVS tests screen: the tests still in their repository that nobody
+# excluded, which the Tests tab opens on (docs/SVS_RUNS.md, *Following runs*). A removed or
+# excluded test keeps its runs, so it is one filter away rather than gone.
 DEFAULT_SVS_TEST_SAVED_FILTERS = (
     {
         "name": "In the catalog",
-        "description": "Tests still in their repository",
+        "description": "Tests still in their repository and not excluded",
         "filters": [
             {"name": "Removed", "inverted": False, "values": ["false"]},
+            {"name": "Excluded", "inverted": False, "values": ["false"]},
         ],
     },
 )

@@ -186,6 +186,7 @@ SVS_TESTS_SCREEN = FilterScreen(
         FilterField("Executor", FilterFieldKind.TEXT),
         FilterField("Repository", FilterFieldKind.TEXT),
         FilterField("Removed", FilterFieldKind.BOOL, SAMPLE_BOOL_OPTIONS),
+        FilterField("Excluded", FilterFieldKind.BOOL, SAMPLE_BOOL_OPTIONS),
     ),
 )
 

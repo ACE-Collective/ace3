@@ -345,6 +345,26 @@ class TestRefresh:
         assert (result.changed, result.retired) == (2, 0)
         assert _rows()[("T1234.001", "windows")].retired_at is None
 
+    def test_an_excluded_test_counts_toward_nothing_until_it_is_back(self, refreshable, user_id):
+        add_catalog_test(GUID)
+        _validated_run(GUID, user_id)
+        refresh_coverage("test")
+        row = _rows()[("T1059.001", "windows")]
+        assert (row.state, row.tests_total, row.measured_signatures) == ("validated", 1, 1)
+
+        expectations.set_exclusion(GUID, "no PowerShell here", person(user_id))
+        # nothing changes until the next refresh
+        assert _rows()[("T1059.001", "windows")].state == "validated"
+        refresh_coverage("test")
+        row = _rows()[("T1059.001", "windows")]
+        assert (row.state, row.tests_total, row.tests_validated, row.measured_signatures) == ("none", 0, 0, 0)
+        assert _rows()[("T1059", "windows")].state == "none"
+
+        expectations.remove_exclusion(GUID, person(user_id))
+        refresh_coverage("test")
+        row = _rows()[("T1059.001", "windows")]
+        assert (row.state, row.tests_total, row.measured_signatures) == ("validated", 1, 1)
+
     def test_tags_count(self, refreshable):
         write_hunt(refreshable, SIGNATURE, tags=["mitre:T1547", "mitre:T9999", "mitre:TA0002"])
         refresh_coverage("test")

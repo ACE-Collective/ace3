@@ -15,9 +15,10 @@ platform against what is expected of it there:
 - validated: that run, as signed off, hit every expected signature.
 Expected signatures are those expected of the test on the platform that no ignore applies to.
 
-A test's state is never_run when no run was ever registered for it, else the worst of its
-platforms' states: failing, stale, awaiting_review, validated, no_expectations. A platform counts
-when the test has a run or a decision there.
+A test's state is excluded while a person has excluded it (saq.svs.expectations.set_exclusion),
+never_run when no run was ever registered for it, else the worst of its platforms' states: failing,
+stale, awaiting_review, validated, no_expectations. A platform counts when the test has a run or a
+decision there. An excluded test's platforms keep their own states, what it comes back to.
 """
 
 from dataclasses import dataclass, field
@@ -26,8 +27,9 @@ from enum import StrEnum
 from typing import Iterable, Optional
 
 from sqlalchemy import func, select
+from sqlalchemy.sql.elements import ColumnElement
 
-from saq.database.model import SVSCatalogTest, SVSExpectation, SVSIgnore, SVSRun, SVSRunResult
+from saq.database.model import SVSCatalogTest, SVSExpectation, SVSIgnore, SVSRun, SVSRunResult, SVSTestExclusion, User
 from saq.svs.catalog import platform_slugs
 from saq.svs.constants import GLOBAL_SCOPE_KEY, ExpectationState, ResultStatus, RunState
 from saq.svs.signatures import SignatureInfo, describe_signatures
@@ -41,6 +43,7 @@ MISSED = (ResultStatus.MISSING.value, ResultStatus.POSSIBLY_SUPPRESSED.value)
 class TestState(StrEnum):
     __test__ = False
 
+    EXCLUDED = "excluded"
     NEVER_RUN = "never_run"
     AWAITING_REVIEW = "awaiting_review"
     NO_EXPECTATIONS = "no_expectations"
@@ -77,6 +80,14 @@ class PlatformHistory:
 
 
 @dataclass(frozen=True)
+class Exclusion:
+    reason: str
+    excluded_at: datetime
+    # username; None once the user is deleted
+    excluded_by: Optional[str] = None
+
+
+@dataclass(frozen=True)
 class TestHistory:
     __test__ = False
 
@@ -95,6 +106,13 @@ class TestHistory:
     # by platform: each one it has a run or a decision on, and each supported one (never_run when it
     # has neither there)
     platform_states: dict[str, PlatformHistory] = field(default_factory=dict)
+    # set while the test is excluded
+    exclusion: Optional[Exclusion] = None
+
+
+def excluded_condition() -> ColumnElement[bool]:
+    """True for an svs_catalog_tests row a person excluded."""
+    return select(SVSTestExclusion.id).where(SVSTestExclusion.test_guid == SVSCatalogTest.guid).exists()
 
 
 def _latest(session, guids: list[str], *conditions, order) -> dict[str, SVSRun]:
@@ -237,6 +255,11 @@ def catalog_histories(session, tests: Iterable[SVSCatalogTest]) -> dict[str, Tes
 
     counts = dict(session.execute(
         select(SVSRun.test_guid, func.count()).where(SVSRun.test_guid.in_(guids)).group_by(SVSRun.test_guid)).all())
+    excluded = {exclusion.test_guid: Exclusion(exclusion.reason, exclusion.excluded_at, username)
+                for exclusion, username in session.execute(
+                    select(SVSTestExclusion, User.username)
+                    .outerjoin(User, User.id == SVSTestExclusion.excluded_by_user_id)
+                    .where(SVSTestExclusion.test_guid.in_(guids)))}
     last = _latest(session, guids, order=(SVSRun.created_at.desc(), SVSRun.id.desc()))
     recent = _recent(session, guids)
     by_test: dict[str, dict[str, Evaluation]] = {guid: {} for guid in guids}
@@ -246,7 +269,9 @@ def catalog_histories(session, tests: Iterable[SVSCatalogTest]) -> dict[str, Tes
     histories = {}
     for guid in guids:
         evaluations = by_test[guid]
-        if guid not in counts:
+        if guid in excluded:
+            state = TestState.EXCLUDED
+        elif guid not in counts:
             state = TestState.NEVER_RUN
         else:
             states = {evaluation.state for evaluation in evaluations.values()}
@@ -273,5 +298,6 @@ def catalog_histories(session, tests: Iterable[SVSCatalogTest]) -> dict[str, Tes
             last_reviewed_run_uuid=latest_reviewed.uuid if latest_reviewed else None,
             last_reviewed_at=latest_reviewed.reviewed_at if latest_reviewed else None,
             expected=len(set().union(*(evaluation.expected for evaluation in evaluations.values()))),
-            recent_runs=recent_runs, recent_runs_missing=recent_missing, platform_states=platform_states)
+            recent_runs=recent_runs, recent_runs_missing=recent_missing, platform_states=platform_states,
+            exclusion=excluded.get(guid))
     return histories

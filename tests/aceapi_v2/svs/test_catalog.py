@@ -7,14 +7,17 @@ from datetime import datetime
 
 import pytest
 from httpx import AsyncClient
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from saq.configuration.config import get_config
 from saq.configuration.schema import GitRepoConfig
-from saq.database.model import SVSCatalogRepository, SVSCatalogTest, SVSRun
+from saq.database.model import SVSCatalogRepository, SVSCatalogTest, SVSRun, User
 from saq.database.pool import get_db
 from saq.svs.catalog import content_hash
+from saq.svs.expectations import set_exclusion
 from tests.aceapi_v2.conftest import api_key_client, make_api_key
+from tests.saq.helpers import person
 
 pytestmark = pytest.mark.integration
 
@@ -76,6 +79,29 @@ async def test_ordered_by_technique_then_name(client: AsyncClient, catalog):
 ])
 async def test_filters(client: AsyncClient, catalog, filters, expected):
     assert await _guids(client, *filters) == [_guid(n) for n in expected]
+
+
+@pytest.mark.asyncio
+async def test_excluded_tests_are_one_filter_away(client: AsyncClient, catalog):
+    analyst = person(get_db().execute(select(User.id).where(User.username == "unittest")).scalar_one())
+    set_exclusion(_guid(1), "no PowerShell here", analyst)
+    set_exclusion(_guid(4), "removed and excluded", analyst)
+
+    assert await _guids(client, "excluded:true") == [_guid(1), _guid(4)]
+    assert await _guids(client, "excluded:false") == [_guid(3), _guid(2), _guid(5)]
+    assert await _guids(client, "!excluded:true", "technique:T1059") == [_guid(2)]
+    # both values: every test
+    assert len(await _guids(client, "excluded:true,false")) == 5
+    # the Tests tab's default view: in the catalog, and not excluded
+    assert await _guids(client, "removed:false", "excluded:false") == [_guid(3), _guid(2), _guid(5)]
+    assert (await client.get("/svs/tests/", params={"f": "excluded:maybe"})).status_code == 422
+
+    rows = {row["guid"]: row for row in (await client.get("/svs/tests/")).json()["data"]}
+    assert (rows[_guid(1)]["test_state"], rows[_guid(1)]["excluded_by"], rows[_guid(1)]["exclusion_reason"]) == (
+        "excluded", "unittest", "no PowerShell here")
+    assert (rows[_guid(3)]["test_state"], rows[_guid(3)]["excluded_at"]) == ("never_run", None)
+    records = {r["guid"]: r for r in csv.DictReader(io.StringIO((await client.get("/svs/tests/export/csv")).text))}
+    assert records[_guid(1)]["exclusion_reason"] == "no PowerShell here"
 
 
 @pytest.mark.asyncio

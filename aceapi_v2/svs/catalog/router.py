@@ -7,7 +7,8 @@ with each test's state and run history. Read with svs:run_read.
 What is decided about a test's signatures on each platform (docs/SVS_RUNS.md, *Expectations and
 ignores*), the ignores that apply to its runs on every platform, and its settings (*Windows*) are
 changed here, with svs:run_manage: each change marks the results of the affected runs stale, and the
-timers recompute them.
+timers recompute them. So is its exclusion (*Excluded tests*), which changes no result: the next
+coverage refresh leaves the test out.
 """
 
 import logging
@@ -23,7 +24,14 @@ from aceapi_v2.responses import CsvStreamResponse, NdjsonStreamResponse
 from aceapi_v2.svs.catalog import service
 from aceapi_v2.svs.catalog.schemas import CatalogRepository, CatalogTestDetail, CatalogTestPage
 from aceapi_v2.svs.expectations import service as expectations_service
-from aceapi_v2.svs.expectations.schemas import Expectation, ExpectationRequest, TestSettings, TestSettingsRequest
+from aceapi_v2.svs.expectations.schemas import (
+    Expectation,
+    ExpectationRequest,
+    TestExclusion,
+    TestExclusionRequest,
+    TestSettings,
+    TestSettingsRequest,
+)
 from aceapi_v2.svs.ignores import service as ignores_service
 from aceapi_v2.svs.ignores.schemas import Ignore, IgnoreRequest
 from aceapi_v2.svs.preconditions import WritePrecondition
@@ -39,8 +47,8 @@ ManageAuth = Annotated[ApiAuthResult, Depends(require_permission("svs", "run_man
 FilterParam = Annotated[list[str], Query(
     default_factory=list,
     description="a filter in the share-link encoding (`[!]slug:v1,v2`) with the tests screen's slugs: technique "
-                "(T1059 also finds its sub-techniques), name, platform, executor, repository, removed (see "
-                "docs/SVS_API.md); repeat for more. Filters are ANDed, the values of one ORed.")]
+                "(T1059 also finds its sub-techniques), name, platform, executor, repository, removed, excluded "
+                "(see docs/SVS_API.md); repeat for more. Filters are ANDed, the values of one ORed.")]
 ChangedSinceParam = Annotated[datetime | None, Query(
     description="only tests added, changed or removed at or after this time (UTC if no offset is given)")]
 
@@ -154,6 +162,31 @@ async def set_test_settings(guid: str, body: TestSettingsRequest, auth: ManageAu
 async def remove_test_settings(guid: str, auth: ManageAuth) -> Response:
     """Back to the computed window and holds_host false; 404 when the test has no settings."""
     await run_db_in_thread(expectations_service.remove_test_settings, guid, auth)
+    return Response(status_code=204)
+
+
+@router.get("/{guid}/exclusion", response_model=TestExclusion)
+async def get_test_exclusion(
+    guid: str,
+    auth: Annotated[ApiAuthResult, Depends(require_permission("svs", "run_read"))],
+) -> TestExclusion:
+    """Who excluded the test, when and why; 404 when it isn't excluded."""
+    return await run_db_in_thread(expectations_service.get_test_exclusion, guid)
+
+
+@router.put("/{guid}/exclusion", response_model=TestExclusion)
+async def set_test_exclusion(guid: str, body: TestExclusionRequest, auth: ManageAuth) -> TestExclusion:
+    """Exclude the test on every platform: from the next coverage refresh it counts toward no
+    coverage row and measures no signature, and a run of it can't be registered (422). Its runs,
+    decisions and ignores are kept. Excluding it again replaces who, when and why. 422 for a config
+    key (an exclusion records who made it)."""
+    return await run_db_in_thread(expectations_service.set_test_exclusion, guid, body, auth)
+
+
+@router.delete("/{guid}/exclusion", status_code=204)
+async def remove_test_exclusion(guid: str, auth: ManageAuth) -> Response:
+    """Bring the test back as it was; 404 when it isn't excluded."""
+    await run_db_in_thread(expectations_service.remove_test_exclusion, guid, auth)
     return Response(status_code=204)
 
 

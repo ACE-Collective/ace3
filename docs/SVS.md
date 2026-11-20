@@ -863,12 +863,14 @@ every context-only (`TEST?`) attribution has been kept or marked *not a test*, b
 - **Test state:** *never run*, *awaiting review*, *no expectations*, *validated*, *failing*, *stale*
   (with the same meanings as in Part 4). A test is judged on each platform on its own, and its
   state is the worst of its platforms': *failing*, *stale*, *awaiting review*, *validated*, *no
-  expectations*. The detail page shows each platform's state.
+  expectations*. The detail page shows each platform's state. A test a person excluded (it doesn't
+  apply to the site, `docs/SVS_RUNS.md`, *Excluded tests*) is *excluded*, counts toward no coverage,
+  and is hidden by default like a removed one.
 - **Sort and filters:** the default sort is technique, then name. There is no suggested order.
 - **The detail page:** the test's description, commands and input arguments from the catalog, its
-  expectations and ignores, and its run history. It is also where an operator sets the test's
-  observation window and removes a decision or an ignore; nothing else on the Tests tab changes
-  anything.
+  expectations and ignores, and its run history. It is also where an operator excludes the test or
+  brings it back, sets its observation window and removes a decision or an ignore; nothing else on
+  the Tests tab changes anything.
 
 ### Coverage
 
@@ -880,8 +882,8 @@ every context-only (`TEST?`) attribution has been kept or marked *not a test*, b
   its rows, one filter away. A summary above the list counts the matching rows per platform and
   state.
 - **The detail page**, per technique: its rows and its sub-techniques', the tests behind them with
-  their latest reviewed runs, the measured and manual signatures, removed tests, and the days its
-  state changed in the daily snapshots.
+  their latest reviewed runs, the measured and manual signatures, excluded and removed tests, and
+  the days its state changed in the daily snapshots.
 
 ### Worklist
 

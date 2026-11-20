@@ -2,7 +2,7 @@
 svs_technique_worklist.
 
 A signature is *measured* on the techniques of the catalog tests it is expected of (ignores applied,
-removed tests left out). For each measured signature there is one row per technique:
+removed and excluded tests left out). For each measured signature there is one row per technique:
 - **declared**: a mitre: tag of the signature, its id resolved against the pinned ATT&CK release
   (ids that resolve to one technique share its row, in declared_as). It is *confirmed* when the
   technique is measured, or is the parent of a measured one: a tag on T1059 is confirmed by a test of

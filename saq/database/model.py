@@ -2502,6 +2502,31 @@ class SVSTestSettings(Base):
         server_onupdate=FetchedValue())
 
 
+class SVSTestExclusion(Base):
+    """A catalog test excluded from SVS on every platform (docs/SVS_RUNS.md, *Excluded tests*): it
+    doesn't count toward coverage or the worklist, and no run of it can be registered. Keyed by the
+    test's guid, so it outlives a change to the test and the test leaving its repository, and it
+    takes nothing else away: deleting the row brings the test back as it was. Only
+    saq/svs/expectations.py writes this table."""
+
+    __tablename__ = 'svs_test_exclusions'
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    test_guid: Mapped[str] = mapped_column(String(36), nullable=False, unique=True)
+    reason: Mapped[str] = mapped_column(Text, nullable=False)
+    excluded_by_user_id: Mapped[Optional[int]] = mapped_column(
+        Integer,
+        ForeignKey('users.id', ondelete='SET NULL', onupdate='CASCADE'),
+        nullable=True)
+    excluded_at: Mapped[datetime] = mapped_column(MYSQL_DATETIME(fsp=6), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        MYSQL_TIMESTAMP(fsp=6),
+        nullable=False,
+        index=True,
+        server_default=text('CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6)'),
+        server_onupdate=FetchedValue())
+
+
 class SVSRunResult(Base):
     """One signature of a run's result (docs/SVS_RUNS.md, *Results*): what fired against what the
     test expects. The live columns are recomputed whenever the run's attributions or the test's

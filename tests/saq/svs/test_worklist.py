@@ -243,6 +243,18 @@ class TestRefresh:
         refresh_coverage("test")
         assert _coverage("T1547").state == "manual"
 
+    def test_an_excluded_test_measures_nothing_until_it_is_back(self, measured, user_id):
+        refresh_coverage("test")
+        assert _statuses() == {(SIGNATURE, "T1059.001"): "undeclared", (SIGNATURE, "T1547"): "open"}
+
+        expectations.set_exclusion(GUID, "no PowerShell here", person(user_id))
+        refresh_coverage("test")
+        assert _statuses() == {(SIGNATURE, "T1059.001"): "retired", (SIGNATURE, "T1547"): "retired"}
+
+        expectations.remove_exclusion(GUID, person(user_id))
+        refresh_coverage("test")
+        assert _statuses() == {(SIGNATURE, "T1059.001"): "undeclared", (SIGNATURE, "T1547"): "open"}
+
     def test_a_confirmed_tag_counts_whatever_its_resolution(self, refreshable, user_id, tag):
         add_catalog_test(GUID)
         _expect(GUID, SIGNATURE, user_id)

@@ -121,6 +121,28 @@ class TestStates:
         assert _history().state == TestState.VALIDATED
 
 
+    def test_excluded_until_it_is_brought_back_as_it_was(self, user_id):
+        expectations.set_expectation(GUID, SIGNATURE, "expected", person(user_id), platform="windows")
+        _result(_reviewed(), SIGNATURE, "hit", "hit")
+        expectations.set_exclusion(GUID, "no PowerShell here", person(user_id), now=datetime(2026, 10, 1, 9, 0))
+
+        history = _history()
+        assert history.state == TestState.EXCLUDED
+        assert (history.exclusion.reason, history.exclusion.excluded_by, history.exclusion.excluded_at) == (
+            "no PowerShell here", "unittest", datetime(2026, 10, 1, 9, 0))
+        # its platforms keep their own states and its history is all there
+        assert history.platform_states["windows"].state == TestState.VALIDATED
+        assert (history.run_count, history.expected) == (1, 1)
+
+        expectations.remove_exclusion(GUID, person(user_id))
+        history = _history()
+        assert (history.state, history.exclusion) == (TestState.VALIDATED, None)
+
+    def test_an_excluded_test_that_never_ran(self, user_id):
+        expectations.set_exclusion(GUID, "not on our platforms", person(user_id))
+        assert _history().state == TestState.EXCLUDED
+
+
 def _platform_run(platform: str, state: str = "reviewed", created_ago: timedelta = timedelta(hours=1)) -> SVSRun:
     """A run of MULTI on the platform's test host."""
     run = started_run(MULTI, f"{platform}-01")

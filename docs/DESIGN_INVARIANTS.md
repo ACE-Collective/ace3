@@ -659,6 +659,10 @@ is written there, change the tag to point at it.
 - **A catalog test's identity is its `auto_generated_guid`, and a vanished test keeps its row.**
   See `saq/svs/catalog.py::parse_atomic_file` and `saq/svs/catalog.py::_store`.
   [docs/SVS_RUNS.md]
+- **A catalog test counts (coverage, the worklist, registration) only while it is in its repository
+  and not excluded, and an exclusion deletes nothing.** Each reader of the tests that count applies
+  both conditions. See `saq/svs/test_state.py::excluded_condition` and
+  `saq/svs/coverage.py::refresh_coverage`. [docs/SVS_RUNS.md, *Excluded tests*]
 - **A coverage refresh is one transaction under the `svs_coverage_state` lock, worklist first,
   changed columns only, and rows are retired, never deleted.** ATT&CK is never fetched in
   production. See `saq/svs/coverage.py::_write` and

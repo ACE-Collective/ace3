@@ -113,6 +113,7 @@ SVS_VALIDATION_FILTER_SLUGS = {
 # The filters of the SVS tests screen (GET /api/v2/svs/tests, docs/SVS_API.md): display name ->
 # URL slug, under the same PERMANENT CONTRACT as FILTER_SLUGS.
 SVS_TEST_FILTER_SLUGS = {
+    'Excluded': 'excluded',
     'Executor': 'executor',
     'Name': 'name',
     'Platform': 'platform',

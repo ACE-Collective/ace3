@@ -6,8 +6,8 @@
 // technique then name: ACE doesn't suggest what to run next. The test page is a shell over
 // /api/v2/svs: the test's catalog entry (its commands, input arguments and dependencies), its
 // observation window, the signatures decided for it and the ignores that apply to it, and its latest
-// runs. With svs:run_manage the page sets the observation window and removes decisions and the
-// test's ignores; removing a global ignore needs svs:admin. Every value shown came from a catalog, a
+// runs. With svs:run_manage the page excludes the test or brings it back, sets the observation
+// window and removes decisions and the test's ignores; removing a global ignore needs svs:admin. Every value shown came from a catalog, a
 // launcher or a person, so it is placed as text, never markup.
 
 (function() {
@@ -16,6 +16,7 @@
     // a test's state on a platform, by its latest reviewed run there; a test's own state is the worst
     // of its platforms' (docs/SVS_RUNS.md, *Tests and their state*)
     const TEST_STATES = {
+        excluded: {css: "text-muted", title: "a person excluded it: it counts toward no coverage, and no run of it can be registered"},
         never_run: {css: "text-muted", title: "no run was ever registered for it"},
         awaiting_review: {css: "text-warning-emphasis fw-semibold",
                           title: "no run of it is reviewed yet, or something was expected of it only after its latest review"},
@@ -107,7 +108,7 @@
         const info = TEST_STATES[test.test_state] || {css: "", title: ""};
         const node = el("div");
         const name = el("span", info.css, test.test_state.replace(/_/g, " "));
-        name.title = info.title;
+        name.title = info.title + (test.exclusion_reason ? ": " + test.exclusion_reason : "");
         node.appendChild(name);
         if (test.removed_at) {
             const removed = el("div", "small text-muted", "removed");
@@ -339,6 +340,7 @@
             document.title = state.test.name + " - SVS test";
             render_header();
             render_facts();
+            render_exclusion();
             render_description();
             render_commands();
             render_arguments();
@@ -478,6 +480,35 @@
                 node.appendChild(line);
             });
             return node;
+        }
+
+        function render_exclusion() {
+            const test = state.test;
+            const node = document.getElementById("svs_test_exclusion");
+            const form = document.getElementById("svs_test_exclusion_form");
+            node.replaceChildren();
+            if (form) {
+                form.classList.toggle("d-none", Boolean(test.excluded_at));
+            }
+            if (!test.excluded_at) {
+                node.appendChild(el("div", "small text-muted",
+                                    "Not excluded: it counts toward its technique's coverage, and its runs can be registered."));
+                return;
+            }
+            const text = el("div", "small");
+            append(text, "Excluded by " + (test.excluded_by || "a deleted user") + " at " + date(test.excluded_at) + " UTC: ",
+                   el("span", null, test.exclusion_reason),
+                   muted(". It counts toward no coverage, measures no signature, and no run of it can be registered. " +
+                         "Its runs, decisions and ignores are kept. "));
+            if (settings.can_manage) {
+                text.appendChild(button("Include it again", "btn-link p-0 align-baseline", "bring the test back as it was", function() {
+                    remove("Include " + test.name + " again?",
+                           "It counts toward its technique's coverage again from the next refresh, with its runs, decisions " +
+                           "and ignores as they were, and its runs can be registered again.",
+                           "Include it", test_path + "/exclusion", "The test is included again.");
+                }));
+            }
+            node.appendChild(text);
         }
 
         function pre(text) {
@@ -771,6 +802,22 @@
                 ]);
             });
             node.appendChild(append(el("div", "table-responsive"), target));
+        }
+
+        //
+        // the exclusion form
+        //
+
+        const exclusion_form = document.getElementById("svs_test_exclusion_form");
+        if (exclusion_form) {
+            exclusion_form.addEventListener("submit", function(event) {
+                event.preventDefault();
+                const field = document.getElementById("svs_test_exclusion_reason");
+                act(aceApi.put(test_path + "/exclusion", {reason: field.value}).then(function(result) {
+                    field.value = "";
+                    return result;
+                }), "The test is excluded: the next coverage refresh leaves it out.");
+            });
         }
 
         //

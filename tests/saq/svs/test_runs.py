@@ -20,7 +20,7 @@ from saq.svs.constants import ObservationSource, RunEventKind, RunState
 from saq.svs.hosts import build_spec, create_host
 from saq.svs.markers import MARKER_REGEX
 from saq.svs.refusals import Caller
-from saq.svs.expectations import set_test_settings
+from saq.svs.expectations import remove_exclusion, set_exclusion, set_test_settings
 from saq.svs.runs import (
     HostBusy,
     HostHolder,
@@ -162,6 +162,24 @@ def test_register_rejects(values, message):
         register(_registration(**values), LAUNCHER)
     assert get_db().execute(select(SVSRun)).first() is None
     assert get_db().execute(select(SVSRegistrationRefusal)).first() is None
+
+
+def test_an_excluded_test_is_refused_with_who_when_and_why():
+    analyst = person(get_db().execute(select(User.id).where(User.username == "unittest")).scalar_one())
+    set_exclusion(GUID, "no PowerShell on our endpoints", analyst, now=datetime(2026, 10, 1, 9, 30, 0))
+    message = (f"test {GUID} is excluded from SVS: unittest excluded it at 2026-10-01 09:30:00 UTC: "
+               "no PowerShell on our endpoints")
+
+    with pytest.raises(InvalidRegistration) as error:
+        register(_registration(), LAUNCHER)
+    assert str(error.value) == message
+    # a launcher's dry run says the same, before it judges the targets
+    decision = validate(_registration(), LAUNCHER)
+    assert (decision.invalid, decision.matches) == (message, [])
+    _nothing_written()
+
+    remove_exclusion(GUID, analyst)
+    assert register(_registration(), LAUNCHER).uuid
 
 
 @pytest.mark.parametrize("target, reason", [

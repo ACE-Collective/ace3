@@ -1,7 +1,7 @@
 """ATT&CK coverage per technique and platform (docs/SVS_COVERAGE.md), kept in svs_coverage.
 
 compute_rows() derives every row from the inputs alone:
-- each catalog test that isn't removed, judged on each of its platforms (saq.svs.test_state);
+- each catalog test that isn't removed or excluded, judged on each of its platforms (saq.svs.test_state);
 - the mitre: tags of the hunts and YARA rules (saq.svs.signatures.signature_techniques);
 - the pinned ATT&CK release (saq.svs.attack).
 
@@ -33,14 +33,21 @@ from typing import Iterable, Optional
 from sqlalchemy import delete, func, insert, literal, select, update
 from sqlalchemy.dialects.mysql import insert as mysql_insert
 
-from saq.database.model import SVSCatalogTest, SVSCoverage, SVSCoverageSnapshot, SVSCoverageState
+from saq.database.model import (
+    SVSCatalogTest,
+    SVSCoverage,
+    SVSCoverageSnapshot,
+    SVSCoverageState,
+    SVSTestExclusion,
+    User,
+)
 from saq.database.private_session import private_transaction
 from saq.svs.attack import AttackCatalog, TechniqueStatus, get_attack_catalog
 from saq.svs.catalog import platform_slugs
 from saq.svs.constants import CoverageState
 from saq.svs.coverage_lock import STATE_ID, lock_refresh
 from saq.svs.signatures import SignatureTags, SignatureTagsUnavailable, signature_techniques
-from saq.svs.test_state import Evaluation, TestState, evaluate_tests
+from saq.svs.test_state import Evaluation, Exclusion, TestState, evaluate_tests, excluded_condition
 from saq.svs.worklist import Measured, excluded_mappings, log_worklist_refresh, refresh_worklist
 
 # worst first: a row is in the first of these anything counting toward it is in
@@ -181,7 +188,7 @@ def compute_rows(catalog: AttackCatalog, tests: Iterable[SVSCatalogTest],
                  evaluations: dict[tuple[str, str], Evaluation],
                  tags: dict[str, SignatureTags],
                  excluded: frozenset[tuple[str, str]] = frozenset()) -> ComputedCoverage:
-    """Every coverage row. tests are the catalog tests that count (not removed), evaluations
+    """Every coverage row. tests are the catalog tests that count (not removed or excluded), evaluations
     evaluate_tests() of them, tags signature_techniques(), and excluded the (signature uuid,
     technique) tags the worklist resolved remove (saq.svs.worklist.excluded_mappings)."""
     computed = ComputedCoverage(rows={})
@@ -339,8 +346,8 @@ def refresh_coverage(actor: str, *, now: Optional[datetime] = None) -> CoverageR
         with private_transaction() as session:
             state = lock_refresh(session)
             # read after the lock, so a refresh never writes what it read before another one wrote
-            tests = list(session.execute(
-                select(SVSCatalogTest).where(SVSCatalogTest.removed_at.is_(None))).scalars())
+            tests = list(session.execute(select(SVSCatalogTest).where(
+                SVSCatalogTest.removed_at.is_(None), ~excluded_condition())).scalars())
             evaluations = evaluate_tests(session, tests)
             # the worklist first: what it resolved remove doesn't count
             worklist = refresh_worklist(session, catalog, tags, measured_by_signature(catalog, tests, evaluations),
@@ -481,6 +488,8 @@ class TechniqueDetail:
     manual: list[ManualMapping]
     # why the manual mappings couldn't be read (they are then empty)
     manual_error: Optional[str] = None
+    # the excluded tests that aren't removed, with their exclusion
+    excluded_tests: list[tuple[SVSCatalogTest, Exclusion]] = field(default_factory=list)
 
 
 def _covers(catalog: AttackCatalog, technique: str, candidate: str) -> bool:
@@ -491,24 +500,32 @@ def technique_detail(session, catalog: AttackCatalog, technique: str) -> Techniq
     """What counts toward a technique's rows now, and toward its sub-techniques' (the technique is
     already resolved). Reads the catalog tests, evaluates the ones of the technique, and reads the
     signature tags."""
-    tests, removed = [], []
+    tests, removed, excluded = [], [], []
     # every test's technique, to resolve it as compute_rows() does; the full rows only for the matches
-    matches = {}
-    for test_id, raw, removed_at in session.execute(
-            select(SVSCatalogTest.id, SVSCatalogTest.technique, SVSCatalogTest.removed_at)):
+    matches = set()
+    for test_id, raw in session.execute(select(SVSCatalogTest.id, SVSCatalogTest.technique)):
         try:
             resolved = catalog.resolve(raw).technique
         except ValueError:
             continue
         if _covers(catalog, technique, resolved):
-            matches[test_id] = removed_at is not None
+            matches.add(test_id)
 
     if matches:
-        rows = session.execute(select(SVSCatalogTest).where(SVSCatalogTest.id.in_(sorted(matches)))
-                               .order_by(SVSCatalogTest.technique, SVSCatalogTest.name, SVSCatalogTest.id)).scalars()
+        rows = session.execute(
+            select(SVSCatalogTest, SVSTestExclusion, User.username)
+            .outerjoin(SVSTestExclusion, SVSTestExclusion.test_guid == SVSCatalogTest.guid)
+            .outerjoin(User, User.id == SVSTestExclusion.excluded_by_user_id)
+            .where(SVSCatalogTest.id.in_(sorted(matches)))
+            .order_by(SVSCatalogTest.technique, SVSCatalogTest.name, SVSCatalogTest.id)).all()
         current = []
-        for test in rows:
-            (removed if matches[test.id] else current).append(test)
+        for test, exclusion, username in rows:
+            if test.removed_at is not None:
+                removed.append(test)
+            elif exclusion is not None:
+                excluded.append((test, Exclusion(exclusion.reason, exclusion.excluded_at, username)))
+            else:
+                current.append(test)
         by_test = evaluations_by_test(evaluate_tests(session, current))
         for test in current:
             evaluations = by_test.get(test.guid, {})
@@ -516,7 +533,7 @@ def technique_detail(session, catalog: AttackCatalog, technique: str) -> Techniq
             for platform, contribution in counted.items():
                 tests.append(TestCoverage(test, resolved, platform, evaluations.get(platform), contribution))
 
-    detail = TechniqueDetail(technique, tests, removed, [])
+    detail = TechniqueDetail(technique, tests, removed, [], excluded_tests=excluded)
     try:
         tags = signature_techniques()
     except SignatureTagsUnavailable as e:

@@ -346,7 +346,7 @@ class CatalogTestFilterEntry(FilterEntryBase):
         if name in ("Platform", "Executor"):
             return [value.strip().lower() for value in values]
 
-        if name == "Removed":
+        if name in ("Removed", "Excluded"):
             values = [value.lower() for value in values]
             for value in values:
                 if value not in SAMPLE_BOOL_OPTIONS:

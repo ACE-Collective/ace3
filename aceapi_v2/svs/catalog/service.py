@@ -63,6 +63,7 @@ def prepare_listing(filter_params: list[str], *, changed_since: datetime | None)
 
 
 def _row(test: SVSCatalogTest, history: TestHistory) -> dict:
+    exclusion = history.exclusion
     return dict(
         guid=test.guid, repository=test.repository, technique=test.technique, technique_name=test.technique_name,
         name=test.name, platforms=supported_platforms(test), executor=test.executor, path=test.path,
@@ -71,7 +72,10 @@ def _row(test: SVSCatalogTest, history: TestHistory) -> dict:
         run_count=history.run_count, last_run_id=history.last_run_uuid, last_run_at=history.last_run_at,
         last_reviewed_run_id=history.last_reviewed_run_uuid, last_reviewed_at=history.last_reviewed_at,
         expected_signatures=history.expected, recent_runs=history.recent_runs,
-        recent_runs_missing=history.recent_runs_missing)
+        recent_runs_missing=history.recent_runs_missing,
+        excluded_at=exclusion.excluded_at if exclusion else None,
+        excluded_by=exclusion.excluded_by if exclusion else None,
+        exclusion_reason=exclusion.reason if exclusion else None)
 
 
 def _parse_key(payload: dict) -> tuple[str, str, int]:

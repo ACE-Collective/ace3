@@ -242,8 +242,8 @@ class TestTestsPages:
             assert b'aria-current="page" href="' + url_for("svs.tests").encode() + b'">Tests</a>' in data
             assert b'data-api="/api/v2/svs/tests"' in data
             assert b'data-screen="svs_tests"' in data
-            # Tests opens on the tests still in the catalog
-            assert b"""data-default-f='["removed:false"]'""" in data
+            # Tests opens on the tests still in the catalog that nobody excluded
+            assert b"""data-default-f='["removed:false", "excluded:false"]'""" in data
             assert f'data-test-url="{url_for("svs.test_detail", guid="__TEST__")}"'.encode() in data
             assert f'data-run-url="{url_for("svs.run_detail", run_id="__RUN__")}"'.encode() in data
             assert (data.index(b"ace_api.js") < data.index(b"saved_filters.js")
@@ -264,7 +264,7 @@ class TestTestsPages:
             assert data.index(b"ace_api.js") < data.index(b"svs_tests.js")
             # the Tests tab is the open one
             assert b'aria-current="page" href="' + url_for("svs.tests").encode() + b'">Tests</a>' in data
-            for section in (b"svs_test_facts", b"svs_test_description", b"svs_test_commands", b"svs_test_arguments",
+            for section in (b"svs_test_facts", b"svs_test_exclusion", b"svs_test_description", b"svs_test_commands", b"svs_test_arguments",
                             b"svs_test_dependencies", b"svs_test_window", b"svs_test_expectations",
                             b"svs_test_ignores", b"svs_test_runs"):
                 assert b'id="' + section + b'"' in data
@@ -280,12 +280,14 @@ class TestTestsPages:
             page = client.get(url_for("svs.test_detail", guid=TEST_GUID)).data
             assert b'data-can-manage="false"' in page and b'data-is-admin="false"' in page
             assert b'id="svs_test_ask_modal"' not in page and b'id="svs_test_window_form"' not in page
+            assert b'id="svs_test_exclusion_form"' not in page
 
         with app.test_client() as client:
             _login(client, run_manager)
             page = client.get(url_for("svs.test_detail", guid=TEST_GUID)).data
             assert b'data-can-manage="true"' in page and b'data-is-admin="false"' in page
             assert b'id="svs_test_ask_modal"' in page and b'id="svs_test_window_form"' in page
+            assert b'id="svs_test_exclusion_form"' in page
 
         with app.test_client() as client:
             # an admin removes global ignores, so gets the modal, but sets no observation window
@@ -293,6 +295,7 @@ class TestTestsPages:
             page = client.get(url_for("svs.test_detail", guid=TEST_GUID)).data
             assert b'data-can-manage="false"' in page and b'data-is-admin="true"' in page
             assert b'id="svs_test_ask_modal"' in page and b'id="svs_test_window_form"' not in page
+            assert b'id="svs_test_exclusion_form"' not in page
 
 
 class TestCoveragePages:
