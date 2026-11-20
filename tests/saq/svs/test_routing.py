@@ -2,7 +2,6 @@
 PRE_INSERT, and the engine's POST_ANALYSIS stage."""
 
 import logging
-import uuid
 from datetime import datetime, timedelta
 from unittest.mock import Mock
 
@@ -58,7 +57,7 @@ def run():
 
 
 def _root(*, marker=None, host="win10-01", analysis_mode=None, queue=None) -> RootAnalysis:
-    root = create_root_analysis(uuid=str(uuid.uuid4()), event_time=datetime.now() + timedelta(minutes=1),
+    root = create_root_analysis(event_time=datetime.now() + timedelta(minutes=1),
                                 analysis_mode=analysis_mode, queue=queue)
     root.initialize_storage()
     root.add_observable_by_spec(F_HOSTNAME, host)
@@ -111,7 +110,7 @@ class TestFallbackEventTime:
     def test_a_hunt_first_attributed_by_a_later_pass_is_warned_about_then(self, run, caplog):
         run_uuid = run.uuid
         # as inserted, it names no host, so nothing concerns a run
-        root = create_root_analysis(uuid=str(uuid.uuid4()), event_time=datetime.now() + timedelta(minutes=1))
+        root = create_root_analysis(event_time=datetime.now() + timedelta(minutes=1))
         root.initialize_storage()
         root.add_detection_point("hunt hit")
         root.set_event_time(root.event_time, EventTimeSource.QUERY_TIME)

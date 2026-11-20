@@ -25,7 +25,7 @@ pytestmark = pytest.mark.integration
 
 def _root_with_a_file(storage_dir: str | None = None, analysis_mode: str | None = None,
                       location: str | None = None) -> tuple[RootAnalysis, str]:
-    root = create_root_analysis(uuid=str(uuid.uuid4()), storage_dir=storage_dir, analysis_mode=analysis_mode,
+    root = create_root_analysis(storage_dir=storage_dir, analysis_mode=analysis_mode,
                                 location=location)
     root.initialize_storage()
     root.details = {"hello": "world"}

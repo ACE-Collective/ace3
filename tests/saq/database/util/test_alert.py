@@ -74,7 +74,7 @@ def test_ALERT_function():
 def test_ALERT_with_owner(two_analysts):
     """An alert can be owned from the moment it is created."""
     owner, _ = two_analysts
-    root = create_root_analysis(uuid=str(uuid.uuid4()))
+    root = create_root_analysis()
     root.initialize_storage()
     root.save()
 

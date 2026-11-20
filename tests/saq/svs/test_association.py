@@ -71,7 +71,7 @@ def run() -> SVSRun:
 
 def _alert(*, marker=None, host="win10-01", analysis_mode=None, event_time=None) -> RootAnalysis:
     """An alert inserted through ALERT(), which the marker router judges."""
-    root = create_root_analysis(uuid=str(uuid.uuid4()), event_time=event_time or datetime.now(),
+    root = create_root_analysis(event_time=event_time or datetime.now(),
                                 analysis_mode=analysis_mode)
     root.initialize_storage()
     root.add_observable_by_spec(F_HOSTNAME, host)
@@ -279,7 +279,7 @@ class TestDisassociate:
         assert (result.svs_status, result.queue, result.moved) == ("test", get_config().svs.queue, False)
 
     def test_an_alert_submitted_to_the_test_queue_stays_there(self, run, user_id):
-        root = create_root_analysis(uuid=str(uuid.uuid4()), event_time=datetime.now(), queue=get_config().svs.queue)
+        root = create_root_analysis(event_time=datetime.now(), queue=get_config().svs.queue)
         root.initialize_storage()
         root.add_observable_by_spec(F_HOSTNAME, "srv-01")
         root.add_detection_point("hunt hit")

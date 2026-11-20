@@ -2,7 +2,6 @@ import json
 import os
 import shutil
 import tempfile
-import uuid
 import pytest
 from sqlalchemy import select
 
@@ -359,7 +358,7 @@ def test_file_analysis_004_yara_001_local_scan(root_analysis, datadir):
 @pytest.mark.integration
 def test_file_analysis_004_yara_002_no_alert(yss_server, datadir):
     
-    root = create_root_analysis(uuid=str(uuid.uuid4()))
+    root = create_root_analysis()
     root.initialize_storage()
     _file = root.add_file_observable(str(datadir / 'scan_targets/no_alert'))
     root.save()
@@ -393,7 +392,7 @@ def test_file_analysis_004_yara_002_no_alert(yss_server, datadir):
 @pytest.mark.integration
 def test_file_analysis_004_yara_003_directives(yss_server, datadir):
     
-    root = create_root_analysis(uuid=str(uuid.uuid4()))
+    root = create_root_analysis()
     root.initialize_storage()
     _file = root.add_file_observable(str(datadir / 'scan_targets/add_directive'))
     root.save()

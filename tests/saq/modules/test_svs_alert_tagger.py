@@ -1,7 +1,6 @@
 """The svs_alert_tagger module (saq.modules.svs.SVSAlertTagger): the svs_test and
 svs:marker_mismatch tags and the mismatch detection (docs/SVS_RUNS.md, *Attribution*)."""
 
-import uuid
 from datetime import datetime, timedelta
 
 import pytest
@@ -46,7 +45,7 @@ def run():
 
 
 def _alert(host: str, marker: str) -> RootAnalysis:
-    root = create_root_analysis(uuid=str(uuid.uuid4()), event_time=datetime.now(), analysis_mode="correlation")
+    root = create_root_analysis(event_time=datetime.now(), analysis_mode="correlation")
     root.initialize_storage()
     root.add_observable_by_spec(F_HOSTNAME, host)
     root.details = {"events": [{"command_line": f"whoami & REM {marker}"}]}
@@ -108,7 +107,7 @@ def test_a_routed_alert_is_tagged_svs_test_until_it_is_not(run):
 
 
 def test_nothing_without_an_alert_row(run):
-    root = create_root_analysis(uuid=str(uuid.uuid4()), event_time=datetime.now())
+    root = create_root_analysis(event_time=datetime.now())
     root.initialize_storage()
     root.add_observable_by_spec(F_HOSTNAME, "srv-01")
     root.details = {"cmd": run.marker}
@@ -125,7 +124,7 @@ def test_nothing_while_no_run_is_open():
 
 def test_an_alert_in_a_maintenance_window_is_tagged_until_it_is_not():
     maintenance.open_window("win10-01", 30, "staging", Caller(person(None, "art")), now=datetime.now() - timedelta(minutes=5))
-    root = create_root_analysis(uuid=str(uuid.uuid4()), event_time=datetime.now(), analysis_mode="correlation")
+    root = create_root_analysis(event_time=datetime.now(), analysis_mode="correlation")
     root.initialize_storage()
     root.add_observable_by_spec(F_HOSTNAME, "win10-01")
     root.add_detection_point("staging tool downloaded")

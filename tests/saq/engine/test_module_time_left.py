@@ -4,7 +4,6 @@
 
 from types import SimpleNamespace
 import time
-import uuid
 
 import pytest
 
@@ -111,7 +110,7 @@ def test_deadline_ignores_the_cumulative_limit_in_ignored_modes():
 
 def _run_time_left_module() -> float:
     """Runs TimeLeftTestModule through the engine and returns what time_left() said."""
-    root = create_root_analysis(uuid=str(uuid.uuid4()), analysis_mode="test_groups")
+    root = create_root_analysis(analysis_mode="test_groups")
     root.initialize_storage()
     observable = root.add_observable_by_spec(F_TEST, "test_1")
     root.save()

@@ -2,7 +2,6 @@
 import logging
 import os
 import subprocess
-import uuid
 
 from unittest.mock import Mock
 
@@ -530,7 +529,7 @@ OFFICE_XML_RELS = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 ])
 @pytest.mark.unit
 def test_office_xml_rel(tmp_path, test_context, file_name, expected_urls):
-    root = create_root_analysis(analysis_mode="test_single", uuid=str(uuid.uuid4()))
+    root = create_root_analysis(analysis_mode="test_single")
     root.initialize_storage()
     rels_path = tmp_path / file_name
     rels_path.write_text(OFFICE_XML_RELS)
@@ -559,7 +558,7 @@ def test_office_xml_rel(tmp_path, test_context, file_name, expected_urls):
 @pytest.mark.unit
 def test_office_xml_rel_target_without_host(tmp_path, test_context):
     """An oleObject target that is not a valid URL adds no URL observable, but the document still alerts."""
-    root = create_root_analysis(analysis_mode="test_single", uuid=str(uuid.uuid4()))
+    root = create_root_analysis(analysis_mode="test_single")
     root.initialize_storage()
     rels_path = tmp_path / "document.xml.rels"
     rels_path.write_text(OFFICE_XML_RELS.replace("https://example.com/payload.html!", "https:.."))
@@ -578,7 +577,7 @@ def test_office_xml_rel_target_without_host(tmp_path, test_context):
 @pytest.mark.unit
 def test_office_xml_rel_that_cannot_be_parsed(tmp_path, test_context):
     """The targets read before the parse error are still added, and the analysis says it failed."""
-    root = create_root_analysis(analysis_mode="test_single", uuid=str(uuid.uuid4()))
+    root = create_root_analysis(analysis_mode="test_single")
     root.initialize_storage()
     rels_path = tmp_path / "document.xml.rels"
     rels_path.write_text(OFFICE_XML_RELS.replace("</Relationships>", "<Relationship"))
@@ -599,7 +598,7 @@ def test_olevba_failure_is_an_error(tmp_path, test_context, monkeypatch):
         raise ValueError("not an OLE2 structured storage file")
 
     monkeypatch.setattr("oletools.olevba.VBA_Parser", _fail)
-    root = create_root_analysis(analysis_mode="test_single", uuid=str(uuid.uuid4()))
+    root = create_root_analysis(analysis_mode="test_single")
     root.initialize_storage()
     path = tmp_path / "invoice.doc"
     path.write_bytes(b"\xD0\xCF\x11\xE0\xA1\xB1\x1A\xE1" + b"\x00" * 504)
@@ -631,7 +630,7 @@ def test_olevba_on_an_encrypted_zip_is_not_an_error(tmp_path):
     payload.write_text("payload")
     archive = tmp_path / "invoice.zip"
     subprocess.run(["7z", "a", "-tzip", "-pSecr3tPw", str(archive), str(payload)], check=True, capture_output=True)
-    root = create_root_analysis(analysis_mode="test_single", uuid=str(uuid.uuid4()))
+    root = create_root_analysis(analysis_mode="test_single")
     root.initialize_storage()
 
     observable = _olevba_on(root, archive)
@@ -645,7 +644,7 @@ def test_olevba_that_cannot_open_an_office_document_is_an_error(tmp_path):
     payload.write_text("payload")
     archive = tmp_path / "invoice.docx"
     subprocess.run(["7z", "a", "-tzip", "-pSecr3tPw", str(archive), str(payload)], check=True, capture_output=True)
-    root = create_root_analysis(analysis_mode="test_single", uuid=str(uuid.uuid4()))
+    root = create_root_analysis(analysis_mode="test_single")
     root.initialize_storage()
 
     observable = _olevba_on(root, archive)

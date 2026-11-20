@@ -496,13 +496,13 @@ def test_delayed_analysis_single_instance(root_analysis):
 
 @pytest.mark.integration
 def test_delayed_analysis_timing():
-    root_1 = create_root_analysis(uuid=str(uuid.uuid4()), analysis_mode='test_groups')
+    root_1 = create_root_analysis(analysis_mode='test_groups')
     root_1.initialize_storage()
     o_1 = root_1.add_observable_by_spec(F_TEST, '0:00|0:01')
     root_1.save()
     root_1.schedule()
 
-    root_2 = create_root_analysis(uuid=str(uuid.uuid4()), analysis_mode='test_groups')
+    root_2 = create_root_analysis(analysis_mode='test_groups')
     root_2.initialize_storage()
     o_2 = root_2.add_observable_by_spec(F_TEST, '0:05|0:10')
     root_2.save()
@@ -546,7 +546,7 @@ def test_io_count():
     assert _get_io_write_count() == 0
     assert _get_io_read_count() == 0
 
-    root = create_root_analysis(uuid=str(uuid.uuid4()), analysis_mode='test_single')
+    root = create_root_analysis(analysis_mode='test_single')
     root.initialize_storage()
     observable = root.add_observable_by_spec(F_TEST, 'test_1')
     root.save() 
@@ -584,7 +584,7 @@ def test_delayed_analysis_io_count():
     assert _get_io_write_count() == 0
     assert _get_io_read_count() == 0
 
-    root = create_root_analysis(uuid=str(uuid.uuid4()), analysis_mode='test_groups')
+    root = create_root_analysis(analysis_mode='test_groups')
     root.initialize_storage()
     observable = root.add_observable_by_spec(F_TEST, '0:00|0:01')
     root.save() 
@@ -629,7 +629,7 @@ def test_autorefresh():
 def test_final_analysis():
     """Test final analysis execution."""
 
-    root = create_root_analysis(uuid=str(uuid.uuid4()), analysis_mode='test_groups')
+    root = create_root_analysis(analysis_mode='test_groups')
     root.initialize_storage()
     observable = root.add_observable_by_spec(F_TEST, 'test')
     root.save() 
@@ -655,7 +655,7 @@ def test_final_analysis_io_count():
     assert _get_io_write_count() == 0
     assert _get_io_read_count() == 0
 
-    root = create_root_analysis(uuid=str(uuid.uuid4()), analysis_mode='test_groups')
+    root = create_root_analysis(analysis_mode='test_groups')
     root.initialize_storage()
     observable = root.add_observable_by_spec(F_TEST, 'test')
     root.save() 
@@ -680,7 +680,7 @@ def test_final_analysis_io_count_2():
     assert _get_io_write_count() == 0
     assert _get_io_read_count() == 0
 
-    root = create_root_analysis(uuid=str(uuid.uuid4()), analysis_mode='test_groups')
+    root = create_root_analysis(analysis_mode='test_groups')
     root.initialize_storage()
     observable_1 = root.add_observable_by_spec(F_TEST, 'test_01')
     observable_2 = root.add_observable_by_spec(F_TEST, 'test_02')
@@ -702,7 +702,7 @@ def test_final_analysis_io_count_2():
 # ensure that post analysis is executed even if delayed analysis times out
 @pytest.mark.integration
 def test_delayed_analysis_timeout():
-    root = create_root_analysis(uuid=str(uuid.uuid4()), analysis_mode='test_groups')
+    root = create_root_analysis(analysis_mode='test_groups')
     test_observable = root.add_observable_by_spec(F_TEST, '0:00|0:00')
     root.save()
     root.schedule()
@@ -818,7 +818,7 @@ def test_delayed_analysis_recovery():
 @pytest.mark.integration
 def test_wait_for_analysis():
 
-    root = create_root_analysis(uuid=str(uuid.uuid4()), analysis_mode='test_groups')
+    root = create_root_analysis(analysis_mode='test_groups')
     root.initialize_storage()
     test_observable = root.add_observable_by_spec(F_TEST, 'test_1')
     root.save()
@@ -841,7 +841,7 @@ def test_wait_for_analysis():
 def test_wait_for_analysis_instance():
     # same as test_wait_for_analysis except we wait for instanced modules
 
-    root = create_root_analysis(uuid=str(uuid.uuid4()), analysis_mode='test_groups')
+    root = create_root_analysis(analysis_mode='test_groups')
     root.initialize_storage()
     test_observable = root.add_observable_by_spec(F_TEST, 'test_7') # <-- test 7
     root.save()
@@ -865,7 +865,7 @@ def test_wait_for_analysis_instance_multi():
 
     # same as test_wait_for_analysis_instance except we wait for another instance of the same module
 
-    root = create_root_analysis(uuid=str(uuid.uuid4()), analysis_mode='test_groups')
+    root = create_root_analysis(analysis_mode='test_groups')
     root.initialize_storage()
     test_observable = root.add_observable_by_spec(F_TEST, 'test_8') # <-- test 8
     root.save()
@@ -886,7 +886,7 @@ def test_wait_for_analysis_instance_multi():
 
 @pytest.mark.integration
 def test_wait_for_disabled_analysis():
-    root = create_root_analysis(uuid=str(uuid.uuid4()), analysis_mode='test_groups')
+    root = create_root_analysis(analysis_mode='test_groups')
     root.initialize_storage()
     test_observable = root.add_observable_by_spec(F_TEST, 'test_1')
     root.save()
@@ -905,7 +905,7 @@ def test_wait_for_disabled_analysis():
 
 @pytest.mark.integration
 def test_wait_for_analysis_missing_analysis():
-    root = create_root_analysis(uuid=str(uuid.uuid4()), analysis_mode='test_groups')
+    root = create_root_analysis(analysis_mode='test_groups')
     root.initialize_storage()
     test_observable = root.add_observable_by_spec(F_TEST, 'test_3')
     root.save()
@@ -929,7 +929,7 @@ def test_wait_for_analysis_missing_analysis():
 def test_wait_for_analysis_target_cancelled(caplog):
     # B is stopped mid-run (as at shutdown) while A waits on it: the dependency must survive
     # the requeue unresolved, so the next pass runs B again rather than handing A nothing
-    root = create_root_analysis(uuid=str(uuid.uuid4()), analysis_mode='test_groups')
+    root = create_root_analysis(analysis_mode='test_groups')
     root.initialize_storage()
     test_observable = root.add_observable_by_spec(F_TEST, 'test_wait_for_analysis_target_cancelled')
     root.save()
@@ -961,7 +961,7 @@ def test_wait_for_analysis_target_cancelled(caplog):
 @pytest.mark.integration
 def test_wait_for_analysis_target_incomplete(caplog):
     # without a cancel, a target that answers INCOMPLETE with nothing still fails the dependency
-    root = create_root_analysis(uuid=str(uuid.uuid4()), analysis_mode='test_groups')
+    root = create_root_analysis(analysis_mode='test_groups')
     root.initialize_storage()
     test_observable = root.add_observable_by_spec(F_TEST, 'test_wait_for_analysis_target_incomplete')
     root.save()
@@ -980,7 +980,7 @@ def test_wait_for_analysis_target_incomplete(caplog):
 
 @pytest.mark.integration
 def test_wait_for_analysis_circ_dep_chained():
-    root = create_root_analysis(uuid=str(uuid.uuid4()), analysis_mode='test_groups')
+    root = create_root_analysis(analysis_mode='test_groups')
     root.initialize_storage()
     test_observable = root.add_observable_by_spec(F_TEST, 'test_4')
     root.save()
@@ -1003,7 +1003,7 @@ def test_wait_for_analysis_circ_dep_chained():
 
 @pytest.mark.integration
 def test_wait_for_analysis_chained():
-    root = create_root_analysis(uuid=str(uuid.uuid4()), analysis_mode='test_groups')
+    root = create_root_analysis(analysis_mode='test_groups')
     root.initialize_storage()
     test_observable = root.add_observable_by_spec(F_TEST, 'test_5')
     root.save()
@@ -1026,7 +1026,7 @@ def test_wait_for_analysis_chained():
 
 @pytest.mark.integration
 def test_wait_for_analysis_target_delayed():
-    root = create_root_analysis(uuid=str(uuid.uuid4()), analysis_mode='test_groups')
+    root = create_root_analysis(analysis_mode='test_groups')
     root.initialize_storage()
     test_observable = root.add_observable_by_spec(F_TEST, 'test_6')
     root.save()
@@ -1048,7 +1048,7 @@ def test_wait_for_analysis_target_delayed():
 @pytest.mark.integration
 def test_wait_for_analysis_source_delayed():
     # XXX not sure what this is actually testing for
-    root = create_root_analysis(uuid=str(uuid.uuid4()), analysis_mode='test_groups')
+    root = create_root_analysis(analysis_mode='test_groups')
     root.initialize_storage()
     test_observable = root.add_observable_by_spec(F_TEST, 'test_wait_for_analysis_source_delayed')
     root.save()
@@ -1068,7 +1068,7 @@ def test_wait_for_analysis_source_delayed():
 @pytest.mark.integration
 def test_wait_for_analysis_rejected():
     
-    root = create_root_analysis(uuid=str(uuid.uuid4()), analysis_mode='test_groups')
+    root = create_root_analysis(analysis_mode='test_groups')
     root.initialize_storage()
     test_observable = root.add_observable_by_spec(F_TEST, 'test_engine_032a')
     test_observable.exclude_analysis(WaitAnalyzerModule_B)
@@ -1092,7 +1092,7 @@ def test_wait_for_analysis_rejected():
 def test_declared_dependency_chained():
     # declared_dep_a depends on declared_dep_b which depends on declared_dep_c;
     # the engine must run c, then b, then a -- without any wait_for_analysis calls
-    root = create_root_analysis(uuid=str(uuid.uuid4()), analysis_mode='test_groups')
+    root = create_root_analysis(analysis_mode='test_groups')
     root.initialize_storage()
     test_observable = root.add_observable_by_spec(F_TEST, 'declared_dep_test')
     root.save()
@@ -1126,7 +1126,7 @@ def test_declared_dependency_chained():
 def test_declared_dependency_missing_soft_skip():
     # declared_dep_a depends on declared_dep_b, but b is not enabled -- a must still
     # run (a missing/disabled declared dependency is treated as vacuously satisfied)
-    root = create_root_analysis(uuid=str(uuid.uuid4()), analysis_mode='test_groups')
+    root = create_root_analysis(analysis_mode='test_groups')
     root.initialize_storage()
     test_observable = root.add_observable_by_spec(F_TEST, 'declared_dep_test')
     root.save()
@@ -1149,7 +1149,7 @@ def test_declared_dependency_missing_soft_skip():
 def test_declared_dependency_no_analysis_target():
     # declared_dep_on_no_produce depends on declared_no_produce, which produces no
     # analysis -- the dependent must still run (exercises the False no-analysis sentinel)
-    root = create_root_analysis(uuid=str(uuid.uuid4()), analysis_mode='test_groups')
+    root = create_root_analysis(analysis_mode='test_groups')
     root.initialize_storage()
     test_observable = root.add_observable_by_spec(F_TEST, 'declared_dep_test')
     root.save()
@@ -1173,7 +1173,7 @@ def test_retry_on_failure_retries_once_per_work_item(caplog):
     # failed analysis, and the observables a replaced analysis added go with it.
     # retry_child adds a hostname under each of those observables it analyzes: it must not run
     # on one a retry has already removed, or what it adds is saved with no way to reach it
-    root = create_root_analysis(uuid=str(uuid.uuid4()), analysis_mode='test_groups')
+    root = create_root_analysis(analysis_mode='test_groups')
     root.initialize_storage()
     test_observable = root.add_observable_by_spec(F_TEST, 'retry_test')
     root.save()
@@ -1216,7 +1216,7 @@ def test_delayed_analysis_request_leaves_failed_analysis_in_place(monkeypatch):
     # only in final analysis mode, where the module cannot run again: a retry there would
     # delete the failed analysis and record no analysis in its place
     monkeypatch.setattr(DelayedAnalysisTestModule, "should_analyze", lambda self, o: o.value != "retry_test")
-    root = create_root_analysis(uuid=str(uuid.uuid4()), analysis_mode='test_groups')
+    root = create_root_analysis(analysis_mode='test_groups')
     root.initialize_storage()
     retry_observable = root.add_observable_by_spec(F_TEST, 'retry_test')
     delayed_observable = root.add_observable_by_spec(F_TEST, '0:00|0:01')
@@ -1250,7 +1250,7 @@ def test_declared_dependency_check_leaves_failed_analysis_in_place(earlier_failu
     # two runs. a failed analysis its module will retry in this work item does not satisfy
     # the dependency, so the dependent runs on what the retry left. checking the dependency
     # must not remove that analysis (the dependent would see none).
-    root = create_root_analysis(uuid=str(uuid.uuid4()), analysis_mode='test_groups')
+    root = create_root_analysis(analysis_mode='test_groups')
     root.initialize_storage()
     test_observable = root.add_observable_by_spec(F_TEST, 'retry_test')
     if earlier_failure:
@@ -1279,7 +1279,7 @@ def test_dependency_edge_completed_by_retried_analysis(monkeypatch):
     # which this work item already retried, and takes it as the answer rather than asking
     # for another retry the work item would refuse ("unaccepted for analysis")
     monkeypatch.setattr(DependsOnRetryModule, "priority", property(lambda self: 1))
-    root = create_root_analysis(uuid=str(uuid.uuid4()), analysis_mode='test_groups')
+    root = create_root_analysis(analysis_mode='test_groups')
     root.initialize_storage()
     test_observable = root.add_observable_by_spec(F_TEST, 'retry_test')
     earlier = test_observable.add_analysis(RetryOnFailureAnalysis())
@@ -1316,7 +1316,7 @@ def test_custom_requirement_sees_declared_dependency():
     # True only if declared_dep_c's analysis is already present. this proves
     # custom_requirement is evaluated AFTER declared dependencies are satisfied --
     # if it ran first (the old behavior) it would return False and never produce analysis
-    root = create_root_analysis(uuid=str(uuid.uuid4()), analysis_mode='test_groups')
+    root = create_root_analysis(analysis_mode='test_groups')
     root.initialize_storage()
     test_observable = root.add_observable_by_spec(F_TEST, 'custom_req_test')
     root.save()
@@ -1339,7 +1339,7 @@ def test_custom_requirement_false_no_sentinel_and_unblocks_dependent():
     # custom_req_false's custom_requirement is always False: it must produce no
     # analysis AND no no-analysis sentinel (so it stays eligible on later passes).
     # custom_req_false_dependent declares a dependency on it and must still run.
-    root = create_root_analysis(uuid=str(uuid.uuid4()), analysis_mode='test_groups')
+    root = create_root_analysis(analysis_mode='test_groups')
     root.initialize_storage()
     test_observable = root.add_observable_by_spec(F_TEST, 'custom_req_test')
     root.save()
@@ -1363,7 +1363,7 @@ def test_custom_requirement_cross_observable_wait():
     # cross_req_source's custom_requirement waits (cross-observable) on the analysis
     # of a sibling observable via wait_for_analysis, raising WaitForAnalysisException
     # until it is present. the engine must run the target first, then the source
-    root = create_root_analysis(uuid=str(uuid.uuid4()), analysis_mode='test_groups')
+    root = create_root_analysis(analysis_mode='test_groups')
     root.initialize_storage()
     source_observable = root.add_observable_by_spec(F_TEST, 'cross_dep_source')
     target_observable = root.add_observable_by_spec(F_TEST, 'cross_dep_target')
@@ -1393,7 +1393,7 @@ def test_maximum_cumulative_analysis_warning_time():
     # setting this to zero should cause it to happen right away
     get_config().global_settings.maximum_cumulative_analysis_warning_time = 0
 
-    root = create_root_analysis(uuid=str(uuid.uuid4()), analysis_mode='test_groups')
+    root = create_root_analysis(analysis_mode='test_groups')
     root.initialize_storage()
     test_observable = root.add_observable_by_spec(F_TEST, 'test_1')
     root.save()
@@ -1411,7 +1411,7 @@ def test_maximum_cumulative_analysis_warning_time_analysis_mode():
     # setting this to zero should cause it to happen right away
     get_config().get_analysis_mode_config('test_groups').maximum_cumulative_analysis_warning_time = 0
 
-    root = create_root_analysis(uuid=str(uuid.uuid4()), analysis_mode='test_groups')
+    root = create_root_analysis(analysis_mode='test_groups')
     root.initialize_storage()
     test_observable = root.add_observable_by_spec(F_TEST, 'test_1')
     root.save()
@@ -1428,7 +1428,7 @@ def test_maximum_cumulative_analysis_fail_time():
     # setting this to zero should cause it to happen right away
     get_config().global_settings.maximum_cumulative_analysis_fail_time = 0
 
-    root = create_root_analysis(uuid=str(uuid.uuid4()), analysis_mode='test_groups')
+    root = create_root_analysis(analysis_mode='test_groups')
     root.initialize_storage()
     test_observable = root.add_observable_by_spec(F_TEST, 'test_1')
     root.save()
@@ -1451,7 +1451,7 @@ def test_maximum_cumulative_analysis_fail_time_ignore():
     # setting this should cause this analysis mode to ignore the cumulative fail time
     get_engine_config().analysis_modes_ignore_cumulative_timeout = ['test_groups']
 
-    root = create_root_analysis(uuid=str(uuid.uuid4()), analysis_mode='test_groups')
+    root = create_root_analysis(analysis_mode='test_groups')
     root.initialize_storage()
     test_observable = root.add_observable_by_spec(F_TEST, 'test_1')
     root.save()
@@ -1473,7 +1473,7 @@ def test_maximum_cumulative_analysis_fail_time_analysis_mode():
     # setting this to zero should cause it to happen right away
     get_config().get_analysis_mode_config('test_groups').maximum_cumulative_analysis_fail_time = 0
 
-    root = create_root_analysis(uuid=str(uuid.uuid4()), analysis_mode='test_groups')
+    root = create_root_analysis(analysis_mode='test_groups')
     root.initialize_storage()
     test_observable = root.add_observable_by_spec(F_TEST, 'test_1')
     root.save()
@@ -1494,7 +1494,7 @@ def test_maximum_analysis_time_global():
     get_config().global_settings.maximum_analysis_time = 0
     # this needs to be set explicitly because it defaults to the global maximum if not set
 
-    root = create_root_analysis(uuid=str(uuid.uuid4()), analysis_mode='test_groups')
+    root = create_root_analysis(analysis_mode='test_groups')
     root.initialize_storage()
     test_observable = root.add_observable_by_spec(F_TEST, 'test_4')
     root.save()
@@ -1516,7 +1516,7 @@ def test_maximum_analysis_time_analysis_mode():
     # setting this to zero should cause it to happen right away
     get_config().get_analysis_mode_config("test_groups").maximum_analysis_time = 0
 
-    root = create_root_analysis(uuid=str(uuid.uuid4()), analysis_mode='test_groups')
+    root = create_root_analysis(analysis_mode='test_groups')
     root.initialize_storage()
     test_observable = root.add_observable_by_spec(F_TEST, 'test_4')
     root.save()
@@ -1534,7 +1534,7 @@ def test_maximum_analysis_time_analysis_mode():
 
 @pytest.mark.integration
 def test_is_module_enabled():
-    root = create_root_analysis(uuid=str(uuid.uuid4()), analysis_mode='test_groups')
+    root = create_root_analysis(analysis_mode='test_groups')
     root.initialize_storage()
     test_observable = root.add_observable_by_spec(F_TEST, 'test')
     root.save()
@@ -1560,14 +1560,14 @@ def test_is_module_enabled():
 @pytest.mark.integration
 def test_analysis_mode_priority():
 
-    root = create_root_analysis(uuid=str(uuid.uuid4()), analysis_mode='test_single')
+    root = create_root_analysis(analysis_mode='test_single')
     root.initialize_storage()
     test_observable = root.add_observable_by_spec(F_TEST, 'test_1')
     root.save()
     root.schedule()
     test_1_uuid = root.uuid
 
-    root = create_root_analysis(uuid=str(uuid.uuid4()), analysis_mode='test_groups')
+    root = create_root_analysis(analysis_mode='test_groups')
     root.initialize_storage()
     test_observable = root.add_observable_by_spec(F_TEST, 'test_2')
     root.save()
@@ -1593,7 +1593,7 @@ def test_module_failure_writes_no_error_report():
 
     existing_reports = _enum_error_reporting()
 
-    root = create_root_analysis(uuid=str(uuid.uuid4()), analysis_mode='test_groups')
+    root = create_root_analysis(analysis_mode='test_groups')
     root.initialize_storage()
     target_path = root.create_file_path('test.txt')
     with open(target_path, 'w') as fp:
@@ -1642,7 +1642,7 @@ def test_crash_report_on_module_exception():
 
     existing = set(_enum_crash_reports())
 
-    root = create_root_analysis(uuid=str(uuid.uuid4()), analysis_mode='test_groups')
+    root = create_root_analysis(analysis_mode='test_groups')
     root.initialize_storage()
     target_path = root.create_file_path('test.txt')
     with open(target_path, 'w') as fp:
@@ -1702,7 +1702,7 @@ def test_crash_report_on_module_exception():
 def test_module_that_raised_runs_again_after_a_reset():
     """A module that raised is not run again on that observable in the same pass, but a reset
     (ace alert reset) gives it another chance, which is how a fixed module gets re-run."""
-    root = create_root_analysis(uuid=str(uuid.uuid4()), analysis_mode='test_groups')
+    root = create_root_analysis(analysis_mode='test_groups')
     root.initialize_storage()
     target_path = root.create_file_path('test.txt')
     with open(target_path, 'w') as fp:
@@ -1740,7 +1740,7 @@ def test_crash_report_is_indexed_in_the_database():
     from saq.database.model import AnalysisModuleCrash
     from saq.database.pool import get_db
 
-    root = create_root_analysis(uuid=str(uuid.uuid4()), analysis_mode='test_groups')
+    root = create_root_analysis(analysis_mode='test_groups')
     root.initialize_storage()
     target_path = root.create_file_path('test.txt')
     with open(target_path, 'w') as fp:
@@ -1775,7 +1775,7 @@ def test_crash_report_disabled():
 
     existing = set(_enum_crash_reports())
 
-    root = create_root_analysis(uuid=str(uuid.uuid4()), analysis_mode='test_groups')
+    root = create_root_analysis(analysis_mode='test_groups')
     root.initialize_storage()
     target_path = root.create_file_path('test.txt')
     with open(target_path, 'w') as fp:
@@ -1963,7 +1963,7 @@ def test_record_execution_statistics_basic(tmpdir, monkeypatch):
     from unittest.mock import patch
 
     # create a root analysis
-    root = create_root_analysis(uuid=str(uuid.uuid4()))
+    root = create_root_analysis()
     root.initialize_storage()
 
     # create an execution context
@@ -2025,7 +2025,7 @@ CACHE_METRIC_FIELDS = [
 @pytest.mark.unit
 def test_record_execution_statistics_with_fluent_bit(tmpdir, monkeypatch):
     """One root event for the work item, then one event per module that did anything."""
-    root = create_root_analysis(uuid=str(uuid.uuid4()))
+    root = create_root_analysis()
     root.initialize_storage()
     context = EngineExecutionContext(root)
     context.total_analysis_time["module_a"] = 2.5
@@ -2066,7 +2066,7 @@ def test_record_execution_statistics_with_fluent_bit(tmpdir, monkeypatch):
 @pytest.mark.unit
 def test_module_metric_events_do_not_repeat_root_fields(tmpdir, monkeypatch):
     """What describes the root is only on the root event, not on every module event."""
-    root = create_root_analysis(uuid=str(uuid.uuid4()), analysis_mode=ANALYSIS_MODE_CORRELATION)
+    root = create_root_analysis(analysis_mode=ANALYSIS_MODE_CORRELATION)
     root.initialize_storage()
     root.add_observable_by_spec(F_IPV4, "1.2.3.4")
     context = EngineExecutionContext(root)
@@ -2087,7 +2087,7 @@ def test_module_metric_events_do_not_repeat_root_fields(tmpdir, monkeypatch):
 @pytest.mark.unit
 def test_root_metric_event_emitted_when_no_module_ran(tmpdir, monkeypatch):
     """A work item where no module did anything still reports its root event."""
-    root = create_root_analysis(uuid=str(uuid.uuid4()))
+    root = create_root_analysis()
     root.initialize_storage()
     root.add_observable_by_spec(F_IPV4, "1.2.3.4")
     context = EngineExecutionContext(root)
@@ -2118,7 +2118,7 @@ def _engine_root_events(root: RootAnalysis) -> list[dict]:
 
 
 def _scheduled_root() -> RootAnalysis:
-    root = create_root_analysis(uuid=str(uuid.uuid4()), analysis_mode='test_groups')
+    root = create_root_analysis(analysis_mode='test_groups')
     root.initialize_storage()
     root.add_observable_by_spec(F_TEST, 'test_1')
     root.add_observable_by_spec(F_IPV4, '1.2.3.4')
@@ -2156,7 +2156,7 @@ def test_root_metric_event_emitted_when_analysis_times_out(monkeypatch):
 @pytest.mark.integration
 def test_root_metric_event_emitted_when_analysis_fails(monkeypatch):
     _enable_fluent_metrics(monkeypatch)
-    root = create_root_analysis(uuid=str(uuid.uuid4()), analysis_mode='test_groups')
+    root = create_root_analysis(analysis_mode='test_groups')
     root.initialize_storage()
     root.add_observable_by_spec(F_TEST, 'test_1')
     root.save()
@@ -2194,7 +2194,7 @@ def test_root_metric_event_outcome_cancelled(monkeypatch):
     """A cancelled work item (shutdown, lost lock, a disposition stop) returns normally from the
     executor, but its tree is unfinished, so it must not report as completed."""
     _enable_fluent_metrics(monkeypatch)
-    root = create_root_analysis(uuid=str(uuid.uuid4()), analysis_mode='test_groups')
+    root = create_root_analysis(analysis_mode='test_groups')
     root.initialize_storage()
     root.add_observable_by_spec(F_TEST, 'test_1')
     root.save()
@@ -2217,7 +2217,7 @@ def test_root_metric_event_outcome_cancelled(monkeypatch):
 @pytest.mark.unit
 def test_record_execution_statistics_zero_elapsed_time(tmpdir, monkeypatch):
     """test that record_execution_statistics handles zero elapsed time"""
-    root = create_root_analysis(uuid=str(uuid.uuid4()))
+    root = create_root_analysis()
     root.initialize_storage()
     context = EngineExecutionContext(root)
     context.total_analysis_time["module_a"] = 1.0
@@ -2232,7 +2232,7 @@ def test_record_execution_statistics_zero_elapsed_time(tmpdir, monkeypatch):
 @pytest.mark.unit
 def test_record_execution_statistics_exception_handling(tmpdir, monkeypatch, caplog):
     """test that record_execution_statistics handles exceptions gracefully"""
-    root = create_root_analysis(uuid=str(uuid.uuid4()))
+    root = create_root_analysis()
     root.initialize_storage()
     context = EngineExecutionContext(root)
     context.total_analysis_time["module_a"] = 1.0
@@ -2256,7 +2256,7 @@ def test_per_root_emits_for_cache_only_modules(tmpdir, monkeypatch):
     """A module that only ever hit the cache (no live execution) must still
     produce a row in the per-root summary so the dashboard can count it.
     """
-    root = create_root_analysis(uuid=str(uuid.uuid4()))
+    root = create_root_analysis()
     root.initialize_storage()
     context = EngineExecutionContext(root)
 
@@ -2285,7 +2285,7 @@ def test_per_root_emits_for_cache_only_modules(tmpdir, monkeypatch):
 def test_per_root_carries_observable_counts(tmpdir, monkeypatch):
     """The root event carries the root's observable total and its count per
     observable type, including observables added below the root."""
-    root = create_root_analysis(uuid=str(uuid.uuid4()))
+    root = create_root_analysis()
     root.initialize_storage()
     root.add_observable_by_spec(F_IPV4, "1.2.3.4")
     root.add_observable_by_spec(F_IPV4, "5.6.7.8")
@@ -2310,7 +2310,7 @@ def test_per_root_carries_observable_counts(tmpdir, monkeypatch):
 def test_per_root_omits_cache_fields_when_no_cache_activity(tmpdir, monkeypatch):
     """exec_count is always present; cache_* fields appear only when the
     module had cache activity in this (root, module)."""
-    root = create_root_analysis(uuid=str(uuid.uuid4()))
+    root = create_root_analysis()
     root.initialize_storage()
     context = EngineExecutionContext(root)
     context.total_analysis_time["module_a"] = 1.5
@@ -2329,7 +2329,7 @@ def test_per_root_omits_cache_fields_when_no_cache_activity(tmpdir, monkeypatch)
 @pytest.mark.unit
 def test_per_root_is_alert_true_when_correlation_mode(tmpdir, monkeypatch):
     """is_alert is True when analysis_mode is CORRELATION."""
-    root = create_root_analysis(uuid=str(uuid.uuid4()), analysis_mode=ANALYSIS_MODE_CORRELATION)
+    root = create_root_analysis(analysis_mode=ANALYSIS_MODE_CORRELATION)
     root.initialize_storage()
     root.alert_type = "splunk - ipv4 search"
     root.queue = "external"
@@ -2349,7 +2349,7 @@ def test_per_root_is_alert_true_when_correlation_mode(tmpdir, monkeypatch):
 def test_per_root_is_alert_false_when_alert_type_set_but_not_promoted(tmpdir, monkeypatch):
     """is_alert is False when analysis_mode hasn't transitioned to CORRELATION yet.
     """
-    root = create_root_analysis(uuid=str(uuid.uuid4()))
+    root = create_root_analysis()
     root.initialize_storage()
     root.alert_type = "mailbox"
     context = EngineExecutionContext(root)
@@ -2366,7 +2366,7 @@ def test_per_root_is_alert_false_when_alert_type_set_but_not_promoted(tmpdir, mo
 @pytest.mark.unit
 def test_per_root_cache_write_byte_aggregation(tmpdir, monkeypatch):
     """Write byte sums flow through to the payload when cache writes occurred."""
-    root = create_root_analysis(uuid=str(uuid.uuid4()))
+    root = create_root_analysis()
     root.initialize_storage()
     context = EngineExecutionContext(root)
     context.total_analysis_time["module_a"] = 1.0
@@ -2399,7 +2399,7 @@ def test_per_root_cache_write_byte_aggregation(tmpdir, monkeypatch):
 @pytest.mark.integration
 def test_exclusion():
 
-    root = create_root_analysis(uuid=str(uuid.uuid4()))
+    root = create_root_analysis()
     root.initialize_storage()
     observable = root.add_observable_by_spec(F_TEST, 'test_6')
     root.save()
@@ -2422,7 +2422,7 @@ def test_exclusion():
 
 @pytest.mark.integration
 def test_limited_analysis():
-    root = create_root_analysis(uuid=str(uuid.uuid4()), analysis_mode='test_groups')
+    root = create_root_analysis(analysis_mode='test_groups')
     root.initialize_storage()
     observable = root.add_observable_by_spec(F_TEST, 'test_1')
     observable.limit_analysis('basic_test')
@@ -2451,7 +2451,7 @@ def test_limited_analysis():
 
 @pytest.mark.integration
 def test_limited_analysis_invalid():
-    root = create_root_analysis(uuid=str(uuid.uuid4()), analysis_mode='test_groups')
+    root = create_root_analysis(analysis_mode='test_groups')
     root.initialize_storage()
     observable = root.add_observable_by_spec(F_TEST, 'test_1')
     observable.limit_analysis('basic_tast') # mispelled test
@@ -2493,7 +2493,7 @@ def test_cleanup_alt_workdir():
 
 @pytest.mark.integration
 def test_no_cleanup():
-    root = create_root_analysis(uuid=str(uuid.uuid4()), analysis_mode='test_empty')
+    root = create_root_analysis(analysis_mode='test_empty')
     root.initialize_storage()
     root.save()
     root.schedule()
@@ -2507,7 +2507,7 @@ def test_no_cleanup():
 def test_cleanup_with_delayed_analysis():
     # we are set to cleanup, however, we don't because we have delayed analysis
     get_config().get_analysis_mode_config("test_groups").cleanup = True
-    root = create_root_analysis(uuid=str(uuid.uuid4()), analysis_mode='test_groups')
+    root = create_root_analysis(analysis_mode='test_groups')
     root.initialize_storage()
     observable = root.add_observable_by_spec(F_TEST, '00:00|00:01')
     root.save()
@@ -3427,13 +3427,13 @@ def test_archive():
 @pytest.mark.integration
 def test_cleanup():
     
-    fp_root = create_root_analysis(analysis_mode='test_single', uuid=str(uuid.uuid4()))
+    fp_root = create_root_analysis(analysis_mode='test_single')
     fp_root.initialize_storage()
     test_observable = fp_root.add_observable_by_spec(F_TEST, 'test_detection')
     fp_root.save()
     fp_root.schedule()
 
-    ignore_root = create_root_analysis(analysis_mode='test_single', uuid=str(uuid.uuid4()))
+    ignore_root = create_root_analysis(analysis_mode='test_single')
     ignore_root.initialize_storage()
     test_observable = ignore_root.add_observable_by_spec(F_TEST, 'test_detection')
     ignore_root.save()
@@ -3579,7 +3579,7 @@ def test_analysis_mode_dispositioned_ignore():
 @pytest.mark.integration
 def test_a_stored_whitelisted_tag_mapping_is_only_a_tag():
 
-    root = create_root_analysis(uuid=str(uuid.uuid4()), analysis_mode='test_single')
+    root = create_root_analysis(analysis_mode='test_single')
     root.initialize_storage()
     test_observable = root.add_observable_by_spec(F_TEST, 'test_1')
     assert test_observable
@@ -3606,7 +3606,7 @@ def test_global_observable_exclusion():
 
     get_config().observable_exclusions = {"exclude_test_1": f"{F_TEST}:test_1"}
 
-    root = create_root_analysis(uuid=str(uuid.uuid4()), analysis_mode='test_single')
+    root = create_root_analysis(analysis_mode='test_single')
     root.initialize_storage()
     test_observable = root.add_observable_by_spec(F_TEST, 'test_1')
     assert test_observable
@@ -3625,7 +3625,7 @@ def test_global_observable_exclusion():
     # the same observable without the exclusion is analyzed normally
     get_config().observable_exclusions = {}
 
-    root = create_root_analysis(uuid=str(uuid.uuid4()), analysis_mode='test_single')
+    root = create_root_analysis(analysis_mode='test_single')
     root.initialize_storage()
     test_observable = root.add_observable_by_spec(F_TEST, 'test_1')
     assert test_observable
@@ -3644,7 +3644,7 @@ def test_global_observable_exclusion():
 @pytest.mark.integration
 def test_a_stored_whitelisted_tag_mapping_on_a_file_is_only_a_tag():
 
-    root = create_root_analysis(uuid=str(uuid.uuid4()), analysis_mode='test_single')
+    root = create_root_analysis(analysis_mode='test_single')
     root.initialize_storage()
     test_file = root.create_file_path("test")
     with open(test_file, "w") as fp:
@@ -3745,7 +3745,7 @@ def _create_root_with_missing_analysis_module() -> tuple[RootAnalysis, str]:
     refers to an analysis class that does not exist.
 
     Returns a tuple of the (unloaded) RootAnalysis and the uuid of the analyzed observable."""
-    root = create_root_analysis(uuid=str(uuid.uuid4()), analysis_mode='test_single')
+    root = create_root_analysis(analysis_mode='test_single')
     root.initialize_storage()
     test_observable = root.add_observable_by_spec(F_TEST, 'test')
     root.save()
@@ -3812,7 +3812,7 @@ def test_deprecated_analysis(monkeypatch):
 @pytest.mark.integration
 def test_cancel_analysis():
     # first we verify that we get 3 different analysis results for these 3 analysis modules like normal
-    root = create_root_analysis(uuid=str(uuid.uuid4()), analysis_mode='test_groups')
+    root = create_root_analysis(analysis_mode='test_groups')
     root.initialize_storage()
     observable = root.add_observable_by_spec(F_TEST, 'test_1')
     root.save()
@@ -3834,7 +3834,7 @@ def test_cancel_analysis():
     assert log_count('execute_post_analysis called') == 1
 
     # now do the same thing but have the basic analysis module cancel the analysis
-    root = create_root_analysis(uuid=str(uuid.uuid4()), analysis_mode='test_groups')
+    root = create_root_analysis(analysis_mode='test_groups')
     root.initialize_storage()
     observable = root.add_observable_by_spec(F_TEST, 'test_cancel')
     root.save()
@@ -3859,7 +3859,7 @@ def test_cancel_analysis():
 
 @pytest.mark.integration
 def test_file_size_limit():
-    root = create_root_analysis(uuid=str(uuid.uuid4()), analysis_mode='test_groups')
+    root = create_root_analysis(analysis_mode='test_groups')
     root.initialize_storage()
 
     # create a file with one byte
@@ -3882,7 +3882,7 @@ def test_file_size_limit():
     # this should have worked because the size of the file is within the limit
     assert isinstance(analysis, FileSizeLimitAnalysis)
 
-    root = create_root_analysis(uuid=str(uuid.uuid4()), analysis_mode='test_groups')
+    root = create_root_analysis(analysis_mode='test_groups')
     root.initialize_storage()
 
     # exceed the limit
@@ -3906,7 +3906,7 @@ def test_file_size_limit():
     assert analysis is None
 
     # file does not exist
-    root = create_root_analysis(uuid=str(uuid.uuid4()), analysis_mode='test_groups')
+    root = create_root_analysis(analysis_mode='test_groups')
     root.initialize_storage()
 
     target_path = root.create_file_path("target.txt")
@@ -3932,7 +3932,7 @@ def test_file_size_limit():
     # we continue even if the file does not exist
     assert isinstance(analysis, FileSizeLimitAnalysis)
 
-    root = create_root_analysis(uuid=str(uuid.uuid4()), analysis_mode='test_groups')
+    root = create_root_analysis(analysis_mode='test_groups')
     root.initialize_storage()
 
     # delete the configuration option

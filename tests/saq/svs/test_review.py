@@ -62,7 +62,7 @@ def bob() -> User:
 
 
 def _alert(run: SVSRun, *signatures_: str, host="win10-01", marker=True) -> str:
-    root = create_root_analysis(uuid=str(uuid.uuid4()), event_time=datetime.now() - timedelta(hours=2))
+    root = create_root_analysis(event_time=datetime.now() - timedelta(hours=2))
     root.initialize_storage()
     root.add_observable_by_spec(F_HOSTNAME, host)
     if marker:

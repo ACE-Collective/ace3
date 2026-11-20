@@ -28,7 +28,7 @@ def _image_path(alert_uuid: str, observable_uuid: str) -> str:
 
 def _alert_with_file(tmpdir, file_name: str, content, mime_type_known: bool = True):
     """An alert holding one file observable; returns (alert uuid, observable)."""
-    root = create_root_analysis(uuid=str(uuid.uuid4()))
+    root = create_root_analysis()
     root.initialize_storage()
     target_path = tmpdir / file_name
     if isinstance(content, bytes):
@@ -133,7 +133,7 @@ async def test_missing_file(client: AsyncClient, tmpdir):
 
 @pytest.mark.asyncio
 async def test_observable_that_is_not_a_file(client: AsyncClient):
-    root = create_root_analysis(uuid=str(uuid.uuid4()))
+    root = create_root_analysis()
     root.initialize_storage()
     observable = root.add_observable_by_spec(F_TEST, "not_a_file")
     root.save()

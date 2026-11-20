@@ -1,6 +1,5 @@
 import hashlib
 import json
-import uuid
 from datetime import datetime
 
 import pytest
@@ -136,7 +135,7 @@ YARA_SIGNATURE_VERSION = "deadbeef"
 def _alert_with_detections():
     """builds and syncs an alert carrying a root-level detection and a yara-style
     observable detection. returns the loaded Alert."""
-    root = create_root_analysis(uuid=str(uuid.uuid4()))
+    root = create_root_analysis()
     root.initialize_storage()
 
     root.add_detection_point("real detection")
@@ -245,7 +244,7 @@ def test_sync_detection_point_queue_change_updates_row():
 
 @pytest.mark.integration
 def test_sync_non_json_native_details():
-    root = create_root_analysis(uuid=str(uuid.uuid4()))
+    root = create_root_analysis()
     root.initialize_storage()
     o = root.add_observable_by_spec(F_FQDN, "evil.example.com")
     o.add_detection_point("ts detection", details={"when": datetime(2026, 6, 17, 12, 0, 0)})
@@ -262,7 +261,7 @@ def test_sync_non_json_native_details():
 
 @pytest.mark.integration
 def test_sync_delayed_skips_detection_points():
-    root = create_root_analysis(uuid=str(uuid.uuid4()))
+    root = create_root_analysis()
     root.initialize_storage()
     o = root.add_observable_by_spec(F_FQDN, "evil.example.com")
     o.add_detection_point("yara hit")
@@ -286,7 +285,7 @@ def test_sync_delayed_skips_detection_points():
 
 @pytest.mark.integration
 def test_detection_count_zero_without_detections():
-    root = create_root_analysis(uuid=str(uuid.uuid4()))
+    root = create_root_analysis()
     root.initialize_storage()
     root.add_observable_by_spec(F_FQDN, "benign.example.com")
     root.save()
@@ -331,7 +330,7 @@ def test_detection_count_query_expression():
 def _alert_with_provider_detection():
     """builds and syncs an alert carrying a root-level detection plus a provider analysis
     that generated a child observable with its own detection. returns the loaded Alert."""
-    root = create_root_analysis(uuid=str(uuid.uuid4()))
+    root = create_root_analysis()
     root.initialize_storage()
 
     root.add_detection_point("real detection")  # root-level, must survive a delete
@@ -374,7 +373,7 @@ def test_sync_reconciles_deleted_analysis_detection_points():
 @pytest.mark.integration
 def test_sync_reconciles_to_zero_when_all_detections_removed():
     """covers the empty-set branch: deleting the only detection clears every row."""
-    root = create_root_analysis(uuid=str(uuid.uuid4()))
+    root = create_root_analysis()
     root.initialize_storage()
 
     obs = root.add_observable_by_spec(F_FQDN, "evil.example.com")
@@ -439,7 +438,7 @@ def test_sync_rekeys_rows_written_under_the_old_formula():
 
 @pytest.mark.integration
 def test_sync_writes_analysis_node_identity():
-    root = create_root_analysis(uuid=str(uuid.uuid4()))
+    root = create_root_analysis()
     root.initialize_storage()
     obs = root.add_observable_by_spec(F_FQDN, "evil.example.com")
     analysis = obs.add_analysis(ProviderAnalysis())

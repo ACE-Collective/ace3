@@ -29,7 +29,7 @@ from tests.saq.helpers import create_root_analysis, create_test_orchestrator
 def _alert_root(delayed: bool = False) -> RootAnalysis:
     """A saved correlation mode root with its alerts row. With delayed, one of its analyses is
     still waiting on delayed analysis."""
-    root = create_root_analysis(uuid=str(uuid.uuid4()), analysis_mode=ANALYSIS_MODE_CORRELATION)
+    root = create_root_analysis(analysis_mode=ANALYSIS_MODE_CORRELATION)
     root.initialize_storage()
     observable = root.add_observable_by_spec(F_TEST, "initial_obs")
     if delayed:
@@ -143,7 +143,7 @@ class TestAnalysisOrchestratorFinallyBlock:
     @pytest.fixture
     def execution_context(self, tmpdir):
         """create an execution context with a test root analysis"""
-        root = create_root_analysis(uuid=str(uuid.uuid4()), analysis_mode="test_groups", storage_dir=str(tmpdir))
+        root = create_root_analysis(analysis_mode="test_groups", storage_dir=str(tmpdir))
         root.save()
         return EngineExecutionContext(work_item=root)
 
@@ -296,7 +296,7 @@ class TestSyncAlertToDatabaseBuildIndex:
     def test_a_missing_alerts_row_is_an_error(self, orchestrator, caplog):
         """A correlation-mode root with no alerts row is an alert no analyst will see; it used
         to be skipped without a word (FR-6)."""
-        root = create_root_analysis(uuid=str(uuid.uuid4()), analysis_mode=ANALYSIS_MODE_CORRELATION)
+        root = create_root_analysis(analysis_mode=ANALYSIS_MODE_CORRELATION)
         root.initialize_storage()
         root.save()
         context = EngineExecutionContext(work_item=root)

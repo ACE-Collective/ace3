@@ -142,7 +142,7 @@ def graded_alert(disposition: Optional[str], files: dict[str, list[str]], *, cap
     capture=False) a capture row per (file sha256, rule uuid). files maps a file name to the rule
     uuids that matched it; contents optionally gives a file's bytes (the same bytes under two names
     are one sha256). Returns (alert, {name: file observable})."""
-    root = create_root_analysis(uuid=str(uuid.uuid4()))
+    root = create_root_analysis()
     root.initialize_storage()
     observables = {}
     for name, rule_uuids in files.items():

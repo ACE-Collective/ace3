@@ -43,7 +43,7 @@ def remediable():
 
 
 def _alert_with(*values: str) -> str:
-    root = create_root_analysis(uuid=str(uuid.uuid4()))
+    root = create_root_analysis()
     root.initialize_storage()
     for value in values:
         root.add_observable_by_spec(F_TEST, value)

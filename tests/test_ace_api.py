@@ -319,7 +319,7 @@ def test_get_analysis_is_alerts_only():
 
 @pytest.mark.integration
 def test_download():
-    root = create_root_analysis(uuid=str(uuid.uuid4()))
+    root = create_root_analysis()
     root.initialize_storage()
     root.details = { 'hello': 'world' }
     root.save()
@@ -336,7 +336,7 @@ def test_download():
 
 @pytest.mark.integration
 def test_upload():
-    root = create_root_analysis(uuid=str(uuid.uuid4()), storage_dir=os.path.join(get_temp_dir(), 'unittest'))
+    root = create_root_analysis(storage_dir=os.path.join(get_temp_dir(), 'unittest'))
     root.initialize_storage()
     root.details = { 'hello': 'world' }
     root.save()
@@ -352,7 +352,7 @@ def test_upload():
 
 @pytest.mark.integration
 def test_clear():
-    root = create_root_analysis(uuid=str(uuid.uuid4()))
+    root = create_root_analysis()
     root.initialize_storage()
     root.details = { 'hello': 'world' }
     root.save()
@@ -365,7 +365,7 @@ def test_clear():
 
 @pytest.mark.integration
 def test_clear_invalid_lock_uuid():
-    root = create_root_analysis(uuid=str(uuid.uuid4()))
+    root = create_root_analysis()
     root.initialize_storage()
     root.details = { 'hello': 'world' }
     root.save()

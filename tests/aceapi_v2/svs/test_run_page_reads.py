@@ -42,7 +42,7 @@ def setup(no_hunts, yara_dir):
 
 
 def _alert(*, marker=None, host="win10-01", event_time=None, signature_uuid=None, description="hunt hit") -> str:
-    root = create_root_analysis(uuid=str(uuid.uuid4()), event_time=event_time or datetime.now())
+    root = create_root_analysis(event_time=event_time or datetime.now())
     root.initialize_storage()
     root.add_observable_by_spec(F_HOSTNAME, host)
     if marker:

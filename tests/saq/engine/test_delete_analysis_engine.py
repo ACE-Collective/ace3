@@ -3,7 +3,6 @@ engine (no mocking of analysis). Each test runs the engine to produce a genuine 
 tree, deletes an analysis, and asserts the tree/DB are cleaned up and remain consistent."""
 
 import os
-import uuid
 
 import pytest
 
@@ -34,7 +33,7 @@ def _run_basic_test_engine(value: str) -> RootAnalysis:
 def create_root_for(value: str) -> RootAnalysis:
     from tests.saq.helpers import create_root_analysis
 
-    root = create_root_analysis(uuid=str(uuid.uuid4()), analysis_mode="test_single")
+    root = create_root_analysis(analysis_mode="test_single")
     root.initialize_storage()
     root.add_observable_by_spec(F_TEST, value)
     root.save()
@@ -146,7 +145,7 @@ def test_engine_delete_analysis_with_runtime_dependency():
     from saq.modules.test import WaitAnalysis_A, WaitAnalysis_B
     from tests.saq.helpers import create_root_analysis
 
-    root = create_root_analysis(uuid=str(uuid.uuid4()), analysis_mode="test_groups")
+    root = create_root_analysis(analysis_mode="test_groups")
     root.initialize_storage()
     root.add_observable_by_spec(F_TEST, "test_1")
     root.save()

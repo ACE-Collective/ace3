@@ -3,7 +3,6 @@
 import logging
 import socket
 import threading
-import uuid
 from unittest.mock import Mock, patch
 
 import pytest
@@ -37,7 +36,7 @@ def _worker(requested: bool) -> Worker:
 
 
 def _root():
-    return create_root_analysis(uuid=str(uuid.uuid4()), analysis_mode=ANALYSIS_MODE_CORRELATION)
+    return create_root_analysis(analysis_mode=ANALYSIS_MODE_CORRELATION)
 
 
 def test_submit_happens_after_the_lock_is_released():

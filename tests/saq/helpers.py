@@ -608,7 +608,7 @@ def create_submission(**kwargs) -> Submission:
     return Submission(root, **kwargs)
 
 def insert_alert():
-    root = create_root_analysis(uuid=str(uuid.uuid4()))
+    root = create_root_analysis()
     root.initialize_storage()
     root.save()
 
@@ -664,7 +664,7 @@ def insert_alert_with_detections(detections: list[dict], disposition: Union[str,
 
     Each detection is a dict with "description" and "signature_uuid", and optionally "fqdn": the
     value of the fqdn observable it sits on (the root when absent). Returns the loaded Alert."""
-    root = create_root_analysis(uuid=str(uuid.uuid4()))
+    root = create_root_analysis()
     root.initialize_storage()
     for detection in detections:
         node = root
