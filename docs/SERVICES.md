@@ -124,6 +124,8 @@ class MyService(ACEServiceInterface):
 
 A service that works through the rows of a database table is built on `saq/queue_service.py` instead, as remediation, external remediation checks and file collection are. A `QueueCollector` thread locks the rows that are due and hands each one to the `QueueWorker` registered under its name, and the worker runs its own threads over an in-memory queue. A row is locked again once its lock times out (`lock_timeout_seconds`), unless a worker of this collector still holds it, queued or in progress (`QueueWorker.pending_ids()`): a worker that falls behind would otherwise be handed a second copy of each row it has not reached. The subclasses supply the table, which rows are due (`filter_candidates()`, `ready()`), the work item (`build_work_item()`, which finishes a row itself when there is no work for it) and what is done with it (`process_one()`). A `QueueManager` lists the workers the configuration asks for, and a `QueueService` needs only `create_manager()`. When the service stops, the manager waits for the collector, unlocks the rows still in the workers' queues (`QueueCollector.release()`, only where the row still holds the lock the collector put on it), and only then waits for the workers, so an item still being worked at the shutdown deadline does not keep the queued rows locked. A restart takes them at once instead of after `lock_timeout_seconds`. The work item carries that lock as `lock`.
 
+Nothing refreshes a row's lock while a worker holds the item, and `pending_ids()` knows only this collector's workers. A second instance of the same queue service, on another node, locks every row a worker here has held past `lock_timeout_seconds` and runs it a second time. So each queue service (remediation, file collection) runs as one instance per cluster (#1213).
+
 Add a `SERVICE_MYSERVICE = "myservice"` constant in `saq/constants.py` alongside the other `SERVICE_*` entries and use it instead of a string literal.
 
 ### 2. Register the configuration
@@ -176,6 +178,8 @@ myservice:
 
 No image rebuild is needed — every service shares the `ace3:latest` image and bind-mounts the repo at `/opt/ace`. Restart the new container to pick up code changes.
 
+Keep `hostname: ace`. With `global.node: AUTO` the node's name is the container's hostname, and every container of a node must have the same one, because the name is part of every storage directory and of every lock the node owns (`docs/ENGINE.md` §14.1).
+
 #### Production-overlay differences
 
 The production-overlay stanzas are similar to the root file but with a few extras to mirror nearby services:
@@ -191,7 +195,7 @@ docker compose up -d myservice
 docker compose logs -f myservice
 ```
 
-`SIGTERM` and `SIGINT` both request shutdown through the process-wide `ShutdownCoordinator`, so `docker compose stop myservice` shuts it down cleanly. A service must not install its own handlers for those signals, must not join anything without a timeout in `stop()`/`wait()`, and should check `is_shutting_down()` in any long-running loop — see `docs/SHUTDOWN.md`. Set `shutdown_deadline_seconds` in the service's config block if the default 20s is not enough. If the service is config-disabled or excluded by `instance_types`, `load_service_by_name` returns a `DisabledService` that simply blocks on a shutdown event — the container will start, log the disabled message, and idle until stopped.
+`SIGTERM` and `SIGINT` both request shutdown through the process-wide `ShutdownCoordinator`, so `docker compose stop myservice` shuts it down cleanly. A service must not install its own handlers for those signals, must not join anything without a timeout in `stop()`/`wait()`, and should check `is_shutting_down()` in any long-running loop — see `docs/SHUTDOWN.md`. A loop that uses `get_db()` calls `remove_all_sessions()` (`saq/database/pool.py`) after each item, in a `finally`: a commit that fails leaves the thread's session unusable, and without the reset every later item raises `PendingRollbackError` (#852). Set `shutdown_deadline_seconds` in the service's config block if the default 20s is not enough. If the service is config-disabled or excluded by `instance_types`, `load_service_by_name` returns a `DisabledService` that simply blocks on a shutdown event — the container will start, log the disabled message, and idle until stopped.
 
 ---
 
