@@ -263,7 +263,7 @@ def test_ocr_does_not_import_pandas():
 def test_reading_analysis_does_not_import_the_analysis_tools():
     # the search indexer reads these modules' analysis, and loading any alert imports each analysis class's module;
     # the libraries the analyzers run (OCR, oletools, the RDAP and WHOIS clients, pikepdf, celery) load when they run
-    _assert_loads_none("import saq.search.extractors, saq.modules.apex_domain\n",
+    _assert_loads_none("import saq.search.extractors\n",
                        ["cv2", "pytesseract", "saq.ocr", "oletools", "whoisit", "whois", "tldextract", "pikepdf",
                         "celery"])
 

@@ -1057,7 +1057,6 @@ BUCKET_ACE3 = "ace3"
 # analysis module names
 ANALYSIS_MODULE_ACTIVE_MIME = "active_mime"
 ANALYSIS_MODULE_ALERT_ADDED_TO_EVENT = "alert_added_to_event"
-ANALYSIS_MODULE_APEX_DOMAIN_ANALYZER = "apex_domain_analyzer"
 ANALYSIS_MODULE_ARCHIVE = "archive"
 ANALYSIS_MODULE_AUTOIT = "autoit"
 ANALYSIS_MODULE_AUTOMATED_REMEDIATION = "automated_remediation"
