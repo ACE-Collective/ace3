@@ -56,7 +56,6 @@ from saq.analysis.presenter.analysis_presenter import (
 )
 from saq.constants import F_FQDN, F_IP, AnalysisExecutionResult
 from saq.modules import AnalysisModule
-from saq.modules.apex_domain import ApexDomainAnalysis
 from saq.util.strings import format_item_list_for_summary
 
 # whoisit, whois and tldextract (~16 MB with the requests and httpx they load) are imported in the functions that
@@ -563,17 +562,9 @@ class RdapAnalyzer(AnalysisModule):
     def custom_requirement(self, observable) -> bool:
         """Skip IP observables that are not globally routable (RFC1918,
         loopback, link-local, CGNAT, multicast, reserved) — they have no
-        public RDAP registration data.
-
-        Skip a subdomain FQDN that apex_domain_analyzer gave an apex
-        observable: registration data belongs to the apex, so RDAP runs once
-        there instead of once per subdomain. apex_domain_analyzer is a declared
-        dependency, so its result is known here; when it is disabled or did not
-        run on this observable, the subdomain is still looked up as before."""
+        public RDAP registration data."""
         if not observable.is_a(F_IP):
-            apex_analysis = observable.get_analysis(ApexDomainAnalysis)
-            # the analysis is kept when the observable limit stopped the apex from being added
-            return not (isinstance(apex_analysis, ApexDomainAnalysis) and apex_analysis.get_observable_by_type(F_FQDN))
+            return True
         try:
             return ipaddress.ip_address(observable.value).is_global
         except ValueError:
