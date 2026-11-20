@@ -92,6 +92,29 @@ def test_a_checkout_with_no_denylist_fails_closed(tmp_path):
         public_text.load_terms(str(tmp_path / "core"), [])
 
 
+def test_a_checkout_with_no_internal_repo_checks_against_no_terms(tmp_path):
+    core = tmp_path / "core"
+    (core / "integrations").mkdir(parents=True)
+
+    assert public_text.load_terms(str(core), []) == []
+
+
+def test_a_signatures_directory_that_is_not_a_git_repo_is_not_an_internal_repo(tmp_path):
+    # ACE writes its own rules under signatures/ (svs_marker, observable_export) when no signatures repo is cloned
+    core = tmp_path / "core"
+    (core / "signatures" / "yara" / "svs_marker").mkdir(parents=True)
+
+    assert public_text.internal_repos(str(core)) == {}
+    assert public_text.load_terms(str(core), []) == []
+
+
+def test_a_signatures_git_repo_without_a_denylist_fails_closed(tmp_path):
+    make_repo(tmp_path / "core" / "signatures")
+
+    with pytest.raises(public_text.CheckError, match="nothing may be published"):
+        public_text.load_terms(str(tmp_path / "core"), [])
+
+
 def test_a_required_repo_without_a_denylist_fails_closed(core):
     make_repo(core / "signatures")
 
@@ -134,8 +157,11 @@ def test_the_cli_exit_status_says_pass_hit_or_could_not_check(core, tmp_path):
     assert run_cli(core, stdin="all generic")[0] == 0
     code, out = run_cli(core, stdin="Initech")
     assert (code, out["ok"]) == (1, False)
-    code, out = run_cli(tmp_path / "nowhere", stdin="anything")
+    make_repo(tmp_path / "bare" / "integrations" / "internal")
+    code, out = run_cli(tmp_path / "bare", stdin="anything")
     assert code == 2 and "nothing may be published" in out["error"]
+    code, out = run_cli(tmp_path / "nowhere", stdin="Initech")
+    assert (code, out["terms"]) == (0, 0)
 
 
 # ---------------------------------------------------------------- tickets and markers
@@ -566,6 +592,62 @@ def test_a_public_write_with_no_denylist_to_check_against_is_refused(tmp_path, c
     with pytest.raises(factory.FactoryError, match="refusing to publish: no .factory/public-denylist.toml"):
         factory.issue_create(FakeContext(core), "generic", "generic", [])
     assert calls == []
+
+
+def test_a_public_write_from_a_checkout_with_no_internal_repo_goes_through(tmp_path, calls):
+    core = tmp_path / "core"
+    core.mkdir()
+    ctx = FakeContext(core)
+    del ctx.repos["internal"]
+
+    factory.issue_create(ctx, "A cache lock blocks maintenance", "generic body", [])
+
+    assert [c[:3] for c in calls] == [("gh", "issue", "create")]
+
+
+def test_doctor_warns_but_passes_when_the_checkout_has_no_internal_repo(tmp_path, monkeypatch):
+    core = tmp_path / "core"
+    (core / "signatures" / "yara").mkdir(parents=True)
+    ctx = FakeContext(core)
+    del ctx.repos["internal"]
+    monkeypatch.setattr(factory, "gh_me", lambda main: "me")
+    monkeypatch.setattr(factory, "dev_mounts", lambda main: None)
+    monkeypatch.setattr(factory, "label_names", lambda ctx: set(factory.LABELS))
+
+    result = factory.doctor(ctx)
+
+    denylists = next(c for c in result["checks"] if c["check"] == "denylists")
+    assert denylists["ok"] and "no internal repo" in denylists["warning"]
+    assert not any(c["check"].endswith("factory files") for c in result["checks"])
+    assert result["warnings"] == ["denylists"]
+
+
+def test_doctor_counts_the_terms_it_loads_without_a_warning(core, monkeypatch):
+    monkeypatch.setattr(factory, "gh_me", lambda main: "me")
+    monkeypatch.setattr(factory, "dev_mounts", lambda main: None)
+    monkeypatch.setattr(factory, "label_names", lambda ctx: set(factory.LABELS))
+    monkeypatch.setattr(factory, "ado_me", lambda: "me")
+
+    result = factory.doctor(FakeContext(core))
+
+    denylists = next(c for c in result["checks"] if c["check"] == "denylists")
+    assert denylists == {"check": "denylists", "ok": True, "detail": "2 terms loaded"}
+    assert result["warnings"] == []
+
+
+def test_doctor_fails_while_an_internal_repo_has_no_denylist(tmp_path, monkeypatch):
+    core = tmp_path / "core"
+    make_repo(core / "signatures")
+    ctx = FakeContext(core)
+    del ctx.repos["internal"]
+    monkeypatch.setattr(factory, "gh_me", lambda main: "me")
+    monkeypatch.setattr(factory, "dev_mounts", lambda main: None)
+    monkeypatch.setattr(factory, "label_names", lambda ctx: set(factory.LABELS))
+
+    result = factory.doctor(ctx)
+
+    assert not result["ok"]
+    assert {c["check"] for c in result["checks"] if not c["ok"]} == {"dev container", "signatures factory files", "denylists"}
 
 
 def test_a_generic_public_write_goes_through(core, calls):
