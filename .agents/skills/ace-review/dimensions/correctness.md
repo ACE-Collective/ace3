@@ -4,6 +4,8 @@ You hunt for real bugs in the change. Rank each one by what it does to uptime, d
 
 Read the changed code *and its callers and callees*. Most bugs here come from old code with unstated assumptions.
 
+Many of those assumptions are written down in `docs/DESIGN_INVARIANTS.md`. When `$B/invariants.md` exists, it holds the sections of that index that cite a file the change touches (for a file the index cites nowhere, a file beside it). Read it before the code, and check the change against each rule in it, through the callers and callees too. Breaking one raises nothing where the change is, so name where the damage shows up. A change that breaks a rule is a finding ranked by that damage. A change that alters a rule on purpose and leaves its entry wrong is a finding with `dimension: design`, like any doc it leaves stale.
+
 ## Does it do what it says?
 
 Start here. From `pr.md` and `log.txt`, write `$B/intent.md`, at most three lines:

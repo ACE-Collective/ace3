@@ -1036,3 +1036,65 @@ def test_scan_looks_inside_classes_and_at_calls_on_call_results():
     leads = prepare.scan_python("saq/pool.py", source, {4, 5, 6})
 
     assert [(lead["line"], lead["check"]) for lead in leads] == [(4, "unbounded-wait"), (5, "bare-except")]
+
+
+INVARIANTS = """# ACE design invariants
+
+## Keeping this current
+
+- Code is cited as `saq/engine/worker.py::Worker.execute`.
+
+## 1. Engine
+
+- **A rule.** See `saq/engine/worker.py::Worker.execute`. [docs/ENGINE.md]
+
+## 2. Storage
+
+- **Another rule.** See `saq/storage/factory.py::reset`. [docs/STORAGE.md]
+
+## 3. Deployment
+
+- **A third rule.** See `docker-compose.yml`, `Dockerfile` and `saq/engine/core.py::Engine`.
+"""
+
+
+def test_invariant_sections_are_the_ones_that_cite_a_changed_file_or_its_neighbor():
+    def titles(*paths):
+        return [title for title, _ in prepare.invariant_sections(INVARIANTS, set(paths))]
+
+    # a cited file picks only the sections that cite it, not those citing its neighbors
+    assert titles("saq/engine/worker.py") == ["1. Engine"]
+    assert titles("Dockerfile") == ["3. Deployment"]
+    # a file cited nowhere picks the sections citing a file beside it
+    assert titles("saq/storage/s3.py") == ["2. Storage"]
+    assert titles("saq/engine/new.py") == ["1. Engine", "3. Deployment"]
+    # saq/ itself is too broad to count as beside, and docs never match
+    assert titles("saq/constants.py", "docs/ENGINE.md", "docs/DESIGN_INVARIANTS.md") == []
+    assert prepare.invariant_sections(None, {"saq/engine/worker.py"}) == []
+
+
+def test_the_bundle_carries_the_base_invariant_sections_the_change_touches(repo, review):
+    git(repo, "switch", "-q", "main")
+    write(repo, "docs/DESIGN_INVARIANTS.md", INVARIANTS)
+    commit(repo, "index")
+    git(repo, "switch", "-q", "mw/topic")
+    git(repo, "rebase", "-q", "main")
+    write(repo, "saq/engine/worker.py", "def execute():\n    pass\n")
+    # the change's own edit to the index is not what it is judged by
+    write(repo, "docs/DESIGN_INVARIANTS.md", INVARIANTS.replace("A rule.", "A rule the change rewrote."))
+
+    target = review()
+
+    assert target["invariant_sections"] == ["1. Engine"]
+    text = bundle_file(target, "invariants.md").read_text()
+    assert "## 1. Engine" in text and "A rule." in text
+    assert "rewrote" not in text and "## 2. Storage" not in text
+
+
+def test_no_invariants_file_when_no_section_is_touched(repo, review):
+    write(repo, "saq/worker.py", "def run():\n    return 2\n")
+
+    target = review()
+
+    assert target["invariant_sections"] == []
+    assert not bundle_file(target, "invariants.md").exists()
