@@ -8,7 +8,13 @@ import pytest
 from saq.database.model import hash_password
 from saq.environment import get_base_dir
 from tests import unittest_session
-from tests.saq.helpers import WaitTimedOutError, process_is_gone, wait_for_condition
+from saq.util.uuid import workload_storage_dir
+from tests.saq.helpers import (
+    WaitTimedOutError,
+    create_root_analysis,
+    process_is_gone,
+    wait_for_condition,
+)
 
 # a pytest process reduced to what matters here: it starts the log collector, reports the pid of
 # the collector's server and then waits to be killed
@@ -123,3 +129,23 @@ def test_passwords_are_hashed_at_bcrypt_cost_4_in_the_tests():
     # tests/conftest.py lowers the cost: at production's 12, each test user and each login
     # cost about 180 ms
     assert hash_password("password").startswith("$2b$04$")
+
+
+@pytest.mark.unit
+def test_each_root_analysis_gets_its_own_uuid_and_storage_dir():
+    # unit tests do not wipe the data directory, so two tests that shared a root would see each
+    # other's files (and add_file_observable would rename the second copy) depending on their order
+    first = create_root_analysis()
+    second = create_root_analysis()
+
+    assert first.uuid != second.uuid
+    assert first.storage_dir != second.storage_dir
+    assert first.storage_dir == os.path.relpath(workload_storage_dir(first.uuid), start=get_base_dir())
+
+
+@pytest.mark.unit
+def test_a_root_analysis_keeps_the_uuid_it_is_given():
+    root = create_root_analysis(uuid="00000000-0000-4000-8000-000000000001")
+
+    assert root.uuid == "00000000-0000-4000-8000-000000000001"
+    assert root.storage_dir == os.path.relpath(workload_storage_dir(root.uuid), start=get_base_dir())

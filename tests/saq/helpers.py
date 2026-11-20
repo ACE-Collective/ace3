@@ -18,6 +18,7 @@ import threading
 import time
 from typing import Union
 import uuid
+from uuid import uuid4
 
 
 from aceapi_v2.auth.utils import API_AUTH_TYPE_USER, API_CREDENTIAL_USER_KEY
@@ -63,7 +64,6 @@ EV_ROOT_ANALYSIS_ALERT_TYPE = 'test_alert'
 EV_ROOT_ANALYSIS_DESCRIPTION = 'This is only a test.'
 EV_ROOT_ANALYSIS_EVENT_TIME = EV_TEST_DATE
 EV_ROOT_ANALYSIS_NAME = 'test'
-EV_ROOT_ANALYSIS_UUID = '14ca0ff2-ff7e-4fa1-a375-160dc072ab02'
 
 IntegrationConfigurationSnapshot = tuple[dict, dict, bool]
 
@@ -98,7 +98,13 @@ def create_root_analysis(tool=None, tool_instance=None, alert_type=None, desc=No
                          action_counts=None, details=None, name=None, remediation=None, state=None,
                          uuid=None, location=None, storage_dir=None, company_name=None, company_id=None,
                          analysis_mode=None, queue=None, instructions=None):
-    """Returns a default RootAnalysis object with expected values for testing."""
+    """Returns a default RootAnalysis object with expected values for testing.
+
+    Each root gets a fresh uuid, and so a storage directory of its own, unless one is given: unit
+    tests do not wipe the data directory between tests."""
+    if not uuid:
+        uuid = str(uuid4())
+
     return RootAnalysis(tool=tool if tool else EV_ROOT_ANALYSIS_TOOL,
                         tool_instance=tool_instance if tool_instance else EV_ROOT_ANALYSIS_TOOL_INSTANCE,
                         alert_type=alert_type if alert_type else EV_ROOT_ANALYSIS_ALERT_TYPE,
@@ -109,11 +115,10 @@ def create_root_analysis(tool=None, tool_instance=None, alert_type=None, desc=No
                         name=name if name else EV_ROOT_ANALYSIS_NAME,
                         remediation=remediation if remediation else None,
                         state=state if state else None,
-                        uuid=uuid if uuid else EV_ROOT_ANALYSIS_UUID,
+                        uuid=uuid,
                         location=location if location else None,
                         storage_dir=storage_dir if storage_dir else os.path.relpath(
-                            workload_storage_dir(uuid if uuid else EV_ROOT_ANALYSIS_UUID),
-                            start=get_base_dir()),
+                            workload_storage_dir(uuid), start=get_base_dir()),
                         company_name=company_name if company_name else None,
                         company_id=company_id if company_id else None,
                         analysis_mode=analysis_mode if analysis_mode else 'test_groups',
