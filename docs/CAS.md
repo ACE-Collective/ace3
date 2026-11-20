@@ -353,7 +353,7 @@ pool by overriding its keys in its own configuration, for example to give `yara_
 
 - **Permissions:** `cas:purge` and `cas:hold` (legal holds), in `saq/permissions/catalog.py`
   with the seeding migration `61b26390b94e`. Nothing in the repo enforces them yet; they exist so
-  an API surface can, without a catalog migration.
+  an API surface can.
 - **CLI** (`saq/cli/commands/cas.py`): `ace cas pools | stat | get | gc | verify | orphans |
   node-stats | purge | hold add | hold release`. `gc`, `verify` and `orphans` take `--pool`,
   `--dry-run` and `--force`; `purge` and `hold` take `--actor`, which is recorded, not checked.

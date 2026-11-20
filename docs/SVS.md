@@ -1130,7 +1130,7 @@ reviewed next to the live one. Every SVS table has `updated_at`.
 | `svs:admin` | Retiring and deleting samples, global ignores, the test-host table, configuration |
 
 Plus `cas:purge` and `cas:hold` from the CAS. Each new `svs:*` permission is added to
-`saq/permissions/catalog.py` with a seeding migration; the `signature:*` pair already exists and
+`saq/permissions/catalog.py`, which the startup seed projects into the catalog table; the `signature:*` pair already exists and
 gates the Signatures area. A reporting key gets the `*_read` permissions, `alert:read` and
 `signature:read`.
 

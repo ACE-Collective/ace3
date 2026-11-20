@@ -4,10 +4,14 @@ The ``PERMISSION_CATALOG`` constant below is the single source of truth for the 
 ``(major, minor)`` permissions the application checks with ``@require_permission`` (Flask) and the
 ``require_permission`` dependency (FastAPI). It is version-controlled, reviewable, and greppable.
 
-The ``auth_permission_catalog`` database table is a *derived read-model*: it is populated from this
-constant by :func:`sync_permission_catalog` (via the ``ace perm catalog sync`` CLI and an Alembic
-data migration) so the management UI can render a canonical list of permissions to grant without
-importing Python. The constant is authoritative; the table is a faithful projection of it.
+The ``auth_permission_catalog`` database table is a *derived read-model*, so the management UI can
+render a canonical list of permissions to grant without importing Python. The startup seed
+(``saq.database.seed.seed``, which ``docker/startup/setup.sh`` runs after ``alembic upgrade head``
+on every start) projects this constant into it with :func:`sync_permission_catalog`, and that is
+the only mechanism: a new permission, or a changed description, is an edit to this file and ships
+no Alembic data migration. The seed never prunes, so the row of a permission removed from this file
+stays until ``ace perm catalog sync`` deletes it; a row grants nothing, so a stale one only stays
+listed in the UI.
 
 Note that wildcard grants (e.g. ``*:*``, ``observable:*``) are legitimate values a deployment may
 grant, but they are not literal catalog rows -- see :func:`is_grantable`.
@@ -33,8 +37,7 @@ class CatalogEntry:
 # GUI area (app/signatures/views/access.py), and is also enforced by the yara-qa API routes. `ai:read` is enforced by the out-of-repo AI container. `file_collection:create`
 # is enforced by integrations, on the API routes through which callers request their collectors' work. `cas:hold`
 # and `cas:purge` have no in-repo enforcement site yet: `ace cas hold|purge` record --actor without
-# checking, and the entries exist so an API surface can enforce them without a catalog migration
-# (docs/CAS.md). Every other entry has at least one in-repo enforcement site.
+# checking, and the entries exist so an API surface can enforce them (docs/CAS.md). Every other entry has at least one in-repo enforcement site.
 PERMISSION_CATALOG: tuple[CatalogEntry, ...] = (
     CatalogEntry("admin", "read", "Access the administration area (individual actions require their own permissions)."),
     # The ai: major gates the AI investigation API (aceapi_ai). ai:alert (alert reads: the alert and
