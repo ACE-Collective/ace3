@@ -2,6 +2,8 @@
 
 Take one ticket from `factory:ready` to a draft PR, or to a clear stop. Run every `$F` command on the host. Run tests and `ace` commands from the worktree's root through `bin/exec-in-container.sh` (AGENTS.md, *Where a command runs*).
 
+Run every pytest command in the background (Claude Code's `run_in_background`), with its output redirected to a file outside the worktree, and read that file when the run exits. A run waits while any other run of the suite holds the dev container, maybe another ticket's, and a foreground command that times out while it waits kills only the `docker exec` client: the run goes on in the container and runs the tests later, for nobody. While a run you started is still going, don't start another or remove the worktree.
+
 ## 1. Claim
 
 `$F claim TICKET`. It refuses a ticket someone else holds; stop there and report it. Claiming comes before any other work, so two runs never build the same ticket.
