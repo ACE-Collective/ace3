@@ -2462,6 +2462,7 @@ deprecated_modules:
   # the email archive is no longer searchable (docs/EMAIL_ARCHIVE.md)
   - saq.modules.email.correlation:URLEmailPivotAnalysis_v2
   - saq.modules.email.archive:EncryptedArchiveAnalysis
+  # apex_domain_analyzer was removed; rdap_analyzer looks up each fqdn again
   - saq.modules.apex_domain:ApexDomainAnalysis
 
 analysis_module_observable_detection:

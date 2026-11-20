@@ -171,12 +171,16 @@ def test_module_path_memoized_and_instance_validated():
     assert analysis.module_path == f"{base}:second"
 
 @pytest.mark.unit
-def test_load_removed_user_tag_analysis(caplog):
-    # the user_tagger module was removed, but saved alerts still reference its analysis
+@pytest.mark.parametrize("module_path", [
+    "saq.modules.user:UserTagAnalysis",
+    "saq.modules.apex_domain:ApexDomainAnalysis",
+])
+def test_load_removed_module_analysis(module_path, caplog):
+    # these modules were removed, but saved alerts still reference their analysis
     from saq.analysis.analysis import UnknownAnalysis, load_analysis_from_module_path
 
     caplog.set_level(logging.DEBUG)
-    analysis = load_analysis_from_module_path("saq.modules.user:UserTagAnalysis")
+    analysis = load_analysis_from_module_path(module_path)
 
     assert isinstance(analysis, UnknownAnalysis)
     assert not [r for r in caplog.records if r.levelno > logging.DEBUG]
