@@ -84,7 +84,8 @@ see changes within the reload interval alone.
 
 ### The Mail From / Mail Return Path collision
 
-ACE deduplicates observables by `(type, value)`. Before this change, every
+ACE deduplicates observables by exact type and value (see *Observable identity*
+below). Before this change, every
 email-address-shaped piece of an email — `From`, `To`, `Cc`, `Reply-To`,
 `Return-Path`, the SMTP envelope addresses, and the various `X-*` sender
 headers — was added as type `email_address`. When a sender used the same
@@ -264,6 +265,14 @@ When ACE exports observable detection information into the yara export, it **col
 The Splunk KV store export instead keeps the **exact type** on each document and publishes the ancestor chain alongside it (`type_path`), so a hunt can select a whole family itself while the alert it creates carries the exact type the engine's own match fires on.
 
 How detections are stored, matched, and exported (including the Splunk KV store collection hunts search) is covered in [OBSERVABLE_DETECTIONS.md](OBSERVABLE_DETECTIONS.md).
+
+## Observable identity
+
+Inside one analysis tree, two observables are the same observable when they have the **exact same type**, values that `_compare_value()` says are equal, and, when either one has a time, the same time (`Observable.__eq__`). Adding an observable that is already in the tree returns the existing one. A parent type and a subtype with the same value are two observables, which is what the email subtypes rely on. A file observable is the same file when it has the same sha256 (its value) and the same `file_path` (`FileObservable.__eq__`), so one content under two names is two observables.
+
+ACE never stores an observable whose value is empty or only whitespace. `ObservableRegistry.record()`, which every add goes through, logs a warning and adds nothing, because generic types such as `user` do not reject an empty value themselves.
+
+In the database an observable is the pair (type, sha256 of its value encoded as UTF-8 with undecodable characters dropped), the `observables` table's unique key (`sync_observable`). A file observable's sha256 is its content hash. Every row keyed on an observable (detections, comments, mappings) is found through that pair, so changing how a type normalizes its value, or renaming the type, leaves the existing rows under a key the engine no longer produces. A lookup normalizes a value through the type's observable class before it hashes it (`resolve_observable_identity`, [SEARCH.md](SEARCH.md)).
 
 ## The email subtype tree
 

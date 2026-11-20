@@ -38,7 +38,7 @@ is written there, change the tag to point at it.
   `saq/util/uuid.py::storage_dir_from_uuid` and `saq/observables/file.py::FileObservable.full_path`
   rely on it, and sandboxed tools run in the same cwd so they can take ACE's paths as they are
   (`saq/modules/base_module.py::AnalysisModule.run_sandboxed_tool`).
-  [#1119, closed, but `FileObservable.full_path` is still relative; partial: docs/TOOL_SANDBOX.md]
+  [docs/PROCESS_ENVIRONMENT.md, docs/TOOL_SANDBOX.md; #1119]
 - **Path bases are mixed and only agree when cwd = `SAQ_HOME`.** `config:` includes and
   `SAQ_CONFIG_PATHS` resolve against the cwd. `file:` values resolve against `SAQ_HOME`. Inside a
   storage dir, `json_path` is joined to the base dir, but `file_dir` and `submission_json_path`
@@ -46,22 +46,22 @@ is written there, change the tag to point at it.
   `saq/configuration/yaml_parser.py::YAMLConfig.resolve_references`,
   `saq/configuration/yaml_parser.py::_read_file_value`,
   `saq/configuration/loader.py::_load_env_config_paths` and
-  `saq/analysis/file_manager/local_file_manager.py::LocalFileManager.file_dir`. [undocumented]
+  `saq/analysis/file_manager/local_file_manager.py::LocalFileManager.file_dir`. [docs/PROCESS_ENVIRONMENT.md]
 - **`GlobalRuntimeSettings` holds hard-coded defaults until the line of
   `initialize_environment()` that sets each field.** The defaults are `/opt/ace` paths,
   instance type `DEV`, node `None` and the system temp dir. Code that runs earlier reads the
   wrong values; #1285 (`SAQ_ENC` is never removed in production) is one case. See
   `saq/environment.py::GlobalRuntimeSettings` and `saq/environment.py::initialize_environment`.
-  [undocumented]
+  [docs/PROCESS_ENVIRONMENT.md; #1285]
 - **`initialize_environment()` deletes `http(s)_proxy` and `ftp_proxy`, in both cases, for the
   whole process and its children.** Every client that needs a proxy configures it explicitly.
-  See `saq/environment.py::initialize_environment`. [undocumented]
+  See `saq/environment.py::initialize_environment`. [docs/PROCESS_ENVIRONMENT.md]
 - **App hosts, the OS and MySQL sessions all run on UTC.** Naive datetimes are compared against
   the database's `NOW()`, and CAS and YARA QA hold expiries are naive local time on purpose
   (`saq/yara_qa/store.py::record_qa_match_or_raise`). DB sessions set no `time_zone`
   (`saq/database/pool.py::_build_engine_options`, `saq/database/pool.py::_database_pool`).
   The only enforcement is `TZ=UTC` in the `Dockerfile` and a warning in
-  `saq/environment.py::initialize_environment`. [undocumented; AGENTS.md only says to use `NOW()`]
+  `saq/environment.py::initialize_environment`. [docs/PROCESS_ENVIRONMENT.md]
 - **`start.sh` must `exec` the ace command so Python is PID 1.** bash does not forward SIGTERM.
   See `docker/startup/start.sh` (`exec "$@"`). [docs/SHUTDOWN.md]
 
@@ -73,7 +73,7 @@ is written there, change the tag to point at it.
   recomputing `storage_dir_from_uuid`. Renaming a node makes transfers return 404 and orphans its
   node row and lock prefix. See `saq/environment.py::initialize_environment` and
   `aceapi_v2/engine/service.py::_existing_target_dir`.
-  [partial: docs/SERVICES.md shows `hostname: ace` without the reason]
+  [docs/ENGINE.md §14.1, docs/SERVICES.md]
 - **Lock owners are named `<node>-worker-<name>`.** Engine startup and shutdown delete
   `<node>-%`. A lock named any other way is never cleared on restart. Two engines must never
   share a node name, and until #1286 is fixed no node name may be another's name plus `-`. See
@@ -117,17 +117,17 @@ is written there, change the tag to point at it.
   `saq/database/model.py::load_alert_by_storage_dir`, `saq/engine/worker.py::Worker.execute` and
   `saq/engine/analysis_orchestrator.py::AnalysisOrchestrator._sync_alert_to_database`;
   `saq/cli/commands/alerts.py::reset_alerts` works around this by trying both forms.
-  [undocumented]
+  [docs/ENGINE.md §15]
 - **A storage dir is self-contained.** Everything `data.json` references is relative to the dir,
   because work transfer tars it to another node and `move()` re-roots it. See
   `aceapi_v2/engine/service.py::create_download_tar` and
   `saq/analysis/persistence_manager.py::AnalysisDetailsPersistenceManager.save`.
-  [partial: docs/ENGINE.md]
+  [docs/ENGINE.md §15]
 - **Stored file bytes are immutable.** `files/` entries are hardlinks to
   `hardcopies/<sha256>`, and the analysis cache and CAS share those inodes across alerts. An
   in-place edit corrupts every copy and invalidates the sha256. See
   `saq/analysis/file_manager/local_file_manager.py::LocalFileManager.store_file`.
-  [partial: docs/ANALYSIS_CACHING.md calls it a "known limitation"]
+  [docs/ENGINE.md §15]
 - **A file observable's value is its sha256, and its copy lives at
   `<storage_dir>/hardcopies/<sha256>`.** Crash reports find the bytes by value alone. See
   `saq/crash_report.py::_resolve_file_source`. [docs/CRASH_REPORTS.md]
@@ -142,9 +142,9 @@ is written there, change the tag to point at it.
   every stored copy into `UnknownAnalysis`. There is no alias mechanism. See
   `saq/analysis/module_path.py::MODULE_PATH` and
   `saq/analysis/analysis.py::load_analysis_from_module_path`.
-  [partial: docs/ENGINE.md §16.6 covers removal only]
+  [docs/ENGINE.md §15, §16.6]
 - **Every Analysis subclass is constructible with no arguments.** Loading calls `Class()`. See
-  `saq/analysis/analysis.py::load_analysis_from_module_path`. [undocumented]
+  `saq/analysis/analysis.py::load_analysis_from_module_path`. [docs/ENGINE.md §15]
 - **An analysis class that cannot be imported loads as a read-only `UnknownAnalysis`, logged at
   ERROR unless it is in `deprecated_modules`. An observable class that cannot be imported
   raises.** Falling back to the generic class would drop the class's state on the next save.
@@ -153,14 +153,14 @@ is written there, change the tag to point at it.
   `saq/observables/generator.py::get_observable_class`. [docs/ENGINE.md §16.6]
 - **Every `data.json` key is optional on read, and a new field defaults when it is absent.**
   Old alerts, and roots transferred from nodes on other versions, go through the same code. See
-  `saq/analysis/serialize/root_serializer.py::RootAnalysisSerializer.deserialize`. [undocumented]
+  `saq/analysis/serialize/root_serializer.py::RootAnalysisSerializer.deserialize`. [docs/ENGINE.md §15]
 - **`details`, `state` and extensions go through `_JSONEncoder` and come back as plain JSON.**
   Datetimes come back as strings, bytes are decoded lossily, and an unknown type raises at
   save. See `saq/json_encoding.py::_JSONEncoder.default`. [#999]
 - **`Analysis.details` is `{}` on a loaded root until `load_details()` is called**, and calling
   it marks the details modified. See `saq/analysis/analysis.py::Analysis.__init__` and
   `saq/analysis/persistence_manager.py::AnalysisDetailsPersistenceManager.load_details`.
-  [partial: docs/ENGINE.md; #1196]
+  [docs/ENGINE.md §15; #1196]
 - **`root.delayed` is derived from the tree.** Its setter does nothing and the serialized value
   is ignored. It gates final analysis, post-analysis and index rebuild. See
   `saq/analysis/root.py::RootAnalysis.delayed`. [docs/ENGINE.md §10]
@@ -168,7 +168,7 @@ is written there, change the tag to point at it.
   cached, shown as failed". See `saq/analysis/analysis.py::Analysis.error`.
   [docs/ENGINE.md §12.4]
 - **ACE never stores an observable with an empty value.** See
-  `saq/analysis/observable_registry.py::ObservableRegistry.record`. [undocumented]
+  `saq/analysis/observable_registry.py::ObservableRegistry.record`. [docs/OBSERVABLE_TYPE_INHERITANCE.md]
 - **When a module fails without creating its analysis, the failure goes in
   `root.analysis_failures` and no Analysis is synthesized.** Readers take an existing analysis
   as the module's result. [docs/ENGINE.md §12.4; #1176]
@@ -180,12 +180,12 @@ is written there, change the tag to point at it.
   are separate observables, which is why email subtypes exist. See
   `saq/analysis/observable.py::Observable.__eq__` and
   `saq/observables/file.py::FileObservable.__eq__`.
-  [partial: docs/OBSERVABLE_TYPE_INHERITANCE.md says "(type, value)"]
+  [docs/OBSERVABLE_TYPE_INHERITANCE.md]
 - **Database identity is (type, sha256 of the UTF-8 value with errors ignored); a file uses its
   content hash.** Changing a type's normalization or its type string orphans its detections,
   comments and mappings. See `saq/analysis/observable.py::Observable._initialize_sha256_hasher`,
   `saq/database/util/sync.py::sync_observable` and
-  `saq/database/model.py::Observable.__table_args__`. [partial: docs/SEARCH.md]
+  `saq/database/model.py::Observable.__table_args__`. [docs/OBSERVABLE_TYPE_INHERITANCE.md, docs/SEARCH.md]
 - **Lookups normalize a value through the observable class before hashing.** Hashing the raw
   value finds rows the engine never matches. This applies to search, `/observables/lookup` and
   observable detections. See
@@ -193,7 +193,7 @@ is written there, change the tag to point at it.
   [docs/SEARCH.md, docs/FLASK_API_MIGRATION.md]
 - **The observable type, directive, disposition and analysis mode strings in `saq/constants.py`
   are persisted and are never renamed.** They live in `data.json`, DB columns, workload rows,
-  hunts, integrations and Splunk exports. [undocumented]
+  hunts, integrations and Splunk exports. [docs/ENGINE.md §15]
 - **Code tests an observable's type through the hierarchy with `observable.is_a()`, never with
   `==`.** Dispatch is by subtype, so `observable.type == F_X` is false for every subtype. Older
   `==` comparisons remain in `saq/modules`. See `saq/analysis/observable.py::Observable.is_a`.
@@ -258,7 +258,7 @@ is written there, change the tag to point at it.
 - **Queue-service row locks expire on a timer that workers never refresh.** Remediation and
   file collection therefore need one instance per cluster. A queue service releases a row only
   where the row still holds the collector's lock. See
-  `saq/queue_service.py::QueueCollector.collect_work_items`. [partial: docs/SERVICES.md; #1213]
+  `saq/queue_service.py::QueueCollector.collect_work_items`. [docs/SERVICES.md; #1213]
 
 ## 7. Engine: one work item
 
@@ -320,8 +320,8 @@ is written there, change the tag to point at it.
   [AGENTS.md]
 - **Every module-level client, connection or singleton is reset in a forked child through
   `os.register_at_fork`, with a hook that only assigns.** No logging, locks or frees. See
-  `saq/database/pool.py::_after_fork_in_child`, `saq/storage/factory.py::reset_storage_system`
-  and `saq/cas/registry.py::reset_cas`. [partial: AGENTS.md; #982]
+  `saq/database/pool.py::_after_fork_in_child`, `saq/storage/factory.py::reset_storage_system`,
+  `saq/cas/registry.py::reset_cas` and `saq/cas/metrics.py::reset`. [docs/PROCESS_ENVIRONMENT.md; #982]
 - **`gc.freeze()` right before the fork and `gc.unfreeze()` right after it stay a pair.** See
   `saq/engine/worker.py::Worker.start`. [AGENTS.md; docs/IMPORTS.md]
 - **Worker shutdown flags are lock-free shared `c_bool`s, never `mp.Event`.** The fork-visible
@@ -357,7 +357,7 @@ is written there, change the tag to point at it.
 - **Every long-running loop calls `remove_all_sessions()` after each item.** Otherwise one
   failed commit makes every later item raise `PendingRollbackError`. See
   `saq/database/pool.py::remove_all_sessions`, `saq/queue_service.py::QueueCollector.collection_loop`
-  and `saq/queue_service.py::QueueWorker.worker_loop`. [partial: docs/ENGINE.md; #852]
+  and `saq/queue_service.py::QueueWorker.worker_loop`. [docs/SERVICES.md, docs/ENGINE.md; #852]
 - **A transaction that may deadlock runs through `run_private_transaction` or
   `execute_with_retry`, and the function it runs has no outside effects.** [AGENTS.md]
 - **Four Alembic chains are kept apart only by disjoint `MetaData`, each chain has one head, and
@@ -396,7 +396,7 @@ is written there, change the tag to point at it.
   duplicate name silently wins last.** See
   `saq/configuration/lazy_registry.py::LazyConfigRegistry.add_raw` and
   `saq/configuration/schema.py::ACEConfig._index_analysis_module_config`.
-  [partial: docs/ENGINE.md covers modes only]
+  [docs/ENGINE.md §16.3]
 - **An analysis mode's `name:` equals its `analysis_mode_<name>` key, and
   `default_analysis_mode` resolves to a defined mode.** See
   `saq/configuration/schema.py::ACEConfig.load_analysis_mode_configs` and
@@ -433,7 +433,7 @@ is written there, change the tag to point at it.
 
 - **The wrapped data key lives in the main database's `config` table.** Every node uses the
   same `SAQ_ENC` password, and the main DB must be reachable before encrypted config values
-  resolve. See `saq/crypto.py::encryption_key_set`. [undocumented]
+  resolve. See `saq/crypto.py::encryption_key_set`. [docs/PROCESS_ENVIRONMENT.md]
 - **`encrypt()` writes the v0 format by default; only the CAS uses v1.** The v0 chunk layout
   never changes, because `encrypted_passwords` rows and `.gz.e` archives are read across nodes.
   See `saq/crypto.py::encrypt` and `saq/cas/pool.py::CASPool.put`. [AGENTS.md; docs/CAS.md]

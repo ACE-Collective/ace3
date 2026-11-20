@@ -1286,6 +1286,14 @@ Every `node_status_update_frequency` seconds the controller loop calls
 `last_update`/`location` and then runs drain routines, node recovery routines and
 (if primary) primary routines.
 
+**A node's name never changes, and every container of a node has the same one.** The name
+is `global.node`, or `socket.getfqdn()` when that is `AUTO`, which is why every ACE service in
+`docker-compose.yml` has `hostname: ace`. It is part of every storage directory
+(`storage_dir_from_uuid`), and a peer that transfers or drains a work target finds it on this
+node by computing that path again (`aceapi_v2/engine/service.py`). It is also the prefix of every
+lock this node's workers own (§5.4). A renamed node answers 404 for the work it held, leaves its
+`nodes` row behind, and never clears the locks it held under the old name.
+
 `ACE_IS_PRIMARY_NODE` (default `"1"`) decides primary status; it is mirrored into
 `nodes.is_primary` at startup. Primary routines are `recover_expired_locks()`
 globally and `reconcile_stale_node_statuses(node_status_update_frequency * 4)`.
@@ -1380,7 +1388,40 @@ instead.
 produces or updates an analysis, the workflow event puts it in the buffer, and
 the buffer flush calls `flush_analysis_details` — writing details to disk and
 dropping them from memory. `load_details()` pulls them back on demand. This is
-the memory-control mechanism for large trees.
+the memory-control mechanism for large trees. It also means that on a root loaded
+from disk every `Analysis.details` is `{}` until `load_details()` is called, so code
+that reads details from a loaded root calls it first, and an empty dict is not
+evidence that the module found nothing (#1196). `load_details()` marks the details
+modified, so the next save writes them again.
+
+**What a storage directory promises.** Code that reads or writes one relies on all of
+these, and none is checked:
+
+- **`storage_dir` is an identity key.** It is always the exact `SAQ_HOME`-relative path
+  `storage_dir_from_uuid` returns. The `alerts`, `workload` and `delayed_analysis` tables
+  match it by string equality (`load_alert_by_storage_dir`, `Worker.execute`,
+  `AnalysisOrchestrator._sync_alert_to_database`), so an absolute path or a `./` form of the
+  same directory silently matches nothing. `ace alert reset` takes paths from an operator and
+  queries both forms for that reason. Changing `global.data_dir` orphans every stored value.
+- **It is self-contained.** Every path `data.json` and the `.ace/` files record is relative to
+  the storage directory, because work transfer tars the directory to another node (§14.3) and
+  `RootAnalysis.move()` re-roots it.
+- **File bytes never change once stored.** `files/` entries are hardlinks to
+  `hardcopies/<sha256>`, and the analysis cache and the CAS share those inodes across alerts.
+  Editing a stored file in place changes it in every alert that has it and leaves its sha256
+  wrong. A module that needs changed bytes writes a new file.
+- **Every `data.json` key is optional on read.** `RootAnalysisSerializer.deserialize` sets a
+  field only when its key is present, and a new field takes its default when it is absent. Old
+  alerts and roots transferred from a node on another version are read by the same code, so a
+  new key is never required.
+- **Every Analysis class can be constructed with no arguments.** Loading calls `Class()` for
+  each serialized analysis (`load_analysis_from_module_path`) and then sets its state.
+- **Names are persisted.** An Analysis is stored under its `MODULE_PATH`
+  (`module:Class[:instance]`), and renaming or moving the class, or changing a module's
+  `instance`, makes every stored copy an `UnknownAnalysis` (§16.6). The observable type,
+  directive, disposition and analysis mode strings in `saq/constants.py` are stored in
+  `data.json`, database columns, workload rows, hunts, integrations and Splunk exports, and are
+  never renamed.
 
 **Database round trips per work item.** Roughly: 1–4 workload/delayed SELECTs to
 claim, 1 lock INSERT, one `acquire_lock` UPDATE per keepalive tick, 1 disposition
@@ -1464,6 +1505,11 @@ Engine-relevant fields: `enabled`, `priority` (execution order, ascending),
 Two validators reject incoherent combinations: `cache_ttl` with `wide_diff`, and
 `cache_ttl` with `is_grouped_by_time`.
 
+A module is registered under its `name:` field, not under its section key: every
+lookup, `enabled_modules`, `disabled_modules` and the `module_group_*` lists use the
+name. Two sections with the same `name:` do not fail validation; the last one loaded
+replaces the other (`LazyConfigRegistry.add_raw`).
+
 ### 16.4 `global_settings:`
 
 `lock_keepalive_frequency`, `maximum_cumulative_analysis_warning_time`,
@@ -1538,6 +1584,11 @@ the tree still loads, and logs through
 
 An entry without an `:instance` suffix covers every instance of that module; an entry
 with one covers only that instance.
+
+There is no alias mechanism, so renaming or moving an Analysis class, or changing a
+module's `instance`, is a removal as far as stored alerts are concerned: every alert
+saved under the old `MODULE_PATH` loads it as `UnknownAnalysis`. List the old path here
+if that is intended.
 
 Unrelated to `disabled_modules:` (§16.2), which stops a module that still exists from
 *running*. `deprecated_modules:` says nothing about execution — it only describes
