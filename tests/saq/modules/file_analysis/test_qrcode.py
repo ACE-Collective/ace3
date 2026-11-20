@@ -194,6 +194,8 @@ def test_summary(tmp_path):
     (None, None),
     (SandboxResult(0, "Title: x\nPages: many\n", ""), "unreadable page count"),
     (SandboxResult(0, "Title: x\n", ""), None),
+    # killed after writing a forged count from the Title, before its own
+    (SandboxResult(134, "Title: x\nPages: 1\n", ""), "pdfinfo failed"),
 ])
 def test_pdf_page_count_that_cannot_be_read(tmp_path, monkeypatch, caplog, result, logged):
     # pdfinfo did not finish or printed no count: every page is rendered instead
