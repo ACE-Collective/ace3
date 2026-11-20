@@ -5,9 +5,14 @@ import re
 import pytest
 from flask import url_for
 
+from aceapi_v2.saved_filters import service as saved_filters_service
+from aceapi_v2.saved_filters.schemas import SavedFilterCreate
+from aceapi_v2.sync import run_async_with_session
 from saq.constants import DISPOSITION_OPEN, QUEUE_DEFAULT
 from saq.database.model import Alert
 from saq.database.pool import get_db
+from saq.gui import filter_query
+from tests.saq.helpers import attach_observable
 
 
 def _insert_alert(uuid, description):
@@ -739,3 +744,158 @@ def test_the_flask_saved_filter_routes_are_gone(app):
                     "set_quick_filters", "saved_filter_link", "saved_filters_modal_body"):
         assert f"analysis.{removed}" not in endpoints
     assert "analysis.select_filter" in endpoints
+
+
+PATTERN_FILTER = [{"name": "Observable Pattern", "inverted": False, "values": [["fqdn", "*.evil.com"]]}]
+
+
+@pytest.mark.integration
+def test_observable_pattern_filter_on_the_manage_page(web_client, analyst):
+    """The list shows the alerts the pattern matches, the bar shows the pattern, and the editor
+    offers it in a type and value pair like the exact Observable filter."""
+    attach_observable(_insert_alert('manage-pattern-match', 'evil subdomain'), "fqdn", "mail.evil.com")
+    attach_observable(_insert_alert('manage-pattern-nomatch', 'lookalike'), "fqdn", "evil.com.attacker.net")
+
+    response = web_client.post(url_for("analysis.set_filters"), data={"filters": json.dumps(PATTERN_FILTER)})
+    assert response.status_code == 204
+
+    body = web_client.get(url_for("analysis.manage")).data.decode()
+    assert 'alert_row_manage-pattern-match' in body
+    assert 'alert_row_manage-pattern-nomatch' not in body
+    assert '>fqdn:*.evil.com</span>' in body
+    assert 'placeholder="*.evil.com or https://evil.com/*"' in body
+    assert 'value="*.evil.com"' in body
+
+
+@pytest.mark.integration
+def test_a_pattern_with_a_wildcard_at_both_ends_is_refused_when_applied(web_client, analyst):
+    for route in ("analysis.set_filters", "analysis.apply_temp_filter"):
+        response = web_client.post(url_for(route), data={"filters": json.dumps(
+            [{"name": "Observable Pattern", "inverted": False, "values": [["fqdn", "*evil*"]]}])})
+        assert response.status_code == 400
+        assert "both ends" in response.data.decode()
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("route", ["analysis.manage", "analysis.manage_refresh"])
+def test_a_pattern_that_cannot_be_run_lists_nothing_and_says_why(web_client, analyst, monkeypatch, route):
+    """Listing the alerts without the filter would show more than the analyst asked for."""
+    attach_observable(_insert_alert('manage-pattern-toomany', 'evil subdomain'), "fqdn", "mail.evil.com")
+    _insert_alert('manage-pattern-other', 'no observables')
+    monkeypatch.setattr(filter_query, "MAX_PATTERN_OBSERVABLES", 0)
+
+    with web_client.session_transaction() as sess:
+        _seed_manage_session(sess, analyst, filters=PATTERN_FILTER)
+
+    response = web_client.get(url_for(route))
+    assert response.status_code == 200
+    html = response.data.decode()
+    assert 'alert_row_manage-pattern-toomany' not in html
+    assert 'alert_row_manage-pattern-other' not in html
+    assert 'matches more than 0 observables; make it more specific' in html_lib.unescape(html)
+
+
+@pytest.mark.integration
+def test_a_pattern_that_cannot_be_run_skips_the_search(web_client, analyst, monkeypatch):
+    def search(*args, **kwargs):
+        raise AssertionError("the search ran")
+
+    monkeypatch.setattr("app.analysis.views.manage.search_alerts", search)
+    attach_observable(_insert_alert('manage-pattern-search', 'evil subdomain'), "fqdn", "mail.evil.com")
+    monkeypatch.setattr(filter_query, "MAX_PATTERN_OBSERVABLES", 0)
+
+    with web_client.session_transaction() as sess:
+        _seed_manage_session(sess, analyst, filters=PATTERN_FILTER)
+        sess['search'] = {'mode': 'query', 'query': 'evil'}
+
+    html = html_lib.unescape(web_client.get(url_for("analysis.manage")).data.decode())
+    assert 'matches more than 0 observables' in html
+    assert '0 matching alerts' in html
+    assert 'alert_row_manage-pattern-search' not in html
+
+
+@pytest.mark.integration
+def test_a_badge_whose_pattern_cannot_be_run_says_why(web_client, analyst, monkeypatch):
+    """The badge count runs on every page render, so it must not take the page down; and a badge
+    that can no longer be counted must not look like one with no alerts, or the analyst watching
+    an indicator through it stops hearing about it."""
+    attach_observable(_insert_alert('manage-pattern-badge', 'evil subdomain'), "fqdn", "mail.evil.com")
+    run_async_with_session(
+        saved_filters_service.create_saved_filter, analyst,
+        SavedFilterCreate(name="evil subdomains", filters=PATTERN_FILTER, quick_filter=True,
+                          quick_filter_indicator=True),
+        screen='alerts')
+
+    with web_client.session_transaction() as sess:
+        _seed_manage_session(sess, analyst)
+
+    dot = 'title="1 evil subdomains alert(s)"'
+    assert dot in web_client.get(url_for("analysis.manage")).data.decode()
+
+    monkeypatch.setattr(filter_query, "MAX_PATTERN_OBSERVABLES", 0)
+    response = web_client.get(url_for("analysis.manage"))
+    assert response.status_code == 200
+    html = html_lib.unescape(response.data.decode())
+    assert 'evil subdomains' in html and dot not in html
+    warning = re.search(r'<span class="quick-filter-error[^"]*" title="([^"]*)"', html)
+    assert warning is not None
+    assert 'matches more than 0 observables; make it more specific' in warning.group(1)
+
+
+@pytest.mark.integration
+def test_a_search_looks_a_pattern_up_once(web_client, analyst, monkeypatch):
+    """The search calls post_filter once per batch of candidates it fuses; each call used to
+    build the filters again, and look the pattern's observables up again."""
+    match = _insert_alert('manage-pattern-search-match', 'evil subdomain')
+    attach_observable(match, "fqdn", "mail.evil.com")
+    other = _insert_alert('manage-pattern-search-other', 'lookalike')
+    attach_observable(other, "fqdn", "evil.com.attacker.net")
+
+    lookups = []
+    resolve = filter_query.resolve_observable_pattern
+    monkeypatch.setattr(filter_query, "resolve_observable_pattern",
+                        lambda *args: lookups.append(args) or resolve(*args))
+
+    def search(request, post_filter):
+        for _ in range(3):
+            kept = post_filter([match.uuid, other.uuid])
+        return _search_response(kept)
+
+    monkeypatch.setattr("app.analysis.views.manage.search_alerts", search)
+    with web_client.session_transaction() as sess:
+        _seed_manage_session(sess, analyst, filters=PATTERN_FILTER)
+        sess['search'] = {'mode': 'query', 'query': 'evil'}
+
+    html = web_client.get(url_for("analysis.manage")).data.decode()
+    assert 'alert_row_manage-pattern-search-match' in html
+    assert 'alert_row_manage-pattern-search-other' not in html
+    assert lookups == [("fqdn", "*.evil.com")]
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("param, reason", [
+    # the share link escapes `*` in a value as %2A
+    ("observable_pattern:fqdn:%2Aevil%2A", "has a wildcard at both ends"),
+    ("analysis:not-a-module-path", "analysis values must be module paths"),
+    ("alert_date:garbage", "invalid date range"),
+])
+def test_a_share_link_with_a_value_the_filter_refuses_is_refused(web_client, analyst, param, reason):
+    """Decoding a link checks its shape, not its values. A value the filter refuses used to reach
+    the write of the temporary filter, fail there and answer 500, after the restore point for
+    Revert had already been moved."""
+    with web_client.session_transaction() as sess:
+        _seed_manage_session(sess, analyst)
+        filter_uuid = sess["filter_uuid"]
+
+    response = web_client.get(url_for("analysis.manage", f=param))
+    assert response.status_code == 302
+    assert response.headers["Location"].endswith(url_for("analysis.manage"))
+
+    with web_client.session_transaction() as sess:
+        assert sess["filter_uuid"] == filter_uuid
+        assert "filter_restore_uuid" not in sess
+        messages = [message for _, message in sess.get("_flashes", [])]
+    assert len(messages) == 1
+    assert messages[0].startswith("That filter link could not be read: ") and reason in messages[0]
+    # the reason as the analyst reads it, without pydantic's framing
+    assert "pydantic" not in messages[0] and "Value error" not in messages[0]

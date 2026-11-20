@@ -10,6 +10,7 @@ import json
 import pytest
 
 from saq.gui.filter_names import FILTER_NAMES, FILTER_NAMES_BY_SLUG, FILTER_SLUGS, LEGACY_FILTER_NAME_ALIASES
+from saq.gui.filter_screens import ALERTS_SCREEN
 from saq.gui.filter_url import (
     FilterQueryError,
     decode_filter_query,
@@ -86,7 +87,7 @@ def test_url_observable_does_not_split_on_the_scheme_colon():
 def test_every_slug_round_trips():
     """Nothing in the registry may be un-encodable."""
     for name in sorted(FILTER_NAMES):
-        values = [["ipv4", "1.2.3.4"]] if name == "Observable" else ["x"]
+        values = [["ipv4", "1.2.3.4"]] if name in ALERTS_SCREEN.pair_filter_names else ["x"]
         filters = [{"name": name, "inverted": False, "values": values}]
         assert _roundtrip(filters) == filters, name
 

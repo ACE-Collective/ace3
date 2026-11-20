@@ -4,7 +4,7 @@ from flask import g, session
 from flask_login import current_user
 import pytz
 
-from app.filters import AnalysisFilter, AutoTextFilter, DateRangeFilter, DetectionPointFilter, MultiSelectFilter, SelectFilter, TextFilter, TypeValueFilter, UnconfirmedDetectionsFilter
+from app.filters import AnalysisFilter, AutoTextFilter, DateRangeFilter, DetectionPointFilter, MultiSelectFilter, ObservablePatternFilter, SelectFilter, TextFilter, TypeValueFilter, UnconfirmedDetectionsFilter
 from saq.configuration.config import get_config
 from aceapi_v2.sync import run_async, run_async_with_session
 from aceapi_v2.observable_types.service import get_observable_types
@@ -23,6 +23,7 @@ from saq.gui.filter_query import (
 )
 from saq.gui.filter_screens import ALERTS_SCREEN
 from saq.gui.filter_url import encode_filter_query
+from saq.gui.observable_pattern import ObservablePatternError
 
 
 def _default_filters() -> list:
@@ -90,6 +91,7 @@ def getFilters():
         'Disposition Date': DateRangeFilter(GUIAlert.disposition_time),
         'Event Date': DateRangeFilter(GUIAlert.event_time),
         'Observable': TypeValueFilter(Observable.type, Observable.value, options=run_async(get_observable_types())),
+        'Observable Pattern': ObservablePatternFilter(Observable.type, Observable.value, options=run_async(get_observable_types())),
         'Owner': SelectFilter(Owner.display_name, nullable=True),
         'Queue': SelectFilter(GUIAlert.queue),
         'Reviewed': MultiSelectFilter(GUIAlert.disposition_review, nullable=False, options=VALID_DISPOSITION_REVIEWS),
@@ -439,15 +441,23 @@ def get_quick_filter_display_data(saved_filters: list) -> list:
     the alert list uses, so the dot cannot disagree with what you get when you click it.
     Each count is a full joined query, so this is only ever called from a real page render
     -- see the note in build_manage_list_context()."""
-    return [
-        {
-            "uuid": saved_filter.uuid,
-            "label": saved_filter.name,
-            "indicator_count": (
-                count_alerts(resolve_saved_filter([e.model_dump() for e in saved_filter.filters]))
-                if saved_filter.quick_filter_indicator else 0
-            ),
-        }
-        for saved_filter in saved_filters
-        if saved_filter.quick_filter_order is not None
-    ]
+    badges = []
+    for saved_filter in saved_filters:
+        if saved_filter.quick_filter_order is None:
+            continue
+
+        count, error = _indicator(saved_filter) if saved_filter.quick_filter_indicator else (0, None)
+        badges.append({"uuid": saved_filter.uuid, "label": saved_filter.name,
+                       "indicator_count": count, "indicator_error": error})
+
+    return badges
+
+def _indicator(saved_filter) -> tuple[int, str | None]:
+    """The badge's alert count, or why it cannot be counted."""
+    try:
+        return count_alerts(resolve_saved_filter([e.model_dump() for e in saved_filter.filters])), None
+    except ObservablePatternError as e:
+        # The badge is marked with the reason instead of a dot: without the mark it would look
+        # like a filter with no alerts. That is the analyst's to fix, not an operator's, so
+        # nothing is logged.
+        return 0, str(e)

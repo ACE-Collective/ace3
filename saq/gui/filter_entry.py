@@ -12,6 +12,7 @@ from saq.analysis.module_path import IS_MODULE_PATH
 from saq.detection_verdicts.constants import SOURCES, VERDICTS
 from saq.file_collection.types import FileCollectionStatus, FileCollectorStatus
 from saq.gui.detection_point_value import normalize_detection_point_value
+from saq.gui.observable_pattern import check_observable_pattern
 from saq.gui.filter_names import (
     DATE_RANGE_FILTER_NAMES,
     DETECTION_POINT_FILTER_SLUGS,
@@ -79,8 +80,8 @@ class FilterEntry(FilterEntryBase):
     @field_validator("values")
     @classmethod
     def validate_values(cls, values: list, info) -> list:
-        """Reject an unparseable date token, detection point value or analysis module path at
-        WRITE time.
+        """Reject an unparseable date token, detection point value, analysis module path or an
+        observable pattern no index can serve at WRITE time.
         """
         if info.data.get("name") == "Analysis":
             for value in values:
@@ -93,6 +94,15 @@ class FilterEntry(FilterEntryBase):
                 if value not in UNCONFIRMED_DETECTIONS_OPTIONS:
                     raise ValueError(f"unconfirmed detections values must be True or False, got {value!r}")
             return values
+
+        if info.data.get("name") == "Observable Pattern":
+            pairs = []
+            for value in values:
+                if not isinstance(value, list) or len(value) != 2:
+                    raise ValueError(f"observable pattern values must be [type, pattern] pairs, got {value!r}")
+                # check_observable_pattern raises ObservablePatternError, a ValueError pydantic reports
+                pairs.append([value[0], check_observable_pattern(value[1])])
+            return pairs
 
         if info.data.get("name") == "Detection Point":
             if not all(isinstance(value, str) for value in values):

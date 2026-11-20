@@ -70,7 +70,7 @@
                                    value="{% if name == filter_name %}{{value}}{% endif %}"/>
                         </div>
                         <div class="form-text relative-date-hint">{% if is_relative %}{{ value | resolve_date_range }}{% endif %}</div>
-                    {% elif filters[name].__class__.__name__ == 'TypeValueFilter' %}
+                    {% elif filters[name].__class__.__name__ in ['TypeValueFilter', 'ObservablePatternFilter'] %}
                         <div style="float:left;width:50%;padding-right:3px;">
                             <select class="form-control" name="filter_{{unique_reference}}_value_{{name}}">
                             {% for option in filters[name].options %}
@@ -79,7 +79,7 @@
                             </select>
                         </div>
                         <div style="overflow:auto;">
-                            <input type="text" class="form-control" name="filter_{{unique_reference}}_value_{{name}}" value="{% if name == filter_name %}{{value[1]}}{% endif %}"/>
+                            <input type="text" class="form-control" name="filter_{{unique_reference}}_value_{{name}}"{% if filters[name].__class__.__name__ == 'ObservablePatternFilter' %} placeholder="*.evil.com or https://evil.com/*" title="* matches anything. The pattern must start or end with text, and matches the stored value exactly, case included."{% endif %} value="{% if name == filter_name %}{{value[1]}}{% endif %}"/>
                         </div>
                     {% elif filters[name].__class__.__name__ == 'AutoTextFilter' %}
                         <input type="text" class="form-control" name="filter_{{unique_reference}}_value_{{name}}" oninput="toggle_options(this, 'filter_options_{{name}}')" autocomplete="off" value="{% if name == filter_name %}{{value}}{% endif %}"/>

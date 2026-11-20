@@ -1,3 +1,4 @@
+import hashlib
 import logging
 from datetime import datetime, timezone
 from unittest.mock import Mock, patch
@@ -6,8 +7,9 @@ import pytest
 from qdrant_client import models
 
 from saq.configuration.config import get_config
-from saq.database.model import Alert
+from saq.database.model import Alert, Observable, ObservableMapping
 from saq.database.pool import get_db
+from saq.gui import filter_query
 from saq.search import index, query
 from saq.search.query import SemanticLane
 from saq.search.syntax import parse_search_query
@@ -450,3 +452,40 @@ class TestTestAlerts:
         seen.clear()
         response = query.similar_alerts("x", include_test_alerts=True)
         assert response.excluded_test_alerts is None and seen[0].queues == ()
+
+
+@pytest.mark.integration
+class TestObservablePatternErrors:
+    """An Observable Pattern filter that cannot be run is reported like a term that cannot be
+    honored: nothing is returned, and the response says why."""
+
+    @pytest.fixture
+    def evil(self, monkeypatch):
+        alert = insert_alert()
+        db = get_db()
+        observable = Observable(type="fqdn", value=b"mail.evil.com", sha256=hashlib.sha256(b"mail.evil.com").digest())
+        db.add(observable)
+        db.flush()
+        db.add(ObservableMapping(observable_id=observable.id, alert_id=alert.id))
+        db.commit()
+        # one observable matches, which is one too many
+        monkeypatch.setattr(filter_query, "MAX_PATTERN_OBSERVABLES", 0)
+        return alert
+
+    def test_a_listing(self, evil):
+        response = query.search_alerts(SearchRequest(query="observable_pattern:fqdn:*.evil.com"))
+        assert response.total == 0 and response.results == []
+        assert len(response.errors) == 1 and "matches more than 0 observables" in response.errors[0]
+
+    def test_a_search_post_filter(self, evil, monkeypatch):
+        monkeypatch.setattr(query, "semantic_search", lambda *a, **k: SemanticLane(dense=[(evil.uuid, [])]))
+        monkeypatch.setattr(query, "lexical_search", lambda *a, **k: [])
+        response = query.search_alerts(SearchRequest(query="observable_pattern:fqdn:*.evil.com some free text"))
+        assert response.total == 0 and "matches more than 0 observables" in response.errors[0]
+
+    def test_similar_alerts(self, evil, monkeypatch):
+        monkeypatch.setattr(query, "similar_search", lambda *a, **k: SemanticLane(dense=[(evil.uuid, [])]))
+        filters = SearchFilters(filter_list=(
+            {"name": "Observable Pattern", "inverted": False, "values": [["fqdn", "*.evil.com"]]},))
+        response = query.similar_alerts("x", filters)
+        assert response.total == 0 and "matches more than 0 observables" in response.errors[0]

@@ -1,4 +1,5 @@
 import copy
+import hashlib
 from contextlib import contextmanager
 import ctypes
 from datetime import datetime, timedelta
@@ -30,7 +31,7 @@ from saq.constants import (
     DISPOSITION_SIMULATED,
     F_FQDN,
 )
-from saq.database.model import Alert, Workload, load_alert
+from saq.database.model import Alert, Observable, ObservableMapping, Workload, load_alert
 from saq.database.pool import get_db
 from saq.database.util.alert import ALERT, set_dispositions
 from saq.engine.analysis_orchestrator import AnalysisOrchestrator
@@ -611,6 +612,24 @@ def insert_alert():
     alert = load_alert(root.uuid)
     assert alert.id is not None
     return alert
+
+def attach_observable(alert: Alert, observable_type: str, value: str, sha256: bytes | None = None) -> None:
+    """Maps an observable to an alert, reusing the catalog row if it already exists.
+
+    `observables` is an append-only catalog with a unique key on (type, sha256): the same
+    observable on two alerts is one row and two observable_mapping rows.
+    """
+    db = get_db()
+    digest = sha256 or hashlib.sha256(value.encode()).digest()
+    observable = db.query(Observable).filter(
+        Observable.type == observable_type, Observable.sha256 == digest).one_or_none()
+    if observable is None:
+        observable = Observable(type=observable_type, value=value.encode(), sha256=digest)
+        db.add(observable)
+        db.flush()
+
+    db.add(ObservableMapping(observable_id=observable.id, alert_id=alert.id))
+    db.commit()
 
 def person(user_id: int | None, name: str = "unittest", key_id: int | None = None) -> ApiAuthResult:
     """A user calling the API with one of their keys, as the routes pass the caller to a write."""

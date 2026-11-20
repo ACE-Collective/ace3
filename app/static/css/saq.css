@@ -903,6 +903,12 @@ th {
     background-color: var(--bs-warning);
 }
 
+/* a quick-filter badge whose filter cannot be run, so it has no count; the title says why */
+.quick-filter-error {
+    margin-left: 4px;
+    color: var(--bs-danger);
+}
+
 .sim-table {
     display:table;
     width:auto;

@@ -100,6 +100,7 @@ tag:phish                        the tag, exactly
 ipv4:10.20.30.40                 an observable, by type shorthand
 signature_id:6f3a…               ditto -- ANY registered observable type works as a prefix
 observable:url:https://evil.com  the explicit form, for values containing colons
+observable_pattern:fqdn:*.evil.com  observables whose value matches a * pattern (any:<pattern> for any type)
 file:<sha256 hex>                a file observable, by content hash
 uuid:1f2e3d4c-…                  an alert uuid (a prefix of at least 8 characters also works)
 queue:default                    a narrowing filter
@@ -140,10 +141,14 @@ Where each term goes:
 |---|---|
 | `observable:`/`<type>:`, `tag:`, `uuid:` (not inverted) | an exact lookup in the lexical lane -- a hit, the `exact` tier, hoisted to the front |
 | `queue:`, `disposition:`, `alert_type:`, `alert_date:` | a pre-filter: a qdrant payload filter *and* a SQL condition |
-| everything else, plus any **inverted** or wildcard form of the above | a SQL filter list run through `saq/gui/filter_query.py` |
+| everything else, plus any **inverted** or wildcard form of the above, and `observable_pattern:` | a SQL filter list run through `saq/gui/filter_query.py` |
 
 Inversion and wildcards fall out of the exact lane on purpose: "alerts *without* this tag" is a
-narrowing condition, and there is no hit to report for it.
+narrowing condition, and there is no hit to report for it. A `*` in an observable term
+(`email_subject:"***SPAM***"`) is literal: only `observable_pattern:` has wildcards, so a value
+that contains a `*` still finds exactly that value. A pattern with a wildcard at both ends, an
+unknown type, or one that matches too many observables is an error (see *Observable patterns* in
+`docs/ALERT_FILTER_URLS.md`).
 
 A term that cannot be honored -- `alert_date:-7dd`, `ipv4:not-an-ip`, an inverted `uuid:` -- is
 an **error**, returned in `SearchResponse.errors` with nothing searched. It is never dropped:

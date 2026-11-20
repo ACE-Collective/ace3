@@ -145,6 +145,40 @@ class TestFilterTerms:
         assert parsed.exact == ()
         assert _filter(parsed, "Tag")[0]["values"] == ["phish*"]
 
+    def test_observable_pattern_becomes_a_filter(self):
+        """A pattern is a SQL narrowing filter (saq/gui/filter_query.py), never an exact lookup."""
+        parsed = parse_search_query("observable_pattern:fqdn:*.evil.com,url:https://evil.com/*")
+        assert parsed.exact == () and parsed.errors == ()
+        assert _filter(parsed, "Observable Pattern") == [{
+            "name": "Observable Pattern", "inverted": False,
+            "values": [["fqdn", "*.evil.com"], ["url", "https://evil.com/*"]]}]
+
+    def test_observable_pattern_type_is_case_insensitive_and_may_be_any(self):
+        parsed = parse_search_query("-observable_pattern:FQDN:*.evil.com observable_pattern:any:*@evil.com")
+        assert parsed.errors == ()
+        assert [(entry["inverted"], entry["values"]) for entry in _filter(parsed, "Observable Pattern")] == [
+            (True, [["fqdn", "*.evil.com"]]), (False, [["Any", "*@evil.com"]])]
+
+    def test_observable_pattern_value_keeps_its_colons(self):
+        parsed = parse_search_query('observable_pattern:url:"https://evil.com:8443/*"')
+        assert _filter(parsed, "Observable Pattern")[0]["values"] == [["url", "https://evil.com:8443/*"]]
+
+    @pytest.mark.parametrize("query, error", [
+        ("observable_pattern:fqdn:*evil*", "both ends"),
+        ("observable_pattern:*.evil.com", "must be written observable_pattern:<type>:<pattern>"),
+        ("observable_pattern:no_such_type:*.evil.com", "is not an observable type"),
+    ])
+    def test_an_observable_pattern_that_cannot_be_run_is_an_error(self, query, error):
+        """Reported, never dropped: a dropped filter silently widens the result set."""
+        parsed = parse_search_query(query)
+        assert parsed.filters == ()
+        assert len(parsed.errors) == 1 and error in parsed.errors[0]
+
+    def test_a_star_in_an_exact_observable_term_is_literal(self):
+        """Only observable_pattern: has wildcards; the exact lane still looks up the value."""
+        parsed = parse_search_query('email_subject:"***SPAM*** invoice"')
+        assert _exact(parsed, FIELD_OBSERVABLE)[0].values == (("email_subject", "***SPAM*** invoice"),)
+
     def test_repeated_field_is_merged_not_anded(self):
         """`queue:a queue:b` must mean either; as two ANDed entries it would match nothing."""
         parsed = parse_search_query("queue:a queue:b")

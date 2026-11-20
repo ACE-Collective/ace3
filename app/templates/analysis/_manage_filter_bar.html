@@ -26,7 +26,7 @@
     {% if current_filter.name %}<span class="ms-1">{{ current_filter.name }}{% if current_filter.state == 'dirty' %}<span title="unsaved changes">&nbsp;*</span>{% endif %}</span>{% endif %}
     |
     {% for quick_filter in quick_filters %}
-    <span class="badge label-special{% if quick_filter.uuid == current_filter.uuid %} border border-strong{% endif %}" style="cursor:pointer" data-filter-uuid="{{ quick_filter.uuid }}" onclick='select_filter(this)'>{{ quick_filter.label }}{% if quick_filter.indicator_count %}<span class="quick-filter-dot" title="{{ quick_filter.indicator_count }} {{ quick_filter.label }} alert(s)"></span>{% endif %}</span>
+    <span class="badge label-special{% if quick_filter.uuid == current_filter.uuid %} border border-strong{% endif %}" style="cursor:pointer" data-filter-uuid="{{ quick_filter.uuid }}" onclick='select_filter(this)'>{{ quick_filter.label }}{% if quick_filter.indicator_error %}<span class="quick-filter-error bi bi-exclamation-triangle-fill" title="{{ quick_filter.indicator_error }}"></span>{% elif quick_filter.indicator_count %}<span class="quick-filter-dot" title="{{ quick_filter.indicator_count }} {{ quick_filter.label }} alert(s)"></span>{% endif %}</span>
     {% endfor %} |
     {% for _filter in effective_filters %}
         {% set name = _filter['name'] %}
@@ -39,4 +39,9 @@
     {# The share link is self-describing, so copying it is a pure string build with no
        round trip. It keeps working after this filter is edited or deleted. #}
     <button id="btn-copy-filter" type="button" class="btn btn-outline-dark btn-xs" data-share-url="{{ share_url }}" title="Copy a link to this filter" onclick="copy_filter_link(this)"><span class="bi bi-copy"></span></button>
+    {# a filter that could not be run, so nothing is listed: here rather than with the search
+       notices because the refresh re-renders this bar and the list can start failing between polls #}
+    {% for error in filter_errors %}
+    <small class="text-danger d-block filter-error">{{ error }}</small>
+    {% endfor %}
 </div>

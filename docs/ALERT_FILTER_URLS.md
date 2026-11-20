@@ -34,7 +34,7 @@ f = [!] <slug> : <value> [, <value> ...]
 | `disposition` | Disposition | | `reviewed` | Reviewed |
 | `disposition_by` | Disposition By | | `tag` | Tag |
 | `disposition_date` | Disposition Date | | `detection_point` | Detection Point |
-| `unconfirmed_detections` | Unconfirmed Detections | | | |
+| `unconfirmed_detections` | Unconfirmed Detections | | `observable_pattern` | Observable Pattern |
 
 `unconfirmed_detections:True` finds alerts with a detection whose verdict nobody has confirmed: an
 inherited TP on a TP alert where several signatures fired (`docs/SVS.md`, Part 1); `False` the rest.
@@ -61,6 +61,52 @@ f=observable:url:https%3A%2F%2Fevil.com%2Fa%2Cb
 
 The second example is why the value's own colons must be encoded — otherwise
 `url:https://evil.com` would parse as an observable of type `https`.
+
+### Observable patterns
+
+`observable_pattern` takes the same type and value pair, with the type `Any` for any type, and
+the value is a pattern in which `*` matches anything:
+
+```
+f=observable_pattern:fqdn:%2A.evil.com
+f=observable_pattern:url:https%3A%2F%2Fevil.com%2Flogin%2A
+```
+
+A `*` in the `observable` filter is a literal character, so a value that contains one, such as
+an email subject like `***SPAM***`, is still matched exactly there, and so is every observable
+clicked from an alert.
+
+The pattern has to start or end with text. `observable_pattern:fqdn:*.evil.com`,
+`observable_pattern:url:https://evil.com/*` and `observable_pattern:fqdn:evil.com*.net` are
+accepted. `*evil*` is refused when the filter is saved, applied or sent to the API, because a
+pattern with a wildcard at both ends can only be answered by reading every row of `observables`
+(over a second at 1.25 million rows), and the filter runs on every page load, every 30 second
+refresh and every badge count.
+
+How it is matched (`ObservablePatternFilter`, `saq/gui/filter_query.py`):
+
+- **Against the stored bytes, case included.** The pattern goes through the type's own class
+  only when the class changes nothing but its case: `email_address` stores addresses lowercased,
+  so `*@Evil.com` matches `bob@evil.com`. An `fqdn` keeps the case it was found in, so
+  `*.evil.com` does not match `Mail.EVIL.com`, as the exact filter does not.
+- **`%`, `_` and `\` are literal.** Only `*` is a wildcard.
+- **Through an index.** A pattern that starts with text is a range scan of `i_obs_value`. One
+  that starts with `*` is a range scan of `i_obs_value_rev`, the index on `observables.value_rev`,
+  which is the last 255 bytes of the value reversed; the whole value is still checked, so a longer
+  suffix is matched correctly.
+- **In two steps.** The matching observables' ids are looked up first, and the alerts are then
+  found through `observable_mapping`'s primary key, which the query names with `FORCE INDEX`:
+  for the inverted form MySQL otherwise scans the whole table. The lookup is refused, and the alert list shows the reason
+  instead of any alerts, when the patterns of one filter match more than 500 observables between
+  them (`MAX_PATTERN_OBSERVABLES`) or take longer than one second (`PATTERN_LOOKUP_TIMEOUT_MS`,
+  enforced by MySQL's `MAX_EXECUTION_TIME`). A partial list of ids would quietly leave alerts
+  out. The API answers 422 with the same reason, the search box returns it as an error, and a
+  quick filter badge whose pattern cannot be run shows a warning mark whose tooltip is the
+  reason, rather than looking like a filter with no alerts.
+- **A refusal is remembered.** A pattern refused for either limit is refused again without a
+  lookup for five minutes (`PATTERN_REFUSAL_TTL_SECONDS`), in that process, because a pinned
+  badge and an open manage page run it on every refresh. A pattern that was looked up is not
+  remembered: a new observable can match it at any time.
 
 ### Analysis
 
@@ -161,7 +207,8 @@ the same one, and it differs in three ways on purpose:
 - **`-` also inverts**, alongside `!`, because `!` is awkward in a shell.
 - **Any observable type is a prefix of its own**: `ipv4:1.2.3.4` is shorthand for
   `observable:ipv4:1.2.3.4`, and `uuid:` means the *alert* uuid rather than the observable
-  type of that name.
+  type of that name. A pattern has no shorthand: it is `observable_pattern:fqdn:*.evil.com`,
+  with the type `any` for any type.
 
 ## Links that outlive a filter type
 
@@ -245,7 +292,7 @@ Validations, Remediations and File Collections followed. A page can also ask for
 - The search box's grammar over the same slugs: `saq/search/syntax.py`
 - Relative-time parser: `saq/util/relative_time.py`
 
-The `Observable`, `Tag`, `Analysis` and `Detection Point` filters are **EXISTS subqueries over
+The `Observable`, `Observable Pattern`, `Tag`, `Analysis` and `Detection Point` filters are **EXISTS subqueries over
 their mapping tables, in both directions**, correlated to the entity the caller selects
 (`create_filter(..., entity=)`: `GUIAlert`, `Alert` or an alias of either). Inverted, that is the only form that is true for an alert with no matching rows
 at all -- a `NOT` evaluated against a joined row cannot be. Non-inverted it avoids the row
