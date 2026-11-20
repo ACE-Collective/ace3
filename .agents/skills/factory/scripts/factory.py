@@ -1284,8 +1284,9 @@ def check_handoff(ctx: Context, path: str) -> dict:
 def doctor(ctx: Context) -> dict:
     checks = []
 
-    def add(name: str, ok: bool, detail: str, fix: str = "") -> None:
-        checks.append({"check": name, "ok": ok, "detail": detail, **({"fix": fix} if fix and not ok else {})})
+    def add(name: str, ok: bool, detail: str, fix: str = "", warning: str = "") -> None:
+        checks.append({"check": name, "ok": ok, "detail": detail, **({"fix": fix} if fix and not ok else {}),
+                       **({"warning": warning} if warning else {})})
 
     try:
         add("gh", True, f"logged in as {gh_me(ctx.main)}, repo {ctx.slug}")
@@ -1317,8 +1318,13 @@ def doctor(ctx: Context) -> dict:
             f"config {'found' if has_config else 'missing'}, denylist {'found' if has_denylist else 'missing'}",
             f"commit {CONFIG} and {public_text.DENYLIST} in {name}")
     try:
-        public_text.load_terms(ctx.main, required_denylists(ctx))
-        add("denylists", True, "loaded")
+        terms = public_text.load_terms(ctx.main, required_denylists(ctx))
+        if public_text.internal_repos(ctx.main):
+            add("denylists", True, f"{len(terms)} terms loaded")
+        else:
+            add("denylists", True, "no internal repo in the checkout", warning=(
+                "no internal repo in this checkout (signatures/ or integrations/<name> as a git repo), so public writes "
+                "are checked against no terms: nothing but the No internal detail rule keeps internal names out of ace3"))
     except public_text.CheckError as e:
         add("denylists", False, str(e), "nothing public can be posted until this passes")
     if any(r["host"] == "azure-devops" for r in ctx.repos.values()):
@@ -1331,7 +1337,7 @@ def doctor(ctx: Context) -> dict:
         add("labels", not missing, f"missing {', '.join(missing)}" if missing else "all present", "factory.py labels")
     except FactoryError as e:
         add("labels", False, str(e))
-    return {"ok": all(c["ok"] for c in checks), "checks": checks}
+    return {"ok": all(c["ok"] for c in checks), "warnings": [c["check"] for c in checks if "warning" in c], "checks": checks}
 
 
 # ---------------------------------------------------------------- main

@@ -20,8 +20,10 @@ commit messages and the added lines of A..B in the repo at --repo, plus --branch
 
 Prints JSON. Exit 0: nothing matched. Exit 1: something matched; each hit names the
 term's reason and where it was, never the matched text, so the output itself can be
-pasted anywhere. Exit 2: the check could not run, which counts as a failure: no denylist
-was found at all, a repo named with --require has none, or a denylist is malformed.
+pasted anywhere. Exit 2: the check could not run, which counts as a failure: the checkout
+has internal repos but none has a denylist, a repo named with --require has none, or a
+denylist is malformed. A checkout with no internal repo has no internal detail to keep out,
+so it is checked against no terms and passes.
 
 Stdlib only, so it runs on the host as well as in the dev container.
 """
@@ -44,9 +46,10 @@ class CheckError(Exception):
 
 
 def internal_repos(core: str) -> dict[str, str]:
-    """The internal repos in the checkout, by name: signatures and each integration."""
+    """The internal repos in the checkout, by name: signatures and each integration. Only a git
+    repo counts: without a signatures repo, signatures/ holds the rules ACE writes itself."""
     repos = {}
-    if os.path.isdir(os.path.join(core, "signatures")):
+    if os.path.exists(os.path.join(core, "signatures", ".git")):
         repos["signatures"] = os.path.join(core, "signatures")
     integrations = os.path.join(core, "integrations")
     if os.path.isdir(integrations):
@@ -86,7 +89,7 @@ def load_terms(core: str, required: list[str]) -> list[dict]:
     missing = [name for name in required if name not in found]
     if missing:
         raise CheckError(f"no {DENYLIST} in {', '.join(missing)}")
-    if not found:
+    if repos and not found:
         raise CheckError(f"no {DENYLIST} in any internal repo under {core}; nothing may be published until one exists")
     return terms
 
