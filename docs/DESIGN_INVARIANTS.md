@@ -696,6 +696,11 @@ is written there, change the tag to point at it.
 - **Cookie-authenticated unsafe requests pass the `Sec-Fetch-Site`/`Origin` check, and proxies
   forward those headers.** See `aceapi_v2/dependencies.py::_reject_cross_site_cookie_write`.
   [docs/FLASK_API_MIGRATION.md]
+- **The startup seed is the only thing that writes `auth_permission_catalog`, so a new permission
+  is a `PERMISSION_CATALOG` entry and no migration.** The seed never prunes: a removed entry's row
+  stays until `ace perm catalog sync`. See `saq/database/seed.py::seed` and
+  `saq/permissions/catalog.py::sync_permission_catalog`; `tests/saq/database/test_seed.py` pins it.
+  [AGENTS.md]
 - **No API key holds `user:self`, and minting a key needs a GUI session.** See
   `saq/permissions/catalog.py::SESSION_ONLY_PAIRS`. [docs/USER_PREFERENCES.md]
 - **An alert's file is never served inline.** It goes out with `nosniff` and a `CSP: sandbox`
@@ -752,8 +757,6 @@ is written there, change the tag to point at it.
 
 - **An integration's `python_module` is imported by every process, so it registers only light
   hooks.** Everything for an integration stays under `integrations/<name>/`. [AGENTS.md]
-- **Each new permission needs a `PERMISSION_CATALOG` entry and a copied data-only migration.**
-  [#1132]
 - **`create_root_analysis()` gives each root a fresh uuid, and so a storage directory of its
   own, because unit tests do not wipe the data directory between tests.** A test passes `uuid=`
   only to reopen a root it saved. See `tests/saq/helpers.py::create_root_analysis`. [#1130]

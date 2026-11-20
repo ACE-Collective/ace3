@@ -11,6 +11,8 @@ import pytest
 
 from saq.database.admin import superuser_connection
 from saq.database.seed import ANALYST_USER_ID, AUTOMATION_USER_ID, seed
+from saq.permissions import catalog
+from saq.permissions.catalog import CatalogEntry
 from tests.unittest_database import DATABASE_CHARSET, DATABASE_COLLATION, UPGRADE_TIMEOUT, get_project_root
 
 
@@ -104,3 +106,34 @@ def test_seeding_again_does_not_bring_back_a_deleted_analyst(database):
 
     assert _query(database, "SELECT id FROM users WHERE username = 'analyst'") == []
     assert _query(database, "SELECT user_id FROM auth_user_permission WHERE user_id = %s", (ANALYST_USER_ID,)) == []
+
+
+@pytest.mark.integration
+def test_seed_projects_a_permission_no_migration_added(database, monkeypatch):
+    # the seed is the only thing that writes the catalog table: a new permission ships no
+    # migration, and an edited description reaches the table on the next start
+    seed(database)
+    monkeypatch.setattr(catalog, "PERMISSION_CATALOG", (
+        *[e for e in catalog.PERMISSION_CATALOG if (e.major, e.minor) != ("alert", "read")],
+        CatalogEntry("alert", "read", "an edited description"),
+        CatalogEntry("example", "new", "a permission with no migration"),
+    ))
+
+    # the next start
+    seed(database)
+
+    assert _query(database, "SELECT description FROM auth_permission_catalog WHERE major = 'example' AND minor = 'new'") == [
+        ("a permission with no migration",)]
+    assert _query(database, "SELECT description FROM auth_permission_catalog WHERE major = 'alert' AND minor = 'read'") == [
+        ("an edited description",)]
+
+
+@pytest.mark.integration
+def test_seed_keeps_a_permission_the_catalog_no_longer_has(database):
+    seed(database)
+    _execute(database, "INSERT INTO auth_permission_catalog (major, minor, description) VALUES ('retired', 'permission', 'gone from the code')")
+
+    # the next start: only `ace perm catalog sync` prunes
+    seed(database)
+
+    assert _query(database, "SELECT major, minor FROM auth_permission_catalog WHERE major = 'retired'") == [("retired", "permission")]

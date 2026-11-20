@@ -104,8 +104,10 @@ def seed(db_name: str = PRIMARY_DATABASE) -> None:
                  "customer threat", "wiper", "traffic direction system",
                  "advanced persistent threat"])
 
-        # Permission catalog — seed from the authoritative code-defined catalog.
-        # prune=False so a fresh seed never removes rows another process may rely on.
+        # Permission catalog: the only thing that projects PERMISSION_CATALOG into the table, so a
+        # new permission needs no migration (saq/permissions/catalog.py). prune=False so a start
+        # never removes rows another process may rely on, such as an ai:<backend> row for a backend
+        # this process's configuration does not name.
         sync_permission_catalog(session, prune=False)
 
         # Built-in user permissions (auto-increment PK — check by unique key)

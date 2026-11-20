@@ -361,7 +361,8 @@ For confidence, the assumptions the design leans on hardest were verified and ar
   `saq/permissions/logic.py:67-83`; `ace user add-api-key <user> --scope "svs:validate"`). The CI
   key and the read-only reporting key are feasible exactly as YR-3 and RPT-5 describe.
 - **Permissions** are per-user and per-group ALLOW/DENY rows with fnmatch patterns; the catalog is
-  a read model seeded by a data migration per addition (`61b26390b94e` is the template). The guard
+  a read model the startup seed projects from `PERMISSION_CATALOG` (`saq/database/seed.py`), so an
+  addition is a catalog entry and no migration. The guard
   test `tests/saq/test_permission_catalog.py` requires every enforced pair to be in the catalog.
 - **Both disposition writers requeue into `analysis_mode_dispositioned`** on the alert's own node,
   for everything except IGNORE and CORRECT reviews (`alert.py:284-300, 399-416`). The workload

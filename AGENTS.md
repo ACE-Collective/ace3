@@ -171,6 +171,8 @@ All models live in `saq/database/model.py`. The brocess models are schema-defini
 
 The `sql/0*.sql` files only create the (empty) databases; every table comes from a migration.
 
+A new permission is an entry in `saq/permissions/catalog.py::PERMISSION_CATALOG` and nothing more: the startup seed (`saq/database/seed.py`, run after the migrations on every start) projects it into `auth_permission_catalog`. Never write a data migration for one. The seed never prunes, so a removed permission's row stays until `ace perm catalog sync`.
+
 The email archive and analysis result cache tables are RANGE-partitioned by date and maintained by `ace partitions` (`saq/database/partitions.py`, `docs/DATABASE_PARTITIONS.md`). Never split a partition that holds rows on a live table (`REORGANIZE PARTITION`, or `PARTITION BY` on a populated table): it copies every row and blocks writes for as long as it runs. A table whose `p_catchall` has filled up is repaired with `ace partitions rebuild`.
 
 `bin/upgrade_databases.py` runs `upgrade head` for any subset of the chains against named databases in one process (the alembic package is shadowed by the repo's `alembic/` directory, so it removes the project root from `sys.path` first); the test suite uses it to build its per-session databases, and so does the drift check.
