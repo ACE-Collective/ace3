@@ -76,12 +76,20 @@ def _upgrade(migration, ddl) -> None:
 
 def test_an_alter_that_waits_too_long_lets_the_queue_through_and_tries_again(migration, ddl, monkeypatch, caplog):
     _hold_the_table()
-    # the transaction ends during the pause between attempts
-    monkeypatch.setattr(migration, "time", SimpleNamespace(sleep=lambda seconds: get_db().commit()))
+    waited_with = []
+
+    def pause(seconds):
+        # what the ALTER that just gave up waited with; the fixture's 30 s would also give up
+        waited_with.append(ddl.execute(text("SELECT @@SESSION.lock_wait_timeout")).scalar())
+        # the transaction ends during the pause between attempts
+        get_db().commit()
+
+    monkeypatch.setattr(migration, "time", SimpleNamespace(sleep=pause))
 
     with caplog.at_level(logging.WARNING):
         _upgrade(migration, ddl)
 
+    assert waited_with == [migration.LOCK_WAIT_TIMEOUT_SECONDS]
     assert _has_value_rev(ddl)
     retries = [r for r in caplog.records if r.getMessage().startswith("gave up waiting 1s for the lock on observables")]
     assert len(retries) == 1 and "ADD COLUMN value_rev" in retries[0].getMessage()
