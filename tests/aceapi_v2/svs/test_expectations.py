@@ -17,9 +17,9 @@ from aceapi_v2.svs.expectations import service as expectations_service
 from aceapi_v2.svs.expectations.schemas import ExpectationRequest, TestExclusionRequest
 from saq.database.model import SVSRunResultState
 from saq.database.pool import get_db
-from saq.svs import results
+from saq.svs import expectations, results
 from tests.aceapi_v2.conftest import api_key_client, make_api_key
-from tests.saq.helpers import audit_actors, audit_records
+from tests.saq.helpers import audit_actors, audit_records, person
 from tests.saq.svs.conftest import add_catalog_test, add_test_host, started_run
 
 # several runs on one test host are fixtures here; the host's claim is tested in test_runs.py
@@ -313,6 +313,10 @@ class TestExclusions:
         assert (response.status_code, response.json()["detail"]) == (422, "an exclusion needs a reason")
         assert (await client.get(f"/svs/tests/{GUID}/exclusion")).status_code == 404
         assert audit_records(caplog, "svs test excluded") == []
+
+    def test_the_store_refuses_a_reason_longer_than_the_api_allows(self, test_user):
+        with pytest.raises(expectations.InvalidDecision, match="longer than 4096"):
+            expectations.set_exclusion(GUID, "x" * 4097, person(test_user.id, test_user.username))
 
     def test_a_config_key_is_refused(self):
         with pytest.raises(HTTPException) as e:

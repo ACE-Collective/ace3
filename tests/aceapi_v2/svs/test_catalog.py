@@ -90,6 +90,8 @@ async def test_excluded_tests_are_one_filter_away(client: AsyncClient, catalog):
     assert await _guids(client, "excluded:true") == [_guid(1), _guid(4)]
     assert await _guids(client, "excluded:false") == [_guid(3), _guid(2), _guid(5)]
     assert await _guids(client, "!excluded:true", "technique:T1059") == [_guid(2)]
+    # both values: every test
+    assert len(await _guids(client, "excluded:true,false")) == 5
     # the Tests tab's default view: in the catalog, and not excluded
     assert await _guids(client, "removed:false", "excluded:false") == [_guid(3), _guid(2), _guid(5)]
     assert (await client.get("/svs/tests/", params={"f": "excluded:maybe"})).status_code == 422
