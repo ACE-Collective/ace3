@@ -14,6 +14,8 @@ A working tree usually spans more than one upstream repo. This repo is the open-
 
 Known flaws in ACE's design that changes have had to work around are GitHub issues labeled `design flaw` (`gh issue list --label "design flaw"`), each describing the workaround that first ran into it. `/ace-review` files them. Before you write a workaround, check whether it is for one of them, and if so, follow the workaround its issue describes rather than inventing another.
 
+`docs/DESIGN_INVARIANTS.md` lists, by subsystem, the assumptions the code depends on, where breaking one breaks something else, often silently. Read the section of a subsystem before you change it, and update an entry in the same change that breaks or changes its rule.
+
 `/factory` (`.agents/skills/factory/`) carries one issue a maintainer has labeled `factory:ready` to a ready-for-review PR: it implements it in a worktree of its own, opens a draft PR, reviews it with `/ace-review`, reworks the findings, files the review's pre-existing findings and new design flaws where their code lives (an ace3 issue, or a work item in an internal repo's Azure DevOps project), and marks it ready on a ship verdict. A human always merges. Each internal repo commits a `.factory/` directory for it: `config.toml` (its Azure DevOps coordinates and checks) and `public-denylist.toml`, the terms that must never reach this public repo, which `/factory` checks every public write against.
 
 ## Environment
