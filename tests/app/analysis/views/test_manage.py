@@ -870,3 +870,31 @@ def test_a_search_looks_a_pattern_up_once(web_client, analyst, monkeypatch):
     assert 'alert_row_manage-pattern-search-match' in html
     assert 'alert_row_manage-pattern-search-other' not in html
     assert lookups == [("fqdn", "*.evil.com")]
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("param, reason", [
+    # the share link escapes `*` in a value as %2A
+    ("observable_pattern:fqdn:%2Aevil%2A", "has a wildcard at both ends"),
+    ("analysis:not-a-module-path", "analysis values must be module paths"),
+    ("alert_date:garbage", "invalid date range"),
+])
+def test_a_share_link_with_a_value_the_filter_refuses_is_refused(web_client, analyst, param, reason):
+    """Decoding a link checks its shape, not its values. A value the filter refuses used to reach
+    the write of the temporary filter, fail there and answer 500, after the restore point for
+    Revert had already been moved."""
+    with web_client.session_transaction() as sess:
+        _seed_manage_session(sess, analyst)
+        filter_uuid = sess["filter_uuid"]
+
+    response = web_client.get(url_for("analysis.manage", f=param))
+    assert response.status_code == 302
+    assert response.headers["Location"].endswith(url_for("analysis.manage"))
+
+    with web_client.session_transaction() as sess:
+        assert sess["filter_uuid"] == filter_uuid
+        assert "filter_restore_uuid" not in sess
+        messages = [message for _, message in sess.get("_flashes", [])]
+    assert len(messages) == 1
+    assert messages[0].startswith("That filter link could not be read: ") and reason in messages[0]
+    assert "pydantic" not in messages[0]

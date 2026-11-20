@@ -5,6 +5,7 @@ from urllib.parse import urlencode
 import pytz
 from flask import flash, make_response, redirect, render_template, request, session, url_for
 from flask_login import current_user
+from pydantic import ValidationError
 from sqlalchemy import distinct, false, func
 from sqlalchemy.orm import selectinload
 
@@ -30,6 +31,7 @@ from app.analysis.views.session.filters import (
     reset_sort_filter,
 )
 from saq.gui.filter_names import DATE_RANGE_FILTER_NAMES
+from saq.gui.filter_screens import ALERTS_SCREEN
 from saq.gui.filter_query import get_analysis_type_labels
 from saq.gui.observable_pattern import ObservablePatternError
 from saq.gui.filter_url import (
@@ -357,8 +359,15 @@ def manage():
         _ensure_manage_session_defaults(seed_saved_filters=True)
         try:
             filters, warnings = decode_filter_query(request.args.getlist('f'))
+            # decoding checks the link's shape, not its values; checked here, before
+            # apply_temporary_filter moves the restore point that Revert goes back to
+            ALERTS_SCREEN.validate_entries(filters)
         except FilterQueryError as e:
             flash(f"That filter link could not be read: {e}", "error")
+            return redirect(url_for('analysis.manage'))
+        except ValidationError as e:
+            reasons = "; ".join(error["msg"].removeprefix("Value error, ") for error in e.errors())
+            flash(f"That filter link could not be read: {reasons}", "error")
             return redirect(url_for('analysis.manage'))
 
         apply_temporary_filter(filters, "Shared link")
