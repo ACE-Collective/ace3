@@ -31,6 +31,9 @@ one is redone in place. The bundle gets:
                        than core; either is the repo's CLAUDE.md where it has no AGENTS.md)
     rule-changes.patch what the change does to the AGENTS.md rule sections or to the
                        skill itself, when it does anything
+    invariants.md      core only: the sections of docs/DESIGN_INVARIANTS.md, from the base,
+                       that cite a file the change touches (for a file cited nowhere, a file
+                       beside it), when any do
     leads.json         added lines that match a mechanical check, functions the change adds
                        that repeat another function's body, and doc lines that name a path,
                        function or config key the change removes
@@ -64,6 +67,9 @@ SKILL_DIR = ".agents/skills/ace-review"
 # no AGENTS.md (an integration repo, or core before the rename). Where both exist CLAUDE.md is the
 # one-line @AGENTS.md import.
 RULES_FILES = ("AGENTS.md", "CLAUDE.md")
+INVARIANTS_INDEX = "docs/DESIGN_INVARIANTS.md"
+# a code citation in the index: `path::Name`, or the backticked path of a file that isn't a doc
+INVARIANT_CITATION = re.compile(r"`((?:[\w.-]+/)*[\w.-]+\.(?:py|sh|ya?ml|conf|toml)|Dockerfile)(?:::[\w.]+)?`")
 # the AGENTS.md sections that state rules rather than facts about the code
 RULE_SECTIONS = ("## Engineering values", "## Conventions")
 DIFF_FLAGS = ["--no-color", "--no-ext-diff", "--src-prefix=a/", "--dst-prefix=b/", "-M"]
@@ -428,6 +434,25 @@ def rule_changes(repo: str, kind: str, merge_base: str, changed_paths: set[str],
             names.append(path)
             patch.extend(unified(path, show(repo, merge_base, path), head_text(path)))
     return names, "".join(patch)
+
+
+def invariant_sections(index: str | None, changed_paths: set[str]) -> list[tuple[str, str]]:
+    """The (title, text) of each numbered section of the invariants index that a changed file is
+    cited in. A file the index cites nowhere (a new one, usually) picks the sections that cite a file
+    in its directory instead, except directly under the root (saq/, tests/), which holds too many
+    unrelated files to say anything."""
+    if not index:
+        return []
+    sections = []
+    for text in re.split(r"(?m)^(?=## )", index):
+        heading = re.match(r"## (\d+\..*)", text)
+        if heading:
+            sections.append((heading.group(1).strip(), text.rstrip() + "\n", set(INVARIANT_CITATION.findall(text))))
+    everywhere = set().union(*(cited for _, _, cited in sections))
+    exact = changed_paths & everywhere
+    dirs = {d for d in map(os.path.dirname, changed_paths - everywhere) if "/" in d}
+    return [(title, text) for title, text, cited in sections
+            if cited & exact or set(map(os.path.dirname, cited)) & dirs]
 
 
 # --- mechanical leads -----------------------------------------------------------------
@@ -969,6 +994,12 @@ def main() -> None:
     rules_sources = snapshot_rules(core, repo, rules_rev, out, accepted)
     if rule_patch:
         write(out, "rule-changes.patch", rule_patch)
+    # judged by the base's index, like the rules: a change can't excuse itself by editing an entry
+    invariants = invariant_sections(show(repo, rules_rev, INVARIANTS_INDEX), changed_paths) if kind == "core" else []
+    if invariants:
+        write(out, "invariants.md", f"# Design invariants this change may touch\n\nThe sections of `{INVARIANTS_INDEX}` at "
+              f"{rules_rev} that cite a file the change touches (for a file cited nowhere, a file beside it).\n\n"
+              + "\n".join(text for _, text in invariants))
     if previous_dir:
         write(out, "previous.json", previous)
 
@@ -997,6 +1028,7 @@ def main() -> None:
         "rule_changes": rule_names,
         "rule_changes_digest": digest,
         "rule_changes_status": rule_status,
+        "invariant_sections": [title for title, _ in invariants],
         "integrations": [os.path.basename(i) for i in integrations],
         "changed_files": len(changed),
         "tests_selected": len(tests),
