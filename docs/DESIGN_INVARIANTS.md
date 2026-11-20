@@ -217,11 +217,13 @@ is written there, change the tag to point at it.
 - **File names in the tree may be surrogate-escaped strings, so every UTF-8 boundary uses
   `utf8_safe`.** That covers logging, MySQL, yara and JSON. See `saq/logging.py::utf8_safe`.
   [#1235]
-- **An email part's role (body or attachment, html or text) exists only as a substring of its
-  generated file name.** Changing `_unnamed_part_name` breaks body detection, lure scoring,
-  password cracking and observable-modifier rules. See
-  `saq/modules/email/rfc822.py::HTML_BODY_PART_MARKER` and
-  `saq/modules/email/rfc822.py::BODY_PART_MARKERS`. [#1241]
+- **An email part's role (body or attachment) and content type are read from
+  `EmailAnalysis.details["parts"]`, and from its generated file name only for an email analyzed
+  before that record existed.** So the `<email>.unknown_<type>_<subtype>_NNN<ext>` names, numbered
+  per type from `_000`, cannot change: old alerts tell their body parts by them, and
+  observable-modifier rules match on them. See
+  `saq/modules/email/rfc822.py::EmailAnalysis._body_part_types` and
+  `saq/modules/email/rfc822.py::_body_part_type_from_name`. [#1241]
 
 ## 6. Engine: claiming, locking, workload
 
