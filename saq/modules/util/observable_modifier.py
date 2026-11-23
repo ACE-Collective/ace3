@@ -161,6 +161,15 @@ class _AnalysisTypeIndex:
         return analysis_type in self._types
 
 
+# the yaml keys _parse_tree_condition reads; produces_observable is one nested
+# key, not the produces_observable_* fields below
+_TREE_CONDITION_KEYS = frozenset({
+    "analysis_type", "scope", "negate", "match_count",
+    "details_match", "observable_match", "produces_observable",
+})
+_PRODUCES_OBSERVABLE_KEYS = frozenset({"type", "value"})
+
+
 @dataclass
 class TreeCondition:
     analysis_type: str
@@ -640,7 +649,16 @@ class ObservableModifierAnalyzer(AnalysisModule):
                 if rule:
                     self._rules.append(rule)
             except Exception as e:
-                logging.warning(f"failed to parse observable modifier rule: {e}")
+                # a dropped rule stops raising its detection points, so this goes out
+                # with a traceback to reach the error report and its monitor event
+                rule_name, rule_uuid = None, None
+                if isinstance(rule_data, dict):
+                    rule_name, rule_uuid = rule_data.get("name"), rule_data.get("uuid")
+                logging.exception(
+                    "failed to parse observable modifier rule '%s' (%s) in %s -- refusing to load this rule: %s",
+                    rule_name, rule_uuid, yaml_path, e,
+                    extra={"rule_name": rule_name, "rule_uuid": rule_uuid, "path": yaml_path},
+                )
 
         logging.debug(f"loaded {len(self._rules)} observable modifier rules from {yaml_path}")
 
@@ -746,6 +764,13 @@ class ObservableModifierAnalyzer(AnalysisModule):
         )
 
     def _parse_tree_condition(self, tc_data: dict, rule_name: str) -> Optional[TreeCondition]:
+        # a misspelled key would otherwise drop its check and the rule would match
+        # more than its author wrote (or, negated, less), so the rule is refused, raised
+        # to _load_config, which logs it with the rule's uuid and file
+        unknown_keys = sorted(set(tc_data) - _TREE_CONDITION_KEYS)
+        if unknown_keys:
+            raise ValueError(f"unknown key(s) {', '.join(map(str, unknown_keys))} in tree_condition")
+
         analysis_type = tc_data.get("analysis_type", "")
         scope = tc_data.get("scope", "ancestors")
         if scope not in ("ancestors", "descendants", "global", "self", "parent", "siblings"):
@@ -775,6 +800,11 @@ class ObservableModifierAnalyzer(AnalysisModule):
                 return None
 
         produces_observable_raw = tc_data.get("produces_observable") or {}
+        if not isinstance(produces_observable_raw, dict):
+            raise ValueError(f"produces_observable in tree_condition must be a mapping, not {produces_observable_raw!r}")
+        unknown_keys = sorted(set(produces_observable_raw) - _PRODUCES_OBSERVABLE_KEYS)
+        if unknown_keys:
+            raise ValueError(f"unknown key(s) {', '.join(map(str, unknown_keys))} in tree_condition produces_observable")
         produces_observable_type = None
         produces_observable_value = None
         if produces_observable_raw:
