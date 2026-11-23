@@ -23,9 +23,12 @@ class CatalogTest(BaseModel):
     removed_at: Optional[datetime] = Field(default=None, description="when the test disappeared from its repository; it keeps its runs")
     updated_at: datetime = Field(description="when the catalog row last changed; the changed_since key. A change "
                                              "to the test's runs or state doesn't change it")
-    test_state: str = Field(description="never_run, awaiting_review, no_expectations, failing, stale or validated: "
-                                        "never_run without runs, else the worst of its platforms' states "
-                                        "(docs/SVS_API.md, *Tests*)")
+    test_state: str = Field(description="excluded, never_run, awaiting_review, no_expectations, failing, stale or "
+                                        "validated: excluded while it is excluded, never_run without runs, else the "
+                                        "worst of its platforms' states (docs/SVS_API.md, *Tests*)")
+    excluded_at: Optional[datetime] = Field(default=None, description="when it was excluded; null while it isn't")
+    excluded_by: Optional[str] = Field(default=None, description="who excluded it (username)")
+    exclusion_reason: Optional[str] = Field(default=None, description="why it was excluded")
     run_count: int = Field(default=0, description="every run registered for it")
     last_run_id: Optional[str] = Field(default=None, description="its latest run's uuid")
     last_run_at: Optional[datetime] = Field(default=None, description="when its latest run was registered")

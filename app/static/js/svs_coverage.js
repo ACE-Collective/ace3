@@ -6,7 +6,8 @@
 // match, counted per platform and state from /api/v2/svs/coverage/summary; each count applies its
 // platform and state as filters. The drill-down is a shell over /api/v2/svs/coverage/{technique}: the
 // technique's rows and its sub-techniques', the tests and signatures that count toward them, the tests
-// removed from the catalog, and the days its state changed in the daily snapshots. Both are read-only.
+// excluded by a person or removed from the catalog, and the days its state changed in the daily
+// snapshots. Both are read-only.
 // The rows carry platform slugs and tactic ids; the page names them from the pinned ATT&CK release
 // (data-attack). Every value shown came from a catalog, a signature or a person, so it is placed as
 // text, never markup. A state is plain text, not a badge.
@@ -478,6 +479,7 @@
             render_tests();
             render_measured();
             render_manual();
+            render_excluded();
             render_removed();
             render_history();
             document.getElementById("svs_technique_loading").classList.add("d-none");
@@ -666,6 +668,24 @@
                     ? el("span", null, "yes")
                     : el("span", "text-muted", MANUAL_REASONS[signature.reason] || "it doesn't count");
                 table_row(target, [signature_node(signature), tag, counts]);
+            });
+            node.appendChild(responsive(target));
+        }
+
+        function render_excluded() {
+            const node = document.getElementById("svs_technique_excluded");
+            const excluded = state.detail.excluded_tests || [];
+            node.replaceChildren();
+            if (!excluded.length) {
+                node.appendChild(el("div", "small text-muted", "None."));
+                return;
+            }
+            node.appendChild(el("div", "small text-muted mb-1",
+                                "Excluded by a person on every platform; they don't count, and keep their runs and decisions."));
+            const target = table(["Test", "Technique", "By", "Excluded (UTC)", "Reason"]);
+            excluded.forEach(function(test) {
+                table_row(target, [link(test_url(test.guid), test.name), test.technique, test.excluded_by || "",
+                                   el("span", "text-nowrap", date(test.excluded_at)), test.exclusion_reason]);
             });
             node.appendChild(responsive(target));
         }

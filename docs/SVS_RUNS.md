@@ -104,7 +104,7 @@ out the `commit` it names to run each test as the catalog has it, including the 
 test's `content_hash` doesn't cover (`docs/SVS_API.md`, *Catalog repositories*).
 
 The catalog is read through `/api/v2/svs/tests` (`svs:run_read`): filter by technique (`T1059` also
-finds its sub-techniques), name, platform, executor, repository or `removed`.
+finds its sub-techniques), name, platform, executor, repository, `removed` or `excluded`.
 
 ### Tests and their state
 
@@ -120,8 +120,9 @@ off, against what is expected of it there (*Expectations and ignores*, below).
 | `stale` | it would be validated, but the test or an expected signature's rule changed since that review |
 | `validated` | its latest reviewed run there hit every expected signature |
 
-The test's own state is `never_run` when no run was ever registered for it. Otherwise it is the
-worst of the states of the platforms it has a run or a decision on, in this order: `failing`,
+The test's own state is `excluded` while it is excluded (*Excluded tests*, below), and `never_run`
+when no run was ever registered for it. Otherwise it is the worst of the states of the platforms it
+has a run or a decision on, in this order: `failing`,
 `stale`, `awaiting_review`, `validated`, `no_expectations`. So a test validated on windows and not
 yet reviewed on linux is `awaiting_review`. The test's detail lists every platform's state
 (`platform_states`), with `never_run` for a supported platform it has no run or decision on.
@@ -156,7 +157,8 @@ curl -X POST https://ace.example/api/v2/svs/runs/$RUN/start -H "x-ace-auth: $KEY
 ```
 
 - **`test_guid`** is a test's `auto_generated_guid` in the catalog (`/api/v2/svs/tests`). A test
-  that is not there, or that was removed, is refused with 422.
+  that is not there, that was removed, or that is excluded (*Excluded tests*, below) is refused with
+  422. An excluded test's message says who excluded it, when and why.
 - **`targets`** are test hosts, by short or fully qualified name, each with the user the test runs
   as. A target that is not a test host, or a user the host doesn't list, refuses the whole
   registration with 403 (below). A test whose `supported_platforms` doesn't include a target's
@@ -492,7 +494,8 @@ the number of runs that need attention, when any do.
   - Review is never a bulk action.
 - **Tests** lists the catalog, one row per test, in the API's one order: technique, then name
   (*Tests and their state*, above). It opens on *In the catalog*, the tests still in their
-  repository; a removed test keeps its runs and is one filter away.
+  repository that nobody excluded; a removed or excluded test keeps its runs and is one filter
+  away.
   - A row shows the test's technique, name and guid, its platforms and repository, and its state,
     coloured (failing in red, awaiting review and stale in amber, validated in green).
   - It also shows its latest run and latest reviewed run, each linking to the run, its number of
@@ -538,6 +541,8 @@ its result is being recomputed.
 guid on a row of the Runs tab) shows one test.
 - **Its facts:** state, and the state on each platform when they differ, platforms, executor,
   repository and path, commit and content hash, runs, and expectations.
+- **Its exclusion** (*Excluded tests*, below): who excluded it, when and why. With
+  `svs:run_manage`, *Exclude* takes a reason, and *Include it again* brings it back.
 - **The catalog entry:** the description, commands (command, manual steps, cleanup), input arguments
   and dependencies.
 - **Its observation window** (*Windows*, above): computed, or the minutes an operator set. With
@@ -945,6 +950,29 @@ than from the techniques a test declares (`docs/SVS.md`, Part 3, *Expectations*)
   test's).
 - **Expected signatures set the window.** A new run of a test with expectations on its platform
   waits for the slowest of them (*Windows*, above).
+
+## Excluded tests
+
+Some catalog tests don't apply to a site (no such software or platform there), or aren't worth
+measuring. A person with `svs:run_manage` **excludes** one, on every platform, with a reason:
+`PUT /api/v2/svs/tests/{guid}/exclusion` `{"reason"}`, from a user's key (a config key gets 422),
+or *Exclude* on the test's page. An excluded test is treated as a removed one:
+
+- **It doesn't count toward coverage** from the next refresh (`docs/SVS_COVERAGE.md`): it adds to
+  no row's `tests_total`, and its expectations measure no signature on the worklist. A technique's
+  drill-down lists it apart from the counted tests, with who excluded it and why. Nothing triggers a
+  refresh.
+- **No run of it can be registered**: registering or validating one answers 422, naming who
+  excluded it, when and why.
+- **Its state is `excluded`**, and the Tests tab hides it by default (filter `excluded`).
+- **Nothing else changes**: its runs, results, expectations, ignores and settings are kept, and its
+  platforms keep their states. `DELETE` on the same path (or *Include it again*) brings it back as it
+  was.
+
+The exclusion is keyed by the test's guid, so it holds when the test changes, and when it leaves its
+repository and comes back. Excluding a test again replaces who, when and why. Each change is an
+AUDIT record (`svs test excluded`, `svs test no longer excluded`). It changes no row of the catalog,
+so a test's `updated_at`, the `changed_since` key, doesn't move.
 
 ## Reviewing runs
 

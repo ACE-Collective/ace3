@@ -116,6 +116,15 @@ class RemovedTest(BaseModel):
     removed_at: Optional[datetime] = None
 
 
+class ExcludedTest(BaseModel):
+    guid: str
+    name: str
+    technique: str
+    excluded_at: datetime
+    excluded_by: Optional[str] = Field(default=None, description="who excluded it (username)")
+    exclusion_reason: str
+
+
 class TechniqueCoverage(BaseModel):
     """A technique's coverage: its rows as of the last refresh, and what counts toward them now."""
 
@@ -137,6 +146,8 @@ class TechniqueCoverage(BaseModel):
     manual_signatures_error: Optional[str] = Field(default=None, description="why the signature tags couldn't be "
                                                                              "read; manual_signatures is then empty")
     removed_tests: list[RemovedTest] = Field(description="tests removed from their repository; they don't count")
+    excluded_tests: list[ExcludedTest] = Field(
+        default_factory=list, description="tests a person excluded that are still in their repository; they don't count")
 
 
 class CoverageSnapshotRow(BaseModel):

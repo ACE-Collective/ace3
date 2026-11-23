@@ -30,6 +30,7 @@ from aceapi_v2.svs.coverage.schemas import (
     CoverageSnapshotRow,
     CoverageSummary,
     CoverageTest,
+    ExcludedTest,
     ManualSignature,
     MeasuredSignature,
     PeriodCounts,
@@ -242,7 +243,11 @@ def get_technique(requested: str) -> TechniqueCoverage:
             for mapping in detail.manual],
         manual_signatures_error=detail.manual_error,
         removed_tests=[RemovedTest(guid=test.guid, name=test.name, technique=test.technique,
-                                   removed_at=test.removed_at) for test in detail.removed_tests])
+                                   removed_at=test.removed_at) for test in detail.removed_tests],
+        excluded_tests=[ExcludedTest(guid=test.guid, name=test.name, technique=test.technique,
+                                     excluded_at=exclusion.excluded_at, excluded_by=exclusion.excluded_by,
+                                     exclusion_reason=exclusion.reason)
+                        for test, exclusion in detail.excluded_tests])
 
 
 #

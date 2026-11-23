@@ -31,6 +31,23 @@
             <dl class="row mb-0 small" id="svs_test_facts"></dl>
         </section>
 
+        <section class="mb-4" aria-labelledby="svs_test_exclusion_title">
+            <h4 id="svs_test_exclusion_title">Exclusion</h4>
+            <div id="svs_test_exclusion"></div>
+            {% if has_permission('svs', 'run_manage') %}
+            <form class="row g-2 align-items-end mt-1 d-none" id="svs_test_exclusion_form">
+                <div class="col-sm-8">
+                    <label class="form-label small mb-0" for="svs_test_exclusion_reason">Why the test doesn't apply here, or isn't worth measuring</label>
+                    <input class="form-control form-control-sm" type="text" maxlength="4096" required
+                           id="svs_test_exclusion_reason" name="reason">
+                </div>
+                <div class="col-auto">
+                    <button type="submit" class="btn btn-sm btn-outline-primary">Exclude</button>
+                </div>
+            </form>
+            {% endif %}
+        </section>
+
         <section class="mb-4" aria-labelledby="svs_test_description_title">
             <h4 id="svs_test_description_title">Description</h4>
             <div id="svs_test_description"></div>

@@ -303,6 +303,10 @@ class TestSignature:
 
         assert (await client.get(f"/svs/worklist/{OTHER}")).status_code == 404
 
+        # an excluded test measures nothing, before any refresh
+        expectations.set_exclusion(GUID, "no PowerShell here", person(unittest_user_id))
+        assert (await client.get(f"/svs/worklist/{SIGNATURE}")).json()["measured"] == []
+
 
 @pytest.mark.asyncio
 async def test_permissions(_override_db_session, session: AsyncSession, test_user, rows, noperm_client):

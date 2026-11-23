@@ -10,6 +10,7 @@ from sqlalchemy import case, false, or_, true
 from sqlalchemy.sql.elements import ColumnElement
 
 from saq.database.model import SVSCatalogTest
+from saq.svs.test_state import excluded_condition
 
 
 def technique_condition(column, value: str) -> ColumnElement[bool]:
@@ -38,6 +39,13 @@ def catalog_filter_condition(entry: dict) -> ColumnElement[bool]:
             condition = SVSCatalogTest.removed_at.isnot(None)
         elif values == ["false"]:
             condition = SVSCatalogTest.removed_at.is_(None)
+        else:
+            condition = true()
+    elif name == "Excluded":
+        if values == ["true"]:
+            condition = excluded_condition()
+        elif values == ["false"]:
+            condition = ~excluded_condition()
         else:
             condition = true()
     else:

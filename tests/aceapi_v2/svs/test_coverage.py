@@ -272,6 +272,22 @@ class TestTechnique:
             "T1086", "T1059.001", True)
         assert (manual[DISABLED]["counts"], manual[DISABLED]["reason"]) == (False, "not_counting")
         assert [test["guid"] for test in detail["removed_tests"]] == [REMOVED_GUID]
+        assert detail["excluded_tests"] == []
+
+    @pytest.mark.asyncio
+    async def test_an_excluded_test_is_listed_apart(self, client: AsyncClient, drill_down, test_user):
+        analyst = person(test_user.id, test_user.username)
+        expectations.set_exclusion(OTHER_GUID, "no linux endpoints", analyst)
+        # a removed test is listed as removed, excluded or not
+        expectations.set_exclusion(REMOVED_GUID, "gone anyway", analyst)
+
+        detail = (await client.get("/svs/coverage/T1059")).json()
+        assert {(test["guid"], test["platform"]) for test in detail["tests"]} == {(GUID, "windows")}
+        assert [(test["guid"], test["name"], test["technique"], test["excluded_by"], test["exclusion_reason"])
+                for test in detail["excluded_tests"]] == [
+            (OTHER_GUID, "Bash", "T1059", test_user.username, "no linux endpoints")]
+        assert detail["excluded_tests"][0]["excluded_at"] is not None
+        assert [test["guid"] for test in detail["removed_tests"]] == [REMOVED_GUID]
 
     @pytest.mark.asyncio
     async def test_a_sub_technique(self, client: AsyncClient, drill_down):

@@ -24,9 +24,9 @@ def tests():
 
 @svs.route("/tests/<guid>", methods=["GET"])
 def test_detail(guid: str):
-    # one test: its catalog entry, its observation window, expectations and ignores, and its runs. A
-    # shell over /api/v2/svs/tests/{guid} and the listings filtered on it; a test the catalog doesn't
-    # have is the script's 404, from the API. Each action follows its permission in the template, and
+    # one test: its catalog entry, its exclusion, its observation window, expectations and ignores, and
+    # its runs. A shell over /api/v2/svs/tests/{guid} and the listings filtered on it; a test the
+    # catalog doesn't have is the script's 404, from the API. Each action follows its permission in the template, and
     # the API enforces them regardless.
     if not UUID_REGEX.fullmatch(guid):
         abort(404)

@@ -14,12 +14,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from aceapi_v2.auth.schemas import ApiAuthResult
 from aceapi_v2.svs.expectations import service as expectations_service
-from aceapi_v2.svs.expectations.schemas import ExpectationRequest
+from aceapi_v2.svs.expectations.schemas import ExpectationRequest, TestExclusionRequest
 from saq.database.model import SVSRunResultState
 from saq.database.pool import get_db
-from saq.svs import results
+from saq.svs import expectations, results
 from tests.aceapi_v2.conftest import api_key_client, make_api_key
-from tests.saq.helpers import audit_actors
+from tests.saq.helpers import audit_actors, audit_records, person
 from tests.saq.svs.conftest import add_catalog_test, add_test_host, started_run
 
 # several runs on one test host are fixtures here; the host's claim is tested in test_runs.py
@@ -257,6 +257,74 @@ class TestSettings:
         assert (await client.get(f"/svs/tests/{unknown}/settings")).status_code == 404
 
 
+class TestExclusions:
+    @pytest.mark.asyncio
+    async def test_exclude_read_replace_and_bring_back(self, client: AsyncClient, test_user, client_actor, caplog):
+        caplog.set_level(logging.INFO)
+        path = f"/svs/tests/{GUID}/exclusion"
+        await client.put(f"/svs/tests/{GUID}/expectations/windows/{SIGNATURE}", json={"state": "expected"})
+        await client.put(f"/svs/tests/{GUID}/ignores/{NOISE}", json={})
+        assert (await client.get(path)).status_code == 404
+        assert (await client.get(f"/svs/tests/{GUID}")).json()["excluded_at"] is None
+
+        response = await client.put(path, json={"reason": "  no PowerShell on our endpoints "})
+        assert response.status_code == 200, response.text
+        first = response.json()
+        assert (first["test_guid"], first["reason"], first["excluded_by"]) == (
+            GUID, "no PowerShell on our endpoints", test_user.username)
+        assert (await client.get(path)).json() == first
+        test = (await client.get(f"/svs/tests/{GUID}")).json()
+        assert (test["test_state"], test["excluded_by"], test["exclusion_reason"]) == (
+            "excluded", test_user.username, "no PowerShell on our endpoints")
+        assert test["excluded_at"] == first["excluded_at"]
+        # the other tests are left alone
+        assert (await client.get(f"/svs/tests/{OTHER_GUID}")).json()["test_state"] == "never_run"
+
+        # excluding it again replaces why
+        response = await client.put(path, json={"reason": "retired software"})
+        assert response.json()["reason"] == "retired software"
+
+        assert (await client.delete(path)).status_code == 204
+        assert (await client.delete(path)).status_code == 404
+        test = (await client.get(f"/svs/tests/{GUID}")).json()
+        assert (test["test_state"], test["excluded_at"], test["exclusion_reason"]) == ("never_run", None, None)
+        # its decisions and ignores were never touched
+        assert [row["signature_uuid"] for row in (await client.get(
+            "/svs/expectations/", params={"test": GUID})).json()["data"]] == [SIGNATURE]
+        assert [row["signature_uuid"] for row in (await client.get(
+            "/svs/ignores/", params={"test": GUID})).json()["data"]] == [NOISE]
+
+        assert audit_actors(caplog, "svs test excluded") == [client_actor] * 2
+        assert [record.reason for record in audit_records(caplog, "svs test excluded")] == [
+            "no PowerShell on our endpoints", "retired software"]
+        assert [record.svs_test for record in audit_records(caplog, "svs test no longer excluded")] == [GUID]
+
+    @pytest.mark.asyncio
+    async def test_errors(self, client: AsyncClient, caplog):
+        caplog.set_level(logging.INFO)
+        unknown = "cccccccc-0000-4000-8000-000000000000"
+        assert (await client.put(f"/svs/tests/{unknown}/exclusion", json={"reason": "x"})).status_code == 404
+        assert (await client.get(f"/svs/tests/{unknown}/exclusion")).status_code == 404
+        assert (await client.delete(f"/svs/tests/{unknown}/exclusion")).status_code == 404
+        for body in ({}, {"reason": ""}, {"reason": "x" * 4097}):
+            assert (await client.put(f"/svs/tests/{GUID}/exclusion", json=body)).status_code == 422, body
+        # a reason of nothing but spaces passes the schema and not the store
+        response = await client.put(f"/svs/tests/{GUID}/exclusion", json={"reason": "   "})
+        assert (response.status_code, response.json()["detail"]) == (422, "an exclusion needs a reason")
+        assert (await client.get(f"/svs/tests/{GUID}/exclusion")).status_code == 404
+        assert audit_records(caplog, "svs test excluded") == []
+
+    def test_the_store_refuses_a_reason_longer_than_the_api_allows(self, test_user):
+        with pytest.raises(expectations.InvalidDecision, match="longer than 4096"):
+            expectations.set_exclusion(GUID, "x" * 4097, person(test_user.id, test_user.username))
+
+    def test_a_config_key_is_refused(self):
+        with pytest.raises(HTTPException) as e:
+            expectations_service.set_test_exclusion(GUID, TestExclusionRequest(reason="x"),
+                                                    ApiAuthResult(auth_type="config", auth_name="ci"))
+        assert e.value.status_code == 422
+
+
 @pytest.mark.asyncio
 async def test_permissions(_override_db_session, session: AsyncSession, test_user):
     reader = await make_api_key(session, test_user.id, inherit=False, scope=[("svs", "run_read")])
@@ -267,6 +335,8 @@ async def test_permissions(_override_db_session, session: AsyncSession, test_use
                                  json={"state": "expected"})).status_code == 403
         assert (await client.put(f"/svs/tests/{GUID}/ignores/{NOISE}", json={})).status_code == 403
         assert (await client.put(f"/svs/tests/{GUID}/settings", json={"observation_minutes": 30})).status_code == 403
+        assert (await client.put(f"/svs/tests/{GUID}/exclusion", json={"reason": "x"})).status_code == 403
+        assert (await client.get(f"/svs/tests/{GUID}/exclusion")).status_code == 404
         assert (await client.put(f"/svs/ignores/global/{NOISE}", json={})).status_code == 403
 
     manager = await make_api_key(session, test_user.id, inherit=False, scope=[("svs", "run_manage")])
@@ -275,6 +345,8 @@ async def test_permissions(_override_db_session, session: AsyncSession, test_use
                                  json={"state": "expected"})).status_code == 200
         assert (await client.put(f"/svs/tests/{GUID}/ignores/{NOISE}", json={})).status_code == 200
         assert (await client.put(f"/svs/tests/{GUID}/settings", json={"observation_minutes": 30})).status_code == 200
+        assert (await client.put(f"/svs/tests/{GUID}/exclusion", json={"reason": "x"})).status_code == 200
+        assert (await client.delete(f"/svs/tests/{GUID}/exclusion")).status_code == 204
         # a global ignore changes every test's results
         assert (await client.put(f"/svs/ignores/global/{NOISE}", json={})).status_code == 403
         assert (await client.get("/svs/expectations/")).status_code == 403

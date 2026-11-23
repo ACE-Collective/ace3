@@ -209,6 +209,7 @@ def execute_global_db_setup(database_reset_information: Optional[DatabaseResetIn
         cursor.execute("DELETE FROM svs_expectations")
         cursor.execute("DELETE FROM svs_ignores")
         cursor.execute("DELETE FROM svs_test_settings")
+        cursor.execute("DELETE FROM svs_test_exclusions")
         cursor.execute("DELETE FROM svs_run_events")
         cursor.execute("DELETE FROM svs_run_targets")
         cursor.execute("DELETE FROM svs_runs")
