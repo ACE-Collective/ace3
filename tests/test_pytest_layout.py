@@ -116,3 +116,16 @@ def test_a_left_over_integration_test_link_is_not_committable(tmp_path):
                             timeout=30)
 
     assert result.returncode == 0
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("name", ["pytest.ini", "conftest.py"])
+def test_the_image_has_the_root_files_that_load_the_suite(name):
+    # COPY lines naming files that land directly in /opt/ace (the image runs the suite without the checkout)
+    copied = set()
+    for line in (REPO / "Dockerfile").read_text().splitlines():
+        words = line.split()
+        if words[:1] == ["COPY"] and words[-1] == "/opt/ace/":
+            copied.update(word for word in words[1:-1] if not word.startswith("--"))
+
+    assert name in copied
