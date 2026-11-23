@@ -197,6 +197,36 @@ def test_xml_binary_data_part_that_cannot_be_stored(root_analysis, monkeypatch, 
 
 
 @pytest.mark.integration
+def test_xml_plain_text(root_analysis):
+    root_analysis.analysis_mode = "test_groups"
+    document_path = root_analysis.create_file_path("invoice.docx")
+    with open(document_path, "wb") as fp:
+        fp.write(b"PK")
+    document = root_analysis.add_file_observable(document_path)
+    document.add_tag("microsoft_office")
+
+    target_path = root_analysis.create_file_path("document.xml")
+    with open(target_path, "w") as fp:
+        fp.write('<?xml version="1.0"?><document><body><t>hello</t></body></document>')
+    _file = root_analysis.add_file_observable(target_path)
+    _file.add_relationship(R_EXTRACTED_FROM, document)
+    root_analysis.save()
+    root_analysis.schedule()
+
+    engine = Engine()
+    engine.configuration_manager.enable_module("xml_plain_text_analyzer", "test_groups")
+    engine.start_single_threaded(execution_mode=EngineExecutionMode.SINGLE_SHOT)
+
+    root_analysis = load_root(get_storage_dir(root_analysis.uuid))
+    analysis = root_analysis.get_observable(_file.uuid).get_and_load_analysis(XMLPlainTextAnalysis)
+    assert analysis.error is None
+    [text] = analysis.get_observables_by_type(F_FILE)
+    assert analysis.details == {"xml_plain_text": text.file_path}
+    with open(text.full_path) as fp:
+        assert fp.read() == "hello"
+
+
+@pytest.mark.integration
 def test_xml_plain_text_that_cannot_be_stored(root_analysis, monkeypatch, caplog):
     root_analysis.analysis_mode = "test_groups"
     document_path = root_analysis.create_file_path("invoice.docx")
