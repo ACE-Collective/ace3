@@ -376,9 +376,6 @@ class Analysis(BaseNode):
         except FileNotFoundError:
             logging.warning(f"add_file_observable called to non-existant file: {path}")
             return None
-        except Exception as e:
-            logging.error(f"unable to add file observable {path}: {e} ({type(e)})")
-            raise e
 
     # LLM context management
     # ------------------------------------------------------------------------
