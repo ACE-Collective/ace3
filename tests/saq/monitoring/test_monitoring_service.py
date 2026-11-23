@@ -90,6 +90,20 @@ class TestACEMonitoringService:
         assert monitor.shutdown_event.is_set()
         assert not monitor.main_thread.is_alive()
 
+    def test_wait_for_start_is_true_once_the_service_started(self, set_monitors):
+        set_monitors({
+            "monitor_a": _make_test_monitor_config(),
+            "monitor_b": _make_test_monitor_config(),
+        })
+
+        service = ACEMonitoringService()
+        service.start()
+        try:
+            assert service.wait_for_start(timeout=5) is True
+        finally:
+            service.stop()
+            service.wait()
+
     def test_start_single_threaded_executes_each_monitor_once(self, set_monitors):
         set_monitors({
             "monitor_a": _make_test_monitor_config(),
