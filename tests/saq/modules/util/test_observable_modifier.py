@@ -1068,6 +1068,7 @@ def test_parse_tree_condition_unknown_key_refuses_rule(caplog):
     root, target, module_path = _build_email_tree()
     rules = [{
         "name": "flat produces_observable keys",
+        "uuid": "6f2c3a64-0000-4000-8000-000000001146",
         "conditions": {
             "observable_types": ["url"],
             "tree_conditions": [{
@@ -1086,6 +1087,44 @@ def test_parse_tree_condition_unknown_key_refuses_rule(caplog):
     [record] = [r for r in caplog.records if "produces_observable_type" in r.message]
     assert record.levelno == logging.ERROR
     assert "flat produces_observable keys" in record.message
+    # a traceback is what makes ErrorReportHandler write the error report an operator sees
+    assert record.exc_info and record.exc_info[0] is ValueError
+    assert record.rule_uuid == "6f2c3a64-0000-4000-8000-000000001146"
+    assert record.path.endswith("test_rules.yaml")
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("produces_observable, named", [
+    ({"type": "email_from", "vaule": "^nomatch$"}, "vaule"),
+    ({"type": "email_from", "values": "^nomatch$"}, "values"),
+    ("email_from", "produces_observable"),
+])
+def test_parse_produces_observable_unknown_key_refuses_rule(caplog, produces_observable, named):
+    """A misspelled key under produces_observable, or a produces_observable that is not a
+    mapping, refuses the rule rather than loading it with only the type check."""
+    # the analysis produced an email_from, so a type-only check would let this rule match
+    root, target, module_path = _build_email_tree()
+    rules = [{
+        "name": "bad produces_observable",
+        "conditions": {
+            "observable_types": ["url"],
+            "tree_conditions": [{
+                "analysis_type": module_path,
+                "scope": "self",
+                "produces_observable": produces_observable,
+            }],
+        },
+        "actions": {"add_directives": ["matched"]},
+    }]
+    with caplog.at_level(logging.WARNING):
+        adapter = _create_analyzer_with_rules(root, rules)
+        adapter.execute_analysis(target)
+        adapter.analyze(target, final_analysis=True)
+    assert not target.has_directive("matched")
+    [record] = [r for r in caplog.records if "bad produces_observable" in r.message]
+    assert record.levelno == logging.ERROR
+    assert named in record.message
+    assert record.exc_info and record.exc_info[0] is ValueError
 
 
 @pytest.mark.unit
