@@ -2,6 +2,7 @@ from datetime import UTC, datetime, timedelta
 from unittest.mock import Mock, patch
 
 import pytest
+import pytz
 from requests.exceptions import ConnectionError, HTTPError, Timeout
 from splunklib.binding import HTTPError as SplunkHTTPError
 from splunklib.client import AuthenticationError
@@ -303,6 +304,25 @@ def test_link_with_use_index_time():
         assert '_index_earliest%3D11%2F11%2F2017%3A07%3A36%3A01' in link
         assert '_index_latest%3D11%2F11%2F2017%3A07%3A36%3A01' in link
         assert 'field%21%3D%22%3A%26%2B%2A%22' in link
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("use_index_time, earliest, latest", [
+    # 1510385761 is MOCK_NOW (2017-11-11 07:36:01 UTC)
+    (False, 1510385761, 1510385761),
+    # 30 days either side of MOCK_NOW; the window before it crosses the end of daylight saving time
+    (True, 1507793761, 1512977761),
+])
+def test_link_time_in_another_timezone(use_index_time, earliest, latest):
+    """The link's epoch range is the same instants whatever timezone the datetimes are in."""
+    with patch("saq.splunk.client.connect", return_value=Mock()):
+        splunk = SplunkQueryObject(host="test.com", port=8089, username="test", password="test")
+
+    eastern = pytz.timezone("America/New_York")
+    link = splunk.encoded_query_link(
+        "index=test", start_time=MOCK_NOW.astimezone(eastern), end_time=MOCK_NOW.astimezone(eastern),
+        use_index_time=use_index_time)
+    assert link.endswith(f"&earliest={earliest}&latest={latest}")
 
 
 @pytest.mark.unit
