@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project (tries to) adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.145] - 2026-11-23
+
+- [Show which alerts on the manage page potentially relate](https://github.com/ACE-Collective/ace3/pull/1307)
+- [SVS: exclude a catalog test that doesn't apply](https://github.com/ACE-Collective/ace3/pull/1306)
+- [Run /factory's test runs in the background](https://github.com/ACE-Collective/ace3/pull/1304)
+- [Make the startup seed the only projection of the permission catalog](https://github.com/ACE-Collective/ace3/pull/1303)
+- [Stop showing the playbook link on the alert page](https://github.com/ACE-Collective/ace3/pull/1302)
+- [Let /factory run from a checkout with no internal repo](https://github.com/ACE-Collective/ace3/pull/1300)
+- [Give each create_root_analysis() root its own uuid and storage dir](https://github.com/ACE-Collective/ace3/pull/1299)
+- [Read the PDF page count from pdfinfo's last Pages: line](https://github.com/ACE-Collective/ace3/pull/1298)
+
 ## [3.0.144] - 2026-11-20
 
 - [Update the email part role invariant for the recorded part roles](https://github.com/ACE-Collective/ace3/pull/1296)
