@@ -42,7 +42,8 @@ def probe_binary_version(name: str, args: Optional[list[str]] = None) -> Optiona
     first non-empty line of stdout — falling back to stderr, since some tools
     (e.g. ``pdfinfo``) print their version there — is returned, stripped.
 
-    Returns None when the tool is missing, times out, or exits abnormally.
+    Returns None when the tool is missing, times out, or exits non-zero
+    (whatever it printed then is an error message, not a version).
     Never raises. Callers building an ``extended_version`` dict should omit
     the tool's key on None: that accepts staleness across an upgrade rather
     than poisoning the cache key with a transient probe failure.
@@ -70,15 +71,24 @@ def probe_binary_version(name: str, args: Optional[list[str]] = None) -> Optiona
             text=True,
             timeout=_PROBE_TIMEOUT_SECONDS,
         )
+        first_line: Optional[str] = None
         for output in (result.stdout, result.stderr):
             for line in output.splitlines():
                 if line.strip():
-                    version = line.strip()
+                    first_line = line.strip()
                     break
-            if version is not None:
+            if first_line is not None:
                 break
-        if version is None:
+        if result.returncode != 0:
+            # the first line is usually the tool's complaint about the args, not a version
+            logging.warning(
+                "probe_binary_version: %s exited with status %d: %s",
+                resolved, result.returncode, first_line,
+            )
+        elif first_line is None:
             logging.warning("probe_binary_version: %s produced no output", resolved)
+        else:
+            version = first_line
     except (OSError, subprocess.SubprocessError) as e:
         logging.warning("probe_binary_version: failed to probe %s: %s", resolved, e)
 

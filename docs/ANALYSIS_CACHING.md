@@ -2399,7 +2399,7 @@ land alongside Step 3.4 with no architectural impact.
   binary, mtime changes, key invalidates, next probe re-runs.
 - Returns the first non-empty line of stdout/stderr stripped.
 - Returns `None` on probe failure (missing tool, timeout, exec
-  error). Callers must decide whether to (a) omit the tool from
+  error, non-zero exit). Callers must decide whether to (a) omit the tool from
   the dict — accepts staleness across upgrades but never poisons
   the cache key with a transient failure, or (b) raise so the
   surrounding `extended_version` propagates and the executor

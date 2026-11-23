@@ -72,6 +72,23 @@ class TestProbeBinaryVersion:
         assert counter.read_text().count("x") == 1
 
     @pytest.mark.unit
+    def test_nonzero_exit_with_output_returns_none_and_caches_negative(self, fake_tool_dir, caplog):
+        counter = fake_tool_dir / "count"
+        # the usual way a tool rejects --version: an error on stderr, then a non-zero exit
+        _make_tool(
+            fake_tool_dir,
+            "fake_tool",
+            f'echo x >> "{counter}"\necho "fake_tool: unrecognized option --version" >&2\nexit 2',
+        )
+        assert probe_binary_version("fake_tool") is None
+        assert probe_binary_version("fake_tool") is None
+        assert counter.read_text().count("x") == 1
+        assert any(
+            "exited with status 2" in r.getMessage() and "unrecognized option" in r.getMessage()
+            for r in caplog.records
+        )
+
+    @pytest.mark.unit
     def test_result_cached_per_binary_identity(self, fake_tool_dir):
         counter = fake_tool_dir / "count"
         _make_tool(fake_tool_dir, "fake_tool", f'echo x >> "{counter}"\necho "v1"')
