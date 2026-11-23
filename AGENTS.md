@@ -48,7 +48,6 @@ GUI: https://localhost:5000/ace (analyst/analyst).
 The SessionStart hook in `.claude/settings.json` (Claude Code) and in `.codex/hooks.json` (Codex) runs `bin/setup-worktree.sh`, which adds what git does not track:
 
 - `integrations/<name>`: a detached worktree of each integration repository in the main checkout. Create a branch in it before committing. Its changes do not show in this checkout's `git status`, so check it before deleting the worktree.
-- the `tests/test_external_integration_*` links into those repositories
 - each path in `.worktreeinclude` (`ssl/`), copied from the main checkout
 - `.agents/skills/<name>`: a link to each skill in the main checkout (most of its skills are gitignored) and in `~/.claude/skills` that the worktree does not have. A skill the worktree has wins, then the main checkout's. The session that makes the links does not list them until its second turn, so the hook's output names them for its first.
 - `local`: a link to the main checkout's `local/`, so what is written there (`/ace-review`'s rounds, `/factory`'s handoffs) outlives the worktree. A write through it lands outside the worktree, so auto mode asks about every one unless the main checkout's `local/` is a working directory of the session: add its absolute path to `permissions.additionalDirectories` in the main checkout's `.claude/settings.local.json`. A relative path, or the path of the link, does not count.
@@ -79,24 +78,24 @@ before this: the volume names changed, so an existing stack has to be brought do
 Tests must run inside the `dev` container, in the `/venv` virtualenv. The commands below are written for a shell in that container, where they run as they are; from the host, prefix each one with `bin/exec-in-container.sh` (see *Where a command runs*).
 
 ```bash
-pytest                                    # default: -m "unit or integration or system" over tests/
+pytest                                    # default: -m "unit or integration or system" over tests/ and each integration's tests/
 pytest tests/saq/modules/test_command_line.py::test_command_line_analyzer -v
 pytest -m "unit or integration or system" # full local suite
 pytest -m unit                            # fast, no DB/engine
-pytest tests/test_external_integration_*  # run all integration tests
+pytest integrations                       # run all integration tests
 ```
 
 Use `-n auto` unless there is a technical reason not to.
 
 Do NOT use `-p no:cacheprovider`. Some tests rely on the cache provider.
 
-Markers are strict (`pytest.ini`): `unit`, `integration`, `system`, `functional`, `subcutaneous`, `slow`. Tests marked `integration`/`system` trigger a full environment + database reset in `tests/conftest.py`; `unit` tests do not.
+Markers are strict (`pytest.ini`): `unit`, `integration`, `system`, `functional`, `subcutaneous`, `slow`. Tests marked `integration`/`system` trigger a full environment + database reset in `tests/harness.py`; `unit` tests do not.
 
 Tests use a data dir under `/var/tmp/ace-unittest/<hash of the checkout path>/`, in the container's own filesystem rather than the bind-mounted checkout, driven by `etc/saq.unittest.default.yaml` (`instance_type: UNITTEST`).
 
-**Every pytest session provisions its own databases.** `tests/unittest_database.py` creates a fresh `ace-unittest-<token>`, `brocess-unittest-<token>`, `email-archive-unittest-<token>` and `analysis-result-cache-unittest-<token>` (8 hex char token) at session start, migrates each to the head of its Alembic chain (`bin/upgrade_databases.py`), seeds the reference rows (`saq/database/seed.py`), points the config at them through `SAQ_UNITTEST_CONFIG_PATHS`, and drops them at session end. Between tests the existing row-level reset in `tests/conftest.py` is reused. This needs the `ace-superuser` credentials (`ACE_SUPERUSER_DB_USER_PASSWORD` or `/auth/passwords/ace-superuser`, see `saq/database/admin.py`); the tests themselves still connect as `ace-user`. What a session created is recorded in `$SAQ_HOME/.pytest-databases/` before anything is created, and the next session drops whatever a killed session left behind. `bin/cleanup-unittest-databases.py` does that from outside a session (`--list`, `--force`, `--orphans`). The old static `ace-unittest` / `ace-unittest-2` / `*-unittest` databases are no longer created or used by anything; a dev environment set up before September 2026 may still have them and they can be dropped by hand.
+**Every pytest session provisions its own databases.** `tests/unittest_database.py` creates a fresh `ace-unittest-<token>`, `brocess-unittest-<token>`, `email-archive-unittest-<token>` and `analysis-result-cache-unittest-<token>` (8 hex char token) at session start, migrates each to the head of its Alembic chain (`bin/upgrade_databases.py`), seeds the reference rows (`saq/database/seed.py`), points the config at them through `SAQ_UNITTEST_CONFIG_PATHS`, and drops them at session end. Between tests the existing row-level reset in `tests/harness.py` is reused. This needs the `ace-superuser` credentials (`ACE_SUPERUSER_DB_USER_PASSWORD` or `/auth/passwords/ace-superuser`, see `saq/database/admin.py`); the tests themselves still connect as `ace-user`. What a session created is recorded in `$SAQ_HOME/.pytest-databases/` before anything is created, and the next session drops whatever a killed session left behind. `bin/cleanup-unittest-databases.py` does that from outside a session (`--list`, `--force`, `--orphans`). The old static `ace-unittest` / `ace-unittest-2` / `*-unittest` databases are no longer created or used by anything; a dev environment set up before September 2026 may still have them and they can be dropped by hand.
 
-ACE "integrations" tests are accessed through the `test_external_integration_*` symlinks. Never try to run these tests using their actual paths, *always* use the symlinks to access ACE integration tests.
+The suite's fixtures and hooks are in `tests/harness.py`, a pytest plugin that the root `conftest.py` loads, so they apply to every test under the checkout, and an integration's tests run where they are: `pytest integrations/<name>/tests`, from the checkout root. `consider_namespace_packages` in `pytest.ini` names an integration's test module `integrations.<name>.tests.<module>`, so it imports its own helpers relatively and core's as `tests.saq.helpers`.
 
 There is no configured linter/formatter in the repo. Before asking for a review, `/venv/bin/python .agents/skills/ace-review/scripts/prepare.py --check` lists the lines the branch adds that the review flags (a missing traceback, an unbounded wait, a copied function, an unmarked test), each with its fix, and exits 1 while there are any.
 
@@ -104,7 +103,7 @@ There is no configured linter/formatter in the repo. Before asking for a review,
 
 One *run* of the test suite runs at a time per container, and one per checkout. Under xdist each worker loads all of ACE and an engine of its own, so two `pytest -n auto` runs in one container (the main checkout and a worktree, or two worktrees) run it out of memory; they would also take the same ports. And a second run of the same checkout would reuse the first one's data directories and Qdrant collections. Two ACE instances can each run the suite concurrently, because each has its own checkout, containers and Qdrant, the databases are provisioned on that instance's own `ace-db`, and the suite's ports are never published to the host, but nothing stops their runs from sharing the host's memory.
 
-This is enforced by `tests/session_lock.py`, in `pytest_configure` in `tests/conftest.py`, by
+This is enforced by `tests/session_lock.py`, in `pytest_configure` in `tests/harness.py`, by
 the xdist controller or the only process of a plain run, before collection, before any
 database access and before any data directory is wiped. There is no bypass flag.
 
@@ -132,7 +131,7 @@ Almost every module test follows this shape — build a root, enable one module 
 
 ```python
 @pytest.mark.integration
-def test_x(root_analysis):                       # fixture in tests/conftest.py
+def test_x(root_analysis):                       # fixture in tests/harness.py
     root_analysis.analysis_mode = "test_groups"  # defined in etc/saq.unittest.default.yaml
     o = root_analysis.add_observable_by_spec(F_COMMAND_LINE, "...")
     root_analysis.save()
@@ -267,7 +266,7 @@ A service is a long-running process with a `start/wait/stop` lifecycle, launched
 
 ### Integrations
 
-`integrations/` is gitignored and populated from one or more separate repos (`bin/install_integrations.sh`, `ace integration install`). `integrations.example/example/` shows the layout: `etc/<name>.yaml` config, `src/<pkg>/` code, optional Flask views and templates. `signatures/` is likewise a separate repo mounted in.
+`integrations/` is gitignored and populated from one or more separate repos (`bin/install_integrations.sh`). `integrations.example/example/` shows the layout: `etc/<name>.yaml` config, `src/<pkg>/` code, optional Flask views and templates. `signatures/` is likewise a separate repo mounted in.
 
 ### Site Configuration
 
@@ -411,7 +410,7 @@ The target is close to full coverage. CI does not run the suite, so the PR is th
 - A bug fix comes with a test that fails on the code before the fix.
 - Every test carries a `unit`, `integration` or `system` marker. A test without one is silently never run.
 - Wait with `wait_for_condition` / `wait_for_log_count` (`tests/saq/helpers.py`), never with `time.sleep`.
-- New module-level state (caches, registries, singletons) is reset in `global_function_setup` (`tests/conftest.py`). The suite runs in random order.
+- New module-level state (caches, registries, singletons) is reset in `global_function_setup` (`tests/harness.py`). The suite runs in random order.
 - Measure coverage of changed lines with `pytest --cov --cov-report=xml` and then `diff-cover coverage.xml --compare-branch=main`.
 - The PR description has a Testing section: the command run, its pass/fail counts, and any manual checks.
 

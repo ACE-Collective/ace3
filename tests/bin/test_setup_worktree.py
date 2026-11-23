@@ -1,6 +1,5 @@
-"""Tests for bin/setup-worktree.sh, which gives a git worktree the integration repositories,
-integration test links, local/, .worktreeinclude files and skills that the main checkout and the user
-have outside of git.
+"""Tests for bin/setup-worktree.sh, which gives a git worktree the integration repositories, local/,
+.worktreeinclude files and skills that the main checkout and the user have outside of git.
 
 Each test builds a throwaway main checkout with one integration repository and runs the real
 script from a worktree of it.
@@ -15,7 +14,6 @@ from pathlib import Path
 import pytest
 
 SCRIPT = Path(__file__).resolve().parents[2] / "bin" / "setup-worktree.sh"
-LINK = "test_external_integration_ext"
 
 pytestmark = pytest.mark.unit
 
@@ -52,13 +50,13 @@ def home(tmp_path, monkeypatch) -> Path:
 
 @pytest.fixture
 def main(tmp_path) -> Path:
-    """a main checkout holding the script, one integration repository and its test link"""
+    """a main checkout holding the script and one integration repository"""
     main = tmp_path / "main"
     (main / "bin").mkdir(parents=True)
     shutil.copy2(SCRIPT, main / "bin" / "setup-worktree.sh")
     (main / "tests").mkdir()
     (main / "tests" / "__init__.py").touch()
-    (main / ".gitignore").write_text("integrations/\nlocal\ntests/test_external_integration_*\n")
+    (main / ".gitignore").write_text("integrations/\nlocal\n")
     _git(main, "init", "--quiet", "--initial-branch=main")
     _git(main, "add", ".")
     _git(main, "commit", "--quiet", "-m", "initial")
@@ -69,8 +67,6 @@ def main(tmp_path) -> Path:
     _git(ext, "init", "--quiet", "--initial-branch=main")
     _git(ext, "add", ".")
     _git(ext, "commit", "--quiet", "-m", "initial")
-
-    (main / "tests" / LINK).symlink_to("../integrations/ext/tests")
     return main
 
 
@@ -89,15 +85,13 @@ def test_sets_up_a_worktree(main):
     assert _git(integration, "rev-parse", "HEAD") == _git(main / "integrations" / "ext", "rev-parse", "HEAD")
     # detached, so the main checkout's branch stays free to check out anywhere
     assert subprocess.run(["git", "symbolic-ref", "-q", "HEAD"], cwd=integration).returncode != 0
-    assert os.readlink(worktree / "tests" / LINK) == "../integrations/ext/tests"
-    assert (worktree / "tests" / LINK / "test_ext.py").exists()
+    assert (integration / "tests" / "test_ext.py").exists()
     # relative, so it resolves wherever the main checkout is mounted
     assert os.readlink(worktree / "local") == "../../../local"
     assert (worktree / "local").resolve() == (main / "local").resolve()
     # the stack's data volume as the dev container mounts it, where the worktree's ace commands run
     assert os.readlink(worktree / "data") == "/opt/ace/data"
     assert "integrations/ext: new worktree" in result.stdout
-    assert "tests: linked 1" in result.stdout
     assert "local: linked" in result.stdout
     assert "data: linked to /opt/ace/data" in result.stdout
 
@@ -284,18 +278,6 @@ def test_removes_the_record_of_a_deleted_worktree_beside_one_outside_the_checkou
 
     assert result.returncode == 0, result.stderr
     assert str(deleted) not in _git(main / "integrations" / "ext", "worktree", "list")
-
-
-def test_refuses_an_absolute_test_link(main):
-    (main / "tests" / LINK).unlink()
-    (main / "tests" / LINK).symlink_to(main / "integrations" / "ext" / "tests")
-    worktree = _add_worktree(main, "wt")
-
-    result = _run(worktree)
-
-    assert result.returncode == 1
-    assert "absolute" in result.stderr
-    assert not (worktree / "tests" / LINK).exists()
 
 
 def _with_worktree_include(main: Path, *entries: str):

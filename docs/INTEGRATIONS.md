@@ -42,22 +42,28 @@ ace integration --help # get the list of supported integration commands
 ace integration list # list the status of all available integrations
 ace integration enable NAME # enable the integration named NAME (requires restart)
 ace integration disable NAME # disable the integration named NAME (required restart)
-
-# (for pytest testing only)
-ace integration install NAME # installs the integration name NAME (see Integration Tests)
-ace integration uninstall NAME # uninstalls the integration name NAME (see Integration Tests)
 ```
 
 ## Integration Tests
 
-This seems to be the trickiest part.
+An integration's tests live in its `tests/` directory and run where they are, from the checkout
+root (`SAQ_HOME`):
 
-- I want the tests to have access to all the setup fixtures and utilities.
-- pytest gets weird when loading from a deeply nested directory.
+```bash
+pytest integrations/NAME/tests   # one integration
+pytest integrations              # all of them
+```
 
-To solve this, for now, an integration has to be "installed". All this does is
-create a symlink in the `tests` directory to the tests defined for the
-integration. I know this is a bit of a kludge but it works.
+A plain `pytest` runs them too: `testpaths` in `pytest.ini` covers an integration directly under
+`integrations/` and one in a repository there that holds several. The suite's fixtures and hooks
+(`root_analysis`, the per-test reset, each integration's `src/` on `sys.path`) are in
+`tests/harness.py`, a plugin that the root `conftest.py` loads, so they apply to an integration's
+tests as they do to core's. A `conftest.py` in the integration's `tests/` adds fixtures of its own.
+
+pytest names an integration's test module by its path from the checkout root,
+`integrations.NAME.tests.test_x` (`consider_namespace_packages` in `pytest.ini`), so its name never
+collides with core's `tests` package or with another integration's. The test imports its own helpers
+relatively (`from .helpers import ...`) and core's by their package (`from tests.saq.helpers import ...`).
 
 ## Development
 
@@ -545,4 +551,3 @@ fixtures those depend on (`_override_db_session`, `valid_api_key`, `test_user`, 
 ```
 - An integration can be a whole separate git repository.
 - The `integrations` directory is in .gitignore.
-- The symlinks created for the tests are also in .gitignore.

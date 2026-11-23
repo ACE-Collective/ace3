@@ -1,48 +1,5 @@
 import os
-from saq.environment import get_base_dir
-from saq.integration.integration_util import get_integration_name_from_path, get_integration_path_from_name, get_integration_var_base_dir
-
-
-def _create_symlink_name(integration_name: str) -> str:
-    return f"test_external_integration_{integration_name}"
-
-def _get_tests_dir() -> str:
-    return os.path.join(get_base_dir(), "tests")
-
-def install_integration(name: str) -> bool:
-    try:
-        dir_path = get_integration_path_from_name(name)
-    except FileNotFoundError:
-        return False
-
-    source_test_dir = os.path.join(dir_path, "tests")
-    if not os.path.exists(source_test_dir):
-        return False
-
-    # symlink needs to be relative to the tests directory
-    relative_source_test_dir = os.path.relpath(source_test_dir, start=_get_tests_dir())
-
-    integration_name = get_integration_name_from_path(dir_path)
-    target_test_dir = os.path.join(_get_tests_dir(), _create_symlink_name(integration_name))
-    if os.path.exists(target_test_dir):
-        return False
-
-    # Create a symlink to the integration directory in the tests directory
-    os.symlink(relative_source_test_dir, target_test_dir)
-    return True
-
-def uninstall_integration(name: str) -> bool:
-    symlink_path = os.path.join(_get_tests_dir(), _create_symlink_name(name))
-    if os.path.exists(symlink_path):
-        os.remove(symlink_path)
-        return True
-
-    return False
-
-def is_integration_installed(name: str) -> bool:
-    """Returns True if the integration is installed, False otherwise."""
-    target_test_dir = os.path.join(_get_tests_dir(), _create_symlink_name(name))
-    return os.path.exists(target_test_dir)
+from saq.integration.integration_util import get_integration_var_base_dir
 
 def _ensure_var_dir_exists(var_dir: str):
     if not os.path.exists(var_dir):

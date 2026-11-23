@@ -22,8 +22,7 @@ one is redone in place. The bundle gets:
     stat.txt           git diff --stat
     files.txt          changed files, one per line, "<status>\t<path relative to repo>"
     log.txt            commit subjects and bodies in the range
-    tests.txt          pytest paths to run (as seen from SAQ_HOME, integration tests
-                       through their tests/test_external_integration_<name> symlink)
+    tests.txt          pytest paths to run, relative to SAQ_HOME
     unmarked.txt       test functions in changed test files with no unit/integration/system marker
     cov_sources.txt    --cov arguments for the pytest run
     rules/AGENTS.md    core's AGENTS.md from the base, which the change is judged by
@@ -233,17 +232,6 @@ def unmarked_tests(path: str, source: str | None) -> list[str]:
                     if not class_marked and not has_run_marker(item.decorator_list):
                         missing.append(f"{path}:{item.lineno} {node.name}.{item.name}")
     return missing
-
-
-def saq_test_path(abs_path: str, integrations: list[str]) -> str | None:
-    """Map a test file to the path pytest must be given, relative to SAQ_HOME."""
-    for idir in integrations:
-        tests_dir = os.path.join(idir, "tests")
-        if abs_path.startswith(tests_dir + os.sep):
-            link = os.path.join("tests", f"test_external_integration_{os.path.basename(idir)}")
-            return os.path.join(link, os.path.relpath(abs_path, tests_dir))
-    rel = os.path.relpath(abs_path, SAQ_HOME)
-    return rel if rel.startswith("tests" + os.sep) else None
 
 
 def mirrored_test(rel_path: str) -> str | None:
@@ -965,9 +953,10 @@ def main() -> None:
         abs_path = os.path.join(repo, path)
         name = os.path.basename(path)
         if name.startswith("test_") and name.endswith(".py"):
-            mapped = saq_test_path(abs_path, integrations)
-            if mapped:
-                tests.append(mapped)
+            # core's tests/ and each integration's tests/ are what pytest.ini's testpaths collect
+            rel = os.path.relpath(abs_path, SAQ_HOME)
+            if rel.startswith("tests" + os.sep) or any(abs_path.startswith(os.path.join(d, "tests") + os.sep) for d in integrations):
+                tests.append(rel)
             unmarked.extend(unmarked_tests(abs_path, head_text(path)))
         elif kind == "core":
             mirrored = mirrored_test(path)
