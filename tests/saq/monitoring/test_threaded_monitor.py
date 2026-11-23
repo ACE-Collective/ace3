@@ -106,6 +106,16 @@ class TestACEThreadedMonitorLifecycle:
 
         assert returned.wait(5)
 
+    @pytest.mark.filterwarnings("ignore::pytest.PytestUnhandledThreadExceptionWarning")
+    def test_wait_returns_when_the_thread_dies_on_its_own(self):
+        # main_loop catches Exception, not SystemExit
+        monitor = ConcreteTestMonitor(frequency=3600, execute_side_effect=SystemExit())
+        monitor.start()
+
+        assert _wait_in_thread(monitor).wait(5)
+        assert not monitor.main_thread.is_alive()
+        assert not monitor.shutdown_event.is_set()
+
     def test_wait_gives_up_on_a_monitor_whose_execute_does_not_return(self, caplog):
         monitor = BlockingMonitor(name="stuck_monitor", frequency=3600)
         monitor.stop_timeout = 0.1
