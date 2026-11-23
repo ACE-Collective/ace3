@@ -83,7 +83,7 @@ def _track(writer, module_path=MODULE_PATH, maximum_analysis_time=60):
 def writer():
     """A real writer against this node's real tracking directory.
 
-    ``clear_all_tracking()`` runs per test (tests/conftest.py), so each of these starts empty.
+    ``clear_all_tracking()`` runs per test (tests/harness.py), so each of these starts empty.
     """
     return TrackingWriter("any-0")
 

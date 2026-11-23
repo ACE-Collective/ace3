@@ -113,7 +113,7 @@ def test_every_enabled_analysis_module_constructs(resolved_config):
     __init__ (read a config key, build a client, open a file) fails only in a worker, as a single
     ERROR line, with the module silently absent from the engine.
 
-    CAVEAT: this test is only reliable when run on its own. tests/conftest.py::pytest_sessionstart
+    CAVEAT: this test is only reliable when run on its own. tests/harness.py::pytest_sessionstart
     puts every integration src/ on sys.path before collection, and the integration test modules
     import their packages at module scope -- so in a full-suite run those packages are already
     imported (and their register_integration_configuration() calls already made) before any test

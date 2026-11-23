@@ -78,7 +78,7 @@ def test_integration_config_object_mutation_is_rolled_back():
     """A field written on a cached integration config must not outlive the test that wrote it.
 
     get_config(<name>) hands back a shared mutable pydantic object, and tests do write to it --
-    ace_crowdstrike/tests/test_lib.py set crowdstrike.proxy that way. tests/conftest.py restores
+    ace_crowdstrike/tests/test_lib.py set crowdstrike.proxy that way. tests/harness.py restores
     the ACEConfig with set_config(), which rolls back an add_proxy_config() but not a field set on
     an integration config object. That asymmetry left every later falcon module construction
     asking for a proxy that no longer existed, and only under the pytest-randomly orders that put

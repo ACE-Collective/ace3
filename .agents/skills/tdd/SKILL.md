@@ -68,7 +68,7 @@ Mock only what ACE doesn't own: network peers and outside services, the clock, r
 - **No marker.** A test without a `unit`, `integration` or `system` marker never runs under the default filter, and it fails no check.
 - **The in-memory root.** An analysis-module test that asserts on the root it built, after the engine ran, isn't testing what the engine saved. Reload it with `load_root`.
 - **`time.sleep`.** A test that sleeps to wait for something is flaky. Use `wait_for_condition` or `wait_for_log_count` from `tests/saq/helpers.py`.
-- **Order.** The suite runs in random order. New module-level state (a cache, a registry, a singleton) is reset in `global_function_setup` in `tests/conftest.py`.
+- **Order.** The suite runs in random order. New module-level state (a cache, a registry, a singleton) is reset in `global_function_setup` in `tests/harness.py`.
 - **A forked child that ends in `os._exit`.** Coverage can't record its lines. Assert on its exit code, log record or effect, and say so in the PR.
 - **A copied helper.** Search `tests/saq/helpers.py` and the nearest `conftest.py` before writing a helper or a fixture. `prepare.py --check` (below) flags an exact copy.
 - **A fallback that hides the bug.** A test that a stored value is used must trip every fallback that could compute it again, not only the most expensive one.

@@ -318,7 +318,7 @@ class TestLoadIntegrationComponentEtc:
 
 @pytest.mark.unit
 def test_the_tests_load_this_checkouts_integrations():
-    # tests/conftest.py puts every integration's source on sys.path before ACE is initialized, and the loader
+    # tests/harness.py puts every integration's source on sys.path before ACE is initialized, and the loader
     # appends, so whatever it adds first wins. Run from a checkout other than /opt/ace (a worktree), it used to add
     # /opt/ace's integrations, and every test imported that checkout's integration code instead of this one's
     own = os.path.realpath(get_base_dir())
