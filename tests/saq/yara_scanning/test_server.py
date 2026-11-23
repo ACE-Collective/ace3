@@ -1,5 +1,6 @@
 """The yara scanner server, running for real against rules written by each test."""
 
+import logging
 import multiprocessing
 import os
 import shutil
@@ -294,6 +295,27 @@ def test_scan_attaches_rule_details():
                                {"op": protocol.OP_SCAN_FILE, "path": "/tmp/x"}, None)
 
     assert response["matches"][0]["string_patterns"] == {"$a": '"MATCH_A"'}
+
+
+@pytest.mark.unit
+def test_a_failed_scan_is_logged_with_its_traceback(caplog):
+    """The client gets only the exception's type and message, so the worker's log record is the only
+    place its stack can be read."""
+    class _Scanner:
+        def scan(self, path, **kwargs):
+            raise RuntimeError("scan blew up")
+
+    settings = ScannerSettings(socket_dir="/tmp", signature_dir="/tmp", git_repo_dirs=(), worker_count=1,
+                               update_frequency=60, default_timeout=5, compile_timeout=60, io_timeout=5,
+                               max_data_bytes=1024, max_requests_per_worker=0, backlog=1)
+    with caplog.at_level(logging.ERROR):
+        response = _scan_in_worker(_Scanner(), settings, {}, {"op": protocol.OP_SCAN_FILE, "path": "/tmp/x"}, None)
+
+    assert response["status"] == protocol.STATUS_ERROR
+    assert response["error"] == {"type": "RuntimeError", "message": "scan blew up"}
+    [record] = [r for r in caplog.records if "/tmp/x" in r.getMessage()]
+    assert record.levelno == logging.ERROR
+    assert record.exc_info and record.exc_info[0] is RuntimeError
 
 
 @pytest.mark.integration
