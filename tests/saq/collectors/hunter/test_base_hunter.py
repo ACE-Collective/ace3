@@ -1393,6 +1393,36 @@ def test_wait_returns_false_while_hunt_is_still_executing(manager_kwargs):
     assert hunt.wait(timeout=5) is True
 
 
+@pytest.mark.integration
+def test_wait_while_execute_hunt_starts_its_thread(manager_kwargs, monkeypatch):
+    """execute_hunt() runs on the manager thread and wait() on the service's lifecycle thread,
+    so wait() can read the hunt at any point in execute_hunt(). It must never find a thread that
+    is not started yet, because Thread.join() raises on one (#1143)."""
+    manager_kwargs["execution_mode"] = ExecutionMode.CONTINUOUS
+    manager = HuntManager(**manager_kwargs)
+    hunt = default_hunt(manager=manager)
+    wait_outcomes = []
+
+    class _WaitBeforeStartThread(threading.Thread):
+        # runs wait() in the last moment before the hunt's execution thread starts
+        def start(self):
+            if self.name == f"Hunt Execution {hunt}":
+                try:
+                    wait_outcomes.append(hunt.wait(timeout=1))
+                except RuntimeError as e:
+                    wait_outcomes.append(e)
+            super().start()
+
+    monkeypatch.setattr(threading, "Thread", _WaitBeforeStartThread)
+    manager.execute_hunt(hunt)
+    monkeypatch.undo()
+
+    hunt.execution_thread.join(10)
+    assert not hunt.execution_thread.is_alive()
+    assert hunt.executed is True
+    assert wait_outcomes == [True]
+
+
 @pytest.mark.unit
 def test_cancel_hunts_abandons_hunt_that_ignores_cancel(manager_kwargs, monkeypatch):
     """A hunt that will not stop must not block the manager thread. cancel_hunts() runs on the

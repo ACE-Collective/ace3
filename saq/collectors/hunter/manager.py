@@ -386,10 +386,14 @@ class HuntManager:
             return
 
         # otherwise we start the execution of the hunt on a new thread
-        hunt.execution_thread = threading.Thread(target=self.execute_threaded_hunt, 
-                                                 args=(hunt,),
-                                                 name=f"Hunt Execution {hunt}")
-        hunt.execution_thread.start()
+        # NOTE the thread is published on the hunt only once it is started: Hunt.wait() runs on
+        # the service's lifecycle thread and joins whatever execution_thread it finds, and
+        # Thread.join() raises on a thread that is not started yet
+        execution_thread = threading.Thread(target=self.execute_threaded_hunt,
+                                            args=(hunt,),
+                                            name=f"Hunt Execution {hunt}")
+        execution_thread.start()
+        hunt.execution_thread = execution_thread
 
         # wait for the signal that the hunt has started
         # this will block for a short time to ensure we don't wrap back around before the 
