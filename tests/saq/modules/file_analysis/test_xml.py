@@ -1,14 +1,31 @@
 import base64
+import errno
+import logging
 import os
 
 import pytest
 
+from saq.analysis.file_manager.local_file_manager import LocalFileManager
 from saq.analysis.root import load_root
 from saq.constants import F_FILE, R_EXTRACTED_FROM
 from saq.engine.core import Engine
 from saq.engine.enums import EngineExecutionMode
 from saq.modules.file_analysis.xml import XMLBinaryDataAnalysis, XMLPlainTextAnalysis
 from saq.util.uuid import get_storage_dir
+
+
+def _fail_to_store(monkeypatch):
+    """Every file added from here on fails to store, as on a full disk."""
+    def store_file(self, *args, **kwargs):
+        raise OSError(errno.ENOSPC, "No space left on device")
+    monkeypatch.setattr(LocalFileManager, "store_file", store_file)
+
+
+def _assert_store_failure_reached_the_executor(analysis, caplog):
+    """The storage failure is the executor's to record (traceback and crash report), not a parse error."""
+    assert analysis.error.startswith("OSError: [Errno 28] No space left on device (crash_id ")
+    [record] = [r for r in caplog.records if "failed on" in r.getMessage() and "No space left" in r.getMessage()]
+    assert record.exc_info is not None
 
 
 def _flat_opc(parts: list[tuple[str, bytes]]) -> str:
@@ -156,3 +173,51 @@ def test_xml_plain_text_that_cannot_be_parsed(root_analysis):
     analysis = root_analysis.get_observable(_file.uuid).get_and_load_analysis(XMLPlainTextAnalysis)
     assert analysis.error.startswith("unable to parse XML: ")
     assert not analysis.observables
+
+
+@pytest.mark.integration
+def test_xml_binary_data_part_that_cannot_be_stored(root_analysis, monkeypatch, caplog):
+    root_analysis.analysis_mode = "test_groups"
+    target_path = root_analysis.create_file_path("document.xml")
+    with open(target_path, "w") as fp:
+        fp.write(_flat_opc([("/word/media/image1.png", b"image")]))
+
+    _file = root_analysis.add_file_observable(target_path)
+    root_analysis.save()
+    root_analysis.schedule()
+    _fail_to_store(monkeypatch)
+
+    engine = Engine()
+    engine.configuration_manager.enable_module("xml_binary_analyzer", "test_groups")
+    engine.start_single_threaded(execution_mode=EngineExecutionMode.SINGLE_SHOT)
+
+    root_analysis = load_root(get_storage_dir(root_analysis.uuid))
+    analysis = root_analysis.get_observable(_file.uuid).get_and_load_analysis(XMLBinaryDataAnalysis)
+    _assert_store_failure_reached_the_executor(analysis, caplog)
+
+
+@pytest.mark.integration
+def test_xml_plain_text_that_cannot_be_stored(root_analysis, monkeypatch, caplog):
+    root_analysis.analysis_mode = "test_groups"
+    document_path = root_analysis.create_file_path("invoice.docx")
+    with open(document_path, "wb") as fp:
+        fp.write(b"PK")
+    document = root_analysis.add_file_observable(document_path)
+    document.add_tag("microsoft_office")
+
+    target_path = root_analysis.create_file_path("document.xml")
+    with open(target_path, "w") as fp:
+        fp.write('<?xml version="1.0"?><document><body><t>hello</t></body></document>')
+    _file = root_analysis.add_file_observable(target_path)
+    _file.add_relationship(R_EXTRACTED_FROM, document)
+    root_analysis.save()
+    root_analysis.schedule()
+    _fail_to_store(monkeypatch)
+
+    engine = Engine()
+    engine.configuration_manager.enable_module("xml_plain_text_analyzer", "test_groups")
+    engine.start_single_threaded(execution_mode=EngineExecutionMode.SINGLE_SHOT)
+
+    root_analysis = load_root(get_storage_dir(root_analysis.uuid))
+    analysis = root_analysis.get_observable(_file.uuid).get_and_load_analysis(XMLPlainTextAnalysis)
+    _assert_store_failure_reached_the_executor(analysis, caplog)

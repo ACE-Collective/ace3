@@ -1,3 +1,4 @@
+import errno
 import logging
 import os
 import struct
@@ -5,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from saq.analysis.file_manager.local_file_manager import LocalFileManager
 from saq.analysis.root import load_root
 from saq.constants import DIRECTIVE_SANDBOX, F_FILE, R_EXTRACTED_FROM
 from saq.engine.core import Engine
@@ -33,11 +35,13 @@ def _rtf(tmp_path: Path, name: str = "document.rtf", filename: bytes = b"payload
     return path
 
 
-def _analyze(root_analysis, path: Path, modules: tuple[str, ...]):
+def _analyze(root_analysis, path: Path, modules: tuple[str, ...], before_engine=None):
     root_analysis.analysis_mode = "test_groups"
     file_observable = root_analysis.add_file_observable(str(path))
     root_analysis.save()
     root_analysis.schedule()
+    if before_engine:
+        before_engine()
 
     engine = Engine()
     for module in modules:
@@ -131,6 +135,23 @@ def test_rtfobj_that_cannot_run_is_recorded(root_analysis, tmp_path, monkeypatch
     assert analysis.error == "unable to run rtfobj: no python"
     assert analysis.extracted_files == []
     [record] = [r for r in caplog.records if r.levelno == logging.ERROR and "execution of" in r.getMessage()]
+    assert record.exc_info is not None
+
+
+@pytest.mark.integration
+def test_extracted_file_that_cannot_be_stored(root_analysis, tmp_path, monkeypatch, caplog):
+    """A failure to store what rtfobj extracted (a full disk) is the executor's to record, with its
+    traceback and a crash report, not a warning about the output directory."""
+    def store_file(self, *args, **kwargs):
+        raise OSError(errno.ENOSPC, "No space left on device")
+
+    def fail_to_store():
+        monkeypatch.setattr(LocalFileManager, "store_file", store_file)
+
+    analysis = _analyze(root_analysis, _rtf(tmp_path), ("rtfole",), before_engine=fail_to_store).get_and_load_analysis(RTFOLEObjectAnalysis)
+
+    assert analysis.error.startswith("OSError: [Errno 28] No space left on device (crash_id ")
+    [record] = [r for r in caplog.records if "failed on" in r.getMessage() and "No space left" in r.getMessage()]
     assert record.exc_info is not None
 
 

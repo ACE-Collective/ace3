@@ -150,25 +150,21 @@ class RTFOLEObjectAnalyzer(AnalysisModule):
             analysis.error = f"unable to run rtfobj: {str(e) or type(e).__name__}"
             return AnalysisExecutionResult.COMPLETED
 
-        # walk the output directory and add all discovered files as observables
-        try:
-            logging.debug("walking {}".format(output_dir))
-            for root, dirs, files in os.walk(output_dir):
-                logging.debug("looping {} {} {}".format(root, dirs, files))
-                for file_name in files:
-                    extracted_file = os.path.join(root, file_name)
-                    logging.debug("extracted_file = {}".format(extracted_file))
-                    analysis.extracted_files.append(extracted_file)
-                    f = analysis.add_file_observable(extracted_file, volatile=True)
-                    if f:
-                        f.add_tag('extracted_rtf')
-                        f.redirection = _file
-                        f.add_relationship(R_EXTRACTED_FROM, _file)
-                        f.add_yara_meta("type", "document.rtf.object")
-
-        except Exception as e:
-            logging.warning("failed to process output directory {}: {}".format(output_dir, e))
-            return AnalysisExecutionResult.COMPLETED
+        # walk the output directory and add all discovered files as observables. a failure to store
+        # one (a full disk) goes to the executor, which logs it with its traceback and a crash report
+        logging.debug("walking {}".format(output_dir))
+        for root, dirs, files in os.walk(output_dir):
+            logging.debug("looping {} {} {}".format(root, dirs, files))
+            for file_name in files:
+                extracted_file = os.path.join(root, file_name)
+                logging.debug("extracted_file = {}".format(extracted_file))
+                analysis.extracted_files.append(extracted_file)
+                f = analysis.add_file_observable(extracted_file, volatile=True)
+                if f:
+                    f.add_tag('extracted_rtf')
+                    f.redirection = _file
+                    f.add_relationship(R_EXTRACTED_FROM, _file)
+                    f.add_yara_meta("type", "document.rtf.object")
 
         return AnalysisExecutionResult.COMPLETED
 
