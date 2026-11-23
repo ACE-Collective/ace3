@@ -37,6 +37,7 @@ from saq.database.model import (
     Comment,
     Company,
     DetectionPoint,
+    Observable as ObservableRecord,
     ObservableComment,
     ObservableMapping,
     Tag,
@@ -56,6 +57,7 @@ from saq.database.util.locking import acquire_lock, release_lock
 from saq.database.util.workload import add_workload, request_analyst_analysis
 from saq.environment import get_base_dir, get_temp_dir
 from saq.gui.alert import GUIAlert
+from saq.observables.type_hierarchy import get_type_hierarchy
 from saq.gui.filter_query import resolve_filter_list, uses_filter_sentinels
 from saq.gui.filter_screens import ALERTS_SCREEN
 from saq.gui.filter_url import FilterQueryError, decode_filter_query
@@ -75,6 +77,9 @@ from aceapi_v2.auth.schemas import ApiAuthResult
 from aceapi_v2.alerts.schemas import (
     ALERT_ROW_CSV_FIELDS,
     AlertCommentRead,
+    AlertCommonalities,
+    CommonalityGroup,
+    CommonalityObservable,
     AlertListRow,
     AlertRow,
     BulkAddObservableResult,
@@ -959,3 +964,213 @@ def alert_rows_to_csv(rows: list[AlertListRow], *, header: bool) -> str:
         values["comments"] = "\n".join(values["comments"])
 
     return rows_to_csv(rows, ALERT_ROW_CSV_FIELDS, header=header, flatten=flatten)
+
+
+# a group is near-identical when every pair of its alerts shares at least this share of the values of
+# the one with more
+NEAR_IDENTICAL_SHARE = 0.9
+
+
+def alert_commonalities(alert_uuids: list[str], ignore: list[str]) -> AlertCommonalities:
+    """Groups the alerts by the observable values they share, for the Commonalities panel of the manage
+    page (manage_commonalities.js); _group_alerts has the rules.
+
+    A value is one value whatever its type: an address that is the sender of one alert and the return
+    path of another links them, and is one column. Two queries, whatever the number of alerts: the
+    values two or more of the alerts have, and how many values each alert has. Requested alerts this
+    node does not show, or that do not exist, are left out. Observables named in `ignore`
+    (`type:value`) are not grouped by."""
+    order = {alert_uuid: index for index, alert_uuid in enumerate(dict.fromkeys(alert_uuids))}
+    scope = [Alert.uuid.in_(order)]
+    locations = node_scope_locations()
+    if locations is not None:
+        scope.append(Alert.location.in_(locations))
+
+    # A value is matched by a hash of the value itself, which is the same whatever its type. The
+    # observables.sha256 column is not: for a file it is the file's sha256 (its value unhexed), so a
+    # file and the sha256 observable of the same hash would be two values.
+    value_key = func.sha2(ObservableRecord.value, 256)
+    page_values = (
+        select(Alert.id.label("alert_id"), value_key.label("value_key"))
+        .join(ObservableMapping, ObservableMapping.alert_id == Alert.id)
+        .join(ObservableRecord, ObservableRecord.id == ObservableMapping.observable_id)
+        .where(*scope)
+        .subquery()
+    )
+    shared_values = (
+        select(page_values.c.value_key)
+        .group_by(page_values.c.value_key)
+        .having(func.count(func.distinct(page_values.c.alert_id)) >= 2)
+    )
+    rows = get_db().execute(
+        select(Alert.uuid, ObservableRecord.type, ObservableRecord.value)
+        .join(ObservableMapping, ObservableMapping.alert_id == Alert.id)
+        .join(ObservableRecord, ObservableRecord.id == ObservableMapping.observable_id)
+        .where(*scope, value_key.in_(shared_values))
+    ).all()
+    totals = dict(get_db().execute(
+        select(Alert.uuid, func.count(func.distinct(value_key)))
+        .select_from(Alert)
+        .outerjoin(ObservableMapping, ObservableMapping.alert_id == Alert.id)
+        .outerjoin(ObservableRecord, ObservableRecord.id == ObservableMapping.observable_id)
+        .where(*scope)
+        .group_by(Alert.uuid)
+    ).all())
+
+    ignored = set(ignore)
+    types_of: dict[str, set[str]] = {}
+    holders: dict[str, set[str]] = {}
+    kept: dict[str, set[str]] = {}
+    dropped: dict[str, set[str]] = {}
+    for alert_uuid, o_type, o_value in rows:
+        value = o_value.decode("utf-8", errors="replace")
+        if f"{o_type}:{value}" in ignored:
+            dropped.setdefault(alert_uuid, set()).add(value)
+            continue
+        kept.setdefault(alert_uuid, set()).add(value)
+        types_of.setdefault(value, set()).add(o_type)
+        holders.setdefault(value, set()).add(alert_uuid)
+    # an ignored value no longer counts toward its alert's size either
+    for alert_uuid, values in dropped.items():
+        totals[alert_uuid] -= len(values - kept.get(alert_uuid, set()))
+    alerts_of = {value: sorted(uuids, key=order.__getitem__) for value, uuids in holders.items() if len(uuids) >= 2}
+
+    groups, group_of, partners, weight = _group_alerts(alerts_of, order)
+
+    _measure_groups(groups, group_of, alerts_of, weight, totals)
+
+    priority = get_config().gui.commonalities_priority_types
+    hierarchy = get_type_hierarchy()
+
+    def type_rank(o_type: str) -> int:
+        return min((priority.index(t) for t in (o_type, *hierarchy.ancestors(o_type)) if t in priority),
+                   default=len(priority))
+
+    observables = []
+    placed: set[str] = set()
+    for index, group in enumerate(groups):
+        mine = []
+        for value, uuids in alerts_of.items():
+            if value in placed or not any(group_of.get(u) == index for u in uuids):
+                continue
+            types = sorted(types_of[value], key=lambda t: (type_rank(t), t))
+            linked = sorted({group_of[u] for u in uuids if u in group_of})
+            in_group = sum(1 for u in uuids if group_of.get(u) == index)
+            mine.append(((len(linked) == 1, type_rank(types[0]), -in_group, -len(uuids), value),
+                         CommonalityObservable(type=types[0], types=types, value=value, alert_uuids=uuids,
+                                               group=index, groups=linked)))
+        mine.sort(key=lambda item: item[0])
+        placed.update(o.value for _, o in mine)
+        observables.extend(o for _, o in mine)
+
+    return AlertCommonalities(
+        groups=groups, observables=observables,
+        related={alert_uuid: len(others) for alert_uuid, others in partners.items()},
+        unrelated=len(totals) - len(group_of),
+        type_ancestors={t: list(hierarchy.ancestors(t)) for o in observables for t in o.types})
+
+
+def _measure_groups(groups: list[CommonalityGroup], group_of: dict[str, int], alerts_of: dict[str, list[str]],
+                    weight: dict[tuple[str, str], int], totals: dict[str, int]) -> None:
+    """Sets each group's shared, total and near_identical, in one pass over the values and one over the pairs."""
+    # one pass over the values: a value every alert of a group has counts toward its `shared`
+    shared_by_all = [0] * len(groups)
+    for uuids in alerts_of.values():
+        holders_in: dict[int, int] = {}
+        for alert_uuid in uuids:
+            if alert_uuid in group_of:
+                holders_in[group_of[alert_uuid]] = holders_in.get(group_of[alert_uuid], 0) + 1
+        for index, count in holders_in.items():
+            if count == len(groups[index].alert_uuids):
+                shared_by_all[index] += 1
+
+    # one pass over the pairs: a group is near-identical when every pair of its alerts shares values
+    # and each such pair shares NEAR_IDENTICAL_SHARE of the values of the one with more
+    close_pairs = [0] * len(groups)
+    for (first, second), shared in weight.items():
+        index = group_of.get(first)
+        if index is not None and index == group_of.get(second) \
+                and shared >= NEAR_IDENTICAL_SHARE * max(totals[first], totals[second]):
+            close_pairs[index] += 1
+
+    for index, group in enumerate(groups):
+        size = len(group.alert_uuids)
+        group.shared = shared_by_all[index]
+        group.total = max(totals[alert_uuid] for alert_uuid in group.alert_uuids)
+        group.near_identical = close_pairs[index] == size * (size - 1) // 2
+
+
+def _group_alerts(
+    alerts_of: dict[str, list[str]], order: dict[str, int]
+) -> tuple[list[CommonalityGroup], dict[str, int], dict[str, set[str]], dict[tuple[str, str], int]]:
+    """Groups alerts sharing observable values: pairs sharing two or more form the groups, then pairs
+    sharing one group alerts no such pair took, and an alert still alone joins the partner it shares
+    the most with. Returns the groups (most in common first), alert uuid -> group index, alert uuid ->
+    the alerts it shares anything with, and (alert, alert) -> how many values the pair shares."""
+    weight: dict[tuple[str, str], int] = {}
+    for uuids in alerts_of.values():
+        for i, first in enumerate(uuids):
+            for second in uuids[i + 1:]:
+                weight[(first, second)] = weight.get((first, second), 0) + 1
+
+    partners: dict[str, set[str]] = {}
+    for first, second in weight:
+        partners.setdefault(first, set()).add(second)
+        partners.setdefault(second, set()).add(first)
+
+    parent = {alert_uuid: alert_uuid for alert_uuid in partners}
+
+    def find(alert_uuid: str) -> str:
+        while parent[alert_uuid] != alert_uuid:
+            parent[alert_uuid] = parent[parent[alert_uuid]]
+            alert_uuid = parent[alert_uuid]
+        return alert_uuid
+
+    def union(first: str, second: str) -> None:
+        parent[find(first)] = find(second)
+
+    strong = [pair for pair, shared in weight.items() if shared >= 2]
+    for pair in strong:
+        union(*pair)
+    taken = {alert_uuid for pair in strong for alert_uuid in pair}
+    for (first, second), shared in weight.items():
+        if shared == 1 and first not in taken and second not in taken:
+            union(first, second)
+
+    def members() -> dict[str, list[str]]:
+        found: dict[str, list[str]] = {}
+        for alert_uuid in parent:
+            found.setdefault(find(alert_uuid), []).append(alert_uuid)
+        return found
+
+    def shared_with(alert_uuid: str, other: str) -> int:
+        return weight.get((alert_uuid, other)) or weight[(other, alert_uuid)]
+
+    for (alert_uuid,) in [m for m in members().values() if len(m) == 1]:
+        union(alert_uuid, max(partners[alert_uuid], key=lambda other: (shared_with(alert_uuid, other), -order[other])))
+
+    # one pass over the pairs: each group's pair count and values shared, and each alert's strength
+    # (the values it shares with the rest of its group)
+    pair_count: dict[str, int] = {}
+    shared_total: dict[str, int] = {}
+    strength: dict[str, int] = {}
+    for (first, second), shared in weight.items():
+        root = find(first)
+        if root != find(second):
+            continue
+        pair_count[root] = pair_count.get(root, 0) + 1
+        shared_total[root] = shared_total.get(root, 0) + shared
+        strength[first] = strength.get(first, 0) + shared
+        strength[second] = strength.get(second, 0) + shared
+
+    groups = []
+    for root, uuids in members().items():
+        average = shared_total[root] / pair_count[root]
+        intensity = min(1.0, 0.45 * min(1.0, (len(uuids) - 2) / 4) + 0.55 * min(1.0, (average - 1) / 2.5))
+        uuids.sort(key=lambda alert_uuid: (-strength[alert_uuid], order[alert_uuid]))
+        groups.append(CommonalityGroup(alert_uuids=uuids, intensity=round(intensity, 3), shared=0, total=0,
+                                       near_identical=False))
+
+    groups.sort(key=lambda group: (-group.intensity, -len(group.alert_uuids), order[group.alert_uuids[0]]))
+    group_of = {alert_uuid: index for index, group in enumerate(groups) for alert_uuid in group.alert_uuids}
+    return groups, group_of, partners, weight
