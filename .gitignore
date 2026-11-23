@@ -47,6 +47,8 @@ coverage.xml
 .hypothesis/
 .pytest_cache/
 .playwright-mcp/
+# links to integrations' tests that `ace integration install` used to make; their names are internal
+tests/test_external_integration_*
 
 # Translations
 *.mo

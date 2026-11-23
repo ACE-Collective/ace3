@@ -4,6 +4,7 @@ The run is in a scratch checkout with this checkout's pytest.ini and root confte
 ``tests`` package whose ``harness`` stands in for tests/harness.py, and two integrations: ``alpha``
 directly under integrations/, whose tests/ is a package, and ``beta`` inside a repository that holds
 several, whose tests/ is not. Each has a test module named like the other's and like a core one.
+The checkout still has the link to alpha's tests that ``ace integration install`` used to make.
 It is a separate pytest process, not this checkout's: the session lock refuses a second run of it.
 """
 
@@ -95,6 +96,7 @@ def test_integration_tests_run_in_place_with_the_suites_fixtures(tmp_path, args,
         "integrations/group-repo/beta/integration.md": "# beta\n",
         "integrations/group-repo/beta/tests/test_same_name.py": BETA_TEST,
     })
+    (tmp_path / "tests" / "test_external_integration_alpha").symlink_to("../integrations/alpha/tests")
     # nothing of this run's: its checkout on the path would put the real tests package first
     env = {k: v for k, v in os.environ.items() if k != "PYTHONPATH" and not k.startswith("PYTEST_")}
 
@@ -103,3 +105,14 @@ def test_integration_tests_run_in_place_with_the_suites_fixtures(tmp_path, args,
 
     assert result.returncode == 0, result.stdout + result.stderr
     assert f" {passed} passed" in result.stdout, result.stdout
+
+
+@pytest.mark.unit
+def test_a_left_over_integration_test_link_is_not_committable(tmp_path):
+    (tmp_path / ".gitignore").write_text((REPO / ".gitignore").read_text())
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True, timeout=30)
+
+    result = subprocess.run(["git", "check-ignore", "-q", "tests/test_external_integration_alpha"], cwd=tmp_path,
+                            timeout=30)
+
+    assert result.returncode == 0
