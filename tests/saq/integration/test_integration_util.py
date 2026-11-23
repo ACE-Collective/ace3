@@ -52,7 +52,7 @@ class TestIntegrationUtil:
     def test_get_integration_name_from_path_with_trailing_slash(self):
         """Test get_integration_name_from_path with trailing slash."""
         test_path = "/path/to/integration_name/"
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError, match=r"must not end with a slash"):
             get_integration_name_from_path(test_path)
 
     def test_get_integration_path_from_name(self, integration_base):

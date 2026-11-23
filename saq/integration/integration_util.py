@@ -17,7 +17,7 @@ def get_integration_name_from_path(dir_path: str) -> str:
         raise ValueError("integration directory path is empty")
 
     if dir_path.endswith("/"):
-        raise ValueError(f"integration directory path {dir_path} does not end with a slash")
+        raise ValueError(f"integration directory path {dir_path} must not end with a slash")
 
     return os.path.basename(dir_path)
 
