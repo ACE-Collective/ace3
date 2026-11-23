@@ -26,7 +26,9 @@ def test_add_file_observable_skips_a_refused_file(root_analysis, tmp_path):
 
 @pytest.mark.unit
 def test_add_file_observable_raises_a_failure_that_is_not_a_refusal(root_analysis, tmp_path, monkeypatch, caplog):
-    """Only a refusal skips the file: any other ValueError is logged and raised, not taken for one."""
+    """Only a refusal skips the file: any other ValueError is raised, not taken for one. The caller
+    logs it (the engine's executor with its traceback and a crash report), so it is not logged here
+    a second time without one."""
     source = tmp_path / "payload.pdf"
     source.write_bytes(b"payload")
 
@@ -38,8 +40,7 @@ def test_add_file_observable_raises_a_failure_that_is_not_a_refusal(root_analysi
     with pytest.raises(ValueError, match="unreadable"):
         root_analysis.add_file_observable(str(source))
 
-    assert [r.getMessage() for r in caplog.records if r.levelno == logging.ERROR] == [
-        f"unable to add file observable {source}: unreadable (<class 'ValueError'>)"]
+    assert [r.getMessage() for r in caplog.records if r.levelno >= logging.ERROR] == []
 
 @pytest.mark.unit
 def test_add_file_observable_with_a_name_no_filesystem_can_hold(root_analysis, tmp_path):

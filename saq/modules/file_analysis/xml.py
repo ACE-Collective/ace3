@@ -119,13 +119,16 @@ class XMLPlainTextAnalyzer(AnalysisModule):
         parser = etree.XMLParser(target=_XMLPlainTextDumper(output_path))
         try:
             etree.parse(local_file_path, parser)
-            if os.path.exists(output_path) and os.path.getsize(output_path):
-                _file = analysis.add_file_observable(output_path, volatile=True)
-                if _file:
-                    analysis.details = { KEY_XML_PLAIN_TEXT : _file.file_path }
         except Exception as e:
             logging.info("unable to parse XML file {}: {}".format(_file, e))
             analysis.error = f"unable to parse XML: {str(e) or type(e).__name__}"
+            return AnalysisExecutionResult.COMPLETED
+
+        # outside the try: a failure to store the text is not a parse failure and goes to the executor
+        if os.path.exists(output_path) and os.path.getsize(output_path):
+            _file = analysis.add_file_observable(output_path, volatile=True)
+            if _file:
+                analysis.details = { KEY_XML_PLAIN_TEXT : _file.file_path }
 
         return AnalysisExecutionResult.COMPLETED
 
@@ -240,15 +243,15 @@ class XMLBinaryDataAnalyzer(AnalysisModule):
         try:
             parser = etree.XMLParser(target=_XMLParser(self.get_root(), f'{_file.file_path}.xml'))
             extracted_files = etree.parse(local_file_path, parser)
-
-            for extracted_file in extracted_files:
-                rel_path = os.path.relpath(extracted_file, start=self.get_root().storage_dir)
-                analysis.add_file_observable(extracted_file, volatile=True)
-                analysis.extracted_files.append(rel_path)
-
         except Exception as e:
             logging.info("xml parsing failed for {}: {}".format(local_file_path, e))
             analysis.error = f"unable to parse XML: {str(e) or type(e).__name__}"
             return AnalysisExecutionResult.COMPLETED
+
+        # outside the try: a failure to store a part is not a parse failure and goes to the executor
+        for extracted_file in extracted_files:
+            rel_path = os.path.relpath(extracted_file, start=self.get_root().storage_dir)
+            analysis.add_file_observable(extracted_file, volatile=True)
+            analysis.extracted_files.append(rel_path)
 
         return AnalysisExecutionResult.COMPLETED
