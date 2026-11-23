@@ -223,7 +223,8 @@ def _scan(scanner: YaraScanner, settings: ScannerSettings, rule_details: Compile
         return {"status": protocol.STATUS_TIMEOUT, "error": {"type": type(e).__name__, "message": str(e)}}
 
     except Exception as e:
-        logging.warning("yara scan of %s failed: %s", request.get("path") or "data stream", e)
+        # the client gets only the type and message, so this record is the only place the worker's stack is kept
+        logging.exception("yara scan of %s failed", request.get("path") or "data stream")
         return {"status": protocol.STATUS_ERROR, "error": {"type": type(e).__name__, "message": str(e)}}
 
     matches = scanner.scan_results if matched else []
