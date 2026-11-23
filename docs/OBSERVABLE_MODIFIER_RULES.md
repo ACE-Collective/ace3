@@ -172,8 +172,9 @@ tree_conditions:
     observable_match:
       file_name: ".*\\.html$"   # regex against the matching analysis's observable
                                 # (supported props: type, value, file_name)
-    produces_observable_type: "url"               # matched analysis must have PRODUCED this type
-    produces_observable_value: ".*example\\.com"  # optional regex on the produced observable's value
+    produces_observable:        # matched analysis must have PRODUCED a matching observable
+      type: "url"               # required
+      value: ".*example\\.com"  # optional regex on the produced observable's value
 ```
 
 `scope` controls *where* ACE looks, relative to the observable being evaluated:
@@ -208,10 +209,14 @@ the remaining path is applied to each element and the condition matches if *any*
 > only one of them. Match on a property the observable type actually carries, or drop
 > `observable_match` and tighten the `scope`/`analysis_type` instead.
 
-`produces_observable_type` requires the matching analysis to have **produced** an observable whose
-type is a subtype of the given type. Unlike `observable_match` (which inspects the analysis's *own*
-observable), this inspects the observables the analysis *generated*. `produces_observable_value` is
-an optional regex applied to that produced observable's value.
+`produces_observable` requires the matching analysis to have **produced** an observable whose type
+is a subtype of its `type`. Unlike `observable_match` (which inspects the analysis's *own*
+observable), this inspects the observables the analysis *generated*. Its optional `value` is a regex
+applied to that produced observable's value.
+
+A tree condition takes only the keys shown above. A rule with any other key in a tree condition is
+not loaded, and the analyzer logs an error naming the rule and the key, because running it without
+the check its author wrote would match more than intended (or, with `negate: true`, less).
 
 > Note: when a `descendants`-scoped condition specifies only `observable_match` (no `analysis_type`
 > and no `details_match`), ACE matches against descendant *observables* directly rather than the

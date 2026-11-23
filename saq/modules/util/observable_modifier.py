@@ -161,6 +161,14 @@ class _AnalysisTypeIndex:
         return analysis_type in self._types
 
 
+# the yaml keys _parse_tree_condition reads; produces_observable is one nested
+# key, not the produces_observable_* fields below
+_TREE_CONDITION_KEYS = frozenset({
+    "analysis_type", "scope", "negate", "match_count",
+    "details_match", "observable_match", "produces_observable",
+})
+
+
 @dataclass
 class TreeCondition:
     analysis_type: str
@@ -746,6 +754,16 @@ class ObservableModifierAnalyzer(AnalysisModule):
         )
 
     def _parse_tree_condition(self, tc_data: dict, rule_name: str) -> Optional[TreeCondition]:
+        # a misspelled key would otherwise drop its check and the rule would match
+        # more than its author wrote (or, negated, less), so the rule is refused
+        unknown_keys = sorted(set(tc_data) - _TREE_CONDITION_KEYS)
+        if unknown_keys:
+            logging.error(
+                "unknown key(s) %s in tree_condition for observable modifier rule '%s' -- refusing to load this rule",
+                ", ".join(map(str, unknown_keys)), rule_name,
+            )
+            return None
+
         analysis_type = tc_data.get("analysis_type", "")
         scope = tc_data.get("scope", "ancestors")
         if scope not in ("ancestors", "descendants", "global", "self", "parent", "siblings"):

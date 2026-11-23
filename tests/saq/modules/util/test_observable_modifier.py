@@ -1061,6 +1061,61 @@ def test_parse_produces_observable_missing_type(caplog):
 
 
 @pytest.mark.unit
+def test_parse_tree_condition_unknown_key_refuses_rule(caplog):
+    """A tree condition key the parser does not know (here the flat form the docs once gave)
+    refuses the rule rather than loading it without that check."""
+    # the analysis produced no url, so the check the author wrote would keep this rule from matching
+    root, target, module_path = _build_email_tree()
+    rules = [{
+        "name": "flat produces_observable keys",
+        "conditions": {
+            "observable_types": ["url"],
+            "tree_conditions": [{
+                "analysis_type": module_path,
+                "scope": "self",
+                "produces_observable_type": "url",
+            }],
+        },
+        "actions": {"add_directives": ["matched"]},
+    }]
+    with caplog.at_level(logging.WARNING):
+        adapter = _create_analyzer_with_rules(root, rules)
+        adapter.execute_analysis(target)
+        adapter.analyze(target, final_analysis=True)
+    assert not target.has_directive("matched")
+    [record] = [r for r in caplog.records if "produces_observable_type" in r.message]
+    assert record.levelno == logging.ERROR
+    assert "flat produces_observable keys" in record.message
+
+
+@pytest.mark.unit
+def test_parse_tree_condition_every_supported_key_is_accepted():
+    """A tree condition using every supported key loads and matches."""
+    root, target, module_path = _build_email_tree()
+    [email_analysis] = target.all_analysis
+    email_analysis.details = {"subject": "invoice"}
+    rules = [{
+        "name": "all tree condition keys",
+        "conditions": {
+            "tree_conditions": [{
+                "analysis_type": module_path,
+                "scope": "self",
+                "negate": False,
+                "match_count": 1,
+                "details_match": {"subject": "^invoice$"},
+                "observable_match": {"type": "^url$"},
+                "produces_observable": {"type": "email_from", "value": "@example"},
+            }],
+        },
+        "actions": {"add_directives": ["matched"]},
+    }]
+    adapter = _create_analyzer_with_rules(root, rules)
+    adapter.execute_analysis(target)
+    adapter.analyze(target, final_analysis=True)
+    assert target.has_directive("matched")
+
+
+@pytest.mark.unit
 def test_tree_condition_no_match():
     """Tree condition should not match when details don't match."""
 

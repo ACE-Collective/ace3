@@ -62,7 +62,7 @@
 #       add_tags: [soc_escalation_ioc]
 #       add_detection_points: ["Matched observable modifier rule: suspicious file"]
 #       exclude_analysis: ["saq.modules.sandbox:SandboxAnalyzer"]
-#       limit_analysis: ["saq.modules.file_analysis.ioc_extraction:IOCExtractionAnalyzer"]
+#       limit_analysis: ["ioc_extraction"]  # short module name (the module config's `name`), not path:Class
 #       reset_analysis: ["saq.modules.phishkit:PhishkitAnalysis"]  # clear "no analysis" sentinel for
 #                                                                  # these modules so they get a second
 #                                                                  # pass (useful when also adding a
