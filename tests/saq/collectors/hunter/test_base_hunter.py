@@ -1393,6 +1393,97 @@ def test_wait_returns_false_while_hunt_is_still_executing(manager_kwargs):
     assert hunt.wait(timeout=5) is True
 
 
+@pytest.mark.integration
+def test_wait_while_execute_hunt_starts_its_thread(manager_kwargs, monkeypatch):
+    """Hunt.wait() called on another thread at any point in execute_hunt() must never find a
+    thread that is not started yet, because Thread.join() raises on one (#1143). Before the hunt
+    is published it finds no thread and returns; HuntManager.wait() avoids that window by
+    joining the manager thread first (test_manager_wait_joins_hunt_started_during_shutdown)."""
+    manager_kwargs["execution_mode"] = ExecutionMode.CONTINUOUS
+    manager = HuntManager(**manager_kwargs)
+    hunt = default_hunt(manager=manager)
+    wait_outcomes = []
+
+    class _WaitBeforeStartThread(threading.Thread):
+        # runs wait() in the last moment before the hunt's execution thread starts
+        def start(self):
+            if self.name == f"Hunt Execution {hunt}":
+                try:
+                    wait_outcomes.append(hunt.wait(timeout=1))
+                except RuntimeError as e:
+                    wait_outcomes.append(e)
+            super().start()
+
+    monkeypatch.setattr(threading, "Thread", _WaitBeforeStartThread)
+    manager.execute_hunt(hunt)
+    monkeypatch.undo()
+
+    hunt.execution_thread.join(10)
+    assert not hunt.execution_thread.is_alive()
+    assert hunt.executed is True
+    assert wait_outcomes == [True]
+
+
+@pytest.mark.integration
+def test_manager_wait_joins_hunt_started_during_shutdown(manager_kwargs, monkeypatch):
+    """HuntManager.wait() can run while the manager thread is still in execute_hunt(), between
+    starting a hunt's thread and publishing it on the hunt. wait() must not read the hunts
+    until the manager thread has exited, or it lets a hunt that is about to run go unjoined and
+    the service exits with it mid-run (#1143)."""
+    manager_kwargs["execution_mode"] = ExecutionMode.CONTINUOUS
+    manager = HuntManager(**manager_kwargs)
+    hunt = default_hunt(manager=manager)
+    manager.add_hunt(hunt)
+
+    waiter_reached = threading.Event()  # wait() is joining the manager thread or read the hunt
+    executed_when_hunt_wait_returned = []
+    real_hunt_wait = hunt.wait
+
+    def _hunt_wait(*args, **kwargs):
+        result = real_hunt_wait(*args, **kwargs)
+        executed_when_hunt_wait_returned.append(hunt.executed)
+        waiter_reached.set()
+        return result
+
+    monkeypatch.setattr(hunt, "wait", _hunt_wait)
+
+    class _ManagerThread(threading.Thread):
+        def join(self, timeout=None):
+            if threading.current_thread() is waiter:
+                waiter_reached.set()
+            super().join(timeout)
+
+    def _stop_and_wait():
+        manager.manager_control_event.set()
+        manager.wait(timeout=10)
+
+    waiter = threading.Thread(target=_stop_and_wait, name="test waiter")
+    real_thread = threading.Thread
+
+    class _StopBeforeStartThread(real_thread):
+        # runs stop() and wait() on another thread in the last moment before the hunt starts
+        def start(self):
+            if self.name == f"Hunt Execution {hunt}":
+                waiter.start()
+                assert waiter_reached.wait(5)
+            super().start()
+
+    manager.manager_thread = _ManagerThread(target=manager.execute_hunt, args=(hunt,),
+                                            name="test manager thread")
+    # only the Thread patch is undone here: the waiter may still be about to call hunt.wait
+    with monkeypatch.context() as m:
+        m.setattr(threading, "Thread", _StopBeforeStartThread)
+        manager.manager_thread.start()
+        manager.manager_thread.join(10)
+    waiter.join(15)
+
+    hunt.execution_thread.join(10)
+
+    assert not waiter.is_alive()
+    # the hunt had finished by the time wait() read it
+    assert executed_when_hunt_wait_returned == [True]
+
+
 @pytest.mark.unit
 def test_cancel_hunts_abandons_hunt_that_ignores_cancel(manager_kwargs, monkeypatch):
     """A hunt that will not stop must not block the manager thread. cancel_hunts() runs on the
