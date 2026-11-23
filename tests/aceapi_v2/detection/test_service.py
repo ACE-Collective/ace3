@@ -250,10 +250,13 @@ class TestPagination:
         ]
 
     @pytest.mark.asyncio
-    async def test_values_sharing_a_long_prefix_paginate_deterministically(self, session: AsyncSession):
+    async def test_values_sharing_a_long_prefix_sort_by_the_whole_value(self, session: AsyncSession):
+        # The values differ only past MySQL's max_sort_length (1024 bytes of weight string), where a
+        # PAD SPACE collation stops comparing. Added out of value order so that the id tiebreak
+        # cannot produce the expected order by itself.
         prefix = "https://collide.example.com/" + ("x" * 900)
-        a = await _make_detection(session, "tie", prefix + "/aaa")
         b = await _make_detection(session, "tie", prefix + "/bbb")
+        a = await _make_detection(session, "tie", prefix + "/aaa")
 
         p1 = await service.get_detection_page(session, observable_type="tie", page=1, page_size=25)
         assert [i.id for i in p1.items] == [a.id, b.id]

@@ -3028,8 +3028,11 @@ class ObservableDetection(Base):
         String(64),
         nullable=False)
 
+    # A NO PAD collation, unlike the database's utf8mb4_unicode_520_ci (PAD SPACE): MySQL sorts a
+    # PAD SPACE string by only the first max_sort_length bytes of its weight string, about 500
+    # characters here, so long values sharing a prefix would list in id order instead of by value.
     value: Mapped[str] = mapped_column(
-        String(MAX_DETECTION_VALUE_LENGTH, collation='utf8mb4_unicode_520_ci'),
+        String(MAX_DETECTION_VALUE_LENGTH, collation='utf8mb4_0900_ai_ci'),
         nullable=False)
 
     # Observable.sha256_bytes semantics -- NOT sha256(value) for every type. A FileObservable's

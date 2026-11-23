@@ -193,7 +193,8 @@ async def list_detections(
         search=search, observable_type=observable_type, status=status,
     )
     # grouped by type, alphabetical by value, with `id` as a tiebreaker so pagination is
-    # deterministic. `value` is a plain collatable column, so this is an ordinary sort.
+    # deterministic. `value` has a NO PAD collation, which MySQL sorts by the whole value rather than
+    # by its first max_sort_length bytes (see ObservableDetection.value).
     stmt = stmt.order_by(ObservableDetection.type, ObservableDetection.value, ObservableDetection.id)
     stmt = stmt.limit(limit).offset(offset)
 
