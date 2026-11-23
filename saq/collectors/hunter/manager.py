@@ -242,14 +242,18 @@ class HuntManager:
 
     def wait(self, *args, **kwargs):
         self.manager_control_event.wait(*args, **kwargs)
-        for hunt in self._hunts:
-            hunt.wait(*args, **kwargs)
 
+        # NOTE the manager threads are joined before the hunts are read: until the manager thread
+        # exits it can still start a hunt (execute_hunt) or replace self._hunts (reload_hunts),
+        # and a hunt it starts after this reads the hunts would be left running unjoined
         if self.manager_thread:
-            self.manager_thread.join()
+            self.manager_thread.join(*args, **kwargs)
 
         if self.update_manager_thread:
-            self.update_manager_thread.join()
+            self.update_manager_thread.join(*args, **kwargs)
+
+        for hunt in self._hunts:
+            hunt.wait(*args, **kwargs)
 
     def update_loop(self):
         logging.info(f"started update manager for {self}")
@@ -386,9 +390,9 @@ class HuntManager:
             return
 
         # otherwise we start the execution of the hunt on a new thread
-        # NOTE the thread is published on the hunt only once it is started: Hunt.wait() runs on
-        # the service's lifecycle thread and joins whatever execution_thread it finds, and
-        # Thread.join() raises on a thread that is not started yet
+        # NOTE the thread is published on the hunt only once it is started: Hunt.wait() joins
+        # whatever execution_thread it finds, and Thread.join() raises on a thread that is not
+        # started yet (HuntManager.wait() reads the hunts only after this thread has exited)
         execution_thread = threading.Thread(target=self.execute_threaded_hunt,
                                             args=(hunt,),
                                             name=f"Hunt Execution {hunt}")
