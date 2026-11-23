@@ -1,6 +1,13 @@
+import os
+import tempfile
+from typing import Type
+
 from pydantic import Field
 
 from saq.analysis.analysis import Analysis
+from saq.constants import F_FILE
+from saq.cracking import crack_password
+from saq.environment import get_temp_dir
 from saq.modules import AnalysisModule
 from saq.modules.config import AnalysisModuleConfig
 
@@ -82,6 +89,14 @@ class EmailPasswordAnalyzerConfig(AnalysisModuleConfig):
 
 
 class EmailPasswordAnalyzer(AnalysisModule):
+    @classmethod
+    def get_config_class(cls) -> Type[AnalysisModuleConfig]:
+        return EmailPasswordAnalyzerConfig
+
+    @property
+    def valid_observable_types(self):
+        return F_FILE
+
     @property
     def range_low(self):
         return self.config.range_low
@@ -101,3 +116,21 @@ class EmailPasswordAnalyzer(AnalysisModule):
     @property
     def john_bin_path(self):
         return self.config.john_bin_path
+
+    def crack(self, john_hash: str, word_list: list[str], filename: str, login: str | None = None) -> str | None:
+        """Cracks john_hash, the output of a *2john tool, with the candidates in word_list and returns
+        the password, or None. filename is the path of the encrypted file and login the login the hash
+        line starts with, either of which crack_password finds the cracked line by."""
+        # the hash, the wordlist and john's session and pot files are not analysis output, and named
+        # after the attachment in its directory they could collide with another attachment's file
+        with tempfile.TemporaryDirectory(dir=get_temp_dir()) as work_dir:
+            hash_file = os.path.join(work_dir, 'hash')
+            with open(hash_file, 'w') as fp:
+                fp.write(john_hash)
+
+            wordlist_path = os.path.join(work_dir, 'wordlist')
+            with open(wordlist_path, 'w') as fp:
+                fp.writelines(f'{word}\n' for word in word_list)
+
+            return crack_password(self, self.john_bin_path, hash_file, filename, f'--wordlist={wordlist_path}',
+                                  login=login, read_files=[wordlist_path])

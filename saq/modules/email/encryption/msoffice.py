@@ -1,18 +1,13 @@
 import logging
 import os
-from typing import Type, override
+from typing import override
 
 import msoffcrypto
 from saq.signatures.builtin import EMAIL_ENCRYPTED_DECRYPTED
-from saq.constants import F_FILE, AnalysisExecutionResult
-from saq.cracking import crack_password, wordlist_from_email
+from saq.constants import AnalysisExecutionResult
+from saq.cracking import wordlist_from_email
 from saq.environment import get_base_dir
-from saq.modules.config import AnalysisModuleConfig
-from saq.modules.email.encryption.email_password import (
-    EmailPasswordAnalysis,
-    EmailPasswordAnalyzer,
-    EmailPasswordAnalyzerConfig,
-)
+from saq.modules.email.encryption.email_password import EmailPasswordAnalysis, EmailPasswordAnalyzer
 
 from saq.observables.file import FileObservable
 from saq.sandbox.runner import sandbox_python
@@ -40,17 +35,9 @@ class MSOfficeEncryptionAnalysis(EmailPasswordAnalysis):
 
 
 class MSOfficeEncryptionAnalyzer(EmailPasswordAnalyzer):
-    @classmethod
-    def get_config_class(cls) -> Type[AnalysisModuleConfig]:
-        return EmailPasswordAnalyzerConfig
-
     @property
     def generated_analysis_type(self):
         return MSOfficeEncryptionAnalysis
-
-    @property
-    def valid_observable_types(self):
-        return F_FILE
 
     def execute_analysis(self, _file) -> AnalysisExecutionResult:
         assert isinstance(_file, FileObservable)
@@ -104,10 +91,6 @@ class MSOfficeEncryptionAnalyzer(EmailPasswordAnalyzer):
                 analysis.error = f"office2john.py failed: {p.stderr}"
                 return AnalysisExecutionResult.COMPLETED
 
-            hash_file = f'{_file.full_path}.hash'
-            with open(hash_file, 'w') as fp:
-                fp.write(p.stdout)
-
             # OK then we've found an office document that is encrypted
 
             # no matter what these are the first passwords we try
@@ -121,14 +104,8 @@ class MSOfficeEncryptionAnalyzer(EmailPasswordAnalyzer):
                 byte_limit=self.byte_limit, list_limit=self.list_limit)
             analysis.word_list.extend(email_words)
 
-            wordlist_path = f'{_file.full_path}.wordlist'
-            with open(wordlist_path, 'w') as fp:
-                for word in analysis.word_list:
-                    fp.write(f'{word}\n')
-
             # crack it with john the ripper using wordlist
-            analysis.password = crack_password(self, self.john_bin_path, hash_file, _file.full_path,
-                                               f'--wordlist={wordlist_path}', read_files=[wordlist_path])
+            analysis.password = self.crack(p.stdout, analysis.word_list, _file.full_path)
 
             # none of the candidates was the password: the summary says so, and it is not an error
             if not analysis.password:

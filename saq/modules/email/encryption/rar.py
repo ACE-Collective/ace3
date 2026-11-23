@@ -1,34 +1,21 @@
 import logging
 import os
-from typing import Type, override
+from typing import override
 
-from pydantic import Field
-from saq.analysis.analysis import Analysis
 from saq.signatures.builtin import EMAIL_ENCRYPTED_DECRYPTED
-from saq.constants import DIRECTIVE_EXTRACT_URLS, F_FILE, AnalysisExecutionResult
-from saq.cracking import crack_password, wordlist_from_email
-from saq.modules import AnalysisModule
-from saq.modules.config import AnalysisModuleConfig
+from saq.constants import DIRECTIVE_EXTRACT_URLS, AnalysisExecutionResult
+from saq.cracking import wordlist_from_email
+from saq.modules.email.encryption.email_password import EmailPasswordAnalysis, EmailPasswordAnalyzer
 from saq.modules.file_analysis.archive import UNRAR_WRITE_ERROR, archive_volumes
 from saq.observables.file import FileObservable
 
 KEY_ENCRYPTION_INFO = 'encryption_info'
-KEY_EMAIL = 'email'
-KEY_EMAIL_BODY = 'email_body'
-KEY_WORD_LIST = 'word_list'
-KEY_PASSWORD = 'password'
 
 
-class RarEncryptionAnalysis(Analysis):
+class RarEncryptionAnalysis(EmailPasswordAnalysis):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.details = {
-            KEY_ENCRYPTION_INFO: None,
-            KEY_EMAIL: False,
-            KEY_EMAIL_BODY: None,
-            KEY_WORD_LIST: [],
-            KEY_PASSWORD: None,
-        }
+        self.details[KEY_ENCRYPTION_INFO] = None
 
     @override
     @property
@@ -43,98 +30,11 @@ class RarEncryptionAnalysis(Analysis):
     def encryption_info(self, value):
         self.details[KEY_ENCRYPTION_INFO] = value
 
-    @property
-    def email(self):
-        return self.details[KEY_EMAIL]
 
-    @email.setter
-    def email(self, value):
-        self.details[KEY_EMAIL] = value
-
-    @property
-    def email_body(self):
-        return self.details[KEY_EMAIL_BODY]
-
-    @email_body.setter
-    def email_body(self, value):
-        self.details[KEY_EMAIL_BODY] = value
-
-    @property
-    def word_list(self):
-        return self.details[KEY_WORD_LIST]
-
-    @word_list.setter
-    def word_list(self, value):
-        self.details[KEY_WORD_LIST] = value
-
-    @property
-    def password(self):
-        return self.details[KEY_PASSWORD]
-
-    @password.setter
-    def password(self, value):
-        self.details[KEY_PASSWORD] = value
-
-    def generate_summary(self):
-        if self.details is None:
-            return None
-
-        result = self.display_name
-        if self.error:
-            return f"{result}: {self.error}"
-        elif self.password:
-            return f"{result}: password {self.password}"
-        elif not self.email:
-            return f"{result}: no associated email detected"
-        elif not self.email_body:
-            return f"{result}: email body cannot be determined"
-        elif not self.word_list:
-            return f"{result}: word list could not be created from email"
-        elif not self.password:
-            return f"{result}: password not available"
-        else:
-            return f"{result}: could not decrypt"
-
-
-class RarEncryptionAnalyzerConfig(AnalysisModuleConfig):
-    range_low: int = Field(..., description="The minimum size of the passwords to try.")
-    range_high: int = Field(..., description="The maximum size of the passwords to try.")
-    byte_limit: int = Field(..., description="How many characters of each email body part (html converted to text) to read for candidate passwords.")
-    list_limit: int = Field(..., description="The maximum size of the word list created.")
-    john_bin_path: str = Field(..., description="Full path to john the ripper binary.")
-
-class RarEncryptionAnalyzer(AnalysisModule):
-    @classmethod
-    def get_config_class(cls) -> Type[AnalysisModuleConfig]:
-        return RarEncryptionAnalyzerConfig
-
+class RarEncryptionAnalyzer(EmailPasswordAnalyzer):
     @property
     def generated_analysis_type(self):
         return RarEncryptionAnalysis
-
-    @property
-    def valid_observable_types(self):
-        return F_FILE
-
-    @property
-    def range_low(self):
-        return self.config.range_low
-
-    @property
-    def range_high(self):
-        return self.config.range_high
-
-    @property
-    def byte_limit(self):
-        return self.config.byte_limit
-
-    @property
-    def list_limit(self):
-        return self.config.list_limit
-
-    @property
-    def john_bin_path(self):
-        return self.config.john_bin_path
 
     def execute_analysis(self, _file) -> AnalysisExecutionResult:
         assert isinstance(_file, FileObservable)
@@ -170,10 +70,6 @@ class RarEncryptionAnalyzer(AnalysisModule):
             analysis.error = f"rar2john failed: {p.stderr}"
             return AnalysisExecutionResult.COMPLETED
 
-        hash_file = f'{_file.full_path}.hash'
-        with open(hash_file, 'w') as fp:
-            fp.write(p.stdout)
-
         # build wordlist for cracking password from the email's body text, if available
         try:
             analysis.email, analysis.email_body, analysis.word_list = wordlist_from_email(
@@ -186,15 +82,8 @@ class RarEncryptionAnalyzer(AnalysisModule):
             return AnalysisExecutionResult.COMPLETED
 
         if analysis.word_list:
-            wordlist_path = f'{_file.full_path}.wordlist'
-            with open(wordlist_path, 'w') as fp:
-                for word in analysis.word_list:
-                    fp.write(f'{word}\n')
-
             try:
-                analysis.password = crack_password(self, self.john_bin_path, hash_file, _file.full_path,
-                                                   f'--wordlist={wordlist_path}',
-                                                   read_files=[wordlist_path])
+                analysis.password = self.crack(p.stdout, analysis.word_list, _file.full_path)
             except Exception as e:
                 logging.exception(f"unable to crack the password for {_file}",
                                   extra={"path": _file.full_path, "root_uuid": self.get_root().uuid})

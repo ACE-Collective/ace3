@@ -215,7 +215,7 @@ def test_crack_failure_is_logged(root_analysis, tmp_path, monkeypatch, caplog):
     def _crack(*args, **kwargs):
         raise FileNotFoundError("john binary not found")
 
-    monkeypatch.setattr("saq.modules.email.encryption.zip.crack_password", _crack)
+    monkeypatch.setattr("saq.modules.email.encryption.email_password.crack_password", _crack)
     _, email_observable = _analyze(root_analysis, _email(tmp_path, _encrypted_zip(tmp_path)))
 
     attachment = _attachment(email_observable, "invoice.zip")
@@ -289,6 +289,22 @@ def test_extraction_timeout_stops_7z(root_analysis, tmp_path, monkeypatch, caplo
     assert not analysis.find_observable(lambda o: o.type == F_FILE and o.file_name == "invoice.txt")
 
 
+def _cracking_leftovers(attachment) -> list[str]:
+    """The hash, wordlist and john pot files of a crack that wrote them beside the attachment."""
+    return [path for path in (f"{attachment.full_path}.hash", f"{attachment.full_path}.wordlist",
+                              f"{attachment.full_path}.hash.pot") if os.path.exists(path)]
+
+
+@pytest.mark.integration
+def test_zip_cracking_leaves_no_files_beside_the_attachment(root_analysis, tmp_path):
+    # they are not analysis output, and the sender names the attachments, so one can carry their names
+    _, email_observable = _analyze(root_analysis, _email(tmp_path, _encrypted_zip(tmp_path)))
+
+    attachment = _attachment(email_observable, "invoice.zip")
+    assert attachment.get_and_load_analysis(ZipEncryptionAnalysis).password == PASSWORD
+    assert _cracking_leftovers(attachment) == []
+
+
 #
 # msoffice
 #
@@ -346,6 +362,16 @@ def test_msoffice_decrypts_with_password_from_email_body(root_analysis, tmp_path
 
 
 @pytest.mark.integration
+def test_msoffice_cracking_leaves_no_files_beside_the_attachment(root_analysis, tmp_path):
+    email_path = _email(tmp_path, _encrypted_docx(tmp_path), subtype="octet-stream")
+    _, email_observable = _analyze(root_analysis, email_path, MSOFFICE_MODULES)
+
+    attachment = _attachment(email_observable, "statement.docx")
+    assert attachment.get_and_load_analysis(MSOfficeEncryptionAnalysis).password == PASSWORD
+    assert _cracking_leftovers(attachment) == []
+
+
+@pytest.mark.integration
 def test_msoffice_password_not_found(root_analysis, tmp_path):
     email_path = _email(tmp_path, _encrypted_docx(tmp_path), body="see attached", subtype="octet-stream")
     _, email_observable = _analyze(root_analysis, email_path, MSOFFICE_MODULES)
@@ -361,7 +387,7 @@ def test_msoffice_password_not_found(root_analysis, tmp_path):
 @pytest.mark.integration
 def test_msoffice_decryption_that_fails_is_recorded(root_analysis, tmp_path, monkeypatch, caplog):
     # john "cracked" a password the document does not open with
-    monkeypatch.setattr("saq.modules.email.encryption.msoffice.crack_password", lambda *args, **kwargs: "wrong")
+    monkeypatch.setattr("saq.modules.email.encryption.email_password.crack_password", lambda *args, **kwargs: "wrong")
     email_path = _email(tmp_path, _encrypted_docx(tmp_path), subtype="octet-stream")
     _, email_observable = _analyze(root_analysis, email_path, MSOFFICE_MODULES)
 
@@ -484,7 +510,7 @@ def test_rar_cracks_with_a_wordlist_from_the_email_body(root_analysis, tmp_path,
         wordlists.append(words)
         return PASSWORD if PASSWORD in words else None
 
-    monkeypatch.setattr("saq.modules.email.encryption.rar.crack_password", _crack)
+    monkeypatch.setattr("saq.modules.email.encryption.email_password.crack_password", _crack)
     _, email_observable = _analyze(root_analysis, _email(tmp_path, fake_rar, subtype="x-rar"), RAR_MODULES)
 
     attachment = _attachment(email_observable, "payload.rar")
@@ -495,6 +521,7 @@ def test_rar_cracks_with_a_wordlist_from_the_email_body(root_analysis, tmp_path,
     assert len(wordlists) == 1 and PASSWORD in wordlists[0]
     assert analysis.password == PASSWORD
     assert _FakeRarFile.extracted_with == [PASSWORD]
+    assert _cracking_leftovers(attachment) == []
 
     payload = analysis.find_observable(lambda o: o.type == F_FILE and o.file_name == RAR_SAMPLE_MEMBER)
     assert [d.signature_uuid for d in payload.detections] == [EMAIL_ENCRYPTED_DECRYPTED.uuid]
@@ -503,7 +530,7 @@ def test_rar_cracks_with_a_wordlist_from_the_email_body(root_analysis, tmp_path,
 @pytest.mark.integration
 def test_rar_split_across_attachments_gets_its_other_volumes(root_analysis, tmp_path, fake_rar, monkeypatch):
     # unrar in the sandbox reads only what it is given, and extracts no split archive without its other volumes
-    monkeypatch.setattr("saq.modules.email.encryption.rar.crack_password", lambda *args, **kwargs: PASSWORD)
+    monkeypatch.setattr("saq.modules.email.encryption.email_password.crack_password", lambda *args, **kwargs: PASSWORD)
     first = tmp_path / "invoice.part1.rar"
     fake_rar.rename(first)
     second = tmp_path / "invoice.part2.rar"
@@ -516,7 +543,7 @@ def test_rar_split_across_attachments_gets_its_other_volumes(root_analysis, tmp_
 
 @pytest.mark.integration
 def test_rar_stopped_at_the_file_size_limit_is_recorded(root_analysis, tmp_path, fake_rar, monkeypatch, caplog):
-    monkeypatch.setattr("saq.modules.email.encryption.rar.crack_password", lambda *args, **kwargs: PASSWORD)
+    monkeypatch.setattr("saq.modules.email.encryption.email_password.crack_password", lambda *args, **kwargs: PASSWORD)
     # the archive's one member is 900 KB, which unrar keeps cut off at the limit
     monkeypatch.setattr(get_config().tool_sandbox, "file_size_limit", 512 * 1024)
 
@@ -531,7 +558,7 @@ def test_rar_stopped_at_the_file_size_limit_is_recorded(root_analysis, tmp_path,
 
 @pytest.mark.integration
 def test_rar_that_unrar_cannot_extract(root_analysis, tmp_path, fake_rar, monkeypatch, caplog):
-    monkeypatch.setattr("saq.modules.email.encryption.rar.crack_password", lambda *args, **kwargs: PASSWORD)
+    monkeypatch.setattr("saq.modules.email.encryption.email_password.crack_password", lambda *args, **kwargs: PASSWORD)
     fake_run = RarEncryptionAnalyzer.run_sandboxed_tool
 
     def _run(self, args, target, **kwargs):
@@ -555,7 +582,7 @@ def test_rar_crack_failure_is_recorded(root_analysis, tmp_path, fake_rar, monkey
     def _crack(*args, **kwargs):
         raise FileNotFoundError("john binary not found")
 
-    monkeypatch.setattr("saq.modules.email.encryption.rar.crack_password", _crack)
+    monkeypatch.setattr("saq.modules.email.encryption.email_password.crack_password", _crack)
     _, email_observable = _analyze(root_analysis, _email(tmp_path, fake_rar, subtype="x-rar"), RAR_MODULES)
 
     attachment = _attachment(email_observable, "payload.rar")
@@ -587,7 +614,7 @@ def test_rar_wordlist_failure_is_recorded(root_analysis, tmp_path, fake_rar, mon
 
 @pytest.mark.integration
 def test_rar_that_unrar_does_not_finish_keeps_what_it_extracted(root_analysis, tmp_path, fake_rar, monkeypatch):
-    monkeypatch.setattr("saq.modules.email.encryption.rar.crack_password", lambda *args, **kwargs: PASSWORD)
+    monkeypatch.setattr("saq.modules.email.encryption.email_password.crack_password", lambda *args, **kwargs: PASSWORD)
     fake_run = RarEncryptionAnalyzer.run_sandboxed_tool
 
     def _run(self, args, target, **kwargs):
@@ -619,7 +646,7 @@ def test_msoffice_office2john_that_does_not_finish(root_analysis, tmp_path, monk
 
 @pytest.mark.integration
 def test_rar_password_not_found(root_analysis, tmp_path, fake_rar, monkeypatch):
-    monkeypatch.setattr("saq.modules.email.encryption.rar.crack_password", lambda *args, **kwargs: None)
+    monkeypatch.setattr("saq.modules.email.encryption.email_password.crack_password", lambda *args, **kwargs: None)
     _, email_observable = _analyze(root_analysis, _email(tmp_path, fake_rar, subtype="x-rar"), RAR_MODULES)
 
     analysis = _attachment(email_observable, "payload.rar").get_and_load_analysis(RarEncryptionAnalysis)
@@ -945,7 +972,7 @@ def test_pdf_unexpected_failure_gets_a_crash_report(root_analysis, tmp_path, mon
     def _crack(*args, **kwargs):
         raise RuntimeError("john exploded")
 
-    monkeypatch.setattr("saq.modules.email.encryption.pdf.crack_password", _crack)
+    monkeypatch.setattr("saq.modules.email.encryption.email_password.crack_password", _crack)
     existing = _crash_reports(ANALYSIS_MODULE_PDF_ENCRYPTION_ANALYZER)
     _, email_observable = _analyze(root_analysis, _email(tmp_path, _encrypted_pdf(tmp_path), subtype="pdf"), PDF_MODULES)
 

@@ -1,17 +1,10 @@
 import logging
 import os
-import tempfile
-from typing import Type, override
+from typing import override
 
-from saq.constants import F_FILE, AnalysisExecutionResult
-from saq.cracking import crack_password, wordlist_from_email
-from saq.environment import get_temp_dir
-from saq.modules.config import AnalysisModuleConfig
-from saq.modules.email.encryption.email_password import (
-    EmailPasswordAnalysis,
-    EmailPasswordAnalyzer,
-    EmailPasswordAnalyzerConfig,
-)
+from saq.constants import AnalysisExecutionResult
+from saq.cracking import wordlist_from_email
+from saq.modules.email.encryption.email_password import EmailPasswordAnalysis, EmailPasswordAnalyzer
 from saq.modules.file_analysis.is_file_type import is_pdf_file
 from saq.observables.file import FileObservable
 from saq.signatures.builtin import EMAIL_ENCRYPTED_DECRYPTED
@@ -25,32 +18,9 @@ class PDFEncryptionAnalysis(EmailPasswordAnalysis):
 
 
 class PDFEncryptionAnalyzer(EmailPasswordAnalyzer):
-    @classmethod
-    def get_config_class(cls) -> Type[AnalysisModuleConfig]:
-        return EmailPasswordAnalyzerConfig
-
     @property
     def generated_analysis_type(self):
         return PDFEncryptionAnalysis
-
-    @property
-    def valid_observable_types(self):
-        return F_FILE
-
-    def crack(self, pdf_hash: bytes, word_list: list[str]) -> str | None:
-        # the hash, the wordlist and john's session and pot files are not analysis output, and named
-        # after the attachment in its directory they could collide with another attachment's file
-        with tempfile.TemporaryDirectory(dir=get_temp_dir()) as work_dir:
-            hash_file = os.path.join(work_dir, 'pdf.hash')
-            with open(hash_file, 'wb') as fp:
-                fp.write(pdf_hash)
-
-            wordlist_path = os.path.join(work_dir, 'wordlist')
-            with open(wordlist_path, 'w') as fp:
-                fp.writelines(f'{word}\n' for word in word_list)
-
-            return crack_password(self, self.john_bin_path, hash_file, hash_file, f'--wordlist={wordlist_path}',
-                                  login='pdf', read_files=[wordlist_path])
 
     def execute_analysis(self, _file) -> AnalysisExecutionResult:
         assert isinstance(_file, FileObservable)
@@ -110,7 +80,8 @@ class PDFEncryptionAnalyzer(EmailPasswordAnalyzer):
 
             # pdf2john puts the file's path in front of the hash, and john splits the line at the
             # first ':', so a ':' in the attachment's name would keep it from loading the hash
-            analysis.password = self.crack(b'pdf:' + p.stdout[p.stdout.index('$pdf$'):].encode(), analysis.word_list)
+            analysis.password = self.crack('pdf:' + p.stdout[p.stdout.index('$pdf$'):], analysis.word_list,
+                                           _file.full_path, login='pdf')
 
             # none of the candidates was the password: the summary says so, and it is not an error
             if not analysis.password:
