@@ -5,6 +5,7 @@ import uuid as uuid_lib
 
 import pytest
 import yaml
+from pydantic import ValidationError
 
 from saq.analysis.analysis import Analysis
 from saq.analysis.detection_point import BUILTIN_SIGNATURE_UUID
@@ -730,7 +731,7 @@ def test_file_name_pattern_no_match():
 @pytest.mark.unit
 @pytest.mark.parametrize("key", ["value_pattern", "display_type_pattern", "display_value_pattern"])
 def test_invalid_regex_in_condition_pattern(caplog, key):
-    """An invalid regex in a condition pattern should skip the rule with a warning."""
+    """An invalid regex in a condition pattern refuses the rule with an ERROR naming the key."""
     root = create_root_analysis(analysis_mode="test_single")
     root.initialize_storage()
 
@@ -752,12 +753,15 @@ def test_invalid_regex_in_condition_pattern(caplog, key):
 
     assert result == AnalysisExecutionResult.COMPLETED
     assert not observable.has_directive("should_not_appear")
-    assert any(f"invalid {key} regex" in r.message for r in caplog.records)
+    [record] = [r for r in caplog.records if f"bad {key} regex rule" in r.getMessage()]
+    assert record.levelno == logging.ERROR
+    assert f"conditions.{key}" in record.getMessage()
+    assert "invalid regex" in record.getMessage()
 
 
 @pytest.mark.unit
 def test_invalid_regex_in_details_match(caplog):
-    """Invalid regex in details_match should skip the rule with a warning."""
+    """Invalid regex in details_match refuses the rule with an ERROR."""
     root = create_root_analysis(analysis_mode="test_single")
     root.initialize_storage()
 
@@ -784,7 +788,9 @@ def test_invalid_regex_in_details_match(caplog):
 
     assert result == AnalysisExecutionResult.COMPLETED
     assert not observable.has_directive("should_not_appear")
-    assert any("invalid" in msg.lower() for msg in [r.message for r in caplog.records])
+    [record] = [r for r in caplog.records if "bad details regex rule" in r.getMessage()]
+    assert record.levelno == logging.ERROR
+    assert "details_match" in record.getMessage() and "invalid regex" in record.getMessage()
 
 
 @pytest.mark.unit
@@ -1012,7 +1018,7 @@ def test_tree_condition_produces_observable_subtype_aware():
 
 @pytest.mark.unit
 def test_parse_produces_observable_invalid_value_regex(caplog):
-    """Invalid value regex in produces_observable should skip the rule with a warning."""
+    """Invalid value regex in produces_observable refuses the rule with an ERROR."""
     root = create_root_analysis(analysis_mode="test_single")
     root.initialize_storage()
     observable = root.add_observable_by_spec(F_URL, "https://example.com")
@@ -1032,12 +1038,14 @@ def test_parse_produces_observable_invalid_value_regex(caplog):
         result = adapter.analyze(observable, final_analysis=True)
     assert result == AnalysisExecutionResult.COMPLETED
     assert not observable.has_directive("should_not_appear")
-    assert any("invalid" in msg.lower() for msg in [r.message for r in caplog.records])
+    [record] = [r for r in caplog.records if "bad produces_observable regex" in r.getMessage()]
+    assert record.levelno == logging.ERROR
+    assert "produces_observable.value" in record.getMessage() and "invalid regex" in record.getMessage()
 
 
 @pytest.mark.unit
 def test_parse_produces_observable_missing_type(caplog):
-    """produces_observable without a 'type' should skip the rule with a warning."""
+    """produces_observable without a 'type' refuses the rule with an ERROR."""
     root = create_root_analysis(analysis_mode="test_single")
     root.initialize_storage()
     observable = root.add_observable_by_spec(F_URL, "https://example.com")
@@ -1057,11 +1065,13 @@ def test_parse_produces_observable_missing_type(caplog):
         result = adapter.analyze(observable, final_analysis=True)
     assert result == AnalysisExecutionResult.COMPLETED
     assert not observable.has_directive("should_not_appear")
-    assert any("produces_observable" in r.message for r in caplog.records)
+    [record] = [r for r in caplog.records if "produces_observable missing type" in r.getMessage()]
+    assert record.levelno == logging.ERROR
+    assert "produces_observable.type" in record.getMessage()
 
 
 @pytest.mark.unit
-def test_parse_tree_condition_unknown_key_refuses_rule(caplog):
+def test_tree_condition_unknown_key_refuses_rule(caplog):
     """A tree condition key the parser does not know (here the flat form the docs once gave)
     refuses the rule rather than loading it without that check."""
     # the analysis produced no url, so the check the author wrote would keep this rule from matching
@@ -1088,7 +1098,7 @@ def test_parse_tree_condition_unknown_key_refuses_rule(caplog):
     assert record.levelno == logging.ERROR
     assert "flat produces_observable keys" in record.message
     # a traceback is what makes ErrorReportHandler write the error report an operator sees
-    assert record.exc_info and record.exc_info[0] is ValueError
+    assert record.exc_info and issubclass(record.exc_info[0], ValidationError)
     assert record.rule_uuid == "6f2c3a64-0000-4000-8000-000000001146"
     assert record.path.endswith("test_rules.yaml")
 
@@ -1124,11 +1134,11 @@ def test_parse_produces_observable_unknown_key_refuses_rule(caplog, produces_obs
     [record] = [r for r in caplog.records if "bad produces_observable" in r.message]
     assert record.levelno == logging.ERROR
     assert named in record.message
-    assert record.exc_info and record.exc_info[0] is ValueError
+    assert record.exc_info and issubclass(record.exc_info[0], ValidationError)
 
 
 @pytest.mark.unit
-def test_parse_tree_condition_every_supported_key_is_accepted():
+def test_tree_condition_every_supported_key_is_accepted():
     """A tree condition using every supported key loads and matches."""
     root, target, module_path = _build_email_tree()
     [email_analysis] = target.all_analysis
@@ -1151,6 +1161,78 @@ def test_parse_tree_condition_every_supported_key_is_accepted():
     adapter = _create_analyzer_with_rules(root, rules)
     adapter.execute_analysis(target)
     adapter.analyze(target, final_analysis=True)
+    assert target.has_directive("matched")
+
+@pytest.mark.unit
+@pytest.mark.parametrize("rule_patch, named", [
+    ({"enabeld": False}, "enabeld"),
+    ({"conditions": {"observable_types": ["url"], "value_patern": "^nomatch$"}}, "value_patern"),
+    ({"actions": {"add_directives": ["matched"], "add_tag": ["x"]}}, "add_tag"),
+    ({"conditions": {"observable_types": ["url"], "tree_conditions": [
+        {"analysis_type": "x:Y", "scope": "ancestor", "negate": True}]}}, "scope"),
+    ({"phase": "pree"}, "phase"),
+    ({"conditions": {"observable_types": ["url"], "tree_conditions": [
+        {"analysis_type": "x:Y", "match_count": -1, "negate": True}]}}, "match_count"),
+])
+def test_rule_schema_refuses_bad_rule_and_loads_the_rest(caplog, rule_patch, named):
+    """A misspelled key or an invalid value at any level of a rule refuses that rule with an
+    ERROR naming the key, and the other rules in the file still load."""
+    root = create_root_analysis(analysis_mode="test_single")
+    root.initialize_storage()
+    bad = {
+        "name": "bad rule",
+        "uuid": "6f2c3a64-0000-4000-8000-000000001322",
+        "phase": "pre",
+        "conditions": {"observable_types": ["url"]},
+        "actions": {"add_directives": ["matched"]},
+    }
+    bad.update(rule_patch)
+    good = {
+        "name": "good rule",
+        "phase": "pre",
+        "conditions": {"observable_types": ["url"]},
+        "actions": {"add_tags": ["good"]},
+    }
+    with caplog.at_level(logging.WARNING):
+        adapter = _create_analyzer_with_rules(root, [bad, good])
+        target = root.add_observable_by_spec(F_URL, "https://example.com")
+        adapter.execute_analysis(target)
+    assert [rule.name for rule in adapter._module._rules] == ["good rule"]
+    assert target.has_tag("good")
+    assert not target.has_directive("matched")
+    [record] = [r for r in caplog.records if "bad rule" in r.getMessage()]
+    assert record.levelno == logging.ERROR
+    assert named in record.getMessage()
+    # a traceback is what makes ErrorReportHandler write the error report an operator sees
+    assert record.exc_info and issubclass(record.exc_info[0], ValidationError)
+    assert record.rule_uuid == "6f2c3a64-0000-4000-8000-000000001322"
+
+
+@pytest.mark.unit
+def test_rule_schema_treats_null_and_empty_as_absent():
+    """A null section, list or pattern, an empty pattern and an empty produces_observable
+    take the default, as the hand-written parser did."""
+    root, target, module_path = _build_email_tree()
+    rules = [{
+        "name": "nulls",
+        "description": None,
+        "conditions": {
+            "observable_types": ["url"],
+            "alert_tags": None,
+            "value_pattern": "",
+            "tree_conditions": [{"analysis_type": module_path, "scope": "self", "produces_observable": {},
+                                 "details_match": None}],
+        },
+        "actions": {"add_directives": ["matched"], "add_tags": None},
+    }, {
+        "name": "null sections",
+        "conditions": None,
+        "actions": None,
+    }]
+    adapter = _create_analyzer_with_rules(root, rules)
+    adapter.execute_analysis(target)
+    adapter.analyze(target, final_analysis=True)
+    assert [rule.name for rule in adapter._module._rules] == ["nulls", "null sections"]
     assert target.has_directive("matched")
 
 
@@ -1826,7 +1908,9 @@ def test_tree_condition_match_count_invalid_in_yaml(caplog):
     result = adapter.analyze(target, final_analysis=True)
     assert result == AnalysisExecutionResult.COMPLETED
     assert not target.has_tag("should_not_apply")
-    assert "invalid match_count" in caplog.text
+    [record] = [r for r in caplog.records if "invalid match_count" in r.getMessage()]
+    assert record.levelno == logging.ERROR
+    assert "tree_conditions.0.match_count" in record.getMessage()
 
 
 # ============================================================
@@ -2135,8 +2219,8 @@ def test_phase_field_defaults_to_post():
 
 
 @pytest.mark.unit
-def test_invalid_phase_defaults_to_post(caplog):
-    """Invalid phase value should default to 'post' with a warning."""
+def test_invalid_phase_refuses_rule(caplog):
+    """An invalid phase refuses the rule rather than running it in a phase its author did not pick."""
     root = create_root_analysis(analysis_mode="test_single")
     root.initialize_storage()
 
@@ -2152,14 +2236,12 @@ def test_invalid_phase_defaults_to_post(caplog):
 
     observable = root.add_observable_by_spec(F_URL, "https://example.com")
     adapter.execute_analysis(observable)
-    # Should not be applied in pre-phase
+    adapter.analyze(observable, final_analysis=True)
+    assert adapter._module._rules == []
     assert not observable.has_tag("bad_phase")
-
-    # Should work in final analysis (defaulted to post)
-    result = adapter.analyze(observable, final_analysis=True)
-    assert result == AnalysisExecutionResult.INCOMPLETE
-    assert observable.has_tag("bad_phase")
-    assert any("invalid phase" in msg.lower() for msg in [r.message for r in caplog.records])
+    [record] = [r for r in caplog.records if "bad phase rule" in r.getMessage()]
+    assert record.levelno == logging.ERROR
+    assert "phase" in record.getMessage()
 
 
 # ============================================================
@@ -3240,9 +3322,9 @@ def test_rule_without_uuid_is_rejected_at_load(caplog):
         adapter.execute_analysis(root.add_observable_by_spec(F_URL, "https://example.com"))
 
     assert adapter._module._rules == []
-    assert any(
-        "missing required 'uuid'" in rec.message for rec in caplog.records
-    )
+    [record] = [r for r in caplog.records if "missing uuid rule" in r.getMessage()]
+    assert record.levelno == logging.ERROR
+    assert "uuid" in record.getMessage() and "Field required" in record.getMessage()
 
 
 @pytest.mark.unit

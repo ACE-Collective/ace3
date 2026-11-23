@@ -91,9 +91,13 @@ Rules are defined in a single YAML file. The path is set by the module config ke
 A deployment can point this key at a different file (for example, a separate signatures repository)
 without changing any code.
 
-The file is **watched** — edits are picked up automatically without restarting ACE. A rule that
-fails to parse (bad regex, missing `uuid`, etc.) is logged and skipped; the rest of the file still
-loads.
+The file is **watched** — edits are picked up automatically without restarting ACE. Each rule is
+validated against a schema (the pydantic models `Rule`, `RuleConditions`, `RuleActions`,
+`TreeCondition` and `ProducesObservable` in `saq/modules/util/observable_modifier.py`). A rule
+with a key the schema does not have, at any level, or an invalid value (a bad regex, a missing
+`uuid`, an unknown `phase` or `scope`, a negative `match_count`) is refused: it is logged at
+ERROR with the path of the key that failed (`conditions.tree_conditions.0.scope`), and the rest of
+the file still loads. A key set to `null` takes its default.
 
 ### How a rule is structured
 
@@ -253,8 +257,7 @@ Each rule runs in one of two phases:
 - **`post`** — evaluated once in `execute_final_analysis`, after the engine has drained all
   analysis.
 
-The default phase is `post`. (An unrecognized `phase:` value is logged as a warning and treated as
-`post`.)
+The default phase is `post`. (A rule with any other `phase:` value is refused.)
 
 #### Which to use
 
@@ -507,6 +510,6 @@ Don't bother extracting and analyzing FQDNs from our own email addresses.
    `reset_analysis` / `limit_analysis`.
 5. **Choose a phase** — default to `pre`; switch to `post` only if you use `reset_analysis` or gate
    on a slow/deferred analysis or a yara-emitted `signature_id`.
-6. **Save the file** — it's hot-reloaded. Check the logs for parse warnings.
+6. **Save the file** — it's hot-reloaded. Check the logs for a refused rule (an ERROR naming it).
 7. **Verify** — once the rule fires, the observable gets an *Observable Modifier Analysis* node,
    and you can search the GUI for the rule's `uuid` as a `signature_id`.
