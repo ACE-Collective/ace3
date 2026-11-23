@@ -225,19 +225,21 @@ def encode_splunk_query_link(host: str, gui_path: str, query: str, start_time: O
         query = re.sub(r'^\s*search\s+', replacement, query, flags=re.IGNORECASE)
 
     # build params
+    # timestamp() rather than mktime(timetuple()): timetuple() drops the tzinfo, so mktime would read the wall time of
+    # a datetime in the Splunk timezone as the process's local time
     params = {'q': query}
     if start_time:
         # if we're using index time then the event time ranges needs to completely overlap with the index time range
         if use_index_time:
-            params['earliest'] = int(time.mktime((start_time - timedelta(days=30)).timetuple())) # hardcoded to 30 days before the start time
+            params['earliest'] = int((start_time - timedelta(days=30)).timestamp()) # hardcoded to 30 days before the start time
         else:
-            params['earliest'] = int(time.mktime(start_time.timetuple()))
+            params['earliest'] = int(start_time.timestamp())
 
     if end_time:
         if use_index_time:
-            params['latest'] = int(time.mktime((end_time + timedelta(days=30)).timetuple())) # hardcoded to 30 days after the end time
+            params['latest'] = int((end_time + timedelta(days=30)).timestamp()) # hardcoded to 30 days after the end time
         else:
-            params['latest'] = int(time.mktime(end_time.timetuple()))
+            params['latest'] = int(end_time.timestamp())
 
     # build link
     uri = (

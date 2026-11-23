@@ -3,7 +3,6 @@ import logging
 from unittest.mock import Mock, patch
 
 import pytest
-import pytz
 from pydantic import ValidationError
 
 from saq.analysis import RootAnalysis
@@ -17,7 +16,7 @@ from saq.modules.splunk import (
 )
 from saq.observables.mapping import FieldsMode, ObservableMapping
 from saq.query.config import PivotLinkConfig
-from saq.splunk import SplunkQueryObject, encode_splunk_query_link, splunk_gui_path
+from saq.splunk import SplunkQueryObject, splunk_gui_path
 from tests.saq.mock_datetime import MOCK_NOW
 
 
@@ -154,19 +153,19 @@ def test_splunk_api_analyzer_fill_timespec(test_context):
         analyzer = SplunkAPIAnalyzer(
             context=test_context,
             config=get_analysis_module_config(ANALYSIS_MODULE_SPLUNK_API))
+        # a Splunk timezone other than the process's (UTC) one
+        analyzer.timezone = 'America/New_York'
         analyzer.target_query = 'hello <O_TIMESPEC> world'
         analyzer.analysis = SplunkAPIAnalysis()
 
         # test fill timespec
         analyzer.fill_target_query_timespec(MOCK_NOW, MOCK_NOW)
 
-        # verify
-        assert analyzer.target_query == 'hello _index_earliest = 11/11/2017:07:36:01 _index_latest = 11/11/2017:07:36:01 world'
-        # the link is to the query with <O_TIMESPEC> removed, over the same time range
-        tz = pytz.timezone(analyzer.timezone)
-        assert analyzer.analysis.details['gui_link'].startswith('https://splunk.local/en-US/app/search/search?q=search+hello++world&earliest=')
-        assert analyzer.analysis.details['gui_link'] == encode_splunk_query_link(
-            'splunk.local', splunk_gui_path(), 'hello  world', MOCK_NOW.astimezone(tz), MOCK_NOW.astimezone(tz))
+        # verify: the SPL time strings are in the Splunk timezone (07:36:01 UTC is 02:36:01 EST)
+        assert analyzer.target_query == 'hello _index_earliest = 11/11/2017:02:36:01 _index_latest = 11/11/2017:02:36:01 world'
+        # the link is to the query with <O_TIMESPEC> removed, over the same instants: 1510385761 is 2017-11-11 07:36:01 UTC
+        assert analyzer.analysis.details['gui_link'] == (
+            'https://splunk.local/en-US/app/search/search?q=search+hello++world&earliest=1510385761&latest=1510385761')
         assert analyzer.analysis.details['gui_link_label'] == 'Open in Splunk'
 
 
