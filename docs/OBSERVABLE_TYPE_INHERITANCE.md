@@ -161,6 +161,15 @@ class StrictEmailAddressModule(AnalysisModule):
         return F_EMAIL_ADDRESS
 ```
 
+A module configured entirely in YAML, such as one instance of a generic query
+module, sets it in its config block instead, which overrides the class:
+
+```yaml
+analysis_module_asset_lookup:
+  valid_observable_types: [hostname]
+  valid_observable_subtypes: false   # a site where fqdn extends hostname: skip domains
+```
+
 ### Write `observable_modifier` rules that target a parent type
 
 The `observable_modifier` rule conditions are subtype-aware too. A rule like:

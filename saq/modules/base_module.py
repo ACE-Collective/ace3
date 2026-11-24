@@ -103,7 +103,8 @@ class AnalysisModule(FileWatcherMixin):
     # When True (the default), valid_observable_types matching is subtype-aware:
     # a module declaring valid_observable_types = "email_address" will also
     # accept observables whose type extends email_address (e.g. "return_path").
-    # Set False on a subclass that genuinely requires an exact type match.
+    # Set False on a subclass that genuinely requires an exact type match, or set
+    # valid_observable_subtypes in the module's config block, which overrides this.
     valid_observable_subtypes: bool = True
 
     def __init__(
@@ -126,6 +127,9 @@ class AnalysisModule(FileWatcherMixin):
         # you might want to run
         # if this value is missing then it defaults to None, which is the "default" instance
         self._instance = config.instance
+
+        if config.valid_observable_subtypes is not None:
+            self.valid_observable_subtypes = config.valid_observable_subtypes
 
         # defaults to an empty context
         # this parameter is provided for ease of use in tests
