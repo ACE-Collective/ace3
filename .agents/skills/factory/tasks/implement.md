@@ -4,6 +4,8 @@ Take one ticket from `factory:ready` to a draft PR, or to a clear stop. Run ever
 
 Run every pytest command in the background (Claude Code's `run_in_background`), with its output redirected to a file outside the worktree, and read that file when the run exits. A run waits while any other run of the suite holds the dev container, maybe another ticket's, and a foreground command that times out while it waits kills only the `docker exec` client: the run goes on in the container and runs the tests later, for nobody. While a run you started is still going, don't start another or remove the worktree.
 
+Wait for a background command by its exit notification, never with a polling loop. A loop whose condition never comes true outlives the task: it keeps the subagent open after its handoff and polls until someone kills it. If a command must wait on another inside one shell, wait for a line the command writes itself when it ends (`...; echo "exit=$?" >> <file>`, then `grep -q '^exit=' <file>`), give the loop a limit (`for i in $(seq 200); do ...; sleep 3; done`), and don't parse another tool's output or use `pgrep -f`: its pattern is in the loop's own command line, so it always finds the loop. Before you write the handoff, stop every background command you started that is still running.
+
 ## 1. Claim
 
 `$F claim TICKET`. It refuses a ticket someone else holds; stop there and report it. Claiming comes before any other work, so two runs never build the same ticket.
