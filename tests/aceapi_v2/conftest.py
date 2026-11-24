@@ -1,4 +1,7 @@
 import hashlib
+import io
+import json
+import zipfile
 from collections.abc import AsyncGenerator
 
 import pytest_asyncio
@@ -70,6 +73,14 @@ def make_flask_session_cookie(user_id) -> str:
 
 
 _app: FastAPI | None = None
+
+
+def open_encrypted_zip(content: bytes) -> tuple[zipfile.ZipFile, dict]:
+    """A zip download (aceapi_v2/common/archive.py), unlocked with its password, and its manifest."""
+    archive = zipfile.ZipFile(io.BytesIO(content))
+    archive.setpassword(b"infected")
+    manifest_name = next(name for name in archive.namelist() if name.endswith("/manifest.json"))
+    return archive, json.loads(archive.read(manifest_name))
 
 
 def v2_app() -> FastAPI:

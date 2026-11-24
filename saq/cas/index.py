@@ -224,6 +224,17 @@ def digests_present(session: Session, pool: str, digests: list[str]) -> set[str]
     return set(session.execute(select(o.digest).where(o.pool == pool, o.digest.in_(digests))).scalars())
 
 
+def object_sizes(session: Session, pool: str, digests: list[str]) -> dict[str, int]:
+    """The plaintext size of each of the given digests that has an index row (any state). The
+    caller batches."""
+    if not digests:
+        return {}
+
+    o = _t(session).object
+    rows = session.execute(select(o.digest, o.size).where(o.pool == pool, o.digest.in_(digests)))
+    return {digest: size for digest, size in rows}
+
+
 def sample_objects(session: Session, pool: str, count: int) -> list:
     """Up to count present objects starting from a random point in digest order, wrapping around."""
     o = _t(session).object

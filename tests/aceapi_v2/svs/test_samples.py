@@ -27,7 +27,7 @@ from saq.detection_verdicts.store import clear_verdict, set_verdict
 from saq.signatures.builtin import SIGNATURE_VERSION_UNKNOWN
 from saq.svs.constants import CaptureState, MissingReason
 from saq.yara_scanning.match_record import serialize_match_record, summarize_match_record
-from tests.aceapi_v2.conftest import api_key_client, make_api_key, v2_app
+from tests.aceapi_v2.conftest import api_key_client, make_api_key, open_encrypted_zip, v2_app
 from tests.saq.helpers import audit_actor_of, audit_actors, audit_record, person
 from tests.saq.svs.conftest import (
     OTHER_RULE_UUID,
@@ -98,13 +98,6 @@ async def _all_pages(client: AsyncClient, params: dict, limit: int) -> list[dict
 
 def _keys(rows: list[dict]) -> list[tuple[str, str]]:
     return [(row["sha256"], row["rule_uuid"]) for row in rows]
-
-
-def _open_zip(content: bytes) -> tuple[zipfile.ZipFile, dict]:
-    archive = zipfile.ZipFile(io.BytesIO(content))
-    archive.setpassword(b"infected")
-    manifest_name = next(name for name in archive.namelist() if name.endswith("/manifest.json"))
-    return archive, json.loads(archive.read(manifest_name))
 
 
 #
@@ -465,7 +458,7 @@ class TestDownload:
         assert response.headers["content-type"] == "application/zip"
         audit = audit_record(caplog, f"user unittest downloading svs sample {sha256}")
         assert (*audit_actor_of(audit), audit.sha256, audit.rule_uuid) == (*client_actor, sha256, RULE_UUID)
-        archive, manifest = _open_zip(response.content)
+        archive, manifest = open_encrypted_zip(response.content)
         (entry,) = manifest["files"]
         assert entry["sha256"] == sha256 and manifest["skipped"] == []
         # the file once, under a name that cannot be the manifest's
@@ -502,7 +495,7 @@ class TestDownload:
 
         response = await client.get("/svs/samples/download", params={"f": "label:tp,fp"})
         assert response.status_code == 200, response.text
-        archive, manifest = _open_zip(response.content)
+        archive, manifest = open_encrypted_zip(response.content)
         files = {entry["sha256"]: entry for entry in manifest["files"]}
         assert set(files) == {fp, tp}
         audit = audit_record(caplog, "user unittest downloading 2 svs sample files (filters ['label:tp,fp'])")
@@ -513,7 +506,7 @@ class TestDownload:
         assert {sample["rule_uuid"] for sample in files[tp]["samples"]} == {RULE_UUID, OTHER_RULE_UUID}
 
         # files on another node's local pool are listed as skipped
-        _, manifest = _open_zip((await client.get("/svs/samples/download")).content)
+        _, manifest = open_encrypted_zip((await client.get("/svs/samples/download")).content)
         assert [(entry["sha256"], entry["reason"]) for entry in manifest["skipped"]] == [("ee" * 32, "wrong_node")]
 
     @pytest.mark.asyncio

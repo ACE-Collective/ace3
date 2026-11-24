@@ -575,6 +575,34 @@ def test_stat_and_exists_on_unknown_objects(plain_pool):
         plain_pool.stat("nope")
 
 
+def test_sizes(plain_pool, enc_pool):
+    small, large = plain_pool.put(b"small"), plain_pool.put(b"a larger object")
+    other_pool = enc_pool.put(b"in another pool")
+    absent = _sha(b"never stored")
+
+    assert plain_pool.sizes([large, absent, small, other_pool]) == {small: 5, large: 15}
+    assert plain_pool.sizes([]) == {}
+
+    with pytest.raises(InvalidDigest):
+        plain_pool.sizes([small, "nope"])
+
+
+def test_sizes_counts_a_deleting_object(plain_pool, payload):
+    # open() still serves a deleting object, so sizes() must say it is there
+    digest = plain_pool.put(payload)
+    with index.transaction(plain_pool.database) as session:
+        index.set_deleting_forced(session, plain_pool.name, digest)
+
+    assert plain_pool.sizes([digest]) == {digest: len(payload)}
+
+
+def test_sizes_spans_batches(plain_pool, monkeypatch):
+    monkeypatch.setattr("saq.cas.pool._INDEX_LOOKUP_BATCH", 2)
+    digests = [plain_pool.put(f"object {n}".encode()) for n in range(5)]
+
+    assert plain_pool.sizes(digests) == {digest: 8 for digest in digests}
+
+
 #
 # verify / orphans
 #

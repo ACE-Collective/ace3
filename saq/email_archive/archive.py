@@ -3,6 +3,7 @@ archive database maps each Message-ID to them (docs/EMAIL_ARCHIVE.md)."""
 
 import hashlib
 import logging
+from dataclasses import dataclass
 from datetime import datetime
 from typing import TYPE_CHECKING, Optional
 
@@ -13,6 +14,10 @@ from saq.email import normalize_message_id
 
 if TYPE_CHECKING:
     from saq.cas import CASPool
+
+# Message-ID hashes per lookup query: 500 BINARY(32) values keep the IN list far below the range
+# optimizer's memory limit, past which MySQL quietly scans instead (saq/database/util/index.py)
+_LOOKUP_BATCH = 500
 
 
 def get_email_archive_pool() -> "CASPool":
@@ -60,20 +65,43 @@ def archive_email(file_path: str, message_id: str, insert_date: datetime) -> str
     return digest
 
 
-def query_archive_hashes(message_id: str) -> list[str]:
-    """The sha256 of every email archived under message_id that still has a row, newest first.
-    One Message-ID can name more than one email (journaled copies, a resent message)."""
+@dataclass(frozen=True)
+class ArchivedCopy:
+    """One email archived under a Message-ID: its digest in the pool, and the last time it was
+    archived under that Message-ID (naive UTC)."""
+    digest: str
+    archived_at: datetime
+
+
+def query_archived_copies(message_ids: list[str]) -> dict[str, list[ArchivedCopy]]:
+    """Every email archived under each of message_ids that still has a row, keyed by the
+    normalized Message-ID, newest first. One Message-ID can name more than one email (journaled
+    copies, a resent message). A Message-ID with no rows is left out. Whether the pool still has
+    each email is the caller's question."""
     # local, these three: as in archive_email()
     from sqlalchemy import select
     from saq.database.model import ArchivedMessage  # local: see above
     from saq.database.private_session import private_transaction  # local: see above
 
+    by_hash = {message_id_hash(message_id): normalize_message_id(message_id) for message_id in message_ids}
+    hashes = list(by_hash)
+    copies: dict[str, dict[str, ArchivedCopy]] = {}
     with private_transaction(DB_EMAIL_ARCHIVE) as session:
-        digests = session.execute(
-            select(ArchivedMessage.digest)
-            .where(ArchivedMessage.message_id_hash == message_id_hash(message_id))
-            .order_by(ArchivedMessage.insert_date.desc())).scalars()
-        return list(dict.fromkeys(digest.hex() for digest in digests))
+        for start in range(0, len(hashes), _LOOKUP_BATCH):
+            rows = session.execute(
+                select(ArchivedMessage.message_id_hash, ArchivedMessage.digest, ArchivedMessage.insert_date)
+                .where(ArchivedMessage.message_id_hash.in_(hashes[start:start + _LOOKUP_BATCH]))
+                .order_by(ArchivedMessage.insert_date.desc()))
+            for hash_, digest, insert_date in rows:
+                # newest first, so the first row of a digest is the last time it was archived
+                copies.setdefault(by_hash[hash_], {}).setdefault(digest.hex(), ArchivedCopy(digest.hex(), insert_date))
+
+    return {message_id: list(found.values()) for message_id, found in copies.items()}
+
+
+def query_archive_hashes(message_id: str) -> list[str]:
+    """The sha256 of every email archived under message_id that still has a row, newest first."""
+    return [copy.digest for copy in query_archived_copies([message_id]).get(normalize_message_id(message_id), [])]
 
 
 def find_archived_email(message_id: str) -> Optional[str]:

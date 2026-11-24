@@ -335,6 +335,8 @@ class EmailArchiveConfig(BaseModel):
     pool: str = Field(default="email_archive", description="the CAS pool archived emails are stored in (docs/EMAIL_ARCHIVE.md)")
     archive_dir: str = Field(default="archive/email", description="the directory of the archive before it moved to the CAS (relative to the data directory); only `ace email-archive migrate` reads it")
     partition_retention_days: int = Field(default=30, description="days of archived_messages rows (Message-ID -> digest) to keep; `ace partitions maintain` drops a weekly partition once all of it is older than this. At least the pool's ttl_days, or the config fails to load (docs/DATABASE_PARTITIONS.md)")
+    max_bulk_download_files: int = Field(default=500, ge=1, description="most emails one POST /api/v2/email/archive/download zip may hold")
+    max_bulk_download_bytes: int = Field(default=1024 * 1024 * 1024, ge=1, description="most plaintext bytes one POST /api/v2/email/archive/download zip may hold")
 
 class MemcachedConfig(BaseModel):
     client_address: str = Field(..., description="the address of the memcached system used by ACE")
