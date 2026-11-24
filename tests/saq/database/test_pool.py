@@ -1,6 +1,7 @@
 import logging
 import threading
 from datetime import datetime, timedelta
+from uuid import uuid4
 
 import pytest
 from sqlalchemy import text
@@ -205,13 +206,46 @@ def test_pooling_multi_process(test_comms):
         assert conn_1 is conn_4
 
 
+# not information_schema.processlist, which fails (3854) while another session is running a statement with bytes
+# that are not utf8 in it (see test_deadlocks._waiting_for_a_lock)
+SERVER_THREADS = "SELECT id FROM performance_schema.processlist"
+
+
 def _open_on_server(thread_ids):
     """The MySQL thread ids, of those given, whose connections are still open on the server. pymysql's close()
     does not wait for the server to drop the thread, so a test waits for this to settle rather than reading it once."""
     with get_db_connection() as db:
         cursor = db.cursor()
-        cursor.execute("SELECT id FROM information_schema.processlist")
+        cursor.execute(SERVER_THREADS)
         return set(thread_ids) & {row[0] for row in cursor.fetchall()}
+
+
+@pytest.mark.integration
+def test_open_on_server_sees_past_another_sessions_binary_statement():
+    # under xdist every worker's sessions are in the processlist, and one can be running a statement with bytes
+    # that are not utf8 in it, as test_deadlocks does on purpose
+    lock_name = f"test_pool-{uuid4()}"
+    with get_db_connection() as holder, get_db_connection() as waiter:
+        holder_cursor = holder.cursor()
+        holder_cursor.execute("SELECT GET_LOCK(%s, 0)", (lock_name,))
+        waiter_id = waiter.thread_id()
+        thread = threading.Thread(target=lambda: waiter.cursor().execute(
+            "SELECT GET_LOCK(%s, 30) FROM DUAL WHERE %s IS NOT NULL", (lock_name, b"\xb5\xc1\xfb.\xfcm")))
+        thread.start()
+        try:
+            def waiting():
+                holder_cursor.execute("SELECT STATE FROM performance_schema.processlist WHERE ID = %s", (waiter_id,))
+                return holder_cursor.fetchone() == ("User lock",)
+
+            wait_for_condition(waiting)
+            assert _open_on_server([waiter_id]) == {waiter_id}
+        finally:
+            holder_cursor.execute("SELECT RELEASE_LOCK(%s)", (lock_name,))
+            thread.join(30)
+            # a named lock outlives the transaction, so the pool's rollback would not free it
+            waiter.cursor().execute("SELECT RELEASE_LOCK(%s)", (lock_name,))
+
+        assert not thread.is_alive()
 
 
 @pytest.mark.integration
@@ -282,7 +316,7 @@ def test_an_expired_connection_the_server_closed_is_retired_without_a_warning(ca
 
     # through the ORM session, which has a pool of its own, so the raw pool's idle connection stays where it is
     def _server_thread_ids():
-        return {row[0] for row in get_db().execute(text("SELECT id FROM information_schema.processlist"))}
+        return {row[0] for row in get_db().execute(text(SERVER_THREADS))}
 
     get_db().execute(text(f"KILL {int(thread_id)}"))
     wait_for_condition(lambda: thread_id not in _server_thread_ids())
