@@ -690,6 +690,7 @@ SERVICE_REMEDIATION = "remediation"
 SERVICE_FILE_COLLECTION = "file_collection"
 SERVICE_EXTERNAL_REMEDIATION_CHECK = "external_remediation_check"
 SERVICE_YARA_SCANNER = "yara"
+SERVICE_TOOL_RUNNER = "tool_runner"
 SERVICE_MONITORING = "monitoring"
 SERVICE_SVS = "svs"
 

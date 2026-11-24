@@ -2,7 +2,7 @@
 
 It runs as a script, with the venv's python in isolated mode, so it uses the standard library only:
 
-    python3 -I -S launcher.py --max-processes=64 --deadline=330 --tcp-ports=443,53 -- prlimit ... -- setpriv ... -- command
+    python3 -I -S launcher.py --max-processes=64 --deadline=330 --tcp-ports=443,53 --cgroup=DIR -- prlimit ... -- setpriv ... -- command
 
 The GUI CLI (aceapi_v2/cli/service.py) runs `ace` under it too, with --unconfined, which skips the
 Landlock domain (an `ace` command may signal and connect to anything a shell could), and with
@@ -32,6 +32,10 @@ things the command cannot undo:
   killed.
 - A process cap. A command with more than --max-processes live descendants is killed (no cap
   without it).
+
+With --cgroup, the command moves itself into that cgroup before the exec, so it and everything it
+starts are under the cgroup's limits and the launcher is not. The tool runner (saq/tool_runner/)
+creates one per run.
 
 It exits with the command's exit status (128 + N for a command killed by signal N). When it killed
 the command itself, or could not start it, it says why on stderr and exits with a code that says
@@ -278,10 +282,14 @@ def kill_descendants(command_pid: int) -> int:
 
 
 def _exec_command(command: list[str], abi: int | None, tcp_ports: list[int] | None, signal_mask: set,
-                  own_group: bool):
-    """In the forked child: undo what the launcher changed, enter the Landlock domain (none when abi
-    is None) and exec."""
+                  own_group: bool, cgroup: str | None = None):
+    """In the forked child: undo what the launcher changed, move into cgroup, enter the Landlock domain
+    (none when abi is None) and exec."""
     try:
+        if cgroup is not None:
+            # 0 is the writing process; everything it starts from here on is in the cgroup too
+            with open(os.path.join(cgroup, "cgroup.procs"), "w") as fp:
+                fp.write("0")
         if own_group:
             # so a graceful stop can SIGTERM the command and what stays in its group, but not the launcher
             os.setpgid(0, 0)
@@ -376,10 +384,10 @@ def supervise(command_pid: int, max_processes: int | None, deadline: float, term
 
 
 _USAGE = ("[--max-processes=N] --deadline=SECONDS [--tcp-ports=PORT,...] [--term-grace=SECONDS] [--unconfined] "
-          "-- command [args...]")
+          "[--cgroup=DIR] -- command [args...]")
 
 
-def _parse_arguments(argv: list[str]) -> tuple[int | None, float, list[int] | None, float, bool, list[str]]:
+def _parse_arguments(argv: list[str]) -> tuple[int | None, float, list[int] | None, float, bool, str | None, list[str]]:
     """See _USAGE. Without --tcp-ports, TCP is unrestricted; `--tcp-ports=` (empty) allows no TCP
     connection.
 
@@ -395,7 +403,7 @@ def _parse_arguments(argv: list[str]) -> tuple[int | None, float, list[int] | No
     if not command:
         raise ValueError("no command given")
 
-    unknown = set(options) - {"--max-processes", "--deadline", "--tcp-ports", "--term-grace", "--unconfined"}
+    unknown = set(options) - {"--max-processes", "--deadline", "--tcp-ports", "--term-grace", "--unconfined", "--cgroup"}
     if unknown:
         raise ValueError(f"unknown option(s) {sorted(unknown)}")
 
@@ -408,12 +416,13 @@ def _parse_arguments(argv: list[str]) -> tuple[int | None, float, list[int] | No
         raise ValueError("--tcp-ports needs the Landlock domain --unconfined skips")
 
     max_processes = int(options["--max-processes"]) if "--max-processes" in options else None
-    return max_processes, float(options["--deadline"]), tcp_ports, float(options.get("--term-grace", 0)), unconfined, command
+    return (max_processes, float(options["--deadline"]), tcp_ports, float(options.get("--term-grace", 0)), unconfined,
+            options.get("--cgroup") or None, command)
 
 
 def main(argv: list[str]) -> int:
     try:
-        max_processes, deadline_seconds, tcp_ports, term_grace, unconfined, command = _parse_arguments(argv)
+        max_processes, deadline_seconds, tcp_ports, term_grace, unconfined, cgroup, command = _parse_arguments(argv)
     except (ValueError, KeyError) as e:
         _say(f"usage: {_USAGE} ({e})")
         return EXIT_SANDBOX_FAILURE
@@ -436,7 +445,7 @@ def main(argv: list[str]) -> int:
     signal_mask = signal.pthread_sigmask(signal.SIG_BLOCK, _WAKE_SIGNALS)
     command_pid = os.fork()
     if command_pid == 0:
-        _exec_command(command, abi, tcp_ports, signal_mask, own_group)
+        _exec_command(command, abi, tcp_ports, signal_mask, own_group, cgroup)
 
     if own_group:
         try:

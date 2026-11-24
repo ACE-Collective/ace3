@@ -1363,6 +1363,19 @@ service_yara:
   # the most QA match jobs the spool may hold; past it new QA matches are logged and dropped (0 = no limit)
   qa_spool_max_jobs: 10000
 
+service_tool_runner:
+  name: tool_runner
+  python_module: saq.tool_runner.service
+  python_class: ToolRunnerService
+  description: Tool Runner - runs the sandboxed tools of every ACE process on the node, each in a cgroup of its own (docs/TOOL_SANDBOX.md)
+  enabled: true
+  # a stopping runner stops the tools it is running, which takes up to about 20 seconds
+  shutdown_deadline_seconds: 30
+  # relative directory where the unix socket of the tool runner is located (relative to DATA_DIR)
+  socket_dir: var/tool_runner
+  # how long (in seconds) the runner waits for a client to send its request
+  io_timeout: 30
+
 # observable groups
 observable_group_internal:
   # all internal IP addresses

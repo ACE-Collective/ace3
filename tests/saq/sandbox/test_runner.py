@@ -290,3 +290,22 @@ def test_failure_reason(result, reason):
 ], ids=["unknown", "unknown-with-stderr", "no-stderr"])
 def test_tool_failure_reason(returncode, stderr, reason):
     assert runner.tool_failure_reason("rtfobj", returncode, stderr) == reason
+
+
+@pytest.mark.unit
+def test_memory_limit_is_the_address_space_limit_outside_a_cgroup(tmp_path):
+    argv = build_sandbox_argv(["/usr/bin/true"], str(tmp_path), SandboxConfig(memory_limit=1024 ** 3),
+                              datetime.timedelta(seconds=10))
+
+    assert f"--as={1024 ** 3}" in argv
+    assert not any(arg.startswith("--cgroup") for arg in argv)
+
+
+@pytest.mark.unit
+def test_in_a_cgroup_there_is_no_address_space_limit(tmp_path):
+    # the cgroup's memory.max is the limit, and counts memory used, not reserved
+    argv = build_sandbox_argv(["/usr/bin/true"], str(tmp_path), SandboxConfig(memory_limit=1024 ** 3),
+                              datetime.timedelta(seconds=10), cgroup="/sys/fs/cgroup/tools/run-1-1")
+
+    assert not any(arg.startswith("--as") for arg in argv)
+    assert argv.index("--cgroup=/sys/fs/cgroup/tools/run-1-1") < argv.index("--")

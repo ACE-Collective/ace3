@@ -19,7 +19,7 @@ import requests
 from saq.analysis.root import RootAnalysis
 from saq.configuration.config import get_config, set_config
 from saq.configuration.schema import IntegrationConfig
-from saq.constants import ANALYSIS_MODE_ANALYSIS, INSTANCE_TYPE_UNITTEST, SERVICE_ENGINE
+from saq.constants import ANALYSIS_MODE_ANALYSIS, INSTANCE_TYPE_UNITTEST, SERVICE_ENGINE, SERVICE_TOOL_RUNNER
 from saq.crypto import set_encryption_password
 from saq.database.admin import superuser_connection
 from saq.database.pool import get_db_connection, remove_all_sessions
@@ -29,6 +29,8 @@ from saq.cas import reset_cas
 from saq.signatures.yara_inventory import reset_yara_inventory
 from saq.shutdown import reset_shutdown_coordinator
 from saq.storage.factory import reset_storage_system
+from saq.tool_runner.protocol import SOCKET_NAME as TOOL_RUNNER_SOCKET_NAME
+from saq.tool_runner.server import ToolRunnerServer
 from saq.svs import attribution as svs_attribution, windows as svs_windows
 from saq.environment import get_data_dir, get_global_runtime_settings, get_temp_dir, initialize_base_dir, initialize_environment, set_global_runtime_settings, set_node, initialize_data_dir
 
@@ -102,10 +104,36 @@ def global_setup(request):
 
     execute_global_setup()
 
+    tool_runner = start_tool_runner(request)
+
     yield
+
+    tool_runner.stop()
+    tool_runner.wait_until_stopped()
 
     # clean up the temp dir
     shutil.rmtree(get_temp_dir())
+
+
+def start_tool_runner(request) -> ToolRunnerServer:
+    """A tool runner in this process for the sandboxed tools of its tests (docs/TOOL_SANDBOX.md), with its
+    socket in the temp dir, which an integration test's reset of the data dir does not remove."""
+    socket_dir = os.path.join(get_temp_dir(), "tool_runner")
+    server = ToolRunnerServer(os.path.join(socket_dir, TOOL_RUNNER_SOCKET_NAME), io_timeout=30)
+    try:
+        server.start()
+    except Exception as e:
+        message = (f"unable to start the tool runner: {e}. dev has to be started by docker/startup/delegate-cgroup.sh, "
+                   "as docker-compose.yml does: recreate it with docker compose up -d dev")
+        if unittest_session.is_xdist_worker(request.config):
+            # as for the databases above: a worker's pytest.exit() trips xdist's scheduler
+            raise RuntimeError(message) from e
+
+        pytest.exit(message, returncode=4)
+
+    # an absolute socket_dir is where it is, not under the data dir
+    get_config().get_service_config(SERVICE_TOOL_RUNNER).socket_dir = socket_dir
+    return server
 
 @dataclass
 class DatabaseResetInformation:

@@ -27,6 +27,7 @@ from saq.sandbox.launcher import (
     landlock_abi,
 )
 from saq.sandbox.runner import LAUNCHER, SETPRIV, build_sandbox_argv, run_sandboxed, sandbox_python
+from saq.tool_runner.cgroup import RunCgroups
 from tests.saq.helpers import wait_for_condition
 
 PYTHON = sys.executable
@@ -41,8 +42,10 @@ print(child.pid, flush=True)
 
 
 def _launcher_argv(*command: str, max_processes: int | None = 16, deadline: float = 60, tcp_ports: str | None = None,
-                   term_grace: float | None = None, unconfined: bool = False) -> list[str]:
+                   term_grace: float | None = None, unconfined: bool = False, cgroup: str | None = None) -> list[str]:
     options = [f"--deadline={deadline}"]
+    if cgroup is not None:
+        options.append(f"--cgroup={cgroup}")
     if max_processes is not None:
         options.append(f"--max-processes={max_processes}")
     if tcp_ports is not None:
@@ -392,3 +395,27 @@ def _pids_with(marker: str) -> list[int]:
         if _alive(int(entry)):
             pids.append(int(entry))
     return pids
+
+
+@pytest.mark.unit
+class TestCgroup:
+    def test_the_command_runs_in_the_cgroup_and_the_launcher_does_not(self):
+        cgroups = RunCgroups.delegated()
+        cgroup = cgroups.create(256 * 1024 ** 2)
+        try:
+            result = _launch(PYTHON, "-c", "import os; print(open('/proc/self/cgroup').read().strip()); "
+                                           "print(open(f'/proc/{os.getppid()}/cgroup').read().strip())",
+                             cgroup=cgroup)
+        finally:
+            cgroups.remove(cgroup)
+
+        assert result.returncode == 0, result.stderr
+        command, launcher = result.stdout.splitlines()
+        assert command == f"0::/{os.path.relpath(cgroup, '/sys/fs/cgroup')}"
+        assert launcher != command
+
+    def test_a_cgroup_it_cannot_join_is_a_sandbox_failure(self, tmp_path):
+        result = _launch("/usr/bin/true", cgroup=str(tmp_path / "missing"))
+
+        assert result.returncode == EXIT_SANDBOX_FAILURE
+        assert "sandbox: cannot run /usr/bin/true" in result.stderr

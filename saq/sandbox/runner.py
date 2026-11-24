@@ -7,7 +7,8 @@ damage ACE or put a secret in front of whoever wrote it. So every command:
   the caller copies in whatever the command needs
 - can read only the system libraries, the python runtime and a short list of /etc files; nothing
   under SAQ_HOME, the data dir, /auth, the SQL volumes, /home or /proc is readable
-- runs under rlimits (memory, file size, open files, CPU seconds)
+- runs under rlimits (file size, open files, CPU seconds, and address space unless it runs in a
+  cgroup of the tool runner's, saq/tool_runner/, whose memory.max bounds the memory it uses instead)
 - can open TCP connections only to the caller's `allowed_tcp_ports`, which keeps it off the cloud
   metadata endpoint and ACE's own services
 - runs under launcher.py, which kills everything the command started when it exits, times out or
@@ -154,13 +155,18 @@ def sandbox_python() -> str:
 
 def build_sandbox_argv(argv: list[str], workdir: str, config: SandboxConfig, timeout: datetime.timedelta,
                        read_files: Sequence[str] = (), read_dirs: Sequence[str] = (),
-                       write_dirs: Sequence[str] = (), cpu_seconds: int | None = None) -> list[str]:
+                       write_dirs: Sequence[str] = (), cpu_seconds: int | None = None,
+                       cgroup: str | None = None) -> list[str]:
     """Wrap argv so it runs under the launcher, the rlimits and the Landlock ruleset.
 
     Besides the fixed allowlist and workdir, read_files and read_dirs are readable (a read_dir's
     programs executable too) and write_dirs are as writable as workdir. Each must exist: setpriv
     refuses a rule for a missing path, and the command would not run. cpu_seconds (the timeout by
-    default) is the CPU time the command may use, summed over all of its threads."""
+    default) is the CPU time the command may use, summed over all of its threads.
+
+    With cgroup (a directory under /sys/fs/cgroup), the command runs in that cgroup, whose memory.max
+    is its memory limit, and gets no RLIMIT_AS: that counts address space a runtime reserves (a GC
+    heap, a thread's arena), not memory it uses. Without one, config.memory_limit is its RLIMIT_AS."""
     rules = []
     for path in [*get_read_dirs(), *read_dirs]:
         rules.extend(["--landlock-rule", f"path-beneath:{_READ_DIR}:{path}"])
@@ -176,13 +182,15 @@ def build_sandbox_argv(argv: list[str], workdir: str, config: SandboxConfig, tim
     ]
     if config.allowed_tcp_ports is not None:
         launcher_options.append(f"--tcp-ports={','.join(str(port) for port in config.allowed_tcp_ports)}")
+    if cgroup is not None:
+        launcher_options.append(f"--cgroup={cgroup}")
 
     return [
         sandbox_python(), "-I", "-S", LAUNCHER,
         *launcher_options,
         "--",
         PRLIMIT,
-        f"--as={config.memory_limit}",
+        *([] if cgroup is not None else [f"--as={config.memory_limit}"]),
         f"--fsize={config.file_size_limit}",
         f"--nofile={config.open_files_limit}",
         f"--cpu={cpu_seconds or max(1, math.ceil(timeout.total_seconds()))}",
