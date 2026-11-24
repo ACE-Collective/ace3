@@ -67,6 +67,23 @@ def test_add_comment_multiple_uuids(web_client):
 
 
 @pytest.mark.integration
+def test_add_comment_normalizes_line_breaks(web_client):
+    """A form post sends CRLF line breaks; the comment is stored with LF ones and no edge whitespace,
+    as the edit modal sends it."""
+    alert_uuid = "test-uuid-crlf"
+
+    response = web_client.post(url_for("analysis.add_comment"), data={
+        "comment": "  first line\r\nsecond line\r\n",
+        "uuids": alert_uuid,
+        "redirect": "analysis"
+    })
+
+    assert response.status_code == 302
+    comment = get_db().query(Comment).filter(Comment.uuid == alert_uuid).one()
+    assert comment.comment == "first line\nsecond line"
+
+
+@pytest.mark.integration
 def test_add_comment_empty_comment(web_client):
     """Test adding an empty comment should fail."""
     response = web_client.post(url_for("analysis.add_comment"), data={

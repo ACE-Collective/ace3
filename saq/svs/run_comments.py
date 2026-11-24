@@ -8,7 +8,7 @@ from typing import Optional
 from sqlalchemy import select
 
 from saq.auth import ApiAuthResult
-from saq.database.model import SVSRunComment
+from saq.database.model import SVSRunComment, normalize_comment
 from saq.database.pool import get_db
 from saq.logging import log_audit
 from saq.svs.run_events import run_log_fields
@@ -31,7 +31,7 @@ class InvalidComment(ValueError):
 
 
 def _text(comment: str) -> str:
-    comment = (comment or "").replace("\r\n", "\n").strip()
+    comment = normalize_comment(comment or "")
     if not comment:
         raise InvalidComment("a comment can't be empty")
     if len(comment) > MAX_COMMENT_LENGTH:

@@ -18,7 +18,7 @@ from saq.constants import (
     DISPOSITION_REVIEW_INCORRECT,
     REVIEW_COMMENT_PREFIX,
 )
-from saq.database.model import Alert, AlertQueueChange, new_alert_version
+from saq.database.model import Alert, AlertQueueChange, new_alert_version, normalize_comment
 from saq.configuration.config import get_config
 from saq.database.pool import get_db, get_db_connection
 from saq.disposition import is_frozen_disposition
@@ -445,6 +445,8 @@ def set_dispositions(alert_uuids, disposition, auth: ApiAuthResult, user_comment
            own, which sees whatever was committed before the lock was granted.
        :returns: which alerts were dispositioned and which were left alone."""
     user_id = _writer_id(auth, system)
+    if user_comment:
+        user_comment = normalize_comment(user_comment)
 
     with get_db_connection() as db:
         c = db.cursor()
@@ -593,7 +595,7 @@ def set_disposition_reviews(alert_uuids, review_result, auth: ApiAuthResult, cor
     # build the prefixed review comment if one was provided
     prefixed_comment = None
     if review_comment:
-        prefixed_comment = f"{REVIEW_COMMENT_PREFIX}{review_comment.strip()}"
+        prefixed_comment = f"{REVIEW_COMMENT_PREFIX}{normalize_comment(review_comment)}"
 
     if review_result == DISPOSITION_REVIEW_INCORRECT:
         # the disposition is wrong and must be corrected

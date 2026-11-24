@@ -829,38 +829,32 @@ class TestUpdateAlertComment:
         mock_submit_index_task.assert_not_called()
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("sent", ["first line\r\nsecond line", " first line\nsecond line\r\n"])
     @patch("aceapi_v2.alerts.service.submit_index_task", wraps=submit_index_task)
-    async def test_line_endings_alone_are_not_a_change(self, mock_submit_index_task, client: AsyncClient):
-        # the GUI's add form stores CRLF; the edit modal's textarea sends LF
-        alert_uuid, comment_id = _insert_commented_alert(_unittest_user_id(), "first line\r\nsecond line")
+    async def test_line_endings_alone_are_not_a_change(self, mock_submit_index_task, client: AsyncClient,
+                                                       sent: str):
+        # a comment is stored with LF line breaks and no edge whitespace; a form post sends CRLF ones
+        alert_uuid, comment_id = _insert_commented_alert(_unittest_user_id(), "first line\nsecond line")
         version = _alert_version(alert_uuid)
 
-        response = await client.patch(
-            f"/alerts/{alert_uuid}/comments/{comment_id}", json={"comment": "first line\nsecond line"})
+        response = await client.patch(f"/alerts/{alert_uuid}/comments/{comment_id}", json={"comment": sent})
         assert response.status_code == 200
+        assert response.json()["edited_at"] is None
         assert _alert_version(alert_uuid) == version
-        assert _comment_text(comment_id) == "first line\r\nsecond line"
+        assert _comment_text(comment_id) == "first line\nsecond line"
         assert _comment_row(comment_id).edited_at is None
         mock_submit_index_task.assert_not_called()
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("stored", ["looks benign\r\n", " looks benign"])
-    @patch("aceapi_v2.alerts.service.submit_index_task", wraps=submit_index_task)
-    async def test_edge_whitespace_alone_is_not_a_change(self, mock_submit_index_task, client: AsyncClient,
-                                                         stored: str):
-        # the add form stores the text as typed; the edit request is stripped
-        alert_uuid, comment_id = _insert_commented_alert(_unittest_user_id(), stored)
-        version = _alert_version(alert_uuid)
+    async def test_edit_is_stored_with_lf_line_breaks(self, client: AsyncClient):
+        alert_uuid, comment_id = _insert_commented_alert(_unittest_user_id())
 
         response = await client.patch(
-            f"/alerts/{alert_uuid}/comments/{comment_id}", json={"comment": "looks benign"})
+            f"/alerts/{alert_uuid}/comments/{comment_id}", json={"comment": "first line\r\nsecond line"})
         assert response.status_code == 200
-        assert response.json()["edited_at"] is None
-        row = _comment_row(comment_id)
-        assert row.edited_at is None
-        assert row.comment == stored
-        assert _alert_version(alert_uuid) == version
-        mock_submit_index_task.assert_not_called()
+        assert response.json()["comment"] == "first line\nsecond line"
+        assert _comment_text(comment_id) == "first line\nsecond line"
+        assert _comment_row(comment_id).edited_at is not None
 
     @pytest.mark.asyncio
     async def test_author_only(self, client: AsyncClient):

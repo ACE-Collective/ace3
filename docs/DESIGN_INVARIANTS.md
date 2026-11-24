@@ -726,8 +726,10 @@ is written there, change the tag to point at it.
   `app/analysis/views/manage.py::manage_refresh`. [docs/GUI_DATASTAR.md]
 - **Durable preferences go only through `PREFERENCE_SCHEMAS`; view state stays in the
   session.** [docs/USER_PREFERENCES.md]
-- **Comments are stored with their raw line breaks, so every comparison normalizes first.** See
-  `aceapi_v2/observable_comments/service.py::update_comment`. [#1165]
+- **Alert and observable comments are stored normalized: LF line breaks, no edge whitespace.**
+  The models' validators normalize every ORM write, the raw inserts in `saq/database/util/alert.py`
+  call it themselves, and an edit compares the normalized text with the stored one by plain
+  equality. See `saq/database/model.py::normalize_comment`. [#1165]
 
 ## 21. Crash reports
 

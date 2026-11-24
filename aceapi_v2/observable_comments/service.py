@@ -8,7 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from saq.analysis.observable import Observable as AnalysisObservable
-from saq.database.model import Observable as DBObservable, ObservableComment
+from saq.database.model import Observable as DBObservable, ObservableComment, normalize_comment
 from saq.database.util.observable_detection import (
     resolve_observable_identity,
     validate_observable_type,
@@ -161,10 +161,10 @@ async def update_comment(
         return None
     if comment.user_id != user_id:
         raise PermissionError("Only the comment author can edit this comment")
-    # the upload form stores its comment as typed and the edit box sends it trimmed, with LF line
-    # breaks for one stored with CRLF ones, so saving it untouched is not a change and must not mark
-    # it edited
-    if comment.comment.replace("\r\n", "\n").strip() != comment_text.replace("\r\n", "\n").strip():
+    # stored comments are normalized, so text that normalizes to the stored text is not a change and
+    # must not mark it edited
+    comment_text = normalize_comment(comment_text)
+    if comment.comment != comment_text:
         comment.comment = comment_text
         comment.edited_at = func.now()
         await session.flush()
