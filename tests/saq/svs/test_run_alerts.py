@@ -28,7 +28,7 @@ from saq.svs import association, runs
 from saq.svs.attribution import evaluate, write_attributions
 from saq.svs.constants import RunEventKind, RunState
 from saq.svs.run_filters import needs_attention_condition
-from tests.saq.helpers import create_root_analysis
+from tests.saq.helpers import alert_row as _alert_row, create_root_analysis
 from tests.saq.svs.conftest import LAUNCHER, add_catalog_test, add_test_host, person, started_run
 
 pytestmark = pytest.mark.integration
@@ -73,12 +73,6 @@ def _alert(*, marker=None, host="win10-01", partial=False) -> str:
     root.save()
     ALERT(root)
     return root.uuid
-
-
-def _alert_row(alert_uuid: str) -> Alert:
-    db = get_db()
-    db.expire_all()
-    return db.execute(select(Alert).where(Alert.uuid == alert_uuid)).unique().scalar_one()
 
 
 def _events(run_uuid: str, kind: RunEventKind) -> list[dict]:

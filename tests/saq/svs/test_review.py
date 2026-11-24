@@ -30,7 +30,7 @@ from saq.database.util.user_management import add_user
 from saq.detection_verdicts.store import set_verdicts
 from saq.svs import association, expectations, results, review, run_comments, runs
 from saq.svs.constants import RunEventKind, RunState
-from tests.saq.helpers import create_root_analysis
+from tests.saq.helpers import alert_row as _row, create_root_analysis
 from tests.saq.svs.conftest import LAUNCHER, add_catalog_test, add_test_host, person, started_run
 
 # several runs on one test host are fixtures here; the host's claim is tested in test_runs.py
@@ -85,12 +85,6 @@ def _ended(run: SVSRun) -> SVSRun:
 def _run() -> SVSRun:
     # started three hours ago: its alerts happened during its observation window
     return started_run(GUID, now=datetime.now() - timedelta(hours=3))
-
-
-def _row(alert_uuid: str) -> Alert:
-    db = get_db()
-    db.expire_all()
-    return db.execute(select(Alert).where(Alert.uuid == alert_uuid)).unique().scalar_one()
 
 
 def _run_row(run: SVSRun) -> SVSRun:
