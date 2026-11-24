@@ -559,12 +559,11 @@ def test_a_run_another_sweep_has_claimed_is_not_retried_until_its_lease_runs_out
 
 
 class HookAction(AlertAutomationAction):
-    """Runs the test's hook on the alert, then is done."""
+    """Runs the test's hook on the alert, and returns what it returns, or is done."""
     hook = None
 
     def run(self, context):
-        HookAction.hook(context.alert_uuid)
-        return ActionOutcome(ActionStatus.DONE)
+        return HookAction.hook(context.alert_uuid) or ActionOutcome(ActionStatus.DONE)
 
 
 @pytest.fixture
@@ -595,6 +594,62 @@ def test_a_sweep_whose_run_another_sweep_took_over_logs_it_and_stops(hook_action
     # what the other sweep claimed is left as it was
     assert run.status == "pending"
     assert [(a["status"], a["attempts"]) for a in _actions(run)] == [("pending", 0), ("pending", 0)]
+
+
+@pytest.mark.usefixtures("remediable")
+def test_a_sweep_that_read_a_pending_run_another_sweep_advanced_leaves_it_alone(hook_action, failing_action,
+                                                                                 monkeypatch, caplog):
+    calls = []
+
+    def fails_once(alert_uuid):
+        calls.append(alert_uuid)
+        if len(calls) == 1:
+            raise RuntimeError("the comment system is down")
+
+    monkeypatch.setattr(hook_action, "hook", fails_once)
+    failing_action.failures = 10
+    alert_uuid = make_alert(DELIVERY_ALICE)
+    confirm(alert_uuid, DELIVERY_ALICE)
+    rule = make_rule(actions=[{"type": "hook"}, {"type": "failing"}])
+    sweep(rule)
+    # a second instance reads the pending run, and the first retries it: the hook is done, the
+    # failing action fails again, and the run is pending and unclaimed as it was when it was read
+    (stale,) = pending_runs(RULE, "enforce", 0, 10)
+    sweep(rule)
+    caplog.clear()
+
+    rules.process_alert(rule, alert_uuid, stale.evidence, alert_states([alert_uuid])[alert_uuid], stale, 5)
+
+    assert len(calls) == 2
+    assert failing_action.calls == 1
+    assert [r for r in caplog.records if r.levelno >= logging.ERROR] == []
+    (run,) = runs(alert_uuid)
+    assert run.status == "pending"
+    assert [(a["status"], a["attempts"]) for a in _actions(run)] == [("done", 2), ("pending", 1)]
+
+
+@pytest.mark.usefixtures("remediable")
+def test_a_sweep_whose_unstarted_run_another_sweep_took_over_keeps_it_when_its_action_defers(hook_action,
+                                                                                              monkeypatch, caplog):
+    alert_uuid = make_alert(DELIVERY_ALICE)
+    confirm(alert_uuid, DELIVERY_ALICE)
+
+    def taken_over_then_defers(alert_uuid):
+        _expire_lease(alert_uuid)
+        (other,) = pending_runs(RULE, "enforce", 0, 10)
+        assert take_run(other)
+        return ActionOutcome(ActionStatus.DEFERRED, reason="not yet")
+
+    monkeypatch.setattr(hook_action, "hook", taken_over_then_defers)
+    sweep(make_rule(actions=[{"type": "hook"}, {"type": "comment", "comment": "after"}]))
+
+    record = the_error_with_traceback(caplog, alert_uuid=alert_uuid, rule=RULE)
+    assert "so it was not deleted" in record.getMessage()
+    # the other sweep's run is kept, not deleted under it
+    (run,) = runs(alert_uuid)
+    assert run.status == "pending"
+    assert [(a["status"], a["attempts"]) for a in _actions(run)] == [("pending", 0), ("pending", 0)]
+    assert comments(alert_uuid) == []
 
 
 @pytest.mark.usefixtures("remediable")
