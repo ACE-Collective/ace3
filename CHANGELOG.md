@@ -5,6 +5,33 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project (tries to) adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.146] - 2026-11-24
+
+- [Collect integration tests from every integration directory, and only those](https://github.com/ACE-Collective/ace3/pull/1350)
+- [Let a module's config turn off subtype matching](https://github.com/ACE-Collective/ace3/pull/1348)
+- [Fix two flaky tests: large-batch submission and keepalive lock steal](https://github.com/ACE-Collective/ace3/pull/1347)
+- [Dev image: pi instead of cline, bubblewrap and project config for codex](https://github.com/ACE-Collective/ace3/pull/1346)
+- [Swap cline for pi in the dev image, add bubblewrap for codex](https://github.com/ACE-Collective/ace3/pull/1344)
+- [Bound sandboxed tools by the memory they use, not address space](https://github.com/ACE-Collective/ace3/pull/1343)
+- [Give the example integration tests](https://github.com/ACE-Collective/ace3/pull/1341)
+- [Skip dot-directories during integration discovery](https://github.com/ACE-Collective/ace3/pull/1340)
+- [Stop factory tasks leaving polling loops behind](https://github.com/ACE-Collective/ace3/pull/1339)
+- [Fix the races in the worker-death and deadlock test waits](https://github.com/ACE-Collective/ace3/pull/1336)
+- [Make an integration's enabled: setting its only off switch](https://github.com/ACE-Collective/ace3/pull/1335)
+- [Store alert and observable comments with normalized line breaks](https://github.com/ACE-Collective/ace3/pull/1334)
+- [Audit observable comment add, edit and delete](https://github.com/ACE-Collective/ace3/pull/1333)
+- [probe_binary_version: return None when the tool exits non-zero](https://github.com/ACE-Collective/ace3/pull/1327)
+- [Fix the Open in Splunk link's time range when the Splunk timezone is not UTC](https://github.com/ACE-Collective/ace3/pull/1326)
+- [Fix the error message for a trailing slash in get_integration_name_from_path](https://github.com/ACE-Collective/ace3/pull/1324)
+- [Refuse observable modifier rules with unknown tree condition keys](https://github.com/ACE-Collective/ace3/pull/1320)
+- [Show the identified networks in the network identifier analysis view](https://github.com/ACE-Collective/ace3/pull/1319)
+- [Set ACEThreadedMonitor's started event and bound its wait()](https://github.com/ACE-Collective/ace3/pull/1317)
+- [Start a hunt's execution thread before publishing it on the hunt](https://github.com/ACE-Collective/ace3/pull/1316)
+- [Log a failed yara scan in the worker with its traceback](https://github.com/ACE-Collective/ace3/pull/1313)
+- [Sort detections by their whole value](https://github.com/ACE-Collective/ace3/pull/1311)
+- [Let add_file_observable's failures reach the caller unlogged](https://github.com/ACE-Collective/ace3/pull/1310)
+- [Share the email-password flow with the zip and rar analyzers](https://github.com/ACE-Collective/ace3/pull/1308)
+
 ## [3.0.145] - 2026-11-23
 
 - [Show which alerts on the manage page potentially relate](https://github.com/ACE-Collective/ace3/pull/1307)
