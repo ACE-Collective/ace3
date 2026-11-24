@@ -33,7 +33,7 @@ class _StrictEmailAddressModule(AnalysisModule):
         return F_EMAIL_ADDRESS
 
 
-def _make_module(cls, test_context):
+def _make_module(cls, test_context, **config):
     return cls(
         context=test_context,
         config=AnalysisModuleConfig(
@@ -41,6 +41,7 @@ def _make_module(cls, test_context):
             python_module="saq.modules.base_module",
             python_class="AnalysisModule",
             enabled=True,
+            **config,
         ),
     )
 
@@ -104,5 +105,25 @@ def test_strict_module_still_accepts_exact_type(test_context, hierarchy_with_ret
     root = RootAnalysis()
     obs = root.add_observable_by_spec(F_EMAIL_ADDRESS, "alice@example.com")
     module = _make_module(_StrictEmailAddressModule, test_context)
+
+    assert module.accepts(obs) is True
+
+
+@pytest.mark.unit
+def test_config_false_rejects_subtype(test_context, hierarchy_with_return_path):
+    root = RootAnalysis()
+    subtype = root.add_observable_by_spec(F_EMAIL_RETURN_PATH, "alice@example.com")
+    exact = root.add_observable_by_spec(F_EMAIL_ADDRESS, "bob@example.com")
+    module = _make_module(_EmailAddressOnlyModule, test_context, valid_observable_subtypes=False)
+
+    assert module.accepts(subtype) is False
+    assert module.accepts(exact) is True
+
+
+@pytest.mark.unit
+def test_config_true_overrides_strict_class(test_context, hierarchy_with_return_path):
+    root = RootAnalysis()
+    obs = root.add_observable_by_spec(F_EMAIL_RETURN_PATH, "alice@example.com")
+    module = _make_module(_StrictEmailAddressModule, test_context, valid_observable_subtypes=True)
 
     assert module.accepts(obs) is True

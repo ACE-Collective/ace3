@@ -26,6 +26,7 @@ class AnalysisModuleConfig(BaseModel):
     semaphore_name: Optional[str] = Field(default=None, description="The semaphore name for the analysis module.")
     file_size_limit: int = Field(default=0, description="The file size limit in bytes.")
     valid_observable_types: Union[str, list[str], None] = Field(default=None, description="The list of valid observable types for the analysis module.")
+    valid_observable_subtypes: Optional[bool] = Field(default=None, description="False matches valid_observable_types exactly, without the types that extend them. Unset keeps the class's valid_observable_subtypes.")
     valid_queues: Optional[list[str]] = Field(default=None, description="The list of valid queues for the analysis module.")
     invalid_queues: Optional[list[str]] = Field(default=None, description="The list of invalid queues for the analysis module.")
     invalid_alert_types: Optional[list[str]] = Field(default=None, description="The list of invalid alert types for the analysis module.")
