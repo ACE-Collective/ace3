@@ -20,6 +20,7 @@ I want to be able to...
 - Integrations are subdirectories of (subdirectories of) the `integrations` directory.
 - Each integration is it's own subdirectory.
 - An integration directory can contain multiple integration directories.
+- Directories whose names start with a dot (`.git`, `.venv`) are never searched, and a dot-directory is never an integration.
 - The presence of an `integration.md` file signifies that the directory is, in fact, an integration. This file serves as the documentation for it.
 - The presence of an `install.sh` script is executed at image build time.
 - The presence of a `src` directory is automatically appended to PYTHONPATH.
