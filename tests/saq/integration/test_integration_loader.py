@@ -74,6 +74,30 @@ class TestRecurseIntegrationDirs:
         assert str(valid_integration) in result
         assert str(nested_integration) in result
 
+    def test_recurse_integration_dirs_skips_dot_directories(self, tmpdir, monkeypatch):
+        """A repository holding several integrations has a .git beside them, which can hold
+        hundreds of object directories; discovery must not descend into it."""
+        repo = tmpdir.mkdir("repo")
+        integration = repo.mkdir("integration1")
+        integration.join("integration.md").write("# Integration")
+        repo.mkdir(".git").mkdir("objects").mkdir("ab")
+        # an integration.md under a dot-directory is not an integration either
+        hidden = tmpdir.mkdir(".hidden")
+        hidden.join("integration.md").write("# Integration")
+
+        listed = []
+        real_listdir = os.listdir
+
+        def recording_listdir(path):
+            listed.append(str(path))
+            return real_listdir(path)
+
+        monkeypatch.setattr(os, "listdir", recording_listdir)
+
+        result = _recurse_integration_dirs(str(tmpdir))
+        assert result == [str(integration)]
+        assert not [path for path in listed if "/." in path[len(str(tmpdir)):]]
+
 
 @pytest.fixture
 def integration_env(tmp_path, monkeypatch):

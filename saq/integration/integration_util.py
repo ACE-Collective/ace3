@@ -49,12 +49,19 @@ def validate_integration_dir(dir_path: str) -> bool:
     return True
 
 def _recurse_integration_dirs(target_path: str) -> list[str]:
-    """Recursively finds all integration directories in the given directory."""
+    """Recursively finds all integration directories in the given directory.
+
+    Dot-directories are skipped: a repository holding several integrations has its .git beside
+    them, and every ace command and service start runs this scan more than once.
+    """
     valid_dirs: list[str] = []
     if not os.path.isdir(target_path):
         return []
 
     for target_name in os.listdir(target_path):
+        if target_name.startswith("."):
+            continue
+
         new_target_path = os.path.join(target_path, target_name)
         if validate_integration_dir(new_target_path):
             valid_dirs.append(new_target_path)
