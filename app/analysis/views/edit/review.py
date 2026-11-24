@@ -8,7 +8,7 @@ from saq.constants import (
     DISPOSITION_REVIEW_INCORRECT,
 )
 from saq.database.util.alert import describe_frozen, set_disposition_reviews
-from saq.disposition import is_selectable_disposition
+from saq.disposition import DispositionNotAllowed, is_selectable_disposition
 from saq.logging import log_audit
 
 @analysis.route('/review_disposition', methods=['POST'])
@@ -67,6 +67,8 @@ def review_disposition():
         message = "disposition review recorded for {} alerts".format(len(reviewed))
         skipped = describe_frozen(frozen)
         flash(f"{message}; {skipped}" if skipped else message)
+    except DispositionNotAllowed as e:
+        flash(f"disposition review not recorded: {e}")
     except Exception as e:
         flash("unable to record disposition review (review error logs)")
         logging.exception("unable to review disposition for %s alerts: %s", len(alert_uuids), e)

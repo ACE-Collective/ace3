@@ -1,0 +1,36 @@
+{% extends "analysis/alert.html" %}
+{# a feed watch alert (docs/FEED_WATCHES.md): an article some watches matched. Every value comes from a
+   feed or a model and is escaped; the source link is followed only when it is http(s). #}
+{% block alert_details %}
+{% set feed = analysis.details.get('feed', {}) %}
+{% set entry = analysis.details.get('entry', {}) %}
+{% set link = entry.get('link') or '' %}
+<table class="table table-sm table-bordered">
+    <tr><td class="col-md-2"><strong>Publisher</strong></td><td>{{ feed.get('publisher') }}{% if feed.get('name') and feed.get('name') != feed.get('publisher') %} <span class="text-muted">({{ feed.get('name') }})</span>{% endif %}</td></tr>
+    <tr><td><strong>Title</strong></td><td>{{ entry.get('title') }}</td></tr>
+    <tr><td><strong>Source</strong></td><td style="overflow-wrap:anywhere">
+        {% if link.startswith('http://') or link.startswith('https://') %}<a href="{{ link }}" target="_blank" rel="noopener noreferrer">{{ link }}</a>{% else %}{{ link }}{% endif %}
+    </td></tr>
+    <tr><td><strong>Published</strong></td><td>{{ entry.get('published_at') or '' }}{% if entry.get('updated_at') %} (updated {{ entry.get('updated_at') }}){% endif %}</td></tr>
+    {% if entry.get('categories') %}<tr><td><strong>Categories</strong></td><td>{{ entry.get('categories') | join(', ') }}</td></tr>{% endif %}
+</table>
+
+{% for match in analysis.details.get('matches', []) %}
+<div class="card mb-2">
+    <div class="card-body py-2">
+        <div><strong>{{ match.get('watch') }}</strong> <span class="font-monospace small text-muted">{{ match.get('watch_version') }}</span>
+            <span class="small text-muted">definition {{ match.get('definition') }}{% if match.get('model') %}, answered by {{ match.get('model') }}{% endif %}</span></div>
+        {% if match.get('excerpt') %}
+        <blockquote class="border-start ps-2 my-1">{{ match.get('excerpt') }}</blockquote>
+        <div class="small text-muted">{% if match.get('excerpt_source') == 'yara' %}matched by the rule in the {{ match.get('yara_field') }}{% else %}quoted by the model{% endif %}</div>
+        {% endif %}
+        {% if match.get('rationale') %}<div class="small">{{ match.get('rationale') }}</div>{% endif %}
+    </div>
+</div>
+{% endfor %}
+
+<details class="mt-2">
+    <summary>Text{% if entry.get('text_truncated') %} (cut){% endif %}</summary>
+    <div style="white-space:pre-wrap">{{ entry.get('text') }}</div>
+</details>
+{% endblock %}

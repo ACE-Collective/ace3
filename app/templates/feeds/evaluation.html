@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+
+{% block page_content %}
+{% set active = 'watches' %}
+{% include "feeds/_nav.html" %}
+
+<div id="evaluation_page" data-watch-id="{{ watch_id }}">
+    <h2 class="mb-1">Evaluation of <span id="evaluation_watch_name"></span></h2>
+    <p class="text-muted">
+        Each version of the watch, with the model and prompt that answered it, scored against the entries analysts
+        labeled: on the replay page, or by dispositioning its alert RELEVANT or NOT_RELEVANT. A false alert is a
+        match on an entry labeled not relevant; a missed relevant post is a relevant entry it did not match. "YARA only"
+        scores the rule alone on the same entries. Latency and tokens cover every question asked.
+    </p>
+    <div id="evaluation_summary" class="mb-3"></div>
+    <div id="evaluation_configurations"></div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+{{ super() }}
+<script src="{{ url_for('static', filename='js/ace_api.js') }}"></script>
+<script src="{{ url_for('static', filename='js/feeds.js') }}"></script>
+{% endblock %}

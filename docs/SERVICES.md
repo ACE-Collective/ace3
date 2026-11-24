@@ -212,5 +212,6 @@ docker compose logs -f myservice
 | `monitoring`         | `saq.monitoring.service.ACEMonitoringService`  | `service_monitoring`         |
 | `search_indexer`     | `saq.search.service.SearchIndexService`        | `service_search_indexer`     |
 | `svs`                | `saq.svs.service.SVSService`                   | `service_svs`                |
+| `feed_watch`         | `saq.feeds.service.FeedWatchService`           | `service_feed_watch`         |
 
 `saq/monitoring/service.py` is a good reference for a service that itself loads a configurable set of named sub-workers; `saq/remediation/` is the smallest service built on `saq/queue_service.py`.

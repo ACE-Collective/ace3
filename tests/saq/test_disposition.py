@@ -16,12 +16,15 @@ from saq.disposition import (
     DEFAULT_DISPOSITION_CSS,
     DISPOSITION_CLASS_FP,
     DISPOSITION_CLASS_TP,
+    DispositionNotAllowed,
+    get_alert_type_dispositions,
     get_disposition_class,
     get_disposition_css,
     get_disposition_rank,
     get_dispositions,
     get_selectable_dispositions,
     validate_stop_analysis_on_dispositions,
+    is_disposition_allowed,
     is_frozen_disposition,
     is_selectable_disposition,
     is_valid_disposition,
@@ -42,7 +45,7 @@ class TestTheList:
         assert list(get_dispositions()) == [
             "OPEN", "FALSE_POSITIVE", "IGNORE", "UNKNOWN", "REVIEWED", "GRAYWARE",
             "POLICY_VIOLATION", "RECONNAISSANCE", "WEAPONIZATION", "DELIVERY", "EXPLOITATION",
-            "INSTALLATION", "COMMAND_AND_CONTROL", "EXFIL", "DAMAGE", "SIMULATED",
+            "INSTALLATION", "COMMAND_AND_CONTROL", "EXFIL", "DAMAGE", "SIMULATED", "NOT_RELEVANT", "RELEVANT",
         ]
 
     @pytest.mark.parametrize("removed", [
@@ -106,12 +109,13 @@ class TestSimulated:
 class TestClassification:
     def test_the_agreed_map(self):
         """docs/SVS.md, Part 1: GRAYWARE, POLICY_VIOLATION and every kill-chain disposition are
-        tp; FALSE_POSITIVE is fp; OPEN, IGNORE, UNKNOWN and REVIEWED are unclassified."""
+        tp; FALSE_POSITIVE is fp; OPEN, IGNORE, UNKNOWN and REVIEWED are unclassified. A feed watch
+        alert's RELEVANT is tp and NOT_RELEVANT fp (docs/FEED_WATCHES.md)."""
         tp = {"GRAYWARE", "POLICY_VIOLATION", "RECONNAISSANCE", "WEAPONIZATION", "DELIVERY",
-              "EXPLOITATION", "INSTALLATION", "COMMAND_AND_CONTROL", "EXFIL", "DAMAGE", "SIMULATED"}
+              "EXPLOITATION", "INSTALLATION", "COMMAND_AND_CONTROL", "EXFIL", "DAMAGE", "SIMULATED", "RELEVANT"}
         for disposition in get_dispositions():
             expected = (DISPOSITION_CLASS_TP if disposition in tp
-                        else DISPOSITION_CLASS_FP if disposition == DISPOSITION_FALSE_POSITIVE
+                        else DISPOSITION_CLASS_FP if disposition in (DISPOSITION_FALSE_POSITIVE, "NOT_RELEVANT")
                         else None)
             assert get_disposition_class(disposition) == expected, disposition
 
@@ -211,3 +215,40 @@ class TestEventRollUp:
         only_removed = self._event("AUTHORIZED")
         assert only_removed.disposition == DISPOSITION_OPEN
         assert only_removed.disposition_rank == 0
+
+
+class TestAlertTypes:
+    """alert_type_dispositions: a type with a list has only its list; a disposition named in a list is
+    hidden from the types without one, except OPEN and IGNORE."""
+
+    def test_a_feed_watch_alert_has_only_its_four(self):
+        assert list(get_alert_type_dispositions("feed_watch")) == ["OPEN", "IGNORE", "NOT_RELEVANT", "RELEVANT"]
+        assert not is_disposition_allowed("DELIVERY", "feed_watch")
+        assert get_disposition_class("RELEVANT") == DISPOSITION_CLASS_TP
+        assert get_disposition_class("NOT_RELEVANT") == DISPOSITION_CLASS_FP
+
+    @pytest.mark.parametrize("alert_type", ["hunter - splunk", "mailbox", None])
+    def test_other_alerts_never_see_relevant(self, alert_type):
+        dispositions = list(get_alert_type_dispositions(alert_type))
+        assert "RELEVANT" not in dispositions and "NOT_RELEVANT" not in dispositions
+        assert dispositions[:3] == ["OPEN", "FALSE_POSITIVE", "IGNORE"]
+        assert "DELIVERY" in dispositions
+        # SIMULATED stays out because no analyst may choose it, not because of a list
+        assert "SIMULATED" not in dispositions
+
+    def test_a_list_hides_its_names_from_other_types(self, monkeypatch):
+        monkeypatch.setattr(get_config(), "alert_type_dispositions", {"intel": ["OPEN", "IGNORE", "REVIEWED"]})
+        assert not is_disposition_allowed("REVIEWED", "mailbox")
+        assert is_disposition_allowed("OPEN", "mailbox") and is_disposition_allowed("IGNORE", "mailbox")
+        assert is_disposition_allowed("RELEVANT", "mailbox")
+        assert is_disposition_allowed("REVIEWED", "intel") and not is_disposition_allowed("DELIVERY", "intel")
+
+    def test_a_list_naming_an_unknown_disposition_is_refused(self):
+        data = _config_data()
+        data["alert_type_dispositions"] = {"feed_watch": ["OPEN", "NOPE"]}
+        with pytest.raises(ValidationError, match="alert_type_dispositions.feed_watch names dispositions"):
+            ACEConfig.model_validate(data)
+
+    def test_the_refusal_names_the_alert_types(self):
+        error = DispositionNotAllowed("DELIVERY", {"a": "feed_watch", "b": "feed_watch"})
+        assert str(error) == "DELIVERY is not a disposition of feed_watch alerts"

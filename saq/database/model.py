@@ -4910,6 +4910,309 @@ class EmailArchiveServer(EmailArchiveBase):
         nullable=False)
 
 
+class Feed(Base):
+    """An RSS or Atom feed analysts subscribed to (docs/FEED_WATCHES.md). service_feed_watch polls it
+    on the primary node every poll_interval_seconds, however many watches read it.
+
+    auth_secret is the basic auth password or the custom header's value, encrypted with
+    saq.crypto.encrypt_chunk; the API accepts it and never returns it. etag and last_modified are the
+    validators of the last 200 response, sent back as a conditional request. last_content_at is when
+    that response came: every entry it carried has last_seen_at at or after it, which is how a 304
+    keeps them from expiring."""
+
+    __tablename__ = 'feeds'
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    name: Mapped[str] = mapped_column(String(256), nullable=False)
+    url: Mapped[str] = mapped_column(String(2048), nullable=False)
+    # the feed's own title, from its last parsed response: the publisher an alert shows
+    title: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
+    poll_interval_seconds: Mapped[int] = mapped_column(Integer, nullable=False)
+    enabled: Mapped[bool] = mapped_column(BOOLEAN, nullable=False, server_default=text('1'))
+    auth_type: Mapped[str] = mapped_column(Enum('none', 'basic', 'header'), nullable=False, server_default=text("'none'"))
+    # the basic auth user, or the custom header's name
+    auth_name: Mapped[Optional[str]] = mapped_column(String(256), nullable=True)
+    auth_secret: Mapped[Optional[bytes]] = mapped_column(BLOB, nullable=True)
+    etag: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
+    last_modified: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    # set by the first successful poll: its entries are only for preview and never evaluated
+    baselined_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    next_poll_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True, index=True)
+    last_poll_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    last_success_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    last_content_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    last_failure_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    last_error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    created_by_user_id: Mapped[Optional[int]] = mapped_column(
+        Integer, ForeignKey('users.id', ondelete='SET NULL', onupdate='CASCADE'), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, server_default=text('CURRENT_TIMESTAMP'))
+    # a deleted feed stops polling at once; the service then deletes its entries in batches, and the row
+    deleted_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+
+
+class FeedDefinition(Base):
+    """A watch definition as service_feed_watch last read it from feeds.repositories
+    (docs/FEED_WATCHES.md, *Definitions*), so the API and the GUI never read the repositories. name is
+    persisted: watches name it. present is false once its file is gone, and error says why a file that
+    is there can't be used (bad YAML, a rule that does not compile, a name another repository has)."""
+
+    __tablename__ = 'feed_definitions'
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    name: Mapped[str] = mapped_column(String(256), nullable=False, unique=True)
+    repository: Mapped[str] = mapped_column(String(256), nullable=False)
+    path: Mapped[str] = mapped_column(String(1024), nullable=False)
+    commit: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    content_hash: Mapped[Optional[str]] = mapped_column(CHAR(64), nullable=True)
+    yara: Mapped[Optional[str]] = mapped_column(MEDIUMTEXT, nullable=True)
+    question: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    present: Mapped[bool] = mapped_column(BOOLEAN, nullable=False, server_default=text('1'))
+    error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, server_default=text('CURRENT_TIMESTAMP'))
+
+
+class FeedEntry(Base):
+    """One version of an entry of a feed (docs/FEED_WATCHES.md, *Entries*). An entry is identified by
+    its guid or id, then its link, then a hash of its title and link (identity, hashed to
+    identity_hash); a version by the hash of the text the feed supplied (content_hash). A vendor that
+    edits an advisory in place makes a new row for the same identity.
+
+    A version the feed still carries has last_seen_at moved forward on every poll; one not seen for
+    feeds.entry_retention_days is deleted in primary-key batches, and its decisions, labels and replay
+    results go with it. evaluated_at is set once every watch of the feed has a decision row for the
+    version (or the version came in the feed's first poll, baseline, which is never evaluated)."""
+
+    __tablename__ = 'feed_entries'
+    __table_args__ = (
+        UniqueConstraint('feed_id', 'identity_hash', 'content_hash', name='uq_feed_entries_version'),
+        Index('i_feed_entries_evaluated', 'evaluated_at', 'id'),
+        Index('i_feed_entries_last_seen', 'last_seen_at', 'id'),
+        Index('i_feed_entries_feed_first_seen', 'feed_id', 'first_seen_at', 'id'),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    feed_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey('feeds.id', ondelete='CASCADE', onupdate='CASCADE'), nullable=False)
+    identity: Mapped[str] = mapped_column(String(2048), nullable=False)
+    identity_hash: Mapped[str] = mapped_column(CHAR(64), nullable=False)
+    content_hash: Mapped[str] = mapped_column(CHAR(64), nullable=False)
+    title: Mapped[Optional[str]] = mapped_column(String(1024), nullable=True)
+    link: Mapped[Optional[str]] = mapped_column(String(2048), nullable=True)
+    # the entry's own published and updated times, as the feed gave them (UTC)
+    published_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    updated_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    # the text the feed supplied, HTML stripped to text
+    summary: Mapped[Optional[str]] = mapped_column(MEDIUMTEXT, nullable=True)
+    content: Mapped[Optional[str]] = mapped_column(MEDIUMTEXT, nullable=True)
+    # newline-separated
+    categories: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    baseline: Mapped[bool] = mapped_column(BOOLEAN, nullable=False, server_default=text('0'))
+    first_seen_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    evaluated_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+
+
+class FeedWatchFeed(Base):
+    """A feed a watch reads."""
+
+    __tablename__ = 'feed_watch_feeds'
+
+    watch_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey('feed_watches.id', ondelete='CASCADE', onupdate='CASCADE'), primary_key=True)
+    feed_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey('feeds.id', ondelete='CASCADE', onupdate='CASCADE'), primary_key=True, index=True)
+
+
+class FeedWatch(Base):
+    """A watch: one definition (by its persisted name) over some feeds, delivering to one queue, or in
+    shadow mode recording its decisions and delivering nothing (docs/FEED_WATCHES.md, *Watches*).
+
+    version counts the edits of the row; with the content hash of the definition at the commit that
+    matched it makes the watch version every decision records. A watch whose definition is missing from
+    the repositories is flagged and matches nothing."""
+
+    __tablename__ = 'feed_watches'
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    name: Mapped[str] = mapped_column(String(256), nullable=False, unique=True)
+    definition_name: Mapped[str] = mapped_column(String(256), nullable=False)
+    queue: Mapped[str] = mapped_column(String(64), nullable=False)
+    mode: Mapped[str] = mapped_column(Enum('shadow', 'delivering'), nullable=False, server_default=text("'shadow'"))
+    enabled: Mapped[bool] = mapped_column(BOOLEAN, nullable=False, server_default=text('1'))
+    version: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text('1'))
+    created_by_user_id: Mapped[Optional[int]] = mapped_column(
+        Integer, ForeignKey('users.id', ondelete='SET NULL', onupdate='CASCADE'), nullable=True)
+    updated_by_user_id: Mapped[Optional[int]] = mapped_column(
+        Integer, ForeignKey('users.id', ondelete='SET NULL', onupdate='CASCADE'), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, server_default=text('CURRENT_TIMESTAMP'))
+    updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, server_default=text('CURRENT_TIMESTAMP'))
+
+
+class FeedDelivery(Base):
+    """The one alert of an entry identity and a queue (docs/FEED_WATCHES.md, *Delivery*). The row is
+    written before the root is staged and is what keeps a second alert from being built: a later
+    version of an entry that already alerted to a queue is ignored for that queue. state is pending
+    until the root is staged; a pending row is staged again (with the same root uuid) after a crash.
+    submission_key is the root's submission key, which the collector's DuplicateSubmissionFilter
+    checks. The decisions it delivered point at it (feed_decisions.delivery_id)."""
+
+    __tablename__ = 'feed_deliveries'
+    __table_args__ = (
+        UniqueConstraint('feed_id', 'identity_hash', 'queue', name='uq_feed_deliveries_destination'),
+        Index('i_feed_deliveries_state', 'state', 'id'),
+        Index('i_feed_deliveries_created', 'created_at', 'id'),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    feed_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey('feeds.id', ondelete='CASCADE', onupdate='CASCADE'), nullable=False)
+    identity_hash: Mapped[str] = mapped_column(CHAR(64), nullable=False)
+    queue: Mapped[str] = mapped_column(String(64), nullable=False)
+    # the version delivered; NULL once it expired
+    entry_id: Mapped[Optional[int]] = mapped_column(
+        BigInteger, ForeignKey('feed_entries.id', ondelete='SET NULL', onupdate='CASCADE'), nullable=True)
+    root_uuid: Mapped[str] = mapped_column(String(36), nullable=False, unique=True)
+    submission_key: Mapped[str] = mapped_column(String(256), nullable=False)
+    state: Mapped[str] = mapped_column(Enum('pending', 'staged'), nullable=False, server_default=text("'pending'"))
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, server_default=text('CURRENT_TIMESTAMP'))
+    staged_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+
+
+class FeedDecision(Base):
+    """What a watch version decided about an entry version, or what a replay's draft did
+    (docs/FEED_WATCHES.md, *Decisions*).
+
+    A watch's row is keyed by (entry, watch, watch version, definition hash, model, prompt hash) and a
+    replay's by (question, prompt hash, entry, model), so replaying the same draft again reuses its
+    answers; cache_key is the sha256 of the key. A definition without a question (a pattern watch)
+    decides at once and has an empty model and prompt hash.
+
+    status is pending until the LLM answered with a valid reply (decided) or the decision used up
+    llm.max_attempts invalid replies (failed). A connection failure, a 5xx, a 429 or a refused key
+    leaves it pending without counting an attempt. yara_matched is the rule prefilter's own answer,
+    NULL without a rule: the YARA-only side of the evaluation."""
+
+    __tablename__ = 'feed_decisions'
+    __table_args__ = (
+        Index('i_feed_decisions_pending', 'status', 'next_attempt_at', 'id'),
+        Index('i_feed_decisions_watch', 'watch_id', 'entry_id'),
+        Index('i_feed_decisions_entry', 'entry_id', 'id'),
+        Index('i_feed_decisions_undelivered', 'deliver', 'delivery_id', 'id'),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    cache_key: Mapped[str] = mapped_column(CHAR(64), nullable=False, unique=True)
+    kind: Mapped[str] = mapped_column(Enum('watch', 'replay'), nullable=False)
+    entry_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey('feed_entries.id', ondelete='CASCADE', onupdate='CASCADE'), nullable=False)
+    watch_id: Mapped[Optional[int]] = mapped_column(
+        Integer, ForeignKey('feed_watches.id', ondelete='CASCADE', onupdate='CASCADE'), nullable=True)
+    watch_row_version: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    definition_name: Mapped[Optional[str]] = mapped_column(String(256), nullable=True)
+    definition_hash: Mapped[Optional[str]] = mapped_column(CHAR(64), nullable=True)
+    # the question asked, NULL for a pattern watch
+    question: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    # the model requested and the prompt file's content hash; empty without a question
+    model: Mapped[str] = mapped_column(String(256), nullable=False, server_default=text("''"))
+    prompt_hash: Mapped[str] = mapped_column(String(64), nullable=False, server_default=text("''"))
+    yara_matched: Mapped[Optional[bool]] = mapped_column(BOOLEAN, nullable=True)
+    # the matched string's text in context, and the field it was in
+    yara_excerpt: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    yara_field: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
+    status: Mapped[str] = mapped_column(Enum('pending', 'decided', 'failed'), nullable=False)
+    decision: Mapped[Optional[str]] = mapped_column(Enum('match', 'no_match', 'insufficient_evidence'), nullable=True)
+    excerpt: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    rationale: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    attempts: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text('0'))
+    last_error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    # the model the endpoint says answered (a router may serve another than the one requested)
+    response_model: Mapped[Optional[str]] = mapped_column(String(256), nullable=True)
+    prompt_tokens: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    completion_tokens: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    latency_ms: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    # the entry text sent was cut to llm.max_entry_chars
+    truncated: Mapped[bool] = mapped_column(BOOLEAN, nullable=False, server_default=text('0'))
+    # a watch in delivering mode made this row, and the queue it delivers to then
+    deliver: Mapped[bool] = mapped_column(BOOLEAN, nullable=False, server_default=text('0'))
+    queue: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    delivery_id: Mapped[Optional[int]] = mapped_column(
+        Integer, ForeignKey('feed_deliveries.id', ondelete='SET NULL', onupdate='CASCADE'), nullable=True)
+    next_attempt_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    decided_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+
+
+class FeedLabel(Base):
+    """An analyst's label of an entry version for a watch, from the replay page. A RELEVANT or
+    NOT_RELEVANT disposition of the alert a watch's decision delivered counts too; it is read from the
+    alert, never copied here (docs/FEED_WATCHES.md, *Evaluation*)."""
+
+    __tablename__ = 'feed_labels'
+    __table_args__ = (
+        UniqueConstraint('entry_id', 'watch_id', name='uq_feed_labels_entry_watch'),
+        Index('i_feed_labels_watch', 'watch_id', 'entry_id'),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    entry_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey('feed_entries.id', ondelete='CASCADE', onupdate='CASCADE'), nullable=False)
+    watch_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey('feed_watches.id', ondelete='CASCADE', onupdate='CASCADE'), nullable=False)
+    label: Mapped[str] = mapped_column(Enum('relevant', 'not_relevant'), nullable=False)
+    user_id: Mapped[Optional[int]] = mapped_column(
+        Integer, ForeignKey('users.id', ondelete='SET NULL', onupdate='CASCADE'), nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, server_default=text('CURRENT_TIMESTAMP'))
+
+
+class FeedReplay(Base):
+    """A replay of a draft definition against recent entries (docs/FEED_WATCHES.md, *Replay*). The
+    draft is never saved anywhere else; committing it to a definitions repository is what makes it
+    live. service_feed_watch runs it: queued, then running while it scans the entries and while the
+    decisions it asked for are pending, then done (or failed, with error)."""
+
+    __tablename__ = 'feed_replays'
+    __table_args__ = (
+        Index('i_feed_replays_state', 'state', 'id'),
+        Index('i_feed_replays_created', 'created_at', 'id'),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    yara: Mapped[Optional[str]] = mapped_column(MEDIUMTEXT, nullable=True)
+    question: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    # JSON-serialized feed ids
+    feed_ids: Mapped[str] = mapped_column(Text, nullable=False)
+    # the watch the analyst labels for on the page, if any
+    watch_id: Mapped[Optional[int]] = mapped_column(
+        Integer, ForeignKey('feed_watches.id', ondelete='SET NULL', onupdate='CASCADE'), nullable=True)
+    state: Mapped[str] = mapped_column(Enum('queued', 'running', 'done', 'failed'), nullable=False, server_default=text("'queued'"))
+    error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    entry_count: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    created_by_user_id: Mapped[Optional[int]] = mapped_column(
+        Integer, ForeignKey('users.id', ondelete='SET NULL', onupdate='CASCADE'), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, server_default=text('CURRENT_TIMESTAMP'))
+    finished_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+
+
+class FeedReplayResult(Base):
+    """What a replay found for one entry version: the rule's answer, and the decision it asked for."""
+
+    __tablename__ = 'feed_replay_results'
+    __table_args__ = (
+        UniqueConstraint('replay_id', 'entry_id', name='uq_feed_replay_results_entry'),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    replay_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey('feed_replays.id', ondelete='CASCADE', onupdate='CASCADE'), nullable=False)
+    entry_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey('feed_entries.id', ondelete='CASCADE', onupdate='CASCADE'), nullable=False, index=True)
+    yara_matched: Mapped[Optional[bool]] = mapped_column(BOOLEAN, nullable=True)
+    yara_excerpt: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    yara_field: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
+    decision_id: Mapped[Optional[int]] = mapped_column(
+        BigInteger, ForeignKey('feed_decisions.id', ondelete='SET NULL', onupdate='CASCADE'), nullable=True, index=True)
+
+
 # NOTE there is no database relationship between these tables
 Alert.workload = relationship('Workload', foreign_keys=[Alert.uuid], primaryjoin='Workload.uuid == Alert.uuid')
 Alert.delayed_analysis = relationship('DelayedAnalysis', foreign_keys=[Alert.uuid], primaryjoin='DelayedAnalysis.uuid == Alert.uuid', overlaps="workload")

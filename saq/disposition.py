@@ -5,6 +5,11 @@ order the disposition modals show them in. `disposition_classification:` says wh
 mean a detection found malicious activity (tp) and which mean it did not (fp); anything not
 listed there is unclassified (OPEN, IGNORE, UNKNOWN, REVIEWED). See docs/SVS.md, Part 1.
 
+`alert_type_dispositions:` keeps some dispositions to some alert types (feed watch alerts have only
+OPEN, IGNORE, RELEVANT and NOT_RELEVANT): a type with a list has only its list, and a disposition
+named in any list is hidden from every type without one, except OPEN and IGNORE, which ACE gives
+every alert (the disposition it starts with, and the one the cleanup deletes).
+
 Everything here reads the configuration on each call rather than caching it, so a test can
 change the configuration and see the change.
 """
@@ -13,6 +18,7 @@ import logging
 from typing import Optional
 
 from saq.configuration.config import get_config, get_engine_config
+from saq.constants import DISPOSITION_IGNORE, DISPOSITION_OPEN
 
 DISPOSITION_CLASS_TP = "tp"
 DISPOSITION_CLASS_FP = "fp"
@@ -31,6 +37,37 @@ def get_dispositions() -> dict[str, dict]:
 def get_selectable_dispositions() -> dict[str, dict]:
     """The dispositions an analyst may choose, in configured order (the disposition modals)."""
     return {name: value for name, value in get_dispositions().items() if value["analyst_selectable"]}
+
+
+# never hidden from an alert type without a list of its own
+UNRESTRICTED_DISPOSITIONS = (DISPOSITION_OPEN, DISPOSITION_IGNORE)
+
+
+class DispositionNotAllowed(ValueError):
+    """The disposition is not one the alert's type may have (alert_type_dispositions)."""
+
+    def __init__(self, disposition: str, alert_types: dict[str, Optional[str]]):
+        types = ", ".join(sorted({str(alert_type) for alert_type in alert_types.values()}))
+        super().__init__(f"{disposition} is not a disposition of {types} alerts")
+        self.disposition = disposition
+        # alert uuid -> its alert type
+        self.alert_types = alert_types
+
+
+def is_disposition_allowed(disposition: Optional[str], alert_type: Optional[str]) -> bool:
+    """True if an alert of alert_type may have this disposition (see the module docstring)."""
+    lists = get_config().alert_type_dispositions
+    if alert_type in lists:
+        return disposition in lists[alert_type]
+    if disposition in UNRESTRICTED_DISPOSITIONS:
+        return True
+    return not any(disposition in names for names in lists.values())
+
+
+def get_alert_type_dispositions(alert_type: Optional[str]) -> dict[str, dict]:
+    """The dispositions an analyst may choose for an alert of alert_type, in configured order."""
+    return {name: value for name, value in get_selectable_dispositions().items()
+            if is_disposition_allowed(name, alert_type)}
 
 
 def is_valid_disposition(disposition: Optional[str]) -> bool:

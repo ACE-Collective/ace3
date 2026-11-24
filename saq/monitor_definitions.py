@@ -101,3 +101,9 @@ MONITOR_CAS_INTEGRITY = Monitor(
     data_type=dict,
     description="A content-addressed storage object failed verification (corrupt, wrong key) or its index row points at bytes that are gone."
 )
+
+MONITOR_FEED_STALE = Monitor(
+    path="feeds.stale",
+    data_type=dict,
+    description="An RSS or Atom feed with no successful poll for feeds.stale_after_minutes (docs/FEED_WATCHES.md): its id, name, url, last success and last error."
+)

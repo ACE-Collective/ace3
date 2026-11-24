@@ -21,7 +21,7 @@ from saq.constants import (
 from saq.database.model import Alert, AlertQueueChange, new_alert_version, normalize_comment
 from saq.configuration.config import get_config
 from saq.database.pool import get_db, get_db_connection
-from saq.disposition import is_frozen_disposition
+from saq.disposition import DispositionNotAllowed, is_disposition_allowed, is_frozen_disposition
 from saq.environment import get_global_runtime_settings
 from saq.logging import log_audit
 from saq.search.tasks import submit_index_task, submit_payload_task
@@ -412,6 +412,14 @@ def _reassign_owner(c, alert_uuids: list, user_id: int | None) -> None:
                   WHERE uuid IN ( {uuid_placeholders} )""",
               [user_id, new_alert_version(), *alert_uuids])
 
+def _ensure_disposition_allowed(disposition, context: dict) -> None:
+    """Raises DispositionNotAllowed when any of the alerts is of a type that may not have the
+    disposition (alert_type_dispositions); then none of them is changed."""
+    refused = {alert_uuid: row["alert_type"] for alert_uuid, row in context.items()
+               if not is_disposition_allowed(disposition, row["alert_type"])}
+    if refused:
+        raise DispositionNotAllowed(disposition, refused)
+
 def _writer_id(auth: ApiAuthResult, system: bool) -> int | None:
     """The user an alert change is written as: the automation user when ACE makes it (system),
     since it owns what ACE dispositions, else whoever acted."""
@@ -443,7 +451,9 @@ def set_dispositions(alert_uuids, disposition, auth: ApiAuthResult, user_comment
            locked, and returns those that still may: the caller's own condition, re-checked where
            nothing that takes the alert's row lock can change it. It reads on a connection of its
            own, which sees whatever was committed before the lock was granted.
-       :returns: which alerts were dispositioned and which were left alone."""
+       :returns: which alerts were dispositioned and which were left alone.
+       :raises DispositionNotAllowed: when an alert's type may not have the disposition (unless system);
+           then no alert is changed."""
     user_id = _writer_id(auth, system)
     if user_comment:
         user_comment = normalize_comment(user_comment)
@@ -457,6 +467,9 @@ def set_dispositions(alert_uuids, disposition, auth: ApiAuthResult, user_comment
         # capture what the alerts look like before the UPDATE overwrites the
         # outgoing disposition (and before the owner changes below)
         context = _fetch_disposition_context(c, list(owners))
+        if not system:
+            # read under the row lock, like everything else here; nothing is written yet
+            _ensure_disposition_allowed(disposition, context)
 
         # a frozen alert is left alone whoever owns it; ACE itself (system) changes it. This comes
         # before the ownership check: SIMULATED was set by the automation user, who now owns it
@@ -611,6 +624,7 @@ def set_disposition_reviews(alert_uuids, review_result, auth: ApiAuthResult, cor
             # incorrect_disposition and the correction takes its place. locked, so a frozen
             # disposition can't be set between this read and the UPDATE
             context = _fetch_disposition_context(c, alert_uuids, lock=True)
+            _ensure_disposition_allowed(corrected_disposition, context)
             frozen = {alert_uuid: row["old_disposition"] for alert_uuid, row in context.items()
                       if is_frozen_disposition(row["old_disposition"])}
             alert_uuids = [alert_uuid for alert_uuid in alert_uuids if alert_uuid not in frozen]

@@ -8,8 +8,11 @@ from saq.auth import ApiAuthResult
 from saq.configuration.config import get_config
 from saq.constants import (
     ANALYSIS_MODE_DISPOSITIONED,
+    DISPOSITION_DELIVERY,
     DISPOSITION_FALSE_POSITIVE,
     DISPOSITION_IGNORE,
+    DISPOSITION_OPEN,
+    DISPOSITION_RELEVANT,
     DISPOSITION_REVIEW_CORRECT,
     DISPOSITION_REVIEW_INCORRECT,
     DISPOSITION_REVIEW_UNREVIEWED,
@@ -36,7 +39,7 @@ from saq.database.util.alert import (
     touch_alerts,
 )
 from saq.database.util.user_management import add_user, delete_user
-from saq.disposition import DISPOSITION_CLASS_TP, get_disposition_class, get_dispositions
+from saq.disposition import DISPOSITION_CLASS_TP, DispositionNotAllowed, get_disposition_class, get_dispositions
 from saq.permissions.user import add_user_permission
 from tests.saq.helpers import create_root_analysis, insert_alert, make_simulated, person, workload_count
 
@@ -1141,3 +1144,52 @@ def test_set_disposition_reviews_normalizes_comment(two_analysts, review_result,
                             review_comment="first line\r\nsecond line\r\n")
 
     assert _comment_texts(alert.uuid) == [f"{REVIEW_COMMENT_PREFIX}first line\nsecond line"]
+
+
+def _feed_watch_alert() -> Alert:
+    alert = insert_alert()
+    get_db().execute(Alert.__table__.update().where(Alert.id == alert.id).values(alert_type="feed_watch"))
+    get_db().commit()
+    get_db().refresh(alert)
+    return alert
+
+
+@pytest.mark.integration
+def test_set_dispositions_refuses_a_disposition_the_alert_type_may_not_have():
+    user = add_user("testuser_types", "testuser_types@test.com", "Test User", "password123")
+    try:
+        feed_alert, other_alert = _feed_watch_alert(), insert_alert()
+
+        with pytest.raises(DispositionNotAllowed) as refused:
+            set_dispositions([feed_alert.uuid], DISPOSITION_DELIVERY, person(user.id, user.username))
+        assert refused.value.alert_types == {feed_alert.uuid: "feed_watch"}
+
+        # a mixed selection changes nothing
+        with pytest.raises(DispositionNotAllowed):
+            set_dispositions([feed_alert.uuid, other_alert.uuid], DISPOSITION_RELEVANT, person(user.id, user.username))
+        for alert in (feed_alert, other_alert):
+            get_db().refresh(alert)
+            assert alert.disposition == DISPOSITION_OPEN
+
+        set_dispositions([feed_alert.uuid], DISPOSITION_RELEVANT, person(user.id, user.username))
+        set_dispositions([other_alert.uuid], DISPOSITION_DELIVERY, person(user.id, user.username))
+        get_db().refresh(feed_alert)
+        get_db().refresh(other_alert)
+        assert (feed_alert.disposition, other_alert.disposition) == (DISPOSITION_RELEVANT, DISPOSITION_DELIVERY)
+    finally:
+        delete_user("testuser_types")
+
+
+@pytest.mark.integration
+def test_a_review_cannot_correct_to_a_disposition_the_alert_type_may_not_have():
+    user = add_user("testuser_review_types", "testuser_review_types@test.com", "Test User", "password123")
+    try:
+        alert = _feed_watch_alert()
+        set_dispositions([alert.uuid], DISPOSITION_RELEVANT, person(user.id, user.username))
+        with pytest.raises(DispositionNotAllowed):
+            set_disposition_reviews([alert.uuid], DISPOSITION_REVIEW_INCORRECT, person(user.id, user.username),
+                                    corrected_disposition=DISPOSITION_FALSE_POSITIVE, review_comment="wrong")
+        get_db().refresh(alert)
+        assert alert.disposition == DISPOSITION_RELEVANT
+    finally:
+        delete_user("testuser_review_types")

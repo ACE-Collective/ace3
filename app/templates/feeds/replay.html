@@ -1,0 +1,49 @@
+{% extends "base.html" %}
+
+{% block page_content %}
+{% set active = 'replay' %}
+{% include "feeds/_nav.html" %}
+
+<div id="replay_page" data-can-write="{{ 'true' if has_permission('feed_watch', 'write') else 'false' }}"
+     data-can-read-feeds="{{ 'true' if has_permission('feed', 'read') else 'false' }}">
+    <h2 class="mb-1">Replay a draft</h2>
+    <p class="text-muted">
+        Run a draft rule and question against the entries first seen in the last {{ config_feeds.replay_days }} days and
+        see what it matches and misses. Nothing is saved where a watch reads it: committing the definition to its
+        repository is what makes it live. Answers already given to the same question are reused.
+    </p>
+
+    {% if has_permission('feed_watch', 'write') %}
+    <form id="replay_form" class="row g-2" autocomplete="off">
+        <div class="col-md-4"><label class="form-label" for="replay_feeds">Feeds</label><select class="form-select form-select-sm" id="replay_feeds" multiple size="5" required></select></div>
+        <div class="col-md-4">
+            <label class="form-label" for="replay_watch">Label entries for watch</label>
+            <select class="form-select form-select-sm" id="replay_watch"><option value="">(no labels)</option></select>
+            <label class="form-label mt-2" for="replay_from_definition">Start from definition</label>
+            <select class="form-select form-select-sm" id="replay_from_definition"><option value="">(blank)</option></select>
+        </div>
+        <div class="col-md-4"><div id="replay_warning" class="alert alert-warning small d-none mt-4"></div></div>
+        <div class="col-md-6"><label class="form-label" for="replay_yara">YARA rule (optional; the external variable <code>field</code> is title, summary, content or categories)</label><textarea class="form-control form-control-sm font-monospace" id="replay_yara" rows="10"></textarea></div>
+        <div class="col-md-6"><label class="form-label" for="replay_question">Question (optional; asked of each entry the rule matched)</label><textarea class="form-control form-control-sm" id="replay_question" rows="10"></textarea></div>
+        <div class="col-12"><button type="submit" class="btn btn-sm btn-primary">Replay</button></div>
+    </form>
+    {% endif %}
+
+    <div id="replay_status" class="mt-3"></div>
+    <div id="replay_results_panel" class="d-none">
+        <div class="btn-group btn-group-sm mb-2" role="group" aria-label="outcome">
+            <button type="button" class="btn btn-outline-dark active" data-outcome="">All</button>
+            <button type="button" class="btn btn-outline-dark" data-outcome="match">Matches</button>
+            <button type="button" class="btn btn-outline-dark" data-outcome="miss">Misses</button>
+        </div>
+        <div id="replay_results"></div>
+        <button type="button" class="btn btn-sm btn-outline-secondary d-none" id="replay_more">More</button>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+{{ super() }}
+<script src="{{ url_for('static', filename='js/ace_api.js') }}"></script>
+<script src="{{ url_for('static', filename='js/feeds.js') }}"></script>
+{% endblock %}

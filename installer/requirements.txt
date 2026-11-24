@@ -13,6 +13,7 @@ diff-cover
 distorm3
 dnspython
 fakeredis[lua]
+feedparser
 Flask
 flask-executor
 Flask-Login
