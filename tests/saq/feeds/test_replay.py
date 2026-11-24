@@ -116,7 +116,9 @@ def test_a_rule_that_times_out_fails_the_replay(monkeypatch, caplog):
 
 
 @pytest.mark.integration
-def test_a_replay_that_breaks_while_it_runs_fails_and_is_logged(monkeypatch, caplog):
+# scan_entry: only a rule's own failure (yara.Error) is the analyst's; a bug in the scan is ours
+@pytest.mark.parametrize("breaks", ["replay_cache_key", "scan_entry"])
+def test_a_replay_that_breaks_while_it_runs_fails_and_is_logged(monkeypatch, caplog, breaks):
     feed = make_feed()
     make_entry(feed, content="actively exploited")
     replay = _replay(feed, yara=EXPLOITED_RULE, question=QUESTION)
@@ -124,7 +126,7 @@ def test_a_replay_that_breaks_while_it_runs_fails_and_is_logged(monkeypatch, cap
     def broken(*args):
         raise RuntimeError("lock wait timeout exceeded")
 
-    monkeypatch.setattr(replay_module, "replay_cache_key", broken)
+    monkeypatch.setattr(replay_module, breaks, broken)
     with caplog.at_level(logging.ERROR):
         run_replays(DEFINITIONS, LLM_MODEL)
 
