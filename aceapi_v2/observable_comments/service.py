@@ -9,7 +9,7 @@ from sqlalchemy.orm import selectinload
 
 from aceapi_v2.auth.schemas import ApiAuthResult
 from saq.analysis.observable import Observable as AnalysisObservable
-from saq.database.model import Observable as DBObservable, ObservableComment
+from saq.database.model import Observable as DBObservable, ObservableComment, normalize_comment
 from saq.database.util.observable_detection import (
     resolve_observable_identity,
     validate_observable_type,
@@ -155,7 +155,7 @@ async def create_comment(
     await session.refresh(comment)
     await session.refresh(comment, attribute_names=["user"])
     fields = _observable_fields(db_observable)
-    log_audit("user %s added comment %s to observable %s %s", auth.auth_name, comment_text,
+    log_audit("user %s added comment %s to observable %s %s", auth.auth_name, comment.comment,
               fields["observable_type"], fields["observable_value"],
               auth=auth, comment_id=comment.id, **fields, **audit_fields)
     return comment
@@ -178,10 +178,10 @@ async def update_comment(
         return None
     if comment.user_id != auth.auth_user_id:
         raise PermissionError("Only the comment author can edit this comment")
-    # the upload form stores its comment as typed and the edit box sends it trimmed, with LF line
-    # breaks for one stored with CRLF ones, so saving it untouched is not a change and must not mark
-    # it edited
-    if comment.comment.replace("\r\n", "\n").strip() != comment_text.replace("\r\n", "\n").strip():
+    # stored comments are normalized, so text that normalizes to the stored text is not a change and
+    # must not mark it edited
+    comment_text = normalize_comment(comment_text)
+    if comment.comment != comment_text:
         fields = _observable_fields(comment.observable)
         log_audit("user %s edited comment %s on observable %s %s from %r to %r", auth.auth_name, comment_id,
                   fields["observable_type"], fields["observable_value"], comment.comment, comment_text,

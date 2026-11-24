@@ -43,6 +43,7 @@ from saq.database.model import (
     Tag,
     TagMapping,
     User,
+    normalize_comment,
 )
 from saq.database.pool import get_db
 from saq.database.util.alert import (
@@ -334,10 +335,9 @@ def update_alert_comment(alert_uuid: str, comment_id: int, comment_text: str, au
     if comment.user_id != user_id:
         raise HTTPException(status_code=403, detail="Only the comment author can edit this comment")
 
-    # a comment added through the GUI's form was stored as typed, with a form submission's CRLF line
-    # breaks, while the edit request is stripped and the modal sends a textarea's LF ones, so saving
-    # it untouched is not a change
-    if comment.comment.replace("\r\n", "\n").strip() != comment_text.replace("\r\n", "\n").strip():
+    # stored comments are normalized, so text that normalizes to the stored text is not a change
+    comment_text = normalize_comment(comment_text)
+    if comment.comment != comment_text:
         log_audit("user %s edited comment %s on alert %s from %r to %r",
                   auth.auth_name, comment_id, alert_uuid, comment.comment, comment_text,
                   auth=auth, alert_uuid=alert_uuid, comment_id=comment_id)

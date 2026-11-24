@@ -4138,6 +4138,17 @@ Owner = aliased(User)
 DispositionBy = aliased(User)
 RemediatedBy = aliased(User)
 
+def normalize_comment(comment: str) -> str:
+    """A comment's text as comments and observable_comments store it. A form post sends CRLF line
+    breaks and the edit box sends LF ones, trimmed, so storing one form makes an unchanged edit equal
+    to the stored text."""
+    return comment.replace("\r\n", "\n").strip()
+
+
+def _normalized_comment(self, key, value):
+    return normalize_comment(value)
+
+
 class Comment(Base):
 
     __tablename__ = 'comments'
@@ -4163,6 +4174,7 @@ class Comment(Base):
         index=True)
 
     comment: Mapped[str] = mapped_column(Text, nullable=False)
+    _normalize_comment = validates('comment')(_normalized_comment)
 
     # when the text last changed; NULL when never edited
     edited_at: Mapped[Optional[datetime]] = mapped_column(TIMESTAMP, nullable=True)
@@ -4199,6 +4211,7 @@ class ObservableComment(Base):
         index=True)
 
     comment: Mapped[str] = mapped_column(Text, nullable=False)
+    _normalize_comment = validates('comment')(_normalized_comment)
 
     # when the text last changed; NULL when never edited
     edited_at: Mapped[Optional[datetime]] = mapped_column(TIMESTAMP, nullable=True)

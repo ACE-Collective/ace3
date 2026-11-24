@@ -66,6 +66,33 @@ class TestObservableComments:
                 audit.observable_value) == (*client_actor, data["id"], obs.id, "ipv4", "1.2.3.4")
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("method", ["create", "update"])
+    async def test_comment_is_stored_with_lf_line_breaks(
+        self, session: AsyncSession, client: AsyncClient, test_user: User, method: str
+    ):
+        """The upload form posts its comment with CRLF line breaks; it is stored with LF ones."""
+        obs = Observable(type="ipv4", sha256=_sha256("10.0.0.9"), value=b"10.0.0.9")
+        session.add(obs)
+        await session.commit()
+        sent = " first line\r\nsecond line\r\n"
+
+        if method == "create":
+            response = await client.post("/observable-comments/", json={
+                "observable_type": "ipv4", "observable_value": "10.0.0.9", "comment": sent})
+            assert response.status_code == 201
+        else:
+            comment = ObservableComment(user_id=test_user.id, observable_id=obs.id, comment="original text")
+            session.add(comment)
+            await session.commit()
+            response = await client.patch(f"/observable-comments/{comment.id}", json={"comment": sent})
+            assert response.status_code == 200
+
+        assert response.json()["comment"] == "first line\nsecond line"
+        stored = (await session.execute(
+            select(ObservableComment.comment).where(ObservableComment.id == response.json()["id"]))).scalar_one()
+        assert stored == "first line\nsecond line"
+
+    @pytest.mark.asyncio
     async def test_create_comment_auto_creates_observable(
         self, session: AsyncSession, client: AsyncClient
     ):
@@ -162,11 +189,10 @@ class TestObservableComments:
     @pytest.mark.asyncio
     @pytest.mark.parametrize("stored, sent", [
         ("same text", "same text"),
-        # the edit box sends LF line breaks for a comment stored with CRLF ones
-        ("first line\r\nsecond line", "first line\nsecond line"),
-        # the upload form stores its comment as typed; the edit box sends it trimmed
-        ("looks benign\r\n", "looks benign"),
-        (" looks benign", "looks benign"),
+        # a comment is stored with LF line breaks and no edge whitespace; a form post sends CRLF ones
+        ("first line\nsecond line", "first line\r\nsecond line"),
+        ("looks benign", "looks benign\r\n"),
+        ("looks benign", " looks benign"),
     ])
     async def test_update_comment_without_a_change(
         self, session: AsyncSession, client: AsyncClient, test_user: User, stored: str, sent: str,

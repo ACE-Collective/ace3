@@ -154,6 +154,20 @@ def test_bulk_add_comment_success(web_client, session_actor, caplog):
     assert (*audit_actor_of(audit), audit.alert_uuids) == (*session_actor, [alert1.uuid, alert2.uuid])
 
 
+def test_bulk_add_comment_normalizes_line_breaks(web_client):
+    alert = insert_alert()
+
+    response = web_client.post(url_for("events.bulk_add_comment"), data={
+        "event_id": EVENT_ID,
+        "alert_uuids": alert.uuid,
+        "comment": "first line\r\nsecond line\r\n",
+    })
+
+    assert response.status_code == 302
+    comment = get_db().query(Comment).filter(Comment.uuid == alert.uuid).one()
+    assert comment.comment == "first line\nsecond line"
+
+
 def test_bulk_add_comment_empty_rejected(web_client):
     alert = insert_alert()
 

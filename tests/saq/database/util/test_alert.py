@@ -1107,3 +1107,37 @@ def test_ensure_not_frozen():
     with pytest.raises(AlertFrozen) as e:
         ensure_uuid_not_frozen(alert.uuid)
     assert (e.value.alert_uuid, e.value.disposition) == (alert.uuid, DISPOSITION_SIMULATED)
+
+
+def _comment_texts(alert_uuid: str) -> list[str]:
+    get_db().expire_all()
+    return [c.comment for c in get_db().query(Comment).filter(Comment.uuid == alert_uuid)]
+
+
+@pytest.mark.integration
+def test_set_dispositions_normalizes_comment(two_analysts):
+    """The disposition form posts its comment with CRLF line breaks; it is stored with LF ones."""
+    _, analyst = two_analysts
+    alert = insert_alert()
+
+    set_dispositions([alert.uuid], DISPOSITION_FALSE_POSITIVE, person(analyst.id, analyst.username),
+                     user_comment="first line\r\nsecond line\r\n")
+
+    assert _comment_texts(alert.uuid) == ["first line\nsecond line"]
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("review_result, corrected_disposition", [
+    (DISPOSITION_REVIEW_CORRECT, None),
+    (DISPOSITION_REVIEW_INCORRECT, DISPOSITION_WEAPONIZATION),
+])
+def test_set_disposition_reviews_normalizes_comment(two_analysts, review_result, corrected_disposition):
+    analyst, reviewer = two_analysts
+    alert = insert_alert()
+    set_dispositions([alert.uuid], DISPOSITION_FALSE_POSITIVE, person(analyst.id, analyst.username))
+
+    set_disposition_reviews([alert.uuid], review_result, person(reviewer.id, reviewer.username),
+                            corrected_disposition=corrected_disposition,
+                            review_comment="first line\r\nsecond line\r\n")
+
+    assert _comment_texts(alert.uuid) == [f"{REVIEW_COMMENT_PREFIX}first line\nsecond line"]
