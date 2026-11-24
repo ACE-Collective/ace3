@@ -3,12 +3,13 @@ import os
 import re
 import time
 from dataclasses import dataclass, field
-from typing import Generator, Optional, Type, override
+from functools import cached_property
+from typing import Annotated, Any, Generator, Literal, Optional, Type, override
 
 from saq.analysis.observable import Observable
 from saq.analysis.root import RootAnalysis
 import yaml
-from pydantic import Field
+from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, NonNegativeInt, StringConstraints, model_validator
 
 from saq.analysis.analysis import Analysis
 from saq.constants import DIRECTIVE_EXCLUDE_ALL, DIRECTIVE_YARA_META_PREFIX, F_SIGNATURE_ID, AnalysisExecutionResult
@@ -161,33 +162,72 @@ class _AnalysisTypeIndex:
         return analysis_type in self._types
 
 
-# the yaml keys _parse_tree_condition reads; produces_observable is one nested
-# key, not the produces_observable_* fields below
-_TREE_CONDITION_KEYS = frozenset({
-    "analysis_type", "scope", "negate", "match_count",
-    "details_match", "observable_match", "produces_observable",
-})
-_PRODUCES_OBSERVABLE_KEYS = frozenset({"type", "value"})
+def _compile_regex(value: Any) -> re.Pattern:
+    # yaml reads an unquoted pattern such as 200 as a number, so it is matched as its text
+    if isinstance(value, re.Pattern):
+        return value
+    try:
+        return re.compile(str(value))
+    except re.error as e:
+        raise ValueError(f"invalid regex {value!r}: {e}") from e
 
 
-@dataclass
-class TreeCondition:
-    analysis_type: str
-    scope: str = "ancestors"  # "ancestors", "descendants", "global", "self", "parent", or "siblings"
-    details_match: dict[str, re.Pattern] = field(default_factory=dict)
-    observable_match: dict[str, re.Pattern] = field(default_factory=dict)
+def _compile_optional_regex(value: Any) -> Optional[re.Pattern]:
+    # an empty pattern means no check, not a pattern that matches everything
+    if value is None or value == "":
+        return None
+    return _compile_regex(value)
+
+
+Regex = Annotated[re.Pattern, BeforeValidator(_compile_regex)]
+OptionalRegex = Annotated[Optional[re.Pattern], BeforeValidator(_compile_optional_regex)]
+
+
+class _RuleModel(BaseModel):
+    """A part of an observable modifier rule as it is written in the rules yaml.
+
+    A key the model does not have refuses the rule: a misspelled condition would
+    otherwise drop its check, so the rule would match more than its author wrote
+    (or, negated, less). A key set to null takes its default."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    @model_validator(mode="before")
+    @classmethod
+    def _null_is_absent(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            return {key: value for key, value in data.items() if value is not None}
+        return data
+
+
+class ProducesObservable(_RuleModel):
+    type: Annotated[str, StringConstraints(min_length=1)]
+    value: OptionalRegex = None
+
+
+class TreeCondition(_RuleModel):
+    analysis_type: str = ""
+    scope: Literal["ancestors", "descendants", "global", "self", "parent", "siblings"] = "ancestors"
+    details_match: dict[str, Regex] = Field(default_factory=dict)
+    observable_match: dict[str, Regex] = Field(default_factory=dict)
     # require the matched analysis to have PRODUCED an observable whose type is a
-    # subtype of produces_observable_type and (if set) whose value matches
-    # produces_observable_value. Unlike observable_match (which inspects the
+    # subtype of produces_observable.type and (if set) whose value matches
+    # produces_observable.value. Unlike observable_match (which inspects the
     # analysis's own observable), this inspects analysis.observables.
-    produces_observable_type: Optional[str] = None
-    produces_observable_value: Optional[re.Pattern] = None
+    produces_observable: Optional[ProducesObservable] = None
     negate: bool = False
     # if set, require exactly this many matching analyses. None means "at least one"
     # (the historical default). Used to scope rules to top-level contexts — e.g.
     # match_count: 1 on an ancestors scope identifies an observable whose chain
     # contains exactly one instance of the analysis type.
-    match_count: Optional[int] = None
+    match_count: Optional[NonNegativeInt] = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _empty_produces_observable_is_absent(cls, data: Any) -> Any:
+        if isinstance(data, dict) and "produces_observable" in data and not data["produces_observable"]:
+            return {key: value for key, value in data.items() if key != "produces_observable"}
+        return data
 
     def evaluate(self, observable: Observable, root: RootAnalysis, details_cache: Optional[dict] = None,
                  type_index: Optional[_AnalysisTypeIndex] = None) -> bool:
@@ -242,7 +282,7 @@ class TreeCondition:
             if self.observable_match:
                 if not self._check_observable(analysis.observable):
                     continue
-            if self.produces_observable_type is not None:
+            if self.produces_observable is not None:
                 if not self._check_produces_observable(analysis):
                     continue
             matches += 1
@@ -265,12 +305,12 @@ class TreeCondition:
 
     def _check_produces_observable(self, analysis) -> bool:
         """True if the analysis produced an observable whose type is a subtype of
-        produces_observable_type and (if set) whose value matches produces_observable_value."""
+        produces_observable.type and (if set) whose value matches produces_observable.value."""
         for produced in analysis.observables:
-            if not produced.is_a(self.produces_observable_type):
+            if not produced.is_a(self.produces_observable.type):
                 continue
-            if self.produces_observable_value is not None:
-                if not self.produces_observable_value.search(str(produced.value)):
+            if self.produces_observable.value is not None:
+                if not self.produces_observable.value.search(str(produced.value)):
                     continue
             return True
         return False
@@ -363,20 +403,19 @@ def _get_descendant_observables(observable: Observable) -> Generator[Observable,
             stack.extend(analysis.observables)
 
 
-@dataclass
-class RuleConditions:
-    alert_tags: list[str] = field(default_factory=list)
+class RuleConditions(_RuleModel):
+    alert_tags: list[str] = Field(default_factory=list)
     alert_type: Optional[str] = None
     queue: Optional[str] = None
-    observable_types: list[str] = field(default_factory=list)
-    value_pattern: Optional[re.Pattern] = None
-    file_name_pattern: Optional[re.Pattern] = None
-    has_tags: list[str] = field(default_factory=list)
-    has_directives: list[str] = field(default_factory=list)
-    has_yara_meta_tags: list[str] = field(default_factory=list)
-    display_type_pattern: Optional[re.Pattern] = None
-    display_value_pattern: Optional[re.Pattern] = None
-    tree_conditions: list[TreeCondition] = field(default_factory=list)
+    observable_types: list[str] = Field(default_factory=list)
+    value_pattern: OptionalRegex = None
+    file_name_pattern: OptionalRegex = None
+    has_tags: list[str] = Field(default_factory=list)
+    has_directives: list[str] = Field(default_factory=list)
+    has_yara_meta_tags: list[str] = Field(default_factory=list)
+    display_type_pattern: OptionalRegex = None
+    display_value_pattern: OptionalRegex = None
+    tree_conditions: list[TreeCondition] = Field(default_factory=list)
 
     def evaluate_early(self, observable: Observable, root: RootAnalysis) -> bool:
         """Check only immutable conditions known at analysis start.
@@ -494,14 +533,13 @@ class RuleConditions:
         return True
 
 
-@dataclass
-class RuleActions:
-    add_directives: list[str] = field(default_factory=list)
-    add_tags: list[str] = field(default_factory=list)
-    add_detection_points: list[str] = field(default_factory=list)
-    exclude_analysis: list[str] = field(default_factory=list)
-    limit_analysis: list[str] = field(default_factory=list)
-    reset_analysis: list[str] = field(default_factory=list)
+class RuleActions(_RuleModel):
+    add_directives: list[str] = Field(default_factory=list)
+    add_tags: list[str] = Field(default_factory=list)
+    add_detection_points: list[str] = Field(default_factory=list)
+    exclude_analysis: list[str] = Field(default_factory=list)
+    limit_analysis: list[str] = Field(default_factory=list)
+    reset_analysis: list[str] = Field(default_factory=list)
     set_display_type: Optional[str] = None
     set_display_value: Optional[str] = None
     ignore: bool = False
@@ -563,18 +601,20 @@ class RuleActions:
         return applied
 
 
-@dataclass
-class Rule:
-    name: str
-    uuid: str
-    description: str
-    enabled: bool
-    conditions: RuleConditions
-    actions: RuleActions
-    phase: str = "post"  # "pre" or "post"
-    # copied from conditions.is_immutable at parse time so the hot rule loop
-    # pays one attribute read instead of recomputing the classification
-    is_immutable: bool = False
+class Rule(_RuleModel):
+    name: str = "unnamed"
+    uuid: Annotated[str, StringConstraints(min_length=1)]
+    description: str = ""
+    enabled: bool = True
+    conditions: RuleConditions = Field(default_factory=RuleConditions)
+    actions: RuleActions = Field(default_factory=RuleActions)
+    phase: Literal["pre", "post"] = "post"
+
+    @cached_property
+    def is_immutable(self) -> bool:
+        # cached so the hot rule loop pays one attribute read instead of
+        # recomputing the classification
+        return self.conditions.is_immutable
 
 
 class ObservableModifierAnalyzer(AnalysisModule):
@@ -645,9 +685,7 @@ class ObservableModifierAnalyzer(AnalysisModule):
 
         for rule_data in data.get("rules", []) or []:
             try:
-                rule = self._parse_rule(rule_data)
-                if rule:
-                    self._rules.append(rule)
+                self._rules.append(self._parse_rule(rule_data))
             except Exception as e:
                 # a dropped rule stops raising its detection points, so this goes out
                 # with a traceback to reach the error report and its monitor event
@@ -662,195 +700,10 @@ class ObservableModifierAnalyzer(AnalysisModule):
 
         logging.debug(f"loaded {len(self._rules)} observable modifier rules from {yaml_path}")
 
-    def _parse_rule(self, rule_data: dict) -> Optional[Rule]:
-        name = rule_data.get("name", "unnamed")
-        rule_uuid = rule_data.get("uuid")
-        if not rule_uuid:
-            logging.error(
-                f"observable modifier rule '{name}' is missing required 'uuid' field -- "
-                f"refusing to load this rule"
-            )
-            return None
-        description = rule_data.get("description", "")
-        enabled = rule_data.get("enabled", True)
-        phase = rule_data.get("phase", "post")
-        if phase not in ("pre", "post"):
-            logging.warning(f"invalid phase '{phase}' in rule '{name}', defaulting to 'post'")
-            phase = "post"
-
-        conditions_data = rule_data.get("conditions", {}) or {}
-        actions_data = rule_data.get("actions", {}) or {}
-
-        # Parse conditions
-        value_pattern = None
-        raw_pattern = conditions_data.get("value_pattern")
-        if raw_pattern:
-            try:
-                value_pattern = re.compile(raw_pattern)
-            except re.error as e:
-                logging.warning(f"invalid value_pattern regex '{raw_pattern}' in rule '{name}': {e}")
-                return None
-
-        file_name_pattern = None
-        raw_fn_pattern = conditions_data.get("file_name_pattern")
-        if raw_fn_pattern:
-            try:
-                file_name_pattern = re.compile(raw_fn_pattern)
-            except re.error as e:
-                logging.warning(f"invalid file_name_pattern regex '{raw_fn_pattern}' in rule '{name}': {e}")
-                return None
-
-        display_type_pattern = None
-        raw_dt_pattern = conditions_data.get("display_type_pattern")
-        if raw_dt_pattern:
-            try:
-                display_type_pattern = re.compile(raw_dt_pattern)
-            except re.error as e:
-                logging.warning(f"invalid display_type_pattern regex '{raw_dt_pattern}' in rule '{name}': {e}")
-                return None
-
-        display_value_pattern = None
-        raw_dv_pattern = conditions_data.get("display_value_pattern")
-        if raw_dv_pattern:
-            try:
-                display_value_pattern = re.compile(raw_dv_pattern)
-            except re.error as e:
-                logging.warning(f"invalid display_value_pattern regex '{raw_dv_pattern}' in rule '{name}': {e}")
-                return None
-
-        tree_conditions = []
-        for tc_data in conditions_data.get("tree_conditions", []) or []:
-            tc = self._parse_tree_condition(tc_data, name)
-            if tc is None:
-                return None
-            tree_conditions.append(tc)
-
-        conditions = RuleConditions(
-            alert_tags=conditions_data.get("alert_tags", []) or [],
-            alert_type=conditions_data.get("alert_type"),
-            queue=conditions_data.get("queue"),
-            observable_types=conditions_data.get("observable_types", []) or [],
-            value_pattern=value_pattern,
-            file_name_pattern=file_name_pattern,
-            display_type_pattern=display_type_pattern,
-            display_value_pattern=display_value_pattern,
-            has_tags=conditions_data.get("has_tags", []) or [],
-            has_directives=conditions_data.get("has_directives", []) or [],
-            has_yara_meta_tags=conditions_data.get("has_yara_meta_tags", []) or [],
-            tree_conditions=tree_conditions,
-        )
-
-        actions = RuleActions(
-            add_directives=actions_data.get("add_directives", []) or [],
-            add_tags=actions_data.get("add_tags", []) or [],
-            add_detection_points=actions_data.get("add_detection_points", []) or [],
-            exclude_analysis=actions_data.get("exclude_analysis", []) or [],
-            limit_analysis=actions_data.get("limit_analysis", []) or [],
-            reset_analysis=actions_data.get("reset_analysis", []) or [],
-            set_display_type=actions_data.get("set_display_type"),
-            set_display_value=actions_data.get("set_display_value"),
-            ignore=bool(actions_data.get("ignore", False)),
-        )
-
-        return Rule(
-            name=name,
-            uuid=rule_uuid,
-            description=description,
-            enabled=enabled,
-            conditions=conditions,
-            actions=actions,
-            phase=phase,
-            is_immutable=conditions.is_immutable,
-        )
-
-    def _parse_tree_condition(self, tc_data: dict, rule_name: str) -> Optional[TreeCondition]:
-        # a misspelled key would otherwise drop its check and the rule would match
-        # more than its author wrote (or, negated, less), so the rule is refused, raised
-        # to _load_config, which logs it with the rule's uuid and file
-        unknown_keys = sorted(set(tc_data) - _TREE_CONDITION_KEYS)
-        if unknown_keys:
-            raise ValueError(f"unknown key(s) {', '.join(map(str, unknown_keys))} in tree_condition")
-
-        analysis_type = tc_data.get("analysis_type", "")
-        scope = tc_data.get("scope", "ancestors")
-        if scope not in ("ancestors", "descendants", "global", "self", "parent", "siblings"):
-            logging.warning(f"invalid scope '{scope}' in tree_condition for rule '{rule_name}', defaulting to 'ancestors'")
-            scope = "ancestors"
-        details_match_raw = tc_data.get("details_match", {}) or {}
-
-        compiled_details_match = {}
-        for dot_path, pattern_str in details_match_raw.items():
-            try:
-                compiled_details_match[dot_path] = re.compile(str(pattern_str))
-            except re.error as e:
-                logging.warning(
-                    f"invalid details_match regex '{pattern_str}' for path '{dot_path}' in rule '{rule_name}': {e}"
-                )
-                return None
-
-        observable_match_raw = tc_data.get("observable_match", {}) or {}
-        compiled_observable_match = {}
-        for attr, pattern_str in observable_match_raw.items():
-            try:
-                compiled_observable_match[attr] = re.compile(str(pattern_str))
-            except re.error as e:
-                logging.warning(
-                    f"invalid observable_match regex '{pattern_str}' for attr '{attr}' in rule '{rule_name}': {e}"
-                )
-                return None
-
-        produces_observable_raw = tc_data.get("produces_observable") or {}
-        if not isinstance(produces_observable_raw, dict):
-            raise ValueError(f"produces_observable in tree_condition must be a mapping, not {produces_observable_raw!r}")
-        unknown_keys = sorted(set(produces_observable_raw) - _PRODUCES_OBSERVABLE_KEYS)
-        if unknown_keys:
-            raise ValueError(f"unknown key(s) {', '.join(map(str, unknown_keys))} in tree_condition produces_observable")
-        produces_observable_type = None
-        produces_observable_value = None
-        if produces_observable_raw:
-            produces_observable_type = produces_observable_raw.get("type")
-            if not produces_observable_type:
-                logging.warning(
-                    f"produces_observable missing required 'type' in tree_condition for rule '{rule_name}'"
-                )
-                return None
-            raw_value = produces_observable_raw.get("value")
-            if raw_value is not None:
-                try:
-                    produces_observable_value = re.compile(str(raw_value))
-                except re.error as e:
-                    logging.warning(
-                        f"invalid produces_observable value regex '{raw_value}' in rule '{rule_name}': {e}"
-                    )
-                    return None
-
-        negate = bool(tc_data.get("negate", False))
-
-        match_count = tc_data.get("match_count")
-        if match_count is not None:
-            try:
-                match_count = int(match_count)
-            except (TypeError, ValueError):
-                logging.warning(
-                    f"invalid match_count '{match_count}' in tree_condition for rule '{rule_name}': must be int"
-                )
-                return None
-            if match_count < 0:
-                logging.warning(
-                    f"invalid match_count {match_count} in tree_condition for rule '{rule_name}': must be >= 0"
-                )
-                return None
-
-        return TreeCondition(
-            analysis_type=analysis_type,
-            scope=scope,
-            details_match=compiled_details_match,
-            observable_match=compiled_observable_match,
-            produces_observable_type=produces_observable_type,
-            produces_observable_value=produces_observable_value,
-            negate=negate,
-            match_count=match_count,
-        )
+    def _parse_rule(self, rule_data: dict) -> Rule:
+        # a ValidationError names the rule's path and key; _load_config logs it with
+        # the rule's uuid and file and goes on to the next rule
+        return Rule.model_validate(rule_data)
 
     def _ensure_initialized(self):
         if not self._initialized:
