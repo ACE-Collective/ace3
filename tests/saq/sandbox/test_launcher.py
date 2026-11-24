@@ -253,6 +253,39 @@ def test_memory_used_counts_what_is_written_and_not_what_is_reserved():
     reserved.close()
 
 
+def _swap_active() -> bool:
+    with open("/proc/swaps") as fp:
+        return len(fp.read().splitlines()) > 1  # the first line is the header
+
+
+def _vm_swap() -> int:
+    with open("/proc/self/status", "rb") as fp:
+        for line in fp:
+            if line.startswith(b"VmSwap:"):
+                return int(line.split()[1]) * 1024
+    return 0
+
+
+_MADV_PAGEOUT = 21  # Linux 5.4; this Python does not export it
+
+
+@pytest.mark.unit
+@pytest.mark.skipif(not _swap_active(), reason="no swap to page out to")
+def test_memory_used_counts_what_is_swapped_out():
+    # under memory pressure the kernel swaps a tool's pages out, and they still count against its limit
+    before = memory_used([os.getpid()])
+    swap_before = _vm_swap()
+    written = mmap.mmap(-1, 128 * MIB, flags=mmap.MAP_PRIVATE | mmap.MAP_ANONYMOUS)
+    try:
+        written.write(b"\x5a" * (128 * MIB))  # not zero, so the pages are not deduplicated
+        written.madvise(_MADV_PAGEOUT)
+        if _vm_swap() - swap_before < 64 * MIB:
+            pytest.skip("the kernel did not page the memory out")
+        assert memory_used([os.getpid()]) - before >= 128 * MIB
+    finally:
+        written.close()
+
+
 @pytest.mark.unit
 def test_memory_used_skips_a_process_that_is_gone():
     process = subprocess.Popen(["/bin/true"])

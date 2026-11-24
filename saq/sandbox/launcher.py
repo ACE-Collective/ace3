@@ -238,8 +238,9 @@ def _live_descendants() -> list[int]:
 
 def memory_used(pids: list[int]) -> int:
     """The bytes of memory pids use: their resident anonymous and shared memory (RssAnon and RssShmem),
-    what the kernel cannot drop without swap. Reserved address space they never touched and file pages
-    they map are not counted."""
+    what the kernel cannot drop without swap, and their anonymous memory in swap (VmSwap), which leaves
+    RssAnon exactly when memory is short. Reserved address space they never touched and file pages
+    they map are not counted, and neither is swapped-out shared memory, which VmSwap leaves out."""
     total = 0
     for pid in pids:
         try:
@@ -250,8 +251,8 @@ def memory_used(pids: list[int]) -> int:
             continue
 
         for line in status.splitlines():
-            # in kB; a zombie, or a kernel thread, has neither line
-            if line.startswith((b"RssAnon:", b"RssShmem:")):
+            # in kB; a zombie, or a kernel thread, has none of them
+            if line.startswith((b"RssAnon:", b"RssShmem:", b"VmSwap:")):
                 total += int(line.split()[1]) * 1024
 
     return total

@@ -24,8 +24,9 @@ database passwords and `SAQ_ENC`.
   counts every thread and john, 7z and the JVM run one per core. When it exits, times out or the
   analysis is cancelled (`should_stop()`), the launcher kills everything it started.
 - `tool_sandbox.memory_limit` bounds the memory the tool and every process it started use together:
-  what they have written to (resident anonymous and shared memory), not the address space they
-  reserve, so a runtime that reserves gigabytes at start (the .NET GC, the JVM's heap, a thread per
+  what they have written to (resident anonymous and shared memory, and the anonymous memory the
+  kernel swapped out, so a tool still counts what it wrote when the node is short of memory), not
+  the address space they reserve (swapped-out shared memory is the one part it misses), so a runtime that reserves gigabytes at start (the .NET GC, the JVM's heap, a thread per
   core in OpenBLAS) runs with its default settings. The launcher measures it every 50 ms and kills
   the whole tree when it is over. A tool that allocates faster than that can pass the limit between
   two measurements, and the container's memory limit (the host's memory, for a container without
