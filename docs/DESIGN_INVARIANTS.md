@@ -525,7 +525,7 @@ is written there, change the tag to point at it.
   `saq/collectors/hunter/correlation/validation.py::check_templates_for_removed_names` and
   `saq/collectors/hunter/correlation/engine.py::CorrelationEngine._execute_condition`.
   [docs/CORRELATION_HUNTS.md, docs/INTEGRATIONS.md]
-- **An executable command always runs in the Landlock sandbox.** Its read allowlist is a code
+- **An executable command always runs in the Landlock sandbox, on the tool runner.** Its read allowlist is a code
   constant, its environment is a fixed allowlist, and TCP is allowed only to 443 and 53, never
   80. Staged sources are regular files inside a hunt repository. See
   `saq/sandbox/runner.py::SANDBOX_READ_DIRS` and
@@ -545,6 +545,19 @@ is written there, change the tag to point at it.
 - **External programs that read alert files run through `run_sandboxed_tool()`, and a node
   without Landlock refuses rather than running unsandboxed.** See
   `saq/modules/file_analysis/pcap.py::_run_tool`. [AGENTS.md; docs/TOOL_SANDBOX.md]
+- **`run_sandboxed_tool()` and correlate executable commands run their command on the tool
+  runner, never in the process that asked, and a runner that cannot run it is a failure, not a
+  fallback.** The tool's memory limit is its cgroup's `memory.max`, and nothing else bounds its
+  memory: there is no RLIMIT_AS. See `saq/modules/base_module.py::AnalysisModule.run_sandboxed_tool`
+  and `saq/tool_runner/client.py::run_on_runner`. [docs/TOOL_SANDBOX.md]
+- **Every path in a tool runner request means the same file to the runner as to its client.** The
+  runner reads none of them itself; its container mounts the same volumes, and the tool runs in
+  the client's cwd. See `saq/tool_runner/protocol.py`. [docs/TOOL_SANDBOX.md]
+- **A run's cgroup is a sibling of the runner's own, under the subtree delegate-cgroup.sh hands
+  ace, and every process of that container is in `tools/service`.** cgroup v2 lets a cgroup that
+  enables controllers for its children hold no processes, and moving a process between cgroups
+  needs write access to their common parent. See `docker/startup/delegate-cgroup.sh` and
+  `saq/tool_runner/cgroup.py::RunCgroups.delegated`. [docs/TOOL_SANDBOX.md]
 - **Sandbox output is hostile.** Only a regular file with exactly one link is taken. See
   `saq/modules/base_module.py::_keep_tool_output` and `saq/sandbox/runner.py::_force_rmtree`.
   [docs/TOOL_SANDBOX.md]

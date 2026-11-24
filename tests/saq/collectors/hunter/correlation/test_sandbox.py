@@ -9,11 +9,13 @@ from unittest.mock import patch
 import pytest
 
 from saq.collectors.hunter.correlation.commands import execute_command
+from saq.collectors.hunter.correlation import sandbox as correlation_sandbox
 from saq.collectors.hunter.correlation.sandbox import get_hunt_source_roots, get_sandbox_config
 from saq.collectors.hunter.correlation.schema import CommandConfig
 from saq.collectors.hunter.loader import get_compiled_hunt_dir
 from saq.configuration.config import get_config
 from saq.configuration.schema import HuntRuleDirConfig, HuntTypeConfig
+from saq.constants import SERVICE_TOOL_RUNNER
 from saq.environment import get_base_dir, get_data_dir
 from saq.sandbox.launcher import NET_ABI, SCOPE_ABI, landlock_abi
 from saq.sandbox.runner import get_read_dirs, get_read_files, landlock_available
@@ -188,8 +190,15 @@ print(json.dumps({"cwd": os.getcwd(), "home": os.environ["HOME"], "tmpdir": os.e
 class TestLimits:
     def test_memory_limit(self, tmpdir, monkeypatch):
         _limits(monkeypatch, memory_limit=256 * 1024 ** 2)
-        with pytest.raises(RuntimeError, match="MemoryError"):
+        with pytest.raises(RuntimeError, match=f"more than its memory limit of {256 * 1024 ** 2} bytes"):
             _run(_python("x = bytearray(512 * 1024 ** 2)"), tmpdir)
+
+    def test_address_space_a_script_reserves_is_not_its_memory(self, tmpdir, monkeypatch):
+        # 16 times the limit, which an address space limit of the memory limit refused
+        _limits(monkeypatch, memory_limit=256 * 1024 ** 2)
+        code = ("import mmap; m = mmap.mmap(-1, 4 * 1024 ** 3, flags=mmap.MAP_PRIVATE | mmap.MAP_ANONYMOUS | "
+                "mmap.MAP_NORESERVE); print('reserved')")
+        assert _run(_python(code), tmpdir).strip() == "reserved"
 
     def test_file_size_limit(self, tmpdir, monkeypatch):
         _limits(monkeypatch, file_size_limit=1024 ** 2)
@@ -377,13 +386,36 @@ class TestHuntSourceRoots:
 
 @pytest.mark.unit
 class TestFailClosed:
-    def test_no_landlock_means_no_execution(self, tmpdir):
-        with patch("saq.collectors.hunter.correlation.commands.landlock_available", return_value=False), \
-             patch("saq.collectors.hunter.correlation.commands.run_sandboxed") as run_sandboxed:
-            with pytest.raises(RuntimeError, match="landlock is unavailable"):
-                _run(_python("print('ran')"), tmpdir)
-        run_sandboxed.assert_not_called()
+    def test_no_tool_runner_means_no_execution(self, tmpdir, monkeypatch):
+        monkeypatch.setattr(get_config().get_service_config(SERVICE_TOOL_RUNNER), "socket_dir", str(tmpdir / "none"))
+        marker = tmpdir / "ran"
+        with pytest.raises(RuntimeError, match="tool runner at .* is unavailable"):
+            _run(_python("open(__import__('sys').argv[1], 'w')", str(marker)), tmpdir)
+        assert not marker.exists()
 
     def test_landlock_is_available_here(self):
         # the rest of this file proves nothing if the probe is wrong
         assert landlock_available()
+
+
+@pytest.mark.unit
+def test_the_hunter_sweeps_its_stale_working_directories(monkeypatch, caplog):
+    swept = []
+    monkeypatch.setattr(correlation_sandbox, "sweep_stale_workdirs", swept.append)
+
+    correlation_sandbox.prepare_sandbox()
+
+    assert swept == [correlation_sandbox.get_sandbox_root()]
+    assert any("run on the tool runner" in r.getMessage() for r in caplog.records)
+
+
+@pytest.mark.unit
+def test_a_sweep_the_hunter_cannot_do_is_a_warning(monkeypatch, caplog):
+    def failing(root):
+        raise OSError("read-only")
+
+    monkeypatch.setattr(correlation_sandbox, "sweep_stale_workdirs", failing)
+
+    correlation_sandbox.prepare_sandbox()
+
+    assert any("unable to sweep" in r.getMessage() and "read-only" in r.getMessage() for r in caplog.records)

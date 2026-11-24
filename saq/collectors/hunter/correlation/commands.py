@@ -14,7 +14,8 @@ from saq.collectors.hunter.correlation.sandbox import get_sandbox_config, get_sa
 from saq.collectors.hunter.correlation.schema import CommandConfig, PredefinedCommandConfig
 from saq.collectors.hunter.correlation.timespec import parse_timespec
 from saq.collectors.hunter.correlation.trace import sanitize_value
-from saq.sandbox.runner import build_sandbox_argv, create_workdir, landlock_available, run_sandboxed
+from saq.sandbox.runner import create_workdir
+from saq.tool_runner.client import run_on_runner
 
 _jinja_env = SandboxedEnvironment()
 
@@ -297,8 +298,8 @@ def _execute_executable(
 ) -> str:
     """Execute an executable command.
 
-    The command runs in the Landlock sandbox (sandbox.py) from its own working directory, with its
-    script and `files:` staged into it; temp_dir is not used. The child process gets
+    The command runs in the Landlock sandbox on the tool runner (sandbox.py) from its own working
+    directory, with its script and `files:` staged into it; temp_dir is not used. The child process gets
     EXECUTABLE_ENV_ALLOWLIST from ACE's environment plus the command's own rendered `env:` values,
     never the whole ACE environment.
     """
@@ -338,9 +339,6 @@ def _execute_executable(
         # Event transform with stdin enabled
         stdin_data = json.dumps(event)
 
-    if not landlock_available():
-        raise RuntimeError("landlock is unavailable; executable commands cannot run")
-
     sandbox_config = get_sandbox_config()
     with create_workdir(get_sandbox_root()) as workdir:
         # the workdir is the only place the command can write, so point its home and temp dir there
@@ -350,14 +348,9 @@ def _execute_executable(
             env_vars.update(rendered_env)
 
         executable = stage_executable(command.path, command.files, workdir, env_vars.get("PATH"))
-        result = run_sandboxed(
-            build_sandbox_argv([executable] + rendered_args, workdir, sandbox_config, timeout),
-            stdin_data,
-            env_vars,
-            workdir,
-            timeout,
-            sandbox_config.max_output_bytes,
-        )
+        # on the tool runner, which raises a RuntimeError for whatever kept it from returning a result
+        result = run_on_runner([executable] + rendered_args, env=env_vars, cwd=workdir, workdir=workdir, timeout=timeout,
+                               config=sandbox_config, stdin_data=stdin_data)
 
     if result.returncode != 0:
         # stderr is sanitized because it reaches the correlation trace, which is persisted

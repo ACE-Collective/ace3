@@ -10,7 +10,7 @@ from saq.analysis.root import load_root
 from saq.constants import F_FILE
 from saq.engine.core import Engine
 from saq.engine.enums import EngineExecutionMode
-from saq.configuration.config import get_analysis_module_config, get_config
+from saq.configuration.config import get_analysis_module_config
 from saq.modules.file_analysis import java
 from saq.modules.file_analysis.java import JavaClassDecompilerAnalysis, JavaClassDecompilerAnalysisModule, strip_banner
 from saq.sandbox.runner import SandboxResult
@@ -116,15 +116,10 @@ def _decompiler():
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize("cannot_start,error", [
-    # too little address space for the heap it is told to reserve
-    (lambda monkeypatch: monkeypatch.setattr(get_config().tool_sandbox, "memory_limit", 1024 ** 3),
-     "Error occurred during initialization of VM"),
+def test_a_jvm_the_sandbox_keeps_from_starting_is_reported(datadir, monkeypatch, caplog):
     # its java.security, under /etc/java-<version>-openjdk, is not readable
-    (lambda monkeypatch: monkeypatch.setattr(java, "jvm_conf_dirs", lambda: []), "Error loading java.security file"),
-], ids=["memory", "configuration"])
-def test_a_jvm_the_sandbox_keeps_from_starting_is_reported(datadir, monkeypatch, caplog, cannot_start, error):
-    cannot_start(monkeypatch)
+    monkeypatch.setattr(java, "jvm_conf_dirs", lambda: [])
+    error = "Error loading java.security file"
     class_file = shutil.copy(datadir / 'VxUGJsAplRNavewkjKujp.class', datadir / 'copy.class')
 
     with pytest.raises(AnalysisError, match="^cfr did not finish$"):

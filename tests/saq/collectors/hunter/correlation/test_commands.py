@@ -241,14 +241,14 @@ class TestExecuteCommand:
             args=["-c", "import os; print(os.environ['API_KEY'])"],
             env={"API_KEY": template},
         )
-        with patch("saq.collectors.hunter.correlation.commands.run_sandboxed") as run_sandboxed, \
+        with patch("saq.collectors.hunter.correlation.commands.run_on_runner") as run_on_runner, \
              pytest.raises(UndefinedError, match="is undefined"):
             execute_command(
                 cmd, {}, [], "event", [], local_time(), str(tmpdir), None,
                 {"vendor.api_key": "REAL_KEY"},
                 {"vendor": {"api_key": "REAL_KEY"}},
             )
-        run_sandboxed.assert_not_called()
+        run_on_runner.assert_not_called()
 
     def test_executable_stderr_is_sanitized(self, tmpdir):
         """A script that reads a credential on its own and echoes it must not leak it.

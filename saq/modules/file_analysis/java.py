@@ -15,12 +15,11 @@ from saq.observables.file import FileObservable
 
 CFR_JAR = "/usr/local/bin/cfr.jar"
 
-# the JVM reserves more address space than the sandbox's memory limit unless it is told how much heap
-# and class space to reserve, and then fails to start one time in three
-JVM_OPTIONS = ["-Xmx1g", "-XX:CompressedClassSpaceSize=128m", "-XX:ReservedCodeCacheSize=128m", "-XX:-UsePerfData"]
+# the JVM writes its performance data to /tmp/hsperfdata_<user>, which the sandbox does not let it write
+JVM_OPTIONS = ["-XX:-UsePerfData"]
 
-# what the JVM starts its output with when the sandbox keeps it from starting: too little address
-# space for its heap, or no readable java.security
+# what the JVM starts its output with when the sandbox keeps it from starting: a heap it cannot
+# reserve, or no readable java.security
 JVM_STARTUP_ERRORS = ["Error occurred during initialization of VM",
                       'Exception in thread "main" java.lang.InternalError: Error loading java.security file']
 

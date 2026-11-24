@@ -34,13 +34,11 @@ from saq.sandbox.runner import (
     SandboxCancelled,
     SandboxOutputExceeded,
     SandboxResult,
-    build_sandbox_argv,
     create_workdir,
     get_read_dirs,
-    landlock_available,
-    run_sandboxed,
     sweep_stale_workdirs,
 )
+from saq.tool_runner.client import ToolMemoryExceeded, ToolRunnerError, run_on_runner
 
 if TYPE_CHECKING:
     pass
@@ -409,12 +407,11 @@ class AnalysisModule(FileWatcherMixin):
         workdir: Optional[str] = None,
         cwd: Optional[str] = None,
         env: Optional[dict[str, str]] = None,
-        memory_limit: Optional[int] = None,
         startup_errors: Sequence[str] = (),
         partial_output: bool = False,
     ) -> Optional[SandboxResult]:
-        """Runs an external tool on target, a file from the alert, in the Landlock sandbox
-        (docs/TOOL_SANDBOX.md), and returns what it did; None if it was stopped or could not run.
+        """Runs an external tool on target, a file from the alert, in the Landlock sandbox on the tool
+        runner (docs/TOOL_SANDBOX.md), and returns what it did; None if it was stopped or could not run.
 
         The tool can read target, read_files and read_dirs, and the directory its program is in, and
         write only its own empty working directory (its HOME and TMPDIR) and write_dirs, which the
@@ -429,16 +426,13 @@ class AnalysisModule(FileWatcherMixin):
 
         It is stopped like run_tool() stops one (at timeout seconds, or before this call to analyze()
         runs out of time), when it writes more than tool_sandbox.max_output_bytes, and when
-        should_stop() says so. env is added to the tool's environment, which is never ACE's own.
-        memory_limit replaces tool_sandbox.memory_limit for a runtime that reserves more address
-        space than it uses. startup_errors are what such a runtime starts its stdout or stderr with
-        when the sandbox keeps it from starting (a directory it needs is not readable, the memory
-        limit is too small for it): a non-zero exit that starts so is reported like a program the
-        sandbox cannot start. With partial_output, a tool stopped for writing too much output returns
-        what it wrote up to then, flagged output_exceeded, rather than None; it keeps no outputs."""
+        should_stop() says so, and killed when it uses more than tool_sandbox.memory_limit. env is
+        added to the tool's environment, which is never ACE's own. startup_errors are what a runtime
+        starts its stdout or stderr with when the sandbox keeps it from starting (a directory it needs
+        is not readable): a non-zero exit that starts so is reported like a program the sandbox cannot
+        start. With partial_output, a tool stopped for writing too much output returns what it wrote
+        up to then, flagged output_exceeded, rather than None; it keeps no outputs."""
         config = get_config().tool_sandbox
-        if memory_limit is not None:
-            config = config.model_copy(update={"memory_limit": memory_limit})
         program = self._resolve_tool(args[0])
         if program is None:
             self._sandbox_failed(args[0], target, f"{args[0]} not found")
@@ -450,37 +444,25 @@ class AnalysisModule(FileWatcherMixin):
             self._sandbox_failed(program, target, str(e))
             return None
 
-        available = landlock_available()
-        if available is None:
-            # landlock_available() reported why with its traceback; the next call probes again, so
-            # this says nothing about the node, and a later failure of the tool is still reported
-            logging.warning("%s did not run %s on %s: the Landlock probe could not run", self, os.path.basename(program),
-                            target, extra={"path": target})
-            return None
-        if not available:
-            self._sandbox_failed(program, target, "the Landlock sandbox is not available on this node")
-            return None
-
         allowed = max(1.0, self.time_left() - TOOL_TIMEOUT_MARGIN_SECONDS)
         seconds = allowed if timeout is None else max(1.0, min(timeout, allowed))
         tool = os.path.basename(program)
         with self.tool_workdir() if workdir is None else contextlib.nullcontext(workdir) as workdir:
-            argv = build_sandbox_argv(
-                [program, *args[1:]], workdir, config, timedelta(seconds=seconds),
-                # setpriv opens these from the tool's cwd, which cwd may have moved away from ACE's
-                read_files=[os.path.abspath(path) for path in (target, *read_files) if os.path.exists(path)],
-                read_dirs=[*tool_dirs, *(os.path.abspath(path) for path in read_dirs)],
-                write_dirs=[os.path.abspath(path) for path in write_dirs],
-                # RLIMIT_CPU counts every thread, and john, 7z and the JVM run one per core; the
-                # timeout still bounds the wall time
-                cpu_seconds=math.ceil(seconds * (os.cpu_count() or 1)),
-            )
             # never os.environ: Landlock does not filter the environment and ACE's carries secrets
             tool_env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "LANG": "C.UTF-8", "HOME": workdir,
                         "TMPDIR": workdir, **(env or {})}
             try:
-                result = run_sandboxed(argv, None, tool_env, os.path.abspath(cwd) if cwd else os.getcwd(),
-                                       timedelta(seconds=seconds), config.max_output_bytes, cancel=self.should_stop)
+                result = run_on_runner(
+                    [program, *args[1:]], env=tool_env, cwd=os.path.abspath(cwd) if cwd else os.getcwd(),
+                    workdir=os.path.abspath(workdir), timeout=timedelta(seconds=seconds), config=config,
+                    # setpriv opens these from the tool's cwd, which cwd may have moved away from ACE's
+                    read_files=[os.path.abspath(path) for path in (target, *read_files) if os.path.exists(path)],
+                    read_dirs=[*tool_dirs, *(os.path.abspath(path) for path in read_dirs)],
+                    write_dirs=[os.path.abspath(path) for path in write_dirs],
+                    # RLIMIT_CPU counts every thread, and john, 7z and the JVM run one per core; the
+                    # timeout still bounds the wall time
+                    cpu_seconds=math.ceil(seconds * (os.cpu_count() or 1)),
+                    cancel=self.should_stop)
             except SandboxCancelled:
                 logging.info("%s stopped %s on %s: the analysis was stopped", self, tool, target,
                              extra={"path": target})
@@ -489,6 +471,15 @@ class AnalysisModule(FileWatcherMixin):
                 # the file's doing, not the node's
                 logging.warning("%s stopped %s on %s: %s", self, tool, target, e, extra={"path": target})
                 return e.result if partial_output else None
+            except ToolRunnerError as e:
+                # the node's: the runner is down, out of memory for this long, or failed
+                self._sandbox_failed(program, target, str(e))
+                return None
+            except ToolMemoryExceeded as e:
+                # the file's doing, like a timeout (a decompression bomb)
+                logging.warning("%s stopped %s on %s: %s (tool_sandbox.memory_limit)", self, tool, target, e,
+                                extra={"path": target})
+                return None
             except RuntimeError as e:
                 # a timeout: the file's doing, not the node's
                 logging.warning("%s stopped %s on %s: %s", self, tool, target, e, extra={"path": target})

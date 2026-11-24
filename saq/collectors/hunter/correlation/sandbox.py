@@ -1,12 +1,13 @@
-"""Stages and runs a correlate `type: executable` command inside the Landlock sandbox (saq/sandbox/).
+"""Stages a correlate `type: executable` command to run inside the Landlock sandbox (saq/sandbox/) on
+the tool runner (saq/tool_runner/).
 
 Hunt scripts are written by analysts and by AI agents iterating through the validation API. They
 are not hostile, but a mistake in one must not be able to damage ACE or put a secret in front of
 whoever wrote it. saq/sandbox/runner.py says what the sandbox allows; this module adds what is
 particular to hunts: where the working directories live, the limits from
 `hunter.correlation.executable`, and staging, which copies the script and its declared `files:`
-into the working directory, but only from the hunt repositories. If the kernel does not support
-Landlock, the command fails -- it is never run unsandboxed.
+into the working directory, but only from the hunt repositories. If the tool runner cannot run it
+(no Landlock, no runner), the command fails -- it is never run unsandboxed.
 """
 
 import logging
@@ -17,8 +18,7 @@ from saq.collectors.hunter.loader import get_compiled_hunt_dir
 from saq.configuration import get_config
 from saq.configuration.schema import ExecutableSandboxConfig
 from saq.environment import get_base_dir, get_data_dir
-from saq.sandbox.launcher import NET_ABI, SCOPE_ABI, landlock_abi
-from saq.sandbox.runner import get_read_dirs, landlock_available, sweep_stale_workdirs
+from saq.sandbox.runner import get_read_dirs, sweep_stale_workdirs
 from saq.util import abs_path
 
 
@@ -121,24 +121,10 @@ def stage_executable(path: str, files: list[str] | None, workdir: str, search_pa
 
 
 def prepare_sandbox():
-    """Hunter startup: report whether executable commands can run and clear out stale workdirs."""
-    if landlock_available():
-        abi = landlock_abi()
-        logging.info("correlate executable commands run in a landlock sandbox (ABI %s) under %s", abi, get_sandbox_root())
-        if get_sandbox_config().allowed_tcp_ports is not None and abi < NET_ABI:
-            logging.error(
-                "landlock ABI %s cannot restrict TCP ports (ABI %s, Linux 6.7, is needed): every correlate "
-                "executable command will fail unless hunter.correlation.executable.allowed_tcp_ports is null",
-                abi, NET_ABI,
-            )
-        if abi < SCOPE_ABI:
-            logging.warning(
-                "landlock ABI %s cannot scope signals (ABI %s, Linux 6.12, is needed): a correlate "
-                "executable command can signal other processes running as this user", abi, SCOPE_ABI,
-            )
-    else:
-        logging.error("landlock is unavailable here: every correlate executable command will fail")
-
+    """Hunter startup: clear out stale workdirs. The tool runner runs the commands, and says at its own
+    startup what its kernel's Landlock can enforce."""
+    logging.info("correlate executable commands run on the tool runner from working directories under %s",
+                 get_sandbox_root())
     try:
         sweep_stale_workdirs(get_sandbox_root())
     except OSError as e:

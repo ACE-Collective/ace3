@@ -234,13 +234,18 @@ class SandboxConfig(BaseModel):
     max_processes: int = Field(default=64, gt=0, description="most processes a command may have alive at once, counting everything it starts; a command that starts more is killed")
     allowed_tcp_ports: Optional[list[Annotated[int, Field(ge=1, le=65535)]]] = Field(default_factory=list, description="the only TCP ports a command may connect to (Landlock ABI 4, Linux 6.7); an empty list allows no TCP at all. null leaves TCP unrestricted, and has to on an older kernel, where every command fails otherwise")
 
+# what memory_limit is for a command that runs on the tool runner (saq/tool_runner/)
+_RUNNER_MEMORY_LIMIT_DESCRIPTION = "memory the command may use, in bytes: the memory.max of the cgroup it runs in on the tool runner, which kills it past that. Unlike an address space limit it does not count what a runtime reserves and never uses"
+
 class ExecutableSandboxConfig(SandboxConfig):
-    """limits for the Landlock sandbox a correlate `type: executable` command runs in (saq/collectors/hunter/correlation/sandbox.py)"""
+    """limits for the Landlock sandbox a correlate `type: executable` command runs in on the tool runner (saq/collectors/hunter/correlation/sandbox.py)"""
+    memory_limit: int = Field(default=4 * 1024 ** 3, gt=0, description=_RUNNER_MEMORY_LIMIT_DESCRIPTION)
     work_dir: str = Field(default="var/correlation_sandbox", description="where each execution gets its private working directory (relative to DATA_DIR); must be on a filesystem that allows execution (not a noexec tmpfs)")
     allowed_tcp_ports: Optional[list[Annotated[int, Field(ge=1, le=65535)]]] = Field(default_factory=lambda: [443, 53], description="the only TCP ports a command may connect to (Landlock ABI 4, Linux 6.7); keeps it off the cloud metadata endpoint and ACE's own services. null leaves TCP unrestricted, and has to on an older kernel, where every command fails otherwise")
 
 class ToolSandboxConfig(SandboxConfig):
-    """the Landlock sandbox analysis modules run their external tools in (AnalysisModule.run_sandboxed_tool)"""
+    """the Landlock sandbox analysis modules run their external tools in on the tool runner (AnalysisModule.run_sandboxed_tool)"""
+    memory_limit: int = Field(default=4 * 1024 ** 3, gt=0, description=_RUNNER_MEMORY_LIMIT_DESCRIPTION)
     work_dir: str = Field(default="var/tool_sandbox", description="where each tool run gets its private working directory (relative to DATA_DIR); on the same filesystem as the alert storage, the outputs a module keeps are moved out by a rename")
     file_size_limit: int = Field(default=1024 ** 3, gt=0, description="largest file a tool may write, in bytes (RLIMIT_FSIZE); a tool that writes a larger one is stopped there, and an extraction stopped this way is recorded as incomplete")
 

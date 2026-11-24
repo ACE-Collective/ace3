@@ -8,6 +8,9 @@ sandbox (`saq/sandbox/`, the one tshark and correlation scripts use) through
 file it was given and write only its own directories, instead of an engine worker that holds the
 database passwords and `SAQ_ENC`.
 
+The engine does not start these tools itself: the tool runner does (see *The tool runner* below),
+and correlate `type: executable` commands run there too.
+
 ## What a tool can do
 
 - It reads the file it analyzes (`target`), any `read_files` and `read_dirs` the module names, the
@@ -19,10 +22,16 @@ database passwords and `SAQ_ENC`.
   directory.
 - It has no network. `tool_sandbox.allowed_tcp_ports` is empty.
 - Its environment holds `PATH`, `LANG`, `HOME`, `TMPDIR` and the module's `env`, never ACE's own.
+- `tool_sandbox.memory_limit` bounds the memory it uses: it runs in a cgroup of its own whose
+  `memory.max` is that limit, with no swap, and the kernel kills it, all of it, past that. Address
+  space it reserves and does not use (a GC heap, a thread's arena) does not count, so a runtime
+  needs no tuning to start.
 - The rlimits in `tool_sandbox` bound it, along with the module's timeout and an output cap. Its CPU
   time limit is the timeout times the number of cores, because RLIMIT_CPU counts every thread and
-  john, 7z and the JVM run one per core. When it exits, times out or the analysis is cancelled
-  (`should_stop()`), the launcher kills everything it started.
+  john, 7z and the JVM run one per core. Its cgroup's `pids.max` (4096) counts threads too, and is
+  the ceiling for a fork loop that outruns `max_processes`, which is counted by polling. When it
+  exits, times out or the analysis is cancelled (`should_stop()`), the launcher kills everything it
+  started, and the runner then kills whatever is left in its cgroup (`cgroup.kill`).
 
 ACE runs with SAQ_HOME as its cwd, and the paths it gives out for an alert's files are relative to
 it. A tool runs in the same cwd, so those paths mean the same file to it, alone or inside a longer
@@ -47,9 +56,11 @@ directory as hostile, as it did before.
 
 `run_sandboxed_tool()` returns `None` when it did not get a result:
 
-- A timeout, too much output or a file larger than `tool_sandbox.file_size_limit` is the file's
-  doing. It is logged at WARNING with the path, and the module sets `Analysis.error` to say the tool
-  did not finish (`docs/ENGINE.md` §12.4).
+- A timeout, too much output, more memory than `tool_sandbox.memory_limit` or a file larger than
+  `tool_sandbox.file_size_limit` is the file's doing. It is logged at WARNING with the path, and the
+  module sets `Analysis.error` to say the tool did not finish (`docs/ENGINE.md` §12.4). The runner
+  reads a memory kill from the cgroup's `memory.events`, so it is reported as one whatever the tool
+  printed.
   A file that hit the limit is cut off there, and the tool wrote nothing after it. unrar exits 5
   instead of dying, and keeps the file only with `-kb`, which both unrar extractions pass. The archive and encrypted-archive modules keep what was extracted, and
   their analysis says the extraction did not finish.
@@ -62,29 +73,62 @@ directory as hostile, as it did before.
   extracted under the file count limit, which takes the dangerous files first. The extractors run
   quiet, so the padding does not stop the extraction too.
 - A cancelled analysis is logged at INFO.
-- A Landlock probe that could not run (a fork that failed under load) is logged at ERROR with its
-  traceback, and the tool is skipped with a WARNING. The next call probes again.
-- A tool the node cannot run at all is an operator's problem. That covers a node without Landlock, a
-  program that is not found, a program in a directory that holds SAQ_HOME or the data directory,
-  a program the sandbox cannot start (exit 125, 126 or 127 with no output), and a runtime it keeps
-  from starting: the JVM, CoreCLR or OpenCV exits with its own start-up error (`startup_errors`) when a
-  directory it needs is not readable or the memory limit is too small for it. It is logged at ERROR
-  on every file, and `ErrorReportHandler` writes its error report once per module, program and reason
-  every ten minutes (`REPEAT_WINDOW_SECONDS` in `saq/error/reporting.py`).
+- A tool the node cannot run at all is an operator's problem. That covers a tool runner that is
+  not running, one that stopped during the run, one whose memory other runs held for all of the
+  tool's time, one that could not create the run's cgroup, a program that is not found, a program
+  in a directory that holds SAQ_HOME or the data directory, a program the sandbox cannot start
+  (exit 125, 126 or 127 with no output), and a runtime it keeps from starting: the JVM, CoreCLR or
+  OpenCV exits with its own start-up error (`startup_errors`) when a directory it needs is not
+  readable. It is logged at ERROR on every file, and `ErrorReportHandler` writes its error report
+  once per module, program and reason every ten minutes (`REPEAT_WINDOW_SECONDS` in
+  `saq/error/reporting.py`). No tool runs outside the runner instead: that would put the tool back
+  in the engine worker.
 
 On a kernel older than 6.7 the TCP rule cannot be enforced and every tool fails. Set
-`tool_sandbox.allowed_tcp_ports: null` there. A node without Landlock runs none of these tools.
+`tool_sandbox.allowed_tcp_ports: null` there. A node without Landlock runs none of these tools: its
+tool runner does not start.
+
+## The tool runner
+
+`saq/tool_runner/` is the `tool_runner` service (`service_tool_runner`), the `tool-runner`
+container in `docker-compose.yml`. Every ACE process on the node sends it its sandboxed tools over a
+unix socket in `service_tool_runner.socket_dir`: `run_sandboxed_tool()` and correlate executable
+commands call `saq/tool_runner/client.py::run_on_runner()`, which takes what `build_sandbox_argv()` and
+`run_sandboxed()` take. The runner reads no file it is given: the paths in a request mean the same
+file on both sides, so the runner's container has the same volumes as its clients.
+
+Each run gets a cgroup of its own (`saq/tool_runner/cgroup.py`), with `memory.max` the caller's
+`memory_limit`, `memory.swap.max` 0, `memory.oom.group` 1 and `pids.max` 4096, and no RLIMIT_AS.
+The launcher moves the tool into it before the exec (`--cgroup`). A run starts only once the memory
+limits of the runs in progress, its own included, fit in the runner's container (its `memory.max`,
+or the host's memory without one; give the container a `mem_limit` to bound it lower). A run waits
+for that out of its own timeout, and one that would be left less than a second is answered busy.
+
+No container may create cgroups as docker starts it: `/sys/fs/cgroup` is read-only in every
+container that is not privileged. `docker/startup/delegate-cgroup.sh` starts the runner's container
+as root with `CAP_SYS_ADMIN` and AppArmor unconfined, remounts `/sys/fs/cgroup` read-write, moves
+every process into `tools/service`, enables the memory and pids controllers below `tools`, hands
+`tools` to `ace`, and runs the service as `ace` with no capabilities. The capability stays on the
+container, which is why it is this small container that parses nothing and holds no tool's input,
+rather than `ace`, which holds the engine. A runner that cannot create cgroups, or has no Landlock,
+does not start.
+
+`dev` starts through the same script, because every pytest process runs a runner of its own
+(`tests/harness.py`), with its socket in the session's temp dir: a `dev` created before this needs
+`docker compose up -d dev`. `docker exec` into `dev` runs as root unless it is given `-u ace`, as
+`bin/exec-in-container.sh` and `bin/attach-container.sh` give it.
+
+The SVS YARA replay (`saq/svs/yara/replay.py`) and pcap dissection (`saq/modules/file_analysis/pcap.py`)
+still run their sandboxed commands where they are, under RLIMIT_AS (`memory_limit` in their own
+sandbox settings).
 
 ## Runtimes that need more
 
 - .NET (de4dot, ilspycmd) will not start without its own `/proc/<pid>`. The modules pass
   `read_dirs=["/proc/self"]`, which setpriv resolves to the tool's own directory, because it execs
-  the tool in the same process. The .NET GC reserves 256 GB of address space unless it gets
-  `DOTNET_GCHeapHardLimit` and `DOTNET_GCRegionRange`, and even then the runtime reserves about
-  5 GB, so these tools run with a 12 GB `memory_limit`. The heap limit bounds what they use.
-- numpy's OpenBLAS starts a thread per core, and each reserves address space under the memory
-  limit, so `bin/qr_decode_opencv.py` runs with `OPENBLAS_NUM_THREADS=1`. It exits with its own
-  start-up error (`startup_errors`) when OpenCV cannot load.
+  the tool in the same process.
+- `bin/qr_decode_opencv.py` exits with its own start-up error (`startup_errors`) when OpenCV cannot
+  load.
 - de4dot runs as `/opt/de4dotEx/de4dot` (`binary_path`), not through the `/usr/local/bin` wrapper,
   which execs a binary the sandbox would not let it read.
 - A split archive does not extract without its other volumes. The archive module gives the
@@ -95,9 +139,8 @@ On a kernel older than 6.7 the TCP rule cannot be enforced and every tool fails.
 - unace opens the directory its archive is in, to look for other volumes, and fails when it cannot.
   It runs on a copy of the archive and its other volumes in a temporary directory of its own, so the
   sandbox never lets it list the alert's files.
-- The JVM gets `-Xmx1g` and fixed class space and code cache sizes. Without them it fails to
-  reserve its metaspace under the 4 GB limit about one start in three. Its `java.security` is under
-  `/etc/java-<version>-openjdk`, which the module makes readable (`jvm_conf_dirs()`).
+- The JVM's `java.security` is under `/etc/java-<version>-openjdk`, which the module makes readable
+  (`jvm_conf_dirs()`).
 
 ## Which tools
 

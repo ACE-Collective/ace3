@@ -13,7 +13,7 @@ import pytest
 import rarfile
 
 from saq.configuration.config import get_analysis_module_config, get_config
-from saq.constants import ANALYSIS_MODULE_CVE_2021_30657_ANALYZER, AnalysisExecutionResult
+from saq.constants import ANALYSIS_MODULE_CVE_2021_30657_ANALYZER, SERVICE_TOOL_RUNNER, AnalysisExecutionResult
 from saq.environment import get_base_dir, get_data_dir
 from saq.error import reporting as error_reporting
 from saq.modules import base_module
@@ -30,6 +30,7 @@ from saq.modules.file_analysis.rtf import RTFOLEObjectAnalysis, RTFOLEObjectAnal
 from saq.modules.file_analysis.ssdeep import SsdeepAnalysis, SsdeepAnalyzer
 from saq.modules.file_analysis.upx import UPXAnalysis, UPXAnalyzer
 from saq.sandbox.runner import SandboxResult, landlock_available, sandbox_python
+from saq.tool_runner.client import ToolRunnerBusy, ToolRunnerFailed, ToolRunnerUnavailable
 from tests.saq.helpers import the_error_with_traceback
 from tests.saq.modules.conftest import HANG, fake_tool_pids, fake_tools_running
 from tests.saq.modules.file_analysis.test_cve import MACOS_MEMBER, _add_dmg_analysis, _create_img
@@ -600,24 +601,47 @@ def test_a_cancelled_analysis_stops_the_tool(root_analysis, caplog):
 def test_sandboxed_tool_timeout_is_what_the_call_has_left(root_analysis, monkeypatch, timeout, left, expected):
     module = _module(SsdeepAnalyzer, "ssdeep", root_analysis)
     module.set_analysis_deadline(time.monotonic() + left)
-    monkeypatch.setattr(base_module, "landlock_available", lambda: True)
     run = Mock(return_value=SandboxResult(0, "", ""))
-    monkeypatch.setattr(base_module, "run_sandboxed", run)
+    monkeypatch.setattr(base_module, "run_on_runner", run)
 
     module.run_sandboxed_tool(["true"], "target", timeout=timeout)
 
-    assert run.call_args.args[4].total_seconds() == pytest.approx(expected, abs=1)
+    assert run.call_args.kwargs["timeout"].total_seconds() == pytest.approx(expected, abs=1)
 
 
 @pytest.mark.unit
 @needs_landlock
-def test_memory_limit_replaces_the_configured_one(root_analysis):
+def test_address_space_a_tool_reserves_is_not_its_memory(root_analysis):
+    # a GC, or a thread's arena, reserves far more than it uses: four times the memory limit here,
+    # which an address space limit (RLIMIT_AS) of the memory limit refused
+    module = _module(SsdeepAnalyzer, "ssdeep", root_analysis)
+    observable = _file(root_analysis, "sample.bin", b"sample")
+    reserve = 4 * get_config().tool_sandbox.memory_limit
+    script = (f"import mmap; m = mmap.mmap(-1, {reserve}, flags=mmap.MAP_PRIVATE | mmap.MAP_ANONYMOUS | "
+              "mmap.MAP_NORESERVE); print('reserved')")
+
+    result = module.run_sandboxed_tool([sandbox_python(), "-I", "-c", script], observable.full_path)
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "reserved\n"
+
+
+@pytest.mark.unit
+@needs_landlock
+def test_a_tool_that_uses_more_than_the_memory_limit_is_stopped(root_analysis, monkeypatch, caplog):
+    monkeypatch.setattr(get_config().tool_sandbox, "memory_limit", 128 * 1024 ** 2)
     module = _module(SsdeepAnalyzer, "ssdeep", root_analysis)
     observable = _file(root_analysis, "sample.bin", b"sample")
 
-    result = module.run_sandboxed_tool(_sh("ulimit -v"), observable.full_path, memory_limit=1024 ** 3)
+    with caplog.at_level(logging.WARNING):
+        assert module.run_sandboxed_tool([sandbox_python(), "-I", "-c", "b = bytearray(512 * 1024 ** 2)"],
+                                         observable.full_path) is None
 
-    assert result.stdout.strip() == str(1024 ** 2)
+    # the file's doing, like a timeout
+    [record] = [r for r in caplog.records if "SsdeepAnalyzer" in r.getMessage()]
+    assert record.levelno == logging.WARNING
+    assert "used more than its memory limit of 134217728 bytes" in record.getMessage()
+    assert record.path == observable.full_path
 
 
 @pytest.mark.unit
@@ -709,34 +733,37 @@ def test_a_program_the_sandbox_cannot_start_is_reported(root_analysis, fake_tool
 
 
 @pytest.mark.unit
-def test_a_landlock_probe_that_could_not_run_is_not_blamed_on_the_node(root_analysis, monkeypatch, caplog):
-    # landlock_available() reported why the probe could not run (a fork that failed under load)
-    monkeypatch.setattr(base_module, "landlock_available", lambda: None)
-    run = Mock()
-    monkeypatch.setattr(base_module, "run_sandboxed", run)
+@pytest.mark.parametrize("error", [
+    ToolRunnerUnavailable("the tool runner at /x is unavailable: [Errno 2] No such file or directory"),
+    ToolRunnerBusy("the tool runner's 4 bytes of memory were taken by other runs"),
+    ToolRunnerFailed("unable to create a cgroup for it"),
+])
+def test_a_tool_runner_that_cannot_run_the_tool_is_the_nodes_problem(root_analysis, monkeypatch, caplog, error):
+    monkeypatch.setattr(base_module, "run_on_runner", Mock(side_effect=error))
     module = _module(SsdeepAnalyzer, "ssdeep", root_analysis)
 
     with caplog.at_level(logging.WARNING):
         assert module.run_sandboxed_tool(["true"], "target") is None
 
-    run.assert_not_called()
     [record] = [r for r in caplog.records if "SsdeepAnalyzer" in r.getMessage()]
-    assert record.levelno == logging.WARNING
-    assert "the Landlock probe could not run" in record.getMessage()
+    assert record.levelno == logging.ERROR
+    assert record.exc_info
+    assert str(error) in record.getMessage()
+    assert record.path == "target"
 
 
 @pytest.mark.unit
-def test_without_landlock_no_tool_runs(root_analysis, monkeypatch, caplog):
-    monkeypatch.setattr(base_module, "landlock_available", lambda: False)
-    run = Mock()
-    monkeypatch.setattr(base_module, "run_sandboxed", run)
+def test_a_tool_runner_that_is_down_is_reported(root_analysis, monkeypatch, tmp_path, caplog):
+    monkeypatch.setattr(get_config().get_service_config(SERVICE_TOOL_RUNNER), "socket_dir", str(tmp_path / "none"))
     module = _module(SsdeepAnalyzer, "ssdeep", root_analysis)
+    observable = _file(root_analysis, "sample.bin", b"sample")
 
-    assert module.run_sandboxed_tool(["true"], "target") is None
+    with caplog.at_level(logging.WARNING):
+        assert module.run_sandboxed_tool(["true"], observable.full_path) is None
 
-    run.assert_not_called()
-    assert any(r.levelno == logging.ERROR and "the Landlock sandbox is not available on this node" in r.getMessage()
-               for r in caplog.records)
+    [record] = [r for r in caplog.records if "SsdeepAnalyzer" in r.getMessage()]
+    assert record.levelno == logging.ERROR
+    assert "the tool runner at" in record.getMessage() and "is unavailable" in record.getMessage()
 
 
 @pytest.mark.unit
