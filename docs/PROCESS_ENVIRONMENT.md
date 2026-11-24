@@ -28,7 +28,7 @@ same directory. They agree only because the cwd is `SAQ_HOME`:
 | Path | Resolved against |
 |---|---|
 | a `config:` include in a YAML file | the cwd (`YAMLConfig.resolve_references`) |
-| a path in `SAQ_CONFIG_PATHS` or `SAQ_UNITTEST_CONFIG_PATHS` | the cwd (`_load_env_config_paths`) |
+| a path in `SAQ_CONFIG_PATHS` or `SAQ_UNITTEST_CONFIG_PATHS` | the cwd (`_env_config_paths`) |
 | a `file:PATH` value | `SAQ_HOME` (`_read_file_value`) |
 | `json_path` of a storage directory (`data.json`) | `SAQ_HOME` (`LocalFileManager.json_path`) |
 | `file_dir` and `submission_json_path` of a storage directory | the cwd (`LocalFileManager`) |

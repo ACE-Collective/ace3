@@ -7,9 +7,11 @@ from typing import Any, Callable
 from saq.configuration.config import get_config
 from saq.configuration.schema import IntegrationConfig
 from saq.environment import get_global_runtime_settings
-from saq.integration.integration_manager import is_integration_enabled
+from saq.integration.integration_manager import is_integration_dir_enabled
 from saq.integration.integration_util import (
+    get_integration_config_path,
     get_integration_name_from_path,
+    get_integration_var_base_dir,
     get_valid_integration_dirs,
 )
 
@@ -27,13 +29,12 @@ def discover_integration_packages(dir_path: str) -> list[str]:
 
 
 def load_integrations():
-    """Loads all enabled integrations. One that fails to load is logged and skipped."""
+    """Puts every integration's src/ on sys.path and its configuration file on the list the
+    configuration loader merges, which leaves out a disabled one's. Its src/ stays on the path so
+    that alerts saved while it was enabled still load their analysis. One that fails to load is
+    logged and skipped."""
     for dir_path in get_valid_integration_dirs():
         try:
-            if not is_integration_enabled(get_integration_name_from_path(dir_path)):
-                logging.debug(f"integration {get_integration_name_from_path(dir_path)} is disabled, skipping")
-                continue
-
             load_integration_from_directory(dir_path)
         except Exception as e:
             logging.exception(f"failed to load integration from {dir_path}: {e}")
@@ -69,21 +70,29 @@ def load_integration_component_etc(dir_path: str):
     Args:
         dir_path: The path to the integration directory.
     """
-    etc_path = os.path.join(dir_path, "etc")
-
-    # load all the ini files found in the etc directory
-    if os.path.exists(etc_path):
-        auto_load_config_file = os.path.join(etc_path, "saq.integration.yaml")
-        if os.path.exists(auto_load_config_file):
-            logging.debug(f"auto loading integration configuration file {auto_load_config_file}")
-            get_global_runtime_settings().integration_config_paths.append(auto_load_config_file)
-            #get_config().load_file(auto_load_config_file)
+    auto_load_config_file = get_integration_config_path(dir_path)
+    if os.path.exists(auto_load_config_file):
+        logging.debug(f"auto loading integration configuration file {auto_load_config_file}")
+        get_global_runtime_settings().integration_config_paths.append(auto_load_config_file)
 
 def initialize_integrations():
-    """Imports the python_module of each enabled integration, which runs its registration hooks.
+    """Puts the bin/ of each integration that is on on PATH, and imports the python_module of each
+    enabled integration_*: section, which runs its registration hooks.
 
     A disabled one is not imported: its observable actions would point at templates in the GUI
     blueprint that apply_integration_hooks() leaves out for it."""
+    for dir_path in get_valid_integration_dirs():
+        try:
+            if is_integration_dir_enabled(dir_path):
+                load_integration_component_bin(dir_path)
+            else:
+                logging.info("integration %s (%s) is disabled", get_integration_name_from_path(dir_path), dir_path,
+                             extra={"integration": get_integration_name_from_path(dir_path), "path": dir_path})
+
+            _report_disabled_marker(dir_path)
+        except Exception as e:
+            logging.exception(f"failed to initialize integration from {dir_path}: {e}")
+
     declared: set[str] = set()
 
     for integration_config in get_config().integrations:
@@ -120,6 +129,30 @@ def apply_integration_hooks(hook: str, apply: Callable[[IntegrationConfig, Any],
                               extra={"integration": integration.name, "hook": hook, "target": target})
 
 
+def _report_disabled_marker(dir_path: str):
+    """Logs an ERROR for the file the removed ace integration disable wrote to turn the integration
+    off. Nothing reads it any more, so the integration it turned off is back on unless its
+    configuration says enabled: false."""
+    name = get_integration_name_from_path(dir_path)
+    marker = os.path.join(get_integration_var_base_dir(), name, "disabled")
+    if not os.path.exists(marker):
+        return
+
+    sections = get_config().raw.integration_blocks.get(get_integration_config_path(dir_path), [])
+    setting = ", ".join(f"{section}.enabled: false" for section in sections) or \
+        "enabled: false in an integration_<name>: block"
+    if is_integration_dir_enabled(dir_path):
+        advice = (f"so it is enabled. To disable it set {setting} in the configuration (for one node, in a file "
+                  f"that node's SAQ_CONFIG_PATHS names), then remove the file")
+    else:
+        advice = "and its configuration already disables it: remove the file"
+
+    logging.error(
+        "integration %s (%s) has the file %s, which ace integration disable wrote and ACE no longer reads, %s",
+        name, dir_path, marker, advice,
+        extra={"integration": name, "path": marker})
+
+
 def _warn_about_undeclared_integrations(declared: set[str]):
     """Warns about an integration directory that declares no integration_<name>: block.
 
@@ -134,10 +167,6 @@ def _warn_about_undeclared_integrations(declared: set[str]):
     """
     for dir_path in get_valid_integration_dirs():
         integration_name = get_integration_name_from_path(dir_path)
-
-        if not is_integration_enabled(integration_name):
-            continue
-
         packages = discover_integration_packages(dir_path)
 
         # warn per directory rather than per package: an integration with more than one package
@@ -165,7 +194,4 @@ def load_integration_from_directory(dir_path: str):
         dir_path: The path to the integration directory.
     """
     load_integration_component_src(dir_path)
-    load_integration_component_bin(dir_path)
     load_integration_component_etc(dir_path)
-
-    # NOTE right now we are not calling verify() on the config

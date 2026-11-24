@@ -11,6 +11,10 @@ def get_integration_var_base_dir() -> str:
     """Returns the absolute path to where integration state variables are stored."""
     return os.path.join(get_data_dir(), "var", "integrations")
 
+def get_integration_config_path(dir_path: str) -> str:
+    """Returns the path of the configuration file the loader merges for the integration directory."""
+    return os.path.join(dir_path, "etc", "saq.integration.yaml")
+
 def get_integration_name_from_path(dir_path: str) -> str:
     """Returns the name of the integration from the directory path."""
     if not dir_path:

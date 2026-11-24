@@ -20,12 +20,12 @@ from saq.integration.integration_loader import (
     load_integration_component_etc,
     load_integration_from_directory,
 )
-from saq.integration.integration_manager import disable_integration
 from saq.integration.integration_util import (
+    get_integration_var_base_dir,
     validate_integration_dir,
     _recurse_integration_dirs,
 )
-from tests.saq.helpers import unconfigured_logging
+from tests.saq.helpers import configure_integrations, unconfigured_logging
 
 
 @pytest.mark.unit
@@ -80,7 +80,8 @@ def integration_env(tmp_path, monkeypatch):
     """Points the integration base and var dirs at tmp_path and restores what loading changes.
 
     Returns a function that creates an integration directory the way integrations.example/ lays
-    one out: integration.md, src/<package>/, bin/ and etc/saq.integration.yaml.
+    one out: integration.md, src/<package>/, bin/ and etc/saq.integration.yaml, which declares
+    integration_<name>: with the given enabled.
     """
     base_dir = tmp_path / "base"
     data_dir = tmp_path / "data"
@@ -92,50 +93,55 @@ def integration_env(tmp_path, monkeypatch):
     monkeypatch.setenv("PATH", os.environ.get("PATH", ""))
     monkeypatch.setattr(get_global_runtime_settings(), "integration_config_paths", [])
 
-    def create(name: str, disabled: bool = False) -> str:
+    def create(name: str, enabled: bool = True) -> str:
         integration_dir = base_dir / "integrations" / name
         (integration_dir / "src" / name).mkdir(parents=True)
         (integration_dir / "src" / name / "__init__.py").write_text("")
         (integration_dir / "bin").mkdir()
         (integration_dir / "etc").mkdir()
-        (integration_dir / "etc" / "saq.integration.yaml").write_text(f"integration_{name}:\n  name: {name}\n")
+        (integration_dir / "etc" / "saq.integration.yaml").write_text(
+            f"integration_{name}:\n  name: {name}\n  enabled: {str(enabled).lower()}\n"
+            f"  description: {name}\n  python_module: {name}\n")
         (integration_dir / "integration.md").write_text(f"# {name}")
-        if disabled:
-            disable_integration(name)
         return str(integration_dir)
 
     return create
 
 
-def _assert_loaded(integration_dir: str):
-    assert os.path.join(integration_dir, "src") in sys.path
-    assert os.path.join(integration_dir, "bin") in os.environ["PATH"].split(":")
-    assert os.path.join(integration_dir, "etc", "saq.integration.yaml") in get_global_runtime_settings().integration_config_paths
+def _on_path(integration_dir: str) -> bool:
+    return os.path.join(integration_dir, "bin") in os.environ["PATH"].split(":")
 
 
 @pytest.mark.unit
 class TestLoadIntegrations:
 
-    def test_load_integrations_disabled_integration(self, integration_env):
-        """Test disabled integrations are skipped."""
+    def test_every_integration_is_on_sys_path_and_merged(self, integration_env):
+        """The configuration loader leaves a disabled integration's file out, but its src/ stays on
+        sys.path so that alerts saved while it was enabled still load their analysis."""
         enabled = integration_env("enabled_integration")
-        disabled = integration_env("disabled_integration", disabled=True)
+        disabled = integration_env("disabled_integration", enabled=False)
 
         load_integrations()
-        _assert_loaded(enabled)
-        assert os.path.join(disabled, "src") not in sys.path
-        assert os.path.join(disabled, "bin") not in os.environ["PATH"].split(":")
-        assert get_global_runtime_settings().integration_config_paths == [
-            os.path.join(enabled, "etc", "saq.integration.yaml")]
+
+        for integration_dir in (enabled, disabled):
+            assert os.path.join(integration_dir, "src") in sys.path
+            # the configuration decides who goes on PATH, so nobody does before it is loaded
+            assert not _on_path(integration_dir)
+        assert sorted(get_global_runtime_settings().integration_config_paths) == sorted(
+            os.path.join(integration_dir, "etc", "saq.integration.yaml") for integration_dir in (enabled, disabled))
 
     def test_load_integrations_component_raises(self, integration_env, monkeypatch, caplog):
         """A component that raises fails that integration, is logged with its traceback, and the rest still load."""
         healthy = integration_env("healthy")
-        # without a bin/ the bin component never reads PATH, so only the other integration fails
-        os.rmdir(os.path.join(healthy, "bin"))
         broken = integration_env("broken")
-        # the bin component raises KeyError reading PATH
-        monkeypatch.delenv("PATH")
+        real_load_etc = load_integration_component_etc
+
+        def load_etc(dir_path: str):
+            if dir_path == broken:
+                raise KeyError("broken")
+            real_load_etc(dir_path)
+
+        monkeypatch.setattr("saq.integration.integration_loader.load_integration_component_etc", load_etc)
 
         load_integrations()
 
@@ -151,6 +157,68 @@ class TestLoadIntegrations:
 
 @pytest.mark.unit
 class TestInitializeIntegrations:
+
+    def test_only_an_integration_that_is_on_goes_on_path(self, integration_env, monkeypatch):
+        enabled = integration_env("enabled_integration")
+        disabled = integration_env("disabled_integration", enabled=False)
+        load_integrations()
+        configure_integrations(monkeypatch)
+        # neither package exists to import, and that is not what this is about
+        monkeypatch.setattr("saq.integration.integration_loader.importlib.import_module", Mock())
+
+        initialize_integrations()
+
+        assert _on_path(enabled)
+        assert not _on_path(disabled)
+
+    def test_a_failure_putting_bin_on_path_is_logged(self, integration_env, monkeypatch, caplog):
+        broken = integration_env("broken")
+        load_integrations()
+        configure_integrations(monkeypatch)
+        monkeypatch.setattr("saq.integration.integration_loader.importlib.import_module", Mock())
+        # the bin component raises KeyError reading PATH
+        monkeypatch.delenv("PATH")
+
+        initialize_integrations()
+
+        failures = [r for r in caplog.records if r.message.startswith(f"failed to initialize integration from {broken}")]
+        assert len(failures) == 1
+        assert failures[0].levelname == "ERROR"
+        assert failures[0].exc_info[0] is KeyError
+
+    @pytest.mark.parametrize("enabled, advice", [
+        (True, "so it is enabled. To disable it set integration_vendor.enabled: false in the configuration"),
+        (False, "and its configuration already disables it: remove the file")])
+    def test_the_file_ace_integration_disable_left_is_reported(self, integration_env, monkeypatch, caplog, enabled, advice):
+        """Nothing reads the file any more, so the integration it turned off is back on unless its
+        configuration turns it off. It is logged at every start until someone removes it."""
+        integration_dir = integration_env("vendor", enabled=enabled)
+        marker = os.path.join(get_integration_var_base_dir(), "vendor", "disabled")
+        os.makedirs(os.path.dirname(marker))
+        open(marker, "w").close()
+        load_integrations()
+        configure_integrations(monkeypatch)
+        monkeypatch.setattr("saq.integration.integration_loader.importlib.import_module", Mock())
+
+        initialize_integrations()
+
+        errors = [r for r in caplog.records if r.levelno == logging.ERROR]
+        assert len(errors) == 1
+        assert errors[0].message.startswith(
+            f"integration vendor ({integration_dir}) has the file {marker}, which ace integration disable wrote")
+        assert advice in errors[0].message
+        assert errors[0].integration == "vendor"
+        assert errors[0].path == marker
+
+    def test_no_file_no_report(self, integration_env, monkeypatch, caplog):
+        integration_env("vendor")
+        load_integrations()
+        configure_integrations(monkeypatch)
+        monkeypatch.setattr("saq.integration.integration_loader.importlib.import_module", Mock())
+
+        initialize_integrations()
+
+        assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
 
     def test_import_failure_is_logged_at_error(self, integration_env, monkeypatch, caplog):
         """An integration package that fails to import is logged at ERROR with its traceback."""

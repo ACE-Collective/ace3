@@ -10,11 +10,11 @@ from pathlib import Path
 import pytest
 
 import saq.cron_tasks
-from saq.configuration.config import get_service_config
+from saq.configuration.config import get_config, get_service_config
 from saq.constants import SERVICE_CRON
 from saq.cli.commands.cron import CRON_CADENCE_CHOICES
 from saq.cron_tasks import CRON_CADENCES, CronTask, CronTaskRunner, discover_tasks, get_max_parallel_tasks, run_tasks
-from saq.integration.integration_manager import disable_integration
+from saq.integration.integration_util import get_integration_config_path
 from tests import unittest_session
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -49,21 +49,23 @@ def saq_home(exec_tmp, monkeypatch):
     _write_task(home / "bin" / "run-cron-job", 'shift\nexec "$@"')
     monkeypatch.setattr(saq.cron_tasks, "get_base_dir", lambda: str(home))
     monkeypatch.setattr("saq.integration.integration_util.get_base_dir", lambda: str(home))
-    monkeypatch.setattr("saq.integration.integration_util.get_data_dir", lambda: str(exec_tmp / "data"))
     monkeypatch.setattr(get_service_config(SERVICE_CRON), "max_parallel_tasks", None)
     return home
 
 
 @pytest.fixture
-def integrations(saq_home):
+def integrations(saq_home, monkeypatch):
     """creates integration dirs; returns a function (name, enabled) -> integration dir"""
+    disabled = set()
+    # the configuration loader decides which integrations are off (tests/saq/configuration/test_disabled_integrations.py)
+    monkeypatch.setattr(get_config().raw, "disabled_integration_paths", disabled)
 
     def _create(name: str, enabled: bool = True) -> Path:
         path = saq_home / "integrations" / name
         path.mkdir(parents=True)
         (path / "integration.md").write_text(f"# {name}")
         if not enabled:
-            disable_integration(name)
+            disabled.add(get_integration_config_path(str(path)))
         return path
 
     return _create

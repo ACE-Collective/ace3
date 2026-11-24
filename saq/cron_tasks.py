@@ -23,7 +23,7 @@ from typing import Optional
 from saq.configuration.config import get_service_config
 from saq.constants import SERVICE_CRON
 from saq.environment import get_base_dir
-from saq.integration.integration_manager import is_integration_enabled
+from saq.integration.integration_manager import is_integration_dir_enabled
 from saq.integration.integration_util import get_integration_name_from_path, get_valid_integration_dirs
 
 CRON_CADENCES = ("hourly", "daily", "weekly")
@@ -110,11 +110,11 @@ def discover_tasks(cadence: str) -> list[CronTask]:
 
     integration_tasks = []
     for integration_dir in get_valid_integration_dirs():
-        integration_name = get_integration_name_from_path(integration_dir)
-        if not is_integration_enabled(integration_name):
+        if not is_integration_dir_enabled(integration_dir):
             continue
 
-        integration_tasks.extend(_tasks_in_dir(get_cron_dir(integration_dir, cadence), cadence, integration_name))
+        integration_tasks.extend(_tasks_in_dir(get_cron_dir(integration_dir, cadence), cadence,
+                                               get_integration_name_from_path(integration_dir)))
 
     integration_tasks.sort(key=lambda task: (task.source, task.name))
     return tasks + integration_tasks

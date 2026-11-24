@@ -1259,6 +1259,13 @@ class ACEConfig(BaseModel):
 
         return self.__integrations.values()
 
+    def get_integration_config(self, section: str) -> IntegrationConfig:
+        """The configuration of the integration_<name>: section named section."""
+        if self.__integrations is None:
+            self._raise_raw_data_error()
+
+        return self.__integrations[section[len("integration_"):]]
+
     #
     # databases
     #

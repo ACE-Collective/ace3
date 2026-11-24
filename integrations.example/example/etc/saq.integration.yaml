@@ -12,7 +12,7 @@
 # everything *looks* configured -- but none of your hooks run, and the failures are invisible.
 integration_example:
   name: example
-  # required -- an integration with enabled: false is not imported
+  # required -- false turns the whole integration off (docs/INTEGRATIONS.md, Disabling an integration)
   enabled: true
   description: "Example Integration"
   # the python package name under src/ -- note this is often NOT the integration directory name.
