@@ -44,9 +44,12 @@ def _waiting_for_a_lock(marker: str) -> bool:
     """True while a statement containing marker waits in this user's processlist."""
     with get_db_connection() as db:
         cursor = db.cursor()
+        # not information_schema.PROCESSLIST: its INFO is utf8mb3, so any query of it fails (3854) while
+        # another session's statement has bytes that are not utf8 in it, which under xdist is any worker's.
+        # ace-user has no PROCESS privilege, so INNODB_TRX and data_locks are not an option either
         cursor.execute(
-            "SELECT COUNT(*) FROM information_schema.PROCESSLIST WHERE INFO LIKE %s AND INFO NOT LIKE %s",
-            (f"%{marker}%", "%PROCESSLIST%"))
+            "SELECT COUNT(*) FROM performance_schema.processlist WHERE INFO LIKE %s AND INFO NOT LIKE %s",
+            (f"%{marker}%", "%processlist%"))
         return cursor.fetchone()[0] > 0
 
 
@@ -69,6 +72,29 @@ def _deadlock_against(rows: dict[str, str], run_victim) -> threading.Thread:
     victim.join(30)
     assert not victim.is_alive()
     return victim
+
+
+@pytest.mark.integration
+def test_waiting_for_a_lock_sees_past_another_sessions_binary_statement(rows):
+    # under xdist every worker's statements are in the processlist, and one can carry bytes that are not
+    # utf8; the statement waiting here is that statement, so finding it proves the others are no obstacle
+    def waiter():
+        with get_db_connection() as db:
+            db.cursor().execute(UPDATE_OWNER + " AND %s IS NOT NULL", ("waiter", rows["a"], b"\xb5\xc1\xfb.\xfcm"))
+            db.commit()
+
+    with get_db_connection() as holder:
+        holder.cursor().execute(UPDATE_OWNER, ("holder", rows["a"]))
+        thread = threading.Thread(target=waiter)
+        thread.start()
+        try:
+            assert wait_for_condition(lambda: _waiting_for_a_lock(rows["a"]))
+        finally:
+            holder.rollback()
+            thread.join(30)
+
+    assert not thread.is_alive()
+    assert _owners(rows)["a"] == "waiter"
 
 
 @pytest.mark.integration

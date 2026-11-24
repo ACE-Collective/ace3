@@ -28,7 +28,7 @@ from saq.engine.engine_configuration import EngineConfiguration
 from saq.engine.enums import EngineExecutionMode, EngineType
 from saq.engine.execution_context import EngineExecutionContext
 from saq.environment import get_data_dir, get_global_runtime_settings, get_temp_dir, reset_node
-from saq.modules.test import BasicTestAnalysis, ConfigurableModuleTestAnalysis, CrossDepTargetAnalysis, CrossReqSourceAnalysis, CustomReqFalseAnalysis, CustomReqFalseDependentAnalysis, CustomReqSeesDepAnalysis, DeclaredDepAnalysis_A, DeclaredDepAnalysis_B, DeclaredDepAnalysis_C, DeclaredDepOnNoProduceAnalysis, DelayedAnalysisTestAnalysis, DelayedAnalysisTestModule, DependsOnRetryAnalysis, DependsOnRetryModule, FileSizeLimitAnalysis, FinalAnalysisTestAnalysis, GenericTestAnalysis, GroupedByTimeRangeAnalysis, GroupingTargetAnalysis, RetryOnFailureAnalysis, TestInstanceAnalysis, WaitAnalysis_A, WaitAnalysis_B, WaitAnalysis_C, WaitAnalyzerModule_B
+from saq.modules.test import BasicTestAnalysis, ConfigurableModuleTestAnalysis, CrossDepTargetAnalysis, CrossReqSourceAnalysis, CustomReqFalseAnalysis, CustomReqFalseDependentAnalysis, CustomReqSeesDepAnalysis, DeclaredDepAnalysis_A, DeclaredDepAnalysis_B, DeclaredDepAnalysis_C, DeclaredDepOnNoProduceAnalysis, DelayedAnalysisTestAnalysis, DelayedAnalysisTestModule, DependsOnRetryAnalysis, DependsOnRetryModule, FileSizeLimitAnalysis, FinalAnalysisTestAnalysis, GenericTestAnalysis, GroupedByTimeRangeAnalysis, GroupingTargetAnalysis, LowPriorityAnalysis, RetryOnFailureAnalysis, TestInstanceAnalysis, WaitAnalysis_A, WaitAnalysis_B, WaitAnalysis_C, WaitAnalyzerModule_B
 from saq.observables.file import FileObservable
 from saq.util.maintenance import cleanup_alerts
 from saq.util.time import parse_event_time
@@ -2845,17 +2845,26 @@ def test_primary_node_clear_locks(monkeypatch):
         assert cursor.fetchone() is None
 
 @pytest.mark.system
-def test_failed_analysis_module():
-    
-    # make sure that when an analysis module causes the entire analysis process to crash
-    # ACE deals with the situation and recovers
+@pytest.mark.parametrize("value, maximum_analysis_time", [
+    # the module kills its own worker
+    ("test_worker_death", None),
+    # the module hangs and the worker manager kills the worker at its deadline
+    ("test_worker_timeout", 0),
+])
+def test_failed_analysis_module(value, maximum_analysis_time):
+
+    # make sure that when an analysis module takes the worker down with it, ACE records
+    # the module as failed and the replacement worker finishes the rest of the root
+    if maximum_analysis_time is not None:
+        get_analysis_module_config("basic_test").maximum_analysis_time = maximum_analysis_time
+
     root_uuid = str(uuid.uuid4())
     root = create_root_analysis(uuid=root_uuid, storage_dir=get_storage_dir(root_uuid))
     root.initialize_storage()
-    observable = root.add_observable_by_spec(F_TEST, 'test_worker_death')
+    observable = root.add_observable_by_spec(F_TEST, value)
     root.save()
     root.schedule()
-    
+
     engine = Engine(config=EngineConfiguration(pool_size_limit=1))
     # basic test should run before low_priority does
     engine.configuration_manager.enable_module('basic_test')
@@ -2865,8 +2874,9 @@ def test_failed_analysis_module():
     engine.wait_for_start()
     # we should see it die
     wait_for_log_count('detected death of', 1, 5)
-    # and then we should have seen two workers start
-    wait_for_log_count('started worker', 2, 5)
+    # and the replacement finish the root: the dead worker never gets that far, and a worker that
+    # has only started has not recorded the failure or run low_priority yet
+    wait_for_log_count(f'completed analysis RootAnalysis({root_uuid})', 1, 5)
     os.kill(engine_process.pid, signal.SIGINT)
     wait_for_process(engine_process)
 
@@ -2876,57 +2886,11 @@ def test_failed_analysis_module():
     assert observable
 
     # we should have recorded a failed analysis
-    from saq.modules.test import BasicTestAnalysis
+    assert observable.get_and_load_analysis(BasicTestAnalysis) is None
     assert root.is_analysis_failed(BasicTestAnalysis, observable)
 
     # the low priority analysis module should have still executed
-    from saq.modules.test import LowPriorityAnalysis
-    analysis = observable.get_and_load_analysis(LowPriorityAnalysis)
-    assert analysis
-
-@pytest.mark.system
-def test_timeout():
-
-    # deal with analysis modules that never return from their execute_analyis() call
-
-    get_analysis_module_config("basic_test").maximum_analysis_time = 0
-
-    root_uuid = str(uuid.uuid4())
-    root = create_root_analysis(uuid=root_uuid, storage_dir=get_storage_dir(root_uuid))
-    root.initialize_storage()
-    observable = root.add_observable_by_spec(F_TEST, 'test_worker_timeout')
-    root.save()
-    root.schedule()
-    
-    engine = Engine(config=EngineConfiguration(pool_size_limit=1))
-    # basic test should run before low_priority does
-    engine.configuration_manager.enable_module('basic_test')
-    engine.configuration_manager.enable_module('low_priority')
-    engine_process = engine.start_nonblocking()
-    assert engine_process.pid
-    engine.wait_for_start()
-    # we should see it die
-    wait_for_log_count('detected death of', 1, 5)
-    # and then we should have seen two workers start
-    wait_for_log_count('started worker', 2, 5)
-    os.kill(engine_process.pid, signal.SIGINT)
-    wait_for_process(engine_process)
-
-    root = RootAnalysis(storage_dir=get_storage_dir(root.uuid))
-    root.load()
-    observable = root.get_observable(observable.uuid)
-    assert observable
-
-    # we should have recorded a failed analysis
-    from saq.modules.test import BasicTestAnalysis
-    analysis = observable.get_and_load_analysis(BasicTestAnalysis)
-    assert analysis is None
-    assert root.is_analysis_failed(BasicTestAnalysis, observable)
-
-    # the low priority analysis module should have still executed
-    from saq.modules.test import LowPriorityAnalysis
-    analysis = observable.get_and_load_analysis(LowPriorityAnalysis)
-    assert analysis
+    assert observable.get_and_load_analysis(LowPriorityAnalysis)
 
 @pytest.mark.system
 def test_timeout_root_flushed():
@@ -2945,7 +2909,7 @@ def test_timeout_root_flushed():
     observable = root.add_observable_by_spec(F_TEST, 'test_generate_file')
     root.save()
     root.schedule()
-    
+
     engine = Engine(config=EngineConfiguration(pool_size_limit=1))
     # basic test should run before low_priority does
     engine.configuration_manager.enable_module('generate_file')
@@ -2954,8 +2918,9 @@ def test_timeout_root_flushed():
     engine.wait_for_start()
     # we should see it die
     wait_for_log_count('detected death of', 1, 5)
-    # and then we should have seen two workers start
-    wait_for_log_count('started worker', 2, 5)
+    # and the replacement finish the root. stopping the engine before then would leave a second
+    # run of generate_file uncounted, and the count below would pass whether or not the root was flushed
+    wait_for_log_count(f'completed analysis RootAnalysis({root_uuid})', 1, 5)
     os.kill(engine_process.pid, signal.SIGINT)
     wait_for_process(engine_process)
 
