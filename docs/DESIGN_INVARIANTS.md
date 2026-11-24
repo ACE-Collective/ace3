@@ -785,3 +785,14 @@ is written there, change the tag to point at it.
   only to reopen a root it saved. See `tests/saq/helpers.py::create_root_analysis`. [#1130]
 - **Module-level state is reset in `global_function_setup`, because the suite runs in random
   order.** [AGENTS.md]
+
+## 24. Alert automation
+
+- **A rule acts at most once per (rule, alert, mode), and never on an alert a person owns.** The
+  run row is inserted before any action runs, and the unique key on `(rule_name, alert_uuid,
+  mode)` makes an overlapping sweep leave the alert alone, so renaming a rule makes it act again.
+  The ownership and OPEN guards are checked before the run is recorded, and the disposition action
+  checks them again under the alert's row lock; an alert it leaves alone has its run deleted, so
+  it is considered again. See `saq/alert_automation/rules.py::process_alert`,
+  `saq/alert_automation/runs.py::claim_run` and
+  `saq/database/model.py::AlertAutomationRun`. [docs/ALERT_AUTOMATION.md]
