@@ -304,6 +304,109 @@ def test_wait_returns_once_stopped(start_server):
     assert not waiter.is_alive()
 
 
+@pytest.mark.unit
+def test_an_accept_loop_that_dies_is_an_error_and_ends_the_wait(start_server, caplog):
+    server = start_server()
+    waiter, outcome = _in_background(server.wait_until_stopped)
+
+    # what select() then gets is not a socket
+    server._listener.close()
+    waiter.join(STOP_SECONDS)
+
+    assert not waiter.is_alive()
+    assert isinstance(outcome["error"], RuntimeError)
+    assert "stopped serving" in str(outcome["error"])
+    [record] = [r for r in caplog.records if "accept loop" in r.getMessage()]
+    assert record.levelno == logging.ERROR
+    assert record.exc_info
+
+
+@pytest.mark.unit
+def test_a_run_cancelled_while_it_waits_for_memory(start_server, tmp_path):
+    server = start_server(budget=256 * MIB)
+    first, _ = _in_background(lambda: _python(server, "import time; time.sleep(5)", tmp_path / "first"))
+    wait_for_condition(lambda: server._reserved == 256 * MIB, timeout=10)
+
+    started = time.monotonic()
+    with pytest.raises(SandboxCancelled):
+        _python(server, "print('never')", tmp_path / "second", cancel=lambda: True)
+
+    assert time.monotonic() - started < 5
+    first.join(30)
+
+
+@pytest.mark.unit
+def test_a_tool_that_cannot_be_started_is_an_error(start_server, tmp_path, monkeypatch, caplog):
+    server = start_server()
+
+    def cannot_start(*args, **kwargs):
+        raise OSError("no python here")
+
+    monkeypatch.setattr(server_module, "run_sandboxed", cannot_start)
+
+    with pytest.raises(ToolRunnerFailed, match="unable to start it: no python here"):
+        _python(server, "print('never')", tmp_path / "work")
+
+    [record] = [r for r in caplog.records if "unable to start" in r.getMessage()]
+    assert record.levelno == logging.ERROR
+    assert record.exc_info
+    assert _runs(server) == []
+
+
+@pytest.mark.unit
+def test_a_cgroup_that_cannot_be_removed_is_an_error_after_the_answer(start_server, tmp_path, monkeypatch, caplog):
+    server = start_server()
+    remove = server.cgroups.remove
+    left = []
+
+    def failing(path):
+        left.append(path)
+        raise OSError("busy")
+
+    monkeypatch.setattr(server.cgroups, "remove", failing)
+    try:
+        assert _python(server, "print('ran')", tmp_path / "work").stdout == "ran\n"
+    finally:
+        for path in left:
+            remove(path)
+
+    [record] = [r for r in caplog.records if "unable to remove the cgroup" in r.getMessage()]
+    assert record.levelno == logging.ERROR
+    assert record.exc_info
+
+
+@pytest.mark.unit
+def test_a_failure_handling_a_request_is_logged_and_the_client_told(start_server, tmp_path, monkeypatch, caplog):
+    server = start_server()
+
+    def unreadable(path):
+        raise ValueError("memory.events is not what it was")
+
+    monkeypatch.setattr(server.cgroups, "oom_killed", unreadable)
+
+    with pytest.raises(ToolRunnerFailed, match="closed the connection without answering"):
+        _python(server, "print('ran')", tmp_path / "work")
+
+    # logged once the connection is closed, which is what the client saw
+    wait_for_condition(lambda: any("failed to handle a request" in r.getMessage() for r in caplog.records), timeout=10)
+    [record] = [r for r in caplog.records if "failed to handle a request" in r.getMessage()]
+    assert record.levelno == logging.ERROR
+    assert record.exc_info
+    assert _runs(server) == []
+
+
+@pytest.mark.unit
+def test_what_an_old_kernel_cannot_enforce_is_logged_at_start(start_server, monkeypatch, caplog):
+    monkeypatch.setattr(server_module, "landlock_abi", lambda: 3)
+
+    start_server()
+
+    [tcp] = [r for r in caplog.records if "cannot restrict TCP ports" in r.getMessage()]
+    assert tcp.levelno == logging.ERROR
+    [signals] = [r for r in caplog.records if "cannot scope signals" in r.getMessage()]
+    assert signals.levelno == logging.WARNING
+
+
 def _fake_server(socket_dir: str, answer):
     """A server that reads one request and answers with answer(), or closes the connection when it is None."""
     path = os.path.join(socket_dir, "fake.sock")

@@ -130,7 +130,8 @@ class ToolRunnerServer:
     def wait_until_stopped(self):
         """Waits for stop(), or for the accept loop to die, and then for the runs to finish, at most
         STOP_SECONDS more. ace service start waits here while the service runs, and bounds the call once
-        it has called stop()."""
+        it has called stop(). Raises when the accept loop died, so the service exits with an error and
+        its container restarts."""
         while not self._stopping.wait(_POLL_SECONDS):
             if self._thread is None or not self._thread.is_alive():
                 break
@@ -145,6 +146,9 @@ class ToolRunnerServer:
             handler.join(max(0, give_up - time.monotonic()))
             if handler.is_alive():
                 logging.warning("a tool run did not stop within %d seconds of the tool runner stopping", STOP_SECONDS)
+
+        if not self._stopping.is_set():
+            raise RuntimeError(f"the tool runner stopped serving {self.socket_path}")
 
     def _serve(self):
         # stop() is what ends this loop rather than is_shutting_down(): ace service start calls it on a
@@ -167,6 +171,9 @@ class ToolRunnerServer:
                 with self._handlers_lock:
                     self._handlers.add(handler)
                 handler.start()
+        except Exception as e:
+            # nothing serves the socket now; wait_until_stopped() raises
+            logging.exception("the tool runner's accept loop on %s failed: %s", self.socket_path, e)
         finally:
             self._listener.close()
             try:

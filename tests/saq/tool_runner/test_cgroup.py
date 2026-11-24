@@ -207,3 +207,25 @@ def test_a_cgroup_that_cannot_be_removed_is_reported_by_sweep(tmp_path, caplog):
 
     [record] = [r for r in caplog.records if "unable to remove the cgroup" in r.getMessage()]
     assert record.exc_info
+
+
+@pytest.mark.unit
+def test_meminfo_without_a_total_is_an_error(tmp_path):
+    meminfo = tmp_path / "meminfo"
+    meminfo.write_text("MemFree:        1024 kB\n")
+
+    with pytest.raises(RuntimeError, match="no MemTotal"):
+        memory_budget(str(tmp_path), str(meminfo))
+
+
+@pytest.mark.unit
+def test_no_oom_kill_count_is_no_oom_kill(tmp_path):
+    (tmp_path / "memory.events").write_text("low 0\nhigh 0\nmax 3\n")
+
+    assert not RunCgroups(str(tmp_path)).oom_killed(str(tmp_path))
+
+
+@pytest.mark.unit
+def test_removing_a_cgroup_that_is_gone_does_nothing(tmp_path):
+    # no assertion: what it checks is that this does not raise
+    RunCgroups(str(tmp_path)).remove(str(tmp_path / "run-1-1"))
