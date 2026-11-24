@@ -740,6 +740,12 @@ services:
     hostname: ace
     cap_add:
       - SYS_PTRACE
+    # codex sandboxes the commands it runs with bubblewrap, which needs the unprivileged user
+    # namespaces that docker's default seccomp and AppArmor profiles deny. dev only: no ACE
+    # service runs here
+    security_opt:
+      - seccomp=unconfined
+      - apparmor=unconfined
     ports:
       - "${ACE_BIND_ADDRESS:-127.0.0.1}:${ACE_PORT_DEV_GUI:-5001}:5000"
     networks:
