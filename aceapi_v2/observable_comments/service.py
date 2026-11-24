@@ -7,12 +7,14 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from aceapi_v2.auth.schemas import ApiAuthResult
 from saq.analysis.observable import Observable as AnalysisObservable
 from saq.database.model import Observable as DBObservable, ObservableComment, normalize_comment
 from saq.database.util.observable_detection import (
     resolve_observable_identity,
     validate_observable_type,
 )
+from saq.logging import log_audit
 
 logger = logging.getLogger(__name__)
 
@@ -44,6 +46,15 @@ async def _find_or_create_observable(
         session.add(db_observable)
         await session.flush()
     return db_observable
+
+
+def _observable_fields(db_observable: DBObservable) -> dict:
+    """The extra={} fields naming the observable a comment is on, as the observables table stores it."""
+    return {
+        "observable_id": db_observable.id,
+        "observable_type": db_observable.type,
+        "observable_value": db_observable.value.decode("utf8", errors="replace"),
+    }
 
 
 async def get_comments_for_observable(
@@ -125,15 +136,17 @@ async def get_observable_db_ids(
 
 async def create_comment(
     session: AsyncSession,
-    user_id: int,
+    auth: ApiAuthResult,
     observable_type: str,
     observable_value: str,
     comment_text: str,
+    **audit_fields,
 ) -> ObservableComment:
-    """Create a comment on an observable, creating the DB observable row if needed."""
+    """Create auth's comment on an observable, creating the DB observable row if needed.
+    audit_fields go into the audit record's extra={} along with the comment's own fields."""
     db_observable = await _find_or_create_observable(session, observable_type, observable_value)
     comment = ObservableComment(
-        user_id=user_id,
+        user_id=auth.auth_user_id,
         observable_id=db_observable.id,
         comment=comment_text,
     )
@@ -141,30 +154,38 @@ async def create_comment(
     await session.flush()
     await session.refresh(comment)
     await session.refresh(comment, attribute_names=["user"])
+    fields = _observable_fields(db_observable)
+    log_audit("user %s added comment %s to observable %s %s", auth.auth_name, comment.comment,
+              fields["observable_type"], fields["observable_value"],
+              auth=auth, comment_id=comment.id, **fields, **audit_fields)
     return comment
 
 
 async def update_comment(
     session: AsyncSession,
     comment_id: int,
-    user_id: int,
+    auth: ApiAuthResult,
     comment_text: str,
 ) -> Optional[ObservableComment]:
-    """Update a comment's text. Returns None if not found, raises ValueError if not author."""
+    """Update auth's comment's text. Returns None if not found, raises PermissionError if auth is not its author."""
     result = await session.execute(
         select(ObservableComment)
         .where(ObservableComment.id == comment_id)
-        .options(selectinload(ObservableComment.user))
+        .options(selectinload(ObservableComment.user), selectinload(ObservableComment.observable))
     )
     comment = result.scalar_one_or_none()
     if comment is None:
         return None
-    if comment.user_id != user_id:
+    if comment.user_id != auth.auth_user_id:
         raise PermissionError("Only the comment author can edit this comment")
     # stored comments are normalized, so text that normalizes to the stored text is not a change and
     # must not mark it edited
     comment_text = normalize_comment(comment_text)
     if comment.comment != comment_text:
+        fields = _observable_fields(comment.observable)
+        log_audit("user %s edited comment %s on observable %s %s from %r to %r", auth.auth_name, comment_id,
+                  fields["observable_type"], fields["observable_value"], comment.comment, comment_text,
+                  auth=auth, comment_id=comment_id, **fields)
         comment.comment = comment_text
         comment.edited_at = func.now()
         await session.flush()
@@ -175,17 +196,22 @@ async def update_comment(
 async def delete_comment(
     session: AsyncSession,
     comment_id: int,
-    user_id: int,
+    auth: ApiAuthResult,
 ) -> bool:
-    """Delete a comment. Returns False if not found, raises ValueError if not author."""
+    """Delete auth's comment. Returns False if not found, raises PermissionError if auth is not its author."""
     result = await session.execute(
-        select(ObservableComment).where(ObservableComment.id == comment_id)
+        select(ObservableComment)
+        .where(ObservableComment.id == comment_id)
+        .options(selectinload(ObservableComment.observable))
     )
     comment = result.scalar_one_or_none()
     if comment is None:
         return False
-    if comment.user_id != user_id:
+    if comment.user_id != auth.auth_user_id:
         raise PermissionError("Only the comment author can delete this comment")
+    fields = _observable_fields(comment.observable)
+    log_audit("user %s deleted comment %s from observable %s %s", auth.auth_name, comment.comment,
+              fields["observable_type"], fields["observable_value"], auth=auth, comment_id=comment_id, **fields)
     await session.delete(comment)
     await session.flush()
     return True

@@ -1,6 +1,7 @@
 """Tests for aceapi_v2 observable comments router."""
 
 import hashlib
+import logging
 
 import pytest
 from httpx import AsyncClient
@@ -8,6 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from saq.database.model import Observable, ObservableComment, User
+from tests.saq.helpers import audit_actor_of, audit_record, audit_records
 
 pytestmark = pytest.mark.integration
 
@@ -34,9 +36,11 @@ class TestObservableComments:
 
     @pytest.mark.asyncio
     async def test_create_comment(
-        self, session: AsyncSession, client: AsyncClient, test_user: User
+        self, session: AsyncSession, client: AsyncClient, test_user: User, client_actor,
+        caplog: pytest.LogCaptureFixture
     ):
-        """Creating a comment should return 201 with correct structure."""
+        """Creating a comment should return 201 with correct structure, and audit who added what."""
+        caplog.set_level(logging.INFO)
         # Pre-create the observable
         obs = Observable(type="ipv4", sha256=_sha256("1.2.3.4"), value=b"1.2.3.4")
         session.add(obs)
@@ -56,6 +60,10 @@ class TestObservableComments:
         assert "insert_date" in data
         assert data["edited_at"] is None
         assert "user_display_name" in data
+
+        audit = audit_record(caplog, f"user {test_user.username} added comment suspicious IP to observable ipv4 1.2.3.4")
+        assert (*audit_actor_of(audit), audit.comment_id, audit.observable_id, audit.observable_type,
+                audit.observable_value) == (*client_actor, data["id"], obs.id, "ipv4", "1.2.3.4")
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("method", ["create", "update"])
@@ -140,9 +148,11 @@ class TestObservableComments:
 
     @pytest.mark.asyncio
     async def test_update_comment(
-        self, session: AsyncSession, client: AsyncClient, test_user: User
+        self, session: AsyncSession, client: AsyncClient, test_user: User, client_actor,
+        caplog: pytest.LogCaptureFixture
     ):
-        """Updating a comment should change its text."""
+        """Updating a comment should change its text, and audit what it said before and after."""
+        caplog.set_level(logging.INFO)
         obs = Observable(type="url", sha256=_sha256("http://bad.com"), value=b"http://bad.com")
         session.add(obs)
         await session.commit()
@@ -171,6 +181,11 @@ class TestObservableComments:
         assert data["edited_at"] == comment.edited_at.isoformat()
         assert data["insert_date"] == comment.insert_date.isoformat()
 
+        audit = audit_record(caplog, f"user {test_user.username} edited comment {comment.id} on observable url "
+                                     "http://bad.com from 'original text' to 'updated text'")
+        assert (*audit_actor_of(audit), audit.comment_id, audit.observable_id, audit.observable_type,
+                audit.observable_value) == (*client_actor, comment.id, obs.id, "url", "http://bad.com")
+
     @pytest.mark.asyncio
     @pytest.mark.parametrize("stored, sent", [
         ("same text", "same text"),
@@ -180,9 +195,11 @@ class TestObservableComments:
         ("looks benign", " looks benign"),
     ])
     async def test_update_comment_without_a_change(
-        self, session: AsyncSession, client: AsyncClient, test_user: User, stored: str, sent: str
+        self, session: AsyncSession, client: AsyncClient, test_user: User, stored: str, sent: str,
+        caplog: pytest.LogCaptureFixture
     ):
-        """Saving a comment's text untouched does not mark it edited."""
+        """Saving a comment's text untouched does not mark it edited, and is not audited as an edit."""
+        caplog.set_level(logging.INFO)
         obs = Observable(type="ipv4", sha256=_sha256("10.0.0.6"), value=b"10.0.0.6")
         session.add(obs)
         await session.commit()
@@ -197,12 +214,14 @@ class TestObservableComments:
         await session.refresh(comment)
         assert comment.comment == stored
         assert comment.edited_at is None
+        assert audit_records(caplog) == []
 
     @pytest.mark.asyncio
     async def test_update_comment_author_only(
-        self, session: AsyncSession, client: AsyncClient
+        self, session: AsyncSession, client: AsyncClient, caplog: pytest.LogCaptureFixture
     ):
         """Updating another user's comment should return 403."""
+        caplog.set_level(logging.INFO)
         obs = Observable(type="ipv4", sha256=_sha256("10.0.0.3"), value=b"10.0.0.3")
         session.add(obs)
         await session.commit()
@@ -233,12 +252,15 @@ class TestObservableComments:
             json={"comment": "trying to edit"},
         )
         assert response.status_code == 403
+        assert audit_records(caplog) == []
 
     @pytest.mark.asyncio
     async def test_delete_comment(
-        self, session: AsyncSession, client: AsyncClient, test_user: User
+        self, session: AsyncSession, client: AsyncClient, test_user: User, client_actor,
+        caplog: pytest.LogCaptureFixture
     ):
-        """Deleting own comment should return 204."""
+        """Deleting own comment should return 204, and audit the text removed."""
+        caplog.set_level(logging.INFO)
         obs = Observable(type="ipv4", sha256=_sha256("10.0.0.4"), value=b"10.0.0.4")
         session.add(obs)
         await session.commit()
@@ -260,11 +282,17 @@ class TestObservableComments:
         )
         assert result.scalar_one_or_none() is None
 
+        audit = audit_record(caplog, f"user {test_user.username} deleted comment to be deleted from observable "
+                                     "ipv4 10.0.0.4")
+        assert (*audit_actor_of(audit), audit.comment_id, audit.observable_id, audit.observable_type,
+                audit.observable_value) == (*client_actor, comment.id, obs.id, "ipv4", "10.0.0.4")
+
     @pytest.mark.asyncio
     async def test_delete_comment_author_only(
-        self, session: AsyncSession, client: AsyncClient
+        self, session: AsyncSession, client: AsyncClient, caplog: pytest.LogCaptureFixture
     ):
         """Deleting another user's comment should return 403."""
+        caplog.set_level(logging.INFO)
         obs = Observable(type="ipv4", sha256=_sha256("10.0.0.5"), value=b"10.0.0.5")
         session.add(obs)
         await session.commit()
@@ -291,6 +319,7 @@ class TestObservableComments:
 
         response = await client.delete(f"/observable-comments/{comment.id}")
         assert response.status_code == 403
+        assert audit_records(caplog) == []
 
     @pytest.mark.asyncio
     async def test_delete_comment_not_found(self, client: AsyncClient):
