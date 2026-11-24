@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """The /factory skill's deterministic layer: ticket and PR state, claiming, worktrees, and
-every write to GitHub or Azure DevOps. Runs on the host, where gh and az are logged in.
+every write to GitHub or Azure DevOps. Runs on the host, where gh and az are logged in (az through
+az login or AZURE_DEVOPS_EXT_PAT).
 Stdlib only.
 
     factory.py doctor                       check what a run needs, and say how to fix what is missing
@@ -50,6 +51,7 @@ public_text.py, and nothing is published when it finds a match or cannot run.
 """
 
 import argparse
+import base64
 import fnmatch
 import html
 import json
@@ -60,6 +62,7 @@ import subprocess
 import sys
 import tempfile
 import tomllib
+import urllib.request
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import public_text  # noqa: E402  (a sibling script, not a package)
@@ -353,8 +356,20 @@ def ado_args(repo: dict) -> list[str]:
     return ["--org", repo["config"]["azure_devops"]["organization"]]
 
 
-def ado_me() -> str:
-    return run(["az", "account", "show", "--query", "user.name", "-o", "tsv"]).strip()
+def ado_me(repo: dict) -> str:
+    # az devops authenticates with AZURE_DEVOPS_EXT_PAT, but az account show knows only an az login session
+    pat = os.environ.get("AZURE_DEVOPS_EXT_PAT")
+    if not pat:
+        return run(["az", "account", "show", "--query", "user.name", "-o", "tsv"]).strip()
+    url = repo["config"]["azure_devops"]["organization"].rstrip("/") + "/_apis/connectionData"
+    token = base64.b64encode(f":{pat}".encode()).decode()
+    request = urllib.request.Request(url, headers={"Authorization": f"Basic {token}", "Accept": "application/json"})
+    try:
+        with urllib.request.urlopen(request, timeout=TIMEOUT) as response:
+            data = json.load(response)
+        return data["authenticatedUser"]["properties"]["Account"]["$value"]
+    except (OSError, ValueError, KeyError, TypeError) as e:
+        raise FactoryError(f"reading who AZURE_DEVOPS_EXT_PAT belongs to from {url} failed: {e}") from e
 
 
 def ado_threads(repo: dict, pr_id: int) -> list[dict]:
@@ -453,7 +468,7 @@ class Context:
         return self._slug
 
     def me(self, ticket: dict) -> str:
-        return gh_me(self.main) if ticket["kind"] == "github" else ado_me()
+        return gh_me(self.main) if ticket["kind"] == "github" else ado_me(ado_repo_for_ticket(self.repos))
 
     def ticket(self, ticket: dict) -> dict:
         if ticket["kind"] == "github":
@@ -941,7 +956,7 @@ def set_labels(ctx: Context, ref: str, add: set[str], remove: set[str], assign: 
         gh(ctx.main, *args)
     else:
         repo = ado_repo_for_ticket(ctx.repos)
-        ado_set_tags(repo, ticket["id"], add, remove, assign=ado_me() if assign else None, unassign=unassign)
+        ado_set_tags(repo, ticket["id"], add, remove, assign=ado_me(repo) if assign else None, unassign=unassign)
 
 
 def claim(ctx: Context, ref: str) -> dict:
@@ -1329,9 +1344,9 @@ def doctor(ctx: Context) -> dict:
         add("denylists", False, str(e), "nothing public can be posted until this passes")
     if any(r["host"] == "azure-devops" for r in ctx.repos.values()):
         try:
-            add("az", True, f"logged in as {ado_me()}")
+            add("az", True, f"logged in as {ado_me(ado_repo_for_ticket(ctx.repos))}")
         except FactoryError as e:
-            add("az", False, str(e), "az login")
+            add("az", False, str(e), "az login, or set AZURE_DEVOPS_EXT_PAT to a valid PAT")
     try:
         missing = sorted(set(LABELS) - label_names(ctx))
         add("labels", not missing, f"missing {', '.join(missing)}" if missing else "all present", "factory.py labels")
