@@ -326,22 +326,23 @@ def test_threaded_remote_node_multi_submissions_with_large_batch(engine):
             while self.available_work:
                 yield self.available_work.pop()
 
-    # start an engine to get a node created
-    #engine = Engine(config=EngineConfiguration(pool_size_limit=1))
-    #engine.node_manager.initialize_node()
-    #engine.node_manager.update_node_status()
-
     collector_service = CollectorService(collector=_custom_collector(), config=get_service_config("test_collector"))
     tg1 = collector_service.create_group_loader()._create_group('test_group_1', 100, True, get_global_runtime_settings().company_id, _local_node_id(), batch_size=2, thread_count=2)
     collector_service.remote_node_groups.append(tg1)
-    collector_service.start()
-    try:
-        assert collector_service.wait_for_start(timeout=5)
 
-        wait_for_log_count('scheduled test_description mode analysis', 2, 5)
+    # schedule both before the group's threads start: each submission is scheduled on its own,
+    # so a thread that polls between the two takes a batch of one, and the two never meet again
+    collector_service.start_single_threaded(execution_mode=CollectorExecutionMode.SINGLE_SHOT, execute_nodes=False)
+    assert log_count('scheduled test_description mode analysis') == 2
+
+    tg1.start()
+    try:
         wait_for_log_count('submitting 2 items', 1, 5)
     finally:
-        collector_service.stop()
+        tg1.stop()
+        tg1.wait()
+
+    assert log_count('submitting 1 items') == 0
 
     # both the incoming_workload and work_distribution tables should have 2 entries
     with get_db_connection() as db:
