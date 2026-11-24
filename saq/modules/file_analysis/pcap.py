@@ -366,7 +366,8 @@ def _run_tool(config: PcapConfig, pcap_path: str, workdir: str, command: list[st
         raise PcapError(f"{tool} failed: {e}") from e
 
     # a missing binary, a wrong tshark_path or a node the sandbox cannot be set up on; the launcher's
-    # verdicts on a run that did start (EXIT_DEADLINE, EXIT_PROCESS_LIMIT) are the capture's problem
+    # verdicts on a run that did start (EXIT_DEADLINE, EXIT_PROCESS_LIMIT, EXIT_MEMORY_LIMIT) are the
+    # capture's problem
     if not result.stdout.strip() and result.returncode in NODE_FAILURE_EXIT_CODES:
         raise PcapNodeError(f"{tool} could not be run in the sandbox: {result.stderr.strip()[-500:]}")
 

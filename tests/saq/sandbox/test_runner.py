@@ -14,7 +14,7 @@ from saq.environment import get_base_dir
 from saq.modules import AnalysisModule
 from saq.modules.config import AnalysisModuleConfig
 from saq.sandbox import runner
-from saq.sandbox.launcher import NET_ABI, landlock_abi
+from saq.sandbox.launcher import EXIT_MEMORY_LIMIT, NET_ABI, landlock_abi
 from saq.sandbox.runner import (
     SandboxCancelled,
     build_sandbox_argv,
@@ -51,6 +51,35 @@ def test_cpu_time_is_the_timeout_unless_given(cpu_seconds, expected):
     argv = build_sandbox_argv(["/bin/true"], "/nonexistent", SandboxConfig(), datetime.timedelta(seconds=4.5),
                               cpu_seconds=cpu_seconds)
     assert expected in argv
+
+
+@pytest.mark.unit
+def test_memory_limit_is_the_launchers_not_an_rlimit():
+    argv = build_sandbox_argv(["/bin/true"], "/nonexistent", SandboxConfig(memory_limit=1024 ** 3), datetime.timedelta(seconds=5))
+    assert f"--memory-limit={1024 ** 3}" in argv[:argv.index("--")]
+    assert not any(arg.startswith("--as") for arg in argv)
+
+
+@pytest.mark.unit
+@pytest.mark.skipif(not landlock_available(), reason="landlock is unavailable")
+def test_a_command_that_uses_more_than_its_memory_limit_is_reported(tmp_path):
+    workdir = str(tmp_path)
+    config = NO_TCP_RULES.model_copy(update={"memory_limit": 256 * 1024 ** 2})
+
+    result = _run_python("import time\nx = b'x' * (512 * 1024 ** 2)\ntime.sleep(60)", workdir, config=config)
+
+    assert result.memory_used > 256 * 1024 ** 2
+    assert f"more than its limit of {256 * 1024 ** 2} bytes" in result.stderr
+
+
+@pytest.mark.unit
+@pytest.mark.skipif(not landlock_available(), reason="landlock is unavailable")
+def test_memory_used_is_only_set_for_a_memory_kill(tmp_path):
+    # a command can exit with the launcher's code itself; only the launcher's line says it was killed
+    result = _run_python(f"import sys\nsys.exit({EXIT_MEMORY_LIMIT})", str(tmp_path))
+
+    assert result.returncode == EXIT_MEMORY_LIMIT
+    assert result.memory_used is None
 
 
 @pytest.mark.unit

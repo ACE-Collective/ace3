@@ -188,8 +188,8 @@ print(json.dumps({"cwd": os.getcwd(), "home": os.environ["HOME"], "tmpdir": os.e
 class TestLimits:
     def test_memory_limit(self, tmpdir, monkeypatch):
         _limits(monkeypatch, memory_limit=256 * 1024 ** 2)
-        with pytest.raises(RuntimeError, match="MemoryError"):
-            _run(_python("x = bytearray(512 * 1024 ** 2)"), tmpdir)
+        with pytest.raises(RuntimeError, match=f"more than its limit of {256 * 1024 ** 2} bytes"):
+            _run(_python("import time\nx = b'x' * (512 * 1024 ** 2)\ntime.sleep(60)"), tmpdir)
 
     def test_file_size_limit(self, tmpdir, monkeypatch):
         _limits(monkeypatch, file_size_limit=1024 ** 2)

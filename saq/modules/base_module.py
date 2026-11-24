@@ -409,7 +409,6 @@ class AnalysisModule(FileWatcherMixin):
         workdir: Optional[str] = None,
         cwd: Optional[str] = None,
         env: Optional[dict[str, str]] = None,
-        memory_limit: Optional[int] = None,
         startup_errors: Sequence[str] = (),
         partial_output: bool = False,
     ) -> Optional[SandboxResult]:
@@ -428,17 +427,14 @@ class AnalysisModule(FileWatcherMixin):
         moved from a tool that was stopped.
 
         It is stopped like run_tool() stops one (at timeout seconds, or before this call to analyze()
-        runs out of time), when it writes more than tool_sandbox.max_output_bytes, and when
-        should_stop() says so. env is added to the tool's environment, which is never ACE's own.
-        memory_limit replaces tool_sandbox.memory_limit for a runtime that reserves more address
-        space than it uses. startup_errors are what such a runtime starts its stdout or stderr with
-        when the sandbox keeps it from starting (a directory it needs is not readable, the memory
-        limit is too small for it): a non-zero exit that starts so is reported like a program the
+        runs out of time), when it writes more than tool_sandbox.max_output_bytes, when its processes
+        use more than tool_sandbox.memory_limit bytes of memory, and when should_stop() says so. env
+        is added to the tool's environment, which is never ACE's own. startup_errors are what a
+        runtime starts its stdout or stderr with when the sandbox keeps it from starting (a directory
+        it needs is not readable): a non-zero exit that starts so is reported like a program the
         sandbox cannot start. With partial_output, a tool stopped for writing too much output returns
         what it wrote up to then, flagged output_exceeded, rather than None; it keeps no outputs."""
         config = get_config().tool_sandbox
-        if memory_limit is not None:
-            config = config.model_copy(update={"memory_limit": memory_limit})
         program = self._resolve_tool(args[0])
         if program is None:
             self._sandbox_failed(args[0], target, f"{args[0]} not found")
@@ -492,6 +488,14 @@ class AnalysisModule(FileWatcherMixin):
             except RuntimeError as e:
                 # a timeout: the file's doing, not the node's
                 logging.warning("%s stopped %s on %s: %s", self, tool, target, e, extra={"path": target})
+                return None
+
+            # the file's doing, like a timeout
+            if result.memory_used is not None:
+                logging.warning("%s stopped %s on %s: it used %d bytes of memory, more than tool_sandbox's memory "
+                                "limit of %d bytes", self, tool, target, result.memory_used, config.memory_limit,
+                                extra={"path": target, "memory_used": result.memory_used,
+                                       "memory_limit": config.memory_limit})
                 return None
 
             # a program the sandbox cannot start: a wrong path, or a directory it needs that is not readable

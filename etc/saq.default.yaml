@@ -567,7 +567,7 @@ hunter:
     executable:
       # relative to DATA_DIR; must be on a filesystem that allows execution (not a noexec tmpfs)
       work_dir: var/correlation_sandbox
-      # address space limit in bytes (4 GiB)
+      # most memory the command's processes may use together, in bytes (4 GiB); not reserved address space
       memory_limit: 4294967296
       # largest file a command may write, in bytes (256 MiB)
       file_size_limit: 268435456

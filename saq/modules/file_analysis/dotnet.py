@@ -26,13 +26,8 @@ ILSPY_TIMEOUT_SECONDS = 10
 # /proc/self in a Landlock rule is the tool's own directory and no other process's: setpriv opens
 # it and then execs the tool in the same process
 DOTNET_READ_DIRS = ["/proc/self"]
-# the GC reserves 256 GB of address space unless it is given a heap limit and a region range, and
-# even then the runtime reserves about 5 GB (ilspycmd 5.4 GB, de4dot 4.7 GB) to use a few hundred MB;
-# the heap limit is what bounds the memory a tool actually uses
-DOTNET_ENV = {"DOTNET_GCHeapHardLimit": "0x40000000", "DOTNET_GCRegionRange": "0x80000000"}
-DOTNET_MEMORY_LIMIT = 12 * 1024 ** 3
 # what the .NET host starts its output with when the sandbox keeps CoreCLR from starting: no
-# /proc/<pid>, or too little address space for its GC
+# /proc/<pid>, or a GC heap it cannot reserve
 DOTNET_STARTUP_ERRORS = ["Failed to create CoreCLR", "GC heap initialization failed"]
 
 class De4dotAnalysis(Analysis):
@@ -100,8 +95,8 @@ class De4dotAnalyzer(AnalysisModule):
                     workdir: Optional[str] = None):
         # de4dot's dynamic string decrypters can call the sample's own methods
         return self.run_sandboxed_tool([self.config.binary_path, *args], local_file_path, timeout=DE4DOT_TIMEOUT_SECONDS,
-                                       read_dirs=DOTNET_READ_DIRS, env=DOTNET_ENV, memory_limit=DOTNET_MEMORY_LIMIT,
-                                       outputs=outputs, workdir=workdir, startup_errors=DOTNET_STARTUP_ERRORS)
+                                       read_dirs=DOTNET_READ_DIRS, outputs=outputs, workdir=workdir,
+                                       startup_errors=DOTNET_STARTUP_ERRORS)
     
     @property
     def valid_observable_types(self):
@@ -245,8 +240,8 @@ class IlspyAnalyzer(AnalysisModule):
         with self.tool_workdir() as workdir:
             result = self.run_sandboxed_tool([self.binary_path, "-il", "--disable-updatecheck", "-o", workdir, _file.full_path],
                                              _file.full_path, timeout=ILSPY_TIMEOUT_SECONDS, read_dirs=DOTNET_READ_DIRS,
-                                             env=DOTNET_ENV, memory_limit=DOTNET_MEMORY_LIMIT, workdir=workdir,
-                                             outputs={il_name: target_path}, startup_errors=DOTNET_STARTUP_ERRORS)
+                                             workdir=workdir, outputs={il_name: target_path},
+                                             startup_errors=DOTNET_STARTUP_ERRORS)
         if result is None:
             analysis.error = "ilspy did not finish"
             return AnalysisExecutionResult.COMPLETED

@@ -611,13 +611,35 @@ def test_sandboxed_tool_timeout_is_what_the_call_has_left(root_analysis, monkeyp
 
 @pytest.mark.unit
 @needs_landlock
-def test_memory_limit_replaces_the_configured_one(root_analysis):
+def test_a_tool_has_no_address_space_limit(root_analysis):
+    # a runtime that reserves more than it uses (the .NET GC, the JVM, OpenBLAS) starts with its defaults
     module = _module(SsdeepAnalyzer, "ssdeep", root_analysis)
     observable = _file(root_analysis, "sample.bin", b"sample")
 
-    result = module.run_sandboxed_tool(_sh("ulimit -v"), observable.full_path, memory_limit=1024 ** 3)
+    result = module.run_sandboxed_tool(_sh("ulimit -v"), observable.full_path)
 
-    assert result.stdout.strip() == str(1024 ** 2)
+    assert result.stdout.strip() == "unlimited"
+
+
+@pytest.mark.unit
+@needs_landlock
+def test_a_tool_that_uses_more_than_the_memory_limit_is_stopped(root_analysis, monkeypatch, caplog):
+    monkeypatch.setattr(get_config().tool_sandbox, "memory_limit", 256 * 1024 ** 2)
+    module = _module(SsdeepAnalyzer, "ssdeep", root_analysis)
+    observable = _file(root_analysis, "sample.bin", b"sample")
+    allocate = "import time\nx = b'x' * (512 * 1024 ** 2)\ntime.sleep(60)"
+
+    with caplog.at_level(logging.WARNING):
+        assert module.run_sandboxed_tool([sandbox_python(), "-I", "-c", allocate], observable.full_path) is None
+
+    [record] = [r for r in caplog.records if "memory limit" in r.getMessage()]
+    assert record.levelno == logging.WARNING
+    assert record.memory_used > 256 * 1024 ** 2
+    assert record.memory_limit == 256 * 1024 ** 2
+    assert record.getMessage() == (f"SsdeepAnalyzer stopped {os.path.basename(sandbox_python())} on {observable.full_path}: "
+                                   f"it used {record.memory_used} bytes of memory, more than tool_sandbox's memory "
+                                   f"limit of {256 * 1024 ** 2} bytes")
+    assert record.path == observable.full_path
 
 
 @pytest.mark.unit
