@@ -11,12 +11,12 @@ import logging
 import os
 import socket
 import threading
-import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Optional
 
 import requests
+from requests.adapters import HTTPAdapter
 from bs4 import BeautifulSoup
 from sqlalchemy import func, or_, select
 
@@ -104,24 +104,84 @@ def _auth(feed: Feed) -> tuple[Optional[tuple[str, str]], dict[str, str]]:
     return None, {feed.auth_name: secret}
 
 
-def _shut_down(fileno: int) -> None:
-    """Shuts down the connection whose socket is fileno, so a read blocked on it returns at once."""
-    # a duplicate of the descriptor: closing it leaves the response's own socket for the response to close
-    sock = socket.socket(fileno=os.dup(fileno))
+class _Deadline:
+    """Shuts down every connection one fetch opened once the fetch has run its course, so a read
+    blocked on any of them returns at once: the read timeout bounds each read, not the response, and a
+    server sending its headers or body a byte at a time would otherwise hold the whole feed loop."""
+
+    def __init__(self, seconds: float):
+        self.lock = threading.Lock()
+        # duplicates of the connections' descriptors: the connection closes its own when it likes, and
+        # these are never another socket's until close() closes them
+        self.sockets: list[socket.socket] = []
+        self.expired = False
+        self.closed = False
+        self.timer = threading.Timer(seconds, self.expire)
+        self.timer.daemon = True
+
+    def watch(self, sock: socket.socket) -> None:
+        duplicate = socket.socket(fileno=os.dup(sock.fileno()))
+        with self.lock:
+            self.sockets.append(duplicate)
+            if self.expired:
+                # connected after the deadline: the connect timeout bounded it, nothing bounds the rest
+                _shut_down(duplicate)
+
+    def expire(self) -> None:
+        with self.lock:
+            if self.closed:
+                return
+            self.expired = True
+            for sock in self.sockets:
+                _shut_down(sock)
+
+    def close(self) -> None:
+        self.timer.cancel()
+        with self.lock:
+            self.closed = True
+            for sock in self.sockets:
+                sock.close()
+
+
+def _shut_down(sock: socket.socket) -> None:
     try:
         sock.shutdown(socket.SHUT_RDWR)
     except OSError:
         # the peer closed it already: the read it would have ended has ended
         pass
-    finally:
-        sock.close()
+
+
+class _DeadlineAdapter(HTTPAdapter):
+    """Hands each connection's socket to the deadline as soon as it is connected, before the proxy
+    tunnel, the TLS handshake and the request, so the deadline covers all of them."""
+
+    def __init__(self, deadline: _Deadline):
+        super().__init__()
+        self.deadline = deadline
+
+    def get_connection_with_tls_context(self, request, verify, proxies=None, cert=None):
+        pool = super().get_connection_with_tls_context(request, verify, proxies=proxies, cert=cert)
+        if not getattr(pool.ConnectionCls, "feed_deadline", None):
+            deadline = self.deadline
+
+            # _new_conn is where every urllib3 connection class (plain, TLS, SOCKS) gets its socket
+            class WatchedConnection(pool.ConnectionCls):
+                feed_deadline = deadline
+
+                def _new_conn(self):
+                    sock = super()._new_conn()
+                    deadline.watch(sock)
+                    return sock
+
+            pool.ConnectionCls = WatchedConnection
+        return pool
 
 
 def fetch_feed(feed: Feed, config: FeedWatchServiceConfig) -> FetchResult:
-    """One conditional GET of the feed, its body capped at max_feed_bytes and cut off once the fetch
-    has run fetch_deadline_seconds (connecting and the headers are bounded by the timeouts). Raises FeedFetchError for an HTTP error, a body that is too large or a
-    fetch past its deadline, and requests' exceptions for a fetch that failed."""
-    deadline = time.monotonic() + config.fetch_deadline_seconds
+    """One conditional GET of the feed, its body capped at max_feed_bytes and the whole response, from
+    the moment the connection is made, cut off once the fetch has run fetch_deadline_seconds. Raises
+    FeedFetchError for an HTTP error, a body that is too large or a fetch past its deadline, and
+    requests' exceptions for a fetch that failed."""
     auth, headers = _auth(feed)
     headers = {"User-Agent": USER_AGENT, **headers}
     if feed.etag:
@@ -129,57 +189,40 @@ def fetch_feed(feed: Feed, config: FeedWatchServiceConfig) -> FetchResult:
     if feed.last_modified:
         headers["If-Modified-Since"] = feed.last_modified
 
-    with requests.get(feed.url, headers=headers, auth=auth, proxies=proxies(config.fetch_proxy), stream=True,
-                      timeout=(config.fetch_connect_timeout_seconds, config.fetch_read_timeout_seconds)) as response:
-        if response.status_code == 304:
-            return FetchResult(not_modified=True)
-        if response.status_code >= 400:
-            raise FeedFetchError(f"HTTP {response.status_code}")
+    deadline = _Deadline(config.fetch_deadline_seconds)
+    late = f"the response took longer than {config.fetch_deadline_seconds:g}s"
+    try:
+        with requests.Session() as session:
+            adapter = _DeadlineAdapter(deadline)
+            session.mount("http://", adapter)
+            session.mount("https://", adapter)
+            deadline.timer.start()
+            with session.get(feed.url, headers=headers, auth=auth, proxies=proxies(config.fetch_proxy), stream=True,
+                             timeout=(config.fetch_connect_timeout_seconds, config.fetch_read_timeout_seconds)) as response:
+                if response.status_code == 304:
+                    return FetchResult(not_modified=True)
+                if response.status_code >= 400:
+                    raise FeedFetchError(f"HTTP {response.status_code}")
 
-        # the read timeout bounds each read, not the body: a server sending a byte at a time would
-        # keep this loop, and with it the whole feed loop, going for as long as it liked
-        try:
-            fileno = response.raw.fileno()
-        except OSError:
-            # no socket under it (a response read from memory): nothing to wait on
-            fileno = None
-        expired = threading.Event()
-        # held while the connection is shut down, and taken before the response closes its socket, so
-        # the descriptor is never another socket's by the time it is shut down
-        finished = threading.Lock()
-        done = False
+                body = bytearray()
+                for chunk in response.iter_content(65536):
+                    body.extend(chunk)
+                    if len(body) > config.max_feed_bytes:
+                        raise FeedFetchError(f"the response is larger than {config.max_feed_bytes} bytes")
+                if deadline.expired:
+                    # a body without a length simply ends when its connection is shut down
+                    raise FeedFetchError(late)
 
-        def expire():
-            with finished:
-                if done:
-                    return
-                expired.set()
-                if fileno is not None:
-                    _shut_down(fileno)
-
-        watchdog = threading.Timer(max(0.0, deadline - time.monotonic()), expire)
-        watchdog.daemon = True
-        watchdog.start()
-        body = bytearray()
-        try:
-            for chunk in response.iter_content(65536):
-                body.extend(chunk)
-                if len(body) > config.max_feed_bytes:
-                    raise FeedFetchError(f"the response is larger than {config.max_feed_bytes} bytes")
-        except Exception as e:
-            if expired.is_set():
-                raise FeedFetchError(f"the response took longer than {config.fetch_deadline_seconds:g}s") from e
-            raise
-        finally:
-            with finished:
-                done = True
-            watchdog.cancel()
-        if expired.is_set():
-            # a body without a length simply ends when its connection is shut down
-            raise FeedFetchError(f"the response took longer than {config.fetch_deadline_seconds:g}s")
-
-        return FetchResult(not_modified=False, body=bytes(body), etag=response.headers.get("ETag"),
-                           last_modified=response.headers.get("Last-Modified"))
+                return FetchResult(not_modified=False, body=bytes(body), etag=response.headers.get("ETag"),
+                                   last_modified=response.headers.get("Last-Modified"))
+    except FeedFetchError:
+        raise
+    except Exception as e:
+        if deadline.expired:
+            raise FeedFetchError(late) from e
+        raise
+    finally:
+        deadline.close()
 
 
 def due_feeds() -> list[int]:

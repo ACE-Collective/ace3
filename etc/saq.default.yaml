@@ -563,7 +563,7 @@ service_feed_watch:
   # fetching a feed
   fetch_connect_timeout_seconds: 10
   fetch_read_timeout_seconds: 30
-  # the longest a whole fetch may take, its body included (the read timeout bounds each read only)
+  # the longest a whole fetch may take, from connecting to the end of its body (the read timeout bounds each read only)
   fetch_deadline_seconds: 120
   max_feed_bytes: 10485760
   # a named proxy (proxy_<name>) for fetching feeds; unset for global.default_proxy

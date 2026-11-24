@@ -1,6 +1,8 @@
 """Polling feeds (docs/FEED_WATCHES.md, *Polling*)."""
 
 import logging
+import socket
+import ssl
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -161,18 +163,22 @@ def test_a_failed_poll_is_logged_and_recorded(requests_mock, caplog, failure, me
 
 
 class _Drip(BaseHTTPRequestHandler):
-    """A feed that sends its body a byte at a time, each well within the read timeout, for up to 8s."""
+    """A feed that sends its body (or, for server.length "headers", a header) a byte at a time, each
+    well within the read timeout, for up to 8s."""
 
     def do_GET(self):
-        self.send_response(200)
-        self.send_header("Content-Type", "application/rss+xml")
-        if self.server.length:
-            self.send_header("Content-Length", str(self.server.length))
-        self.end_headers()
+        if self.server.length == "headers":
+            self.wfile.write(b"HTTP/1.1 200 OK\r\nX-Slow: ")
+        else:
+            self.send_response(200)
+            self.send_header("Content-Type", "application/rss+xml")
+            if self.server.length:
+                self.send_header("Content-Length", str(self.server.length))
+            self.end_headers()
         end = time.monotonic() + 8
         try:
             while time.monotonic() < end and not self.server.stop.wait(0.1):
-                self.wfile.write(b"<")
+                self.wfile.write(b"a" if self.server.length == "headers" else b"<")
                 self.wfile.flush()
         except OSError:
             # the client shut the connection down: what the test waits for
@@ -183,19 +189,25 @@ class _Drip(BaseHTTPRequestHandler):
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize("length", [None, 1000000])
-def test_a_feed_that_trickles_its_body_fails_at_the_deadline(monkeypatch, length):
+@pytest.mark.parametrize("length, tls", [(None, False), (1000000, False), ("headers", False), ("headers", True)])
+def test_a_feed_that_trickles_its_response_fails_at_the_deadline(monkeypatch, length, tls):
     monkeypatch.setattr(poller, "proxies", lambda name=None: {})
     server = ThreadingHTTPServer(("127.0.0.1", 0), _Drip)
     server.daemon_threads = True
+    if tls:
+        # the TLS socket takes the connected socket's descriptor over, so the deadline must hold its own
+        context = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
+        context.load_cert_chain("ssl/ace.cert.pem", "ssl/ace.key.pem")
+        server.socket = context.wrap_socket(server.socket, server_side=True)
+        monkeypatch.setenv("REQUESTS_CA_BUNDLE", "ssl/ca-chain.cert.pem")
     server.stop = threading.Event()
     server.length = length
     threading.Thread(target=server.serve_forever, daemon=True).start()
     config = service_config()
     config.fetch_read_timeout_seconds = 1
     config.fetch_deadline_seconds = 1.5
-    feed = SimpleNamespace(url=f"http://127.0.0.1:{server.server_port}/feed.xml", auth_type="none", auth_secret=None,
-                           etag=None, last_modified=None)
+    feed = SimpleNamespace(url=f"{'https' if tls else 'http'}://127.0.0.1:{server.server_port}/feed.xml", auth_type="none",
+                           auth_secret=None, etag=None, last_modified=None)
     try:
         started = time.monotonic()
         with pytest.raises(poller.FeedFetchError, match="took longer than 1.5s"):
@@ -205,6 +217,42 @@ def test_a_feed_that_trickles_its_body_fails_at_the_deadline(monkeypatch, length
         server.stop.set()
         server.shutdown()
         server.server_close()
+
+
+@pytest.mark.unit
+def test_a_connection_made_after_the_deadline_is_shut_down_and_the_duplicates_closed():
+    deadline = poller._Deadline(60)
+    deadline.expire()
+    ours, theirs = socket.socketpair()
+    # fails rather than hangs when the connection is left open
+    theirs.settimeout(5)
+    try:
+        deadline.watch(ours)
+        # shut down: the peer reads the end of the stream, and our own end is still open
+        assert theirs.recv(1) == b""
+        assert ours.fileno() != -1
+        (duplicate,) = deadline.sockets
+        deadline.close()
+        assert duplicate.fileno() == -1
+    finally:
+        ours.close()
+        theirs.close()
+
+
+@pytest.mark.unit
+def test_a_deadline_that_runs_out_after_the_fetch_finished_does_nothing():
+    deadline = poller._Deadline(60)
+    ours, theirs = socket.socketpair()
+    try:
+        deadline.watch(ours)
+        deadline.close()
+        deadline.expire()
+        assert not deadline.expired
+        # what a shut down of a socket already closed comes to
+        poller._shut_down(deadline.sockets[0])
+    finally:
+        ours.close()
+        theirs.close()
 
 
 @pytest.mark.integration
