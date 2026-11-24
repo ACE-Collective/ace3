@@ -3525,6 +3525,8 @@ class ExternalRemediationCheck(Base):
               mysql_length={'probe_name': 64, 'observable_type': 64}),
         Index('idx_erc_collector_loop', 'status', 'probe_name', desc('insert_date'),
               mysql_length={'probe_name': 64}),
+        # the external_remediation_confirmed alert automation trigger's candidate query
+        Index('idx_erc_probe_result_time', 'probe_name', 'result', 'update_time'),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
@@ -3607,6 +3609,41 @@ class ExternalRemediationCheck(Base):
     def __str__(self):
         return (f"ExternalRemediationCheck: {self.probe_name} - {self.observable_type} - "
                 f"{self.status} - {self.observable_value} - {self.result}")
+
+
+
+class AlertAutomationRun(Base):
+    """One alert automation rule's run on one alert (saq/alert_automation/, docs/ALERT_AUTOMATION.md).
+
+    The unique key is what makes a rule act at most once per alert and mode: the service inserts
+    the row before any action runs, so a second instance that overlaps it fails the insert and
+    leaves the alert alone. status is pending while an action is still to be (re)tried, done once
+    every action is done or skipped, and failed once an action ran out of attempts. evidence is
+    the trigger's evidence and actions is one entry per action of the rule, in its order, each
+    {type, status, attempts, detail, reason}; both are JSON-serialized (no native JSON column
+    type is used in this schema -- see ExternalRemediationCheck.context_json). Only
+    saq/alert_automation writes this table."""
+
+    __tablename__ = 'alert_automation_runs'
+    __table_args__ = (
+        UniqueConstraint('rule_name', 'alert_uuid', 'mode', name='uq_aar_rule_alert_mode'),
+        # the pending runs a sweep retries
+        Index('idx_aar_rule_mode_status', 'rule_name', 'mode', 'status', 'id'),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    rule_name: Mapped[str] = mapped_column(String(128), nullable=False)
+    # not a foreign key: the run is the record of what ACE did, and outlives the alert
+    alert_uuid: Mapped[str] = mapped_column(String(36), nullable=False)
+    mode: Mapped[str] = mapped_column(Enum('dry_run', 'enforce'), nullable=False)
+    status: Mapped[str] = mapped_column(
+        Enum('pending', 'done', 'failed'), nullable=False, server_default=text("'pending'"))
+    evidence: Mapped[str] = mapped_column(MEDIUMTEXT, nullable=False)
+    actions: Mapped[str] = mapped_column(MEDIUMTEXT, nullable=False)
+    insert_date: Mapped[datetime] = mapped_column(
+        TIMESTAMP, nullable=False, index=True, server_default=text('CURRENT_TIMESTAMP'))
+    update_time: Mapped[datetime] = mapped_column(
+        TIMESTAMP, nullable=False, server_default=text('CURRENT_TIMESTAMP'))
 
 
 class Tag(Base):

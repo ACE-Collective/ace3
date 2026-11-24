@@ -44,6 +44,7 @@ from saq.modules.context import AnalysisModuleContext
 from saq.monitor import reset_emitter
 from saq.permissions.user import add_user_permission
 from saq.remediation.target import reset_observable_remediation_interface_registry
+from saq.alert_automation.rules import reset_alert_automation_registry
 import saq
 import saq.observables.generator as observable_generator
 from saq.util.uuid import storage_dir_from_uuid
@@ -153,6 +154,7 @@ def execute_global_db_setup(database_reset_information: Optional[DatabaseResetIn
         cursor.execute("DELETE FROM events")
         cursor.execute("DELETE FROM remediation")
         cursor.execute("DELETE FROM external_remediation_check")
+        cursor.execute("DELETE FROM alert_automation_runs")
         cursor.execute("DELETE FROM file_collection_waiters")
         cursor.execute("DELETE FROM file_collection_history")
         cursor.execute("DELETE FROM file_collection")
@@ -444,6 +446,9 @@ def global_function_setup(request):
 
     # reset the observable remediation interface registry
     reset_observable_remediation_interface_registry()
+
+    # the alert automation trigger and action classes loaded so far (saq.alert_automation.rules)
+    reset_alert_automation_registry()
 
     # the observable classes loaded so far (saq.observables.generator)
     observable_generator._LOADED_CLASSES.clear()
