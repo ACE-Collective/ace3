@@ -387,7 +387,7 @@ def test_email_modules_import_first():
 # pulls one of these packages in costs every one of them that package's memory.
 LIGHT_SERVICES = ["saq.network_semaphore.service", "saq.git", "saq.monitoring.service", "saq.cron",
                   "saq.remediation.service", "saq.remediation.external.service", "saq.yara_scanning.service",
-                  "saq.svs.service"]
+                  "saq.svs.service", "saq.alert_automation.service"]
 HEAVY_PACKAGES = ["aceapi_v2", "aceapi_ai", "app", "fastapi", "flask", "werkzeug", "qdrant_client", "numpy", "grpc",
                   "celery", "pandas", "cv2", "torch", "saq.observables.base", "saq.observables.generator",
                   "urlfinderlib", "requests"]

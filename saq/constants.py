@@ -692,6 +692,7 @@ SERVICE_EXTERNAL_REMEDIATION_CHECK = "external_remediation_check"
 SERVICE_YARA_SCANNER = "yara"
 SERVICE_MONITORING = "monitoring"
 SERVICE_SVS = "svs"
+SERVICE_ALERT_AUTOMATION = "alert_automation"
 
 SERVICE_STATUS_RUNNING = 'running'
 SERVICE_STATUS_STOPPED = 'stopped'
