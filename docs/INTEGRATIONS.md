@@ -68,6 +68,11 @@ pytest names an integration's test module by its path from the checkout root,
 collides with core's `tests` package or with another integration's. The test imports its own helpers
 relatively (`from .helpers import ...`) and core's by their package (`from tests.saq.helpers import ...`).
 
+`integrations.example/example/tests/` has a unit test (`test_routing.py`, the example's alert router
+as its configuration registers it) and the standard analysis-module test (`test_modules.py`, from
+AGENTS.md). The suite does not collect them where they are, because `integrations.example/` is not
+under `integrations/`; they run once the example is copied there.
+
 ## Development
 
 Follow these steps to bulid a new integration.
