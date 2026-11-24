@@ -34,6 +34,7 @@ Worktrees go under `FACTORY_WORKTREE_ROOT` if set; else `~/.t3/worktrees/<repo>`
 1. `python3 $F state TICKET`. Stop and report when `next` is `not-ready`, `blocked`, `needs-info`, `needs-human` or `done`, with its `why`.
 2. Run the task `next` names, as the table says. Each task ends by writing its handoff, a JSON result, to `local/factory/<ticket>/<n>-<task>.json` in the main checkout (`n` counts up across invocations).
 3. `python3 $F handoff <that file>`. It checks the fields and that `next_state` agrees with the ticket's live state. When it is not valid, run `python3 $F release TICKET --to needs-human --body-file <file>` with a body saying which task's result was wrong and why, then stop.
+   When the subagent's completion notice says it stopped with background work of its own still running, find that work (`ps -eo pid,ppid,etime,cmd` on the host: the shells it started are children of the `claude` process) and stop it before going on. Its handoff is written, so nothing that work does is needed, and nothing else ends it.
 4. Go back to 1.
 
 | `next` | Task | Who runs it |
