@@ -2,3 +2,10 @@
 # AGENTS.md is about 60 KB and the nested ones add about 25 KB; past the 32 KiB default
 # Codex drops the rest without saying so.
 project_doc_max_bytes = 131072
+
+approval_policy = "on-request"
+approvals_reviewer = "auto_review"
+sandbox_mode = "workspace-write"
+
+[mcp_servers.playwright]
+url = "http://localhost:8931/mcp"

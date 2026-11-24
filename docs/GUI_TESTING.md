@@ -128,20 +128,13 @@ that something rendered. To check what the page actually says, read it: `page.in
 
 ## Driving the browser through MCP
 
-Register the `browser-mcp` server with your agent inside the container. The registration is stored in
-`/home/ace`, which is a volume, so it survives image rebuilds.
+Codex loads the `playwright` server from the trusted checkout's `.codex/config.toml`.
+Run `codex mcp get playwright` inside `dev` to check the registration.
 
-Claude Code:
+For Claude Code, register the server inside `dev`:
 
 ```bash
 claude mcp add --transport http playwright http://localhost:8931/mcp
-```
-
-codex (`~/.codex/config.toml`):
-
-```toml
-[mcp_servers.playwright]
-url = "http://localhost:8931/mcp"
 ```
 
 - The server's options (headless Chromium, HTTPS errors ignored, profile kept in memory) are set in its
