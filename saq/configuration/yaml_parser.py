@@ -144,6 +144,18 @@ def resolve_model_fields(model_class: type, data: dict[str, Any], path: str = ""
             for key, value in data.items() if key in names}
 
 
+def _disabled_integration_sections(yaml_root: dict[str, Any]) -> dict[str, Any]:
+    """What is merged of a disabled integration's file: its integration_*: sections, and the
+    observable classes it maps, since its src/ stays importable and the observables of its types in
+    saved alerts must not load as DefaultObservable."""
+    sections = {key: value for key, value in yaml_root.items() if key.startswith(INTEGRATION_SECTION_PREFIX)}
+    observable_types = yaml_root.get("observable_types")
+    if isinstance(observable_types, dict) and "classes" in observable_types:
+        sections["observable_types"] = {"classes": observable_types["classes"]}
+
+    return sections
+
+
 class YAMLConfig:
     """YAML-based configuration interface.
     - Supports recursive includes via top-level 'config' mapping or list of paths.
@@ -162,6 +174,11 @@ class YAMLConfig:
         # and those of the integrations whose every section is disabled, merged without the rest
         # of their files
         self.disabled_integration_paths: set[str] = set()
+        # the top-level keys those integrations' files declared first, which are left out of the
+        # merged configuration along with whatever later layers set on them
+        self.disabled_integration_keys: set[str] = set()
+        # each top-level key -> the first file merged that declares it
+        self.first_declared_by: dict[str, str] = {}
 
     def copy(self) -> "YAMLConfig":
         """Return a deep copy of this YAMLConfig object."""
@@ -170,6 +187,8 @@ class YAMLConfig:
         new_config.loaded_files = copy.deepcopy(self.loaded_files)
         new_config.integration_blocks = copy.deepcopy(self.integration_blocks)
         new_config.disabled_integration_paths = set(self.disabled_integration_paths)
+        new_config.disabled_integration_keys = set(self.disabled_integration_keys)
+        new_config.first_declared_by = dict(self.first_declared_by)
         return new_config
 
     def merge(self, other: dict[str, dict[str, Any]]) -> None:
@@ -197,8 +216,8 @@ class YAMLConfig:
     def load_file(self, path: str, integration_sections_only: bool = False) -> bool:
         """Load a YAML configuration file and merge it into this config.
 
-        With integration_sections_only, only its integration_*: sections are merged, and the same
-        goes for the files it includes.
+        With integration_sections_only, only its integration_*: sections and its
+        observable_types.classes are merged, and the same goes for the files it includes.
 
         Returns False if the file was already loaded, True otherwise.
         """
@@ -214,10 +233,11 @@ class YAMLConfig:
 
         yaml_root = self._load_yaml_file(path)
 
-        if integration_sections_only:
-            self.merge({key: value for key, value in yaml_root.items() if key.startswith(INTEGRATION_SECTION_PREFIX)})
-        else:
-            self.merge(yaml_root)
+        merged = _disabled_integration_sections(yaml_root) if integration_sections_only else yaml_root
+        for key in merged:
+            self.first_declared_by.setdefault(key, path)
+
+        self.merge(merged)
 
         #for top_key, top_value in yaml_root.items():
             #if top_key == "config":

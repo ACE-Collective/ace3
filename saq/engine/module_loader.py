@@ -137,6 +137,16 @@ class ModuleLoader:
                                 analysis_mode_module_names_map: Dict[str, Set[str]]):
         """Add modules from module groups to the analysis mode mapping."""
         for module_group_name in analysis_mode_config.module_groups:
+            # a disabled integration's module group is left out of the configuration, but a site's
+            # analysis mode can still list it
+            if f"module_group_{module_group_name}" in get_config().raw.disabled_integration_keys:
+                logging.info(
+                    "analysis mode %s lists module group %s of a disabled integration; skipping it",
+                    analysis_mode_config.name, module_group_name,
+                    extra={"analysis_mode": analysis_mode_config.name, "module_group": module_group_name},
+                )
+                continue
+
             module_group_config = get_config().get_module_group_config(module_group_name)
             for module_name in module_group_config.modules:
                 if not self._is_module_configured(module_name, analysis_mode_config.name, module_group_name):
@@ -166,6 +176,14 @@ class ModuleLoader:
         # it would stop every engine worker, so the reference is skipped and logged at ERROR instead
         if get_config().has_analysis_module_config(module_name):
             return True
+
+        if f"analysis_module_{module_name}" in get_config().raw.disabled_integration_keys:
+            logging.info(
+                "analysis mode %s references analysis module %s%s of a disabled integration; skipping it",
+                analysis_mode, module_name, f" through module group {module_group}" if module_group else "",
+                extra={"analysis_mode": analysis_mode, "analysis_module": module_name, "module_group": module_group},
+            )
+            return False
 
         logging.error(
             "analysis mode %s references analysis module %s%s, which has no analysis_module_%s "

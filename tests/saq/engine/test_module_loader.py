@@ -107,6 +107,29 @@ def test_enabled_and_disabled_reference_to_removed_module_is_skipped(caplog):
 
 
 @pytest.mark.unit
+def test_a_disabled_integrations_group_and_modules_are_skipped(caplog, monkeypatch):
+    # a site's analysis mode can still name what a disabled integration declared, which the loader
+    # left out of the configuration (saq/configuration/loader.py)
+    configured_module = get_config().analysis_modules[0].name
+    monkeypatch.setattr(get_config().raw, "disabled_integration_keys",
+                        {"module_group_vendor", "analysis_module_vendor_module"})
+    get_config().add_analysis_mode_config(
+        "test_vendor_ref",
+        AnalysisModeConfig(name="test_vendor_ref", module_groups=["vendor"],
+                           enabled_modules=[configured_module, "vendor_module"], cleanup=True),
+    )
+
+    with caplog.at_level(logging.INFO):
+        mapping = _module_loader("test_vendor_ref")._build_analysis_mode_mapping()
+
+    assert mapping == {"test_vendor_ref": {configured_module}}
+    assert not [r for r in caplog.records if r.levelno >= logging.ERROR]
+    skipped = [r for r in caplog.records if r.levelno == logging.INFO and "disabled integration" in r.getMessage()]
+    assert [(getattr(r, "module_group", None), getattr(r, "analysis_module", None)) for r in skipped] == [
+        ("vendor", None), (None, "vendor_module")]
+
+
+@pytest.mark.unit
 def test_has_analysis_module_config():
     assert get_config().has_analysis_module_config(get_config().analysis_modules[0].name)
     assert not get_config().has_analysis_module_config("removed_module")

@@ -136,12 +136,18 @@ ACE logs a warning at startup for any discovered integration directory that has 
 `enabled: false` in the `integration_<name>:` section is the only switch, and it turns the whole
 integration off:
 
-- None of its files are merged into the configuration except its `integration_*:` sections, so
-  its analysis modules, services, alert routers, query sources and command types are not there.
-  That covers the files its `etc/saq.integration.yaml` pulls in through `config:`.
+- None of its files are merged into the configuration except its `integration_*:` sections and
+  its `observable_types.classes`, so its analysis modules, services, alert routers, query sources
+  and command types are not there. That covers the files its `etc/saq.integration.yaml` pulls in
+  through `config:`.
+- A block the integration declares first (one no earlier file and no enabled integration declares,
+  such as its `service_*:` or `module_group_*:`) is left out together with what later files set on
+  it, so a site file that turns the integration off can keep its settings for it. An analysis mode
+  that still lists the integration's module group or analysis module skips it with an INFO record.
 - Nothing imports its `python_module`, `api_router` or `gui_blueprint`, its cron tasks do not run
   (`docs/CRON.md`) and its `bin/` is not on `PATH`.
-- Its `src/` stays on `sys.path`, so alerts saved while it was enabled still load their analysis.
+- Its `src/` stays on `sys.path` and its observable classes stay mapped, so alerts saved while it
+  was enabled still load their analysis and observables.
 
 Any later configuration file can set `enabled:`, so a deployment turns an integration off in its
 own `SAQ_CONFIG_PATHS` file, and one node does it in a file named only in that node's `.env`:

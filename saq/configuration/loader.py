@@ -70,9 +70,11 @@ def _config_layers(config_paths: list[str]) -> list[str]:
     return layers
 
 
-def _merge_layers(layers: list[str], disabled: set[str], parsed_files: dict[str, dict[str, Any]]) -> YAMLConfig:
-    """Merges the layers, leaving out all but the integration_*: sections of the integration files
-    in disabled and of the files they include."""
+def _merge_layers(layers: list[str], disabled: set[str], parsed_files: dict[str, dict[str, Any]],
+                  integration_files: dict[str, set[str]]) -> YAMLConfig:
+    """Merges the layers, leaving out all but the integration_*: sections (and the observable
+    classes) of the integration files in disabled and of the files they include. Fills
+    integration_files with each integration file -> it and the files it included."""
     integration_paths = set(get_global_runtime_settings().integration_config_paths)
     config = YAMLConfig(parsed_files=parsed_files)
 
@@ -87,8 +89,9 @@ def _merge_layers(layers: list[str], disabled: set[str], parsed_files: dict[str,
 
         before = set(config.loaded_files)
         config.load_file(path, integration_sections_only=path in disabled)
+        integration_files[path] = config.loaded_files - before
         config.integration_blocks[path] = sorted({
-            key for loaded in config.loaded_files - before for key in parsed_files[loaded]
+            key for loaded in integration_files[path] for key in parsed_files[loaded]
             if key.startswith(INTEGRATION_SECTION_PREFIX)})
 
     return config
@@ -131,20 +134,37 @@ def load_configuration(config_paths: list[str] | None = None):
     sections are merged. Any later layer can set enabled:, so that is known only after every layer
     is merged, and then the layers are merged again without the files of the integrations that are
     off. The second merge reuses the parsed files.
+
+    A top-level key that one of those integrations declared before any other file did is its block
+    (a service, a hunt type, a module group), and is left out with whatever later layers set on it:
+    a site's service_<name>: enabled: alone is not a service. A key another integration that is on
+    also declares is kept.
     """
     if config_paths is None:
         config_paths = []
 
     layers = _config_layers(config_paths)
     parsed_files: dict[str, dict[str, Any]] = {}
-    config = _merge_layers(layers, set(), parsed_files)
+    integration_files: dict[str, set[str]] = {}
+    config = _merge_layers(layers, set(), parsed_files, integration_files)
 
     disabled = {path for path, keys in config.integration_blocks.items()
                 if keys and not any(_section_enabled(key, config._data.get(key)) for key in keys)}
 
     if disabled:
-        config = _merge_layers(layers, disabled, parsed_files)
+        disabled_files = set().union(*(integration_files[path] for path in disabled))
+        enabled_keys = {key for path, files in integration_files.items() if path not in disabled
+                        for loaded in files for key in parsed_files[loaded]}
+        dropped = {key for key, path in config.first_declared_by.items()
+                   if path in disabled_files and key not in enabled_keys
+                   and not key.startswith(INTEGRATION_SECTION_PREFIX)}
+
+        config = _merge_layers(layers, disabled, parsed_files, integration_files)
+        for key in dropped:
+            config._data.pop(key, None)
+
         config.disabled_integration_paths = disabled
+        config.disabled_integration_keys = dropped
 
     config.apply_path_references()
     return config

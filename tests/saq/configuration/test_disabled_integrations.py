@@ -6,6 +6,7 @@ import yaml
 import pytest
 
 from saq.configuration.loader import load_configuration
+from saq.configuration.schema import ACEConfig
 from saq.environment import get_global_runtime_settings
 
 pytestmark = pytest.mark.unit
@@ -179,5 +180,70 @@ def test_a_copy_keeps_what_the_loader_found(integration):
 
     assert copied.integration_blocks == {path: ["integration_switched_off"]}
     assert copied.disabled_integration_paths == {path}
+    assert copied.disabled_integration_keys == config.disabled_integration_keys
+    assert copied.first_declared_by == config.first_declared_by
     copied.disabled_integration_paths.clear()
     assert config.disabled_integration_paths == {path}
+
+
+def _service(name: str) -> str:
+    return (f"service_{name}:\n  name: {name}\n  python_module: {name}.service\n"
+            f"  python_class: Service\n  description: {name}\n  enabled: false\n")
+
+
+def test_what_a_later_file_sets_on_a_disabled_integrations_block_is_left_out(integration, tmp_path, monkeypatch):
+    path = integration("vendor", _block("vendor", True) + _service("vendor_collector")
+                       + "module_group_vendor:\n  name: vendor\n  modules:\n    - vendor_module\n")
+    # what docs/INTEGRATIONS.md tells a site to do, in a file that also configures the integration
+    _overlay(tmp_path, monkeypatch, "integration_vendor:\n  enabled: false\n"
+             "service_vendor_collector:\n  enabled: true\nmodule_group_vendor:\n  modules:\n    - site_module\n")
+
+    raw = load_configuration(config_paths=[])
+
+    assert "service_vendor_collector" not in raw._data
+    assert "module_group_vendor" not in raw._data
+    assert raw.disabled_integration_keys == {"service_vendor_collector", "module_group_vendor"}
+    assert raw.disabled_integration_paths == {path}
+    # the fragment would fail ServiceConfig validation and stop every process
+    config = ACEConfig.model_validate(raw._data)
+    config.raw = raw
+    assert "vendor_collector" not in [service.name for service in config.services]
+
+
+def test_a_block_a_disabled_integration_did_not_declare_first_is_kept(integration, tmp_path, monkeypatch):
+    # the default configuration declares observable_types and alert_routers first
+    integration("vendor", _block("vendor", False) + "alert_routers:\n  - name: from_vendor\n")
+    _overlay(tmp_path, monkeypatch, "alert_routers:\n  - name: from_site\n")
+
+    raw = load_configuration(config_paths=[])
+
+    assert "from_site" in [router["name"] for router in raw._data["alert_routers"]]
+    assert "from_vendor" not in [router["name"] for router in raw._data["alert_routers"]]
+    assert "alert_routers" not in raw.disabled_integration_keys
+
+
+def test_a_block_an_enabled_integration_also_declares_is_kept(integration):
+    integration("switched_off", _block("switched_off", False) + _service("shared"))
+    integration("switched_on", _block("switched_on", True) + _service("shared"))
+
+    raw = load_configuration(config_paths=[])
+
+    assert raw._data["service_shared"]["name"] == "shared"
+    assert raw.disabled_integration_keys == set()
+
+
+def test_a_disabled_integration_keeps_its_observable_classes(integration, tmp_path):
+    # its src/ stays on sys.path so that saved alerts load, and their observables need the class
+    included = tmp_path / "observables.yaml"
+    included.write_text("observable_types:\n  classes:\n    vendor_other: \"vendor.observables:Other\"\n")
+    integration("vendor", f"config:\n  observables: {included}\n" + _block("vendor", False)
+                + "observable_types:\n  config_path: vendor.yaml\n"
+                + "  classes:\n    vendor_thing: \"vendor.observables:Thing\"\n")
+
+    raw = load_configuration(config_paths=[])
+
+    classes = raw._data["observable_types"]["classes"]
+    assert classes["vendor_thing"] == "vendor.observables:Thing"
+    assert classes["vendor_other"] == "vendor.observables:Other"
+    # only the class map: the rest of the block is the integration's configuration
+    assert raw._data["observable_types"]["config_path"] != "vendor.yaml"
