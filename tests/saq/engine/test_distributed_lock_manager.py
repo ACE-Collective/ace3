@@ -6,6 +6,7 @@ import pytest
 
 from saq.configuration.config import get_config
 from saq.engine.lock_manager.distributed import DistributedLockManager
+from saq.environment import get_global_runtime_settings
 from saq.database.util.locking import acquire_lock, force_release_lock, release_lock
 
 
@@ -138,10 +139,10 @@ class TestDistributedLockManager:
 
         assert manager.start_keepalive(target_uuid, on_lock_lost=lost.set)
         try:
-            # steal the lock: drop our row and give it to a different fresh owner so our
-            # keepalive re-acquire fails
-            force_release_lock(target_uuid)
-            assert acquire_lock(target_uuid, other_lock_uuid)
+            # steal the lock in one statement, the way an expired takeover does: a release
+            # followed by a fresh acquire leaves a window in which the keepalive re-inserts the row
+            monkeypatch.setattr(get_global_runtime_settings(), "lock_timeout_seconds", 0)
+            assert acquire_lock(target_uuid, other_lock_uuid, allow_expired_takeover=True)
 
             # the keepalive should notice within a couple of cycles
             assert lost.wait(5.0)
