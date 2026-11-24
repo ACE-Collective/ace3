@@ -34,15 +34,12 @@ def _add_upload_comment(file_observable, comment: str, alert_uuid: str):
         return
 
     try:
-        run_async_with_session(create_comment, current_user.id, F_FILE, file_observable.value, comment)
+        # create_comment writes the audit record
+        run_async_with_session(create_comment, current_user_auth(), F_FILE, file_observable.value, comment,
+                               alert_uuid=alert_uuid)
     except Exception as e:
         logging.exception(f"unable to add the upload comment to {file_observable} in alert {alert_uuid}: {e}")
         flash("uploaded the file, but unable to save the comment")
-        return
-
-    log_audit("user %s added comment %s to observable %s %s in alert %s", current_user.username, comment, F_FILE,
-              file_observable.value, alert_uuid, auth=current_user_auth(), alert_uuid=alert_uuid,
-              observable_type=F_FILE, observable_value=file_observable.value)
 
 @analysis.route('/upload_file', methods=['POST'])
 @require_permission('alert', 'create')

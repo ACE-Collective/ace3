@@ -52,7 +52,7 @@ async def create_comment(
         raise HTTPException(status_code=401, detail="User authentication required")
     try:
         comment = await service.create_comment(
-            session, auth.auth_user_id, body.observable_type, body.observable_value, body.comment
+            session, auth, body.observable_type, body.observable_value, body.comment
         )
     except InvalidDetectionValue as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -69,7 +69,7 @@ async def update_comment(
     if auth.auth_user_id is None:
         raise HTTPException(status_code=401, detail="User authentication required")
     try:
-        comment = await service.update_comment(session, comment_id, auth.auth_user_id, body.comment)
+        comment = await service.update_comment(session, comment_id, auth, body.comment)
     except PermissionError:
         raise HTTPException(status_code=403, detail="Only the comment author can edit this comment")
     if comment is None:
@@ -86,7 +86,7 @@ async def delete_comment(
     if auth.auth_user_id is None:
         raise HTTPException(status_code=401, detail="User authentication required")
     try:
-        deleted = await service.delete_comment(session, comment_id, auth.auth_user_id)
+        deleted = await service.delete_comment(session, comment_id, auth)
     except PermissionError:
         raise HTTPException(status_code=403, detail="Only the comment author can delete this comment")
     if not deleted:
