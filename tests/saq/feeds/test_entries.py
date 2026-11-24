@@ -3,7 +3,7 @@
 from datetime import datetime
 
 import pytest
-from sqlalchemy import select, text
+from sqlalchemy import func, select, text
 
 from saq.configuration.config import get_config
 from saq.database.model import Feed, FeedDecision, FeedDelivery, FeedEntry
@@ -46,6 +46,10 @@ def test_normalize_text_folds_unicode_and_whitespace():
     assert normalize_text("ｆｕｌｌｗｉｄｔｈ") == "fullwidth"
 
 
+def _now() -> datetime:
+    return get_db().execute(select(func.now())).scalar()
+
+
 def _versions(feed_id: int) -> list[FeedEntry]:
     db = get_db()
     db.expire_all()
@@ -58,19 +62,19 @@ def test_first_poll_is_a_baseline_and_an_edit_is_a_new_version():
     parsed = ParsedFeed(entries=[ParsedEntry(guid="1", title="Advisory", summary="a flaw"),
                                  ParsedEntry(guid="2", title="Other", summary="other")])
 
-    first = store_entries(feed.id, parsed, baseline=True)
+    first = store_entries(feed.id, parsed, baseline=True, now=_now())
     get_db().commit()
     assert (first.new, first.seen) == (2, 0)
     rows = _versions(feed.id)
     assert all(row.baseline and row.evaluated_at is not None for row in rows)
 
-    again = store_entries(feed.id, parsed, baseline=False)
+    again = store_entries(feed.id, parsed, baseline=False, now=_now())
     get_db().commit()
     assert (again.new, again.seen) == (0, 2)
 
     edited = ParsedFeed(entries=[ParsedEntry(guid="1", title="Advisory", summary="a flaw, now actively exploited"),
                                  ParsedEntry(guid="2", title="Other", summary="other")])
-    third = store_entries(feed.id, edited, baseline=False)
+    third = store_entries(feed.id, edited, baseline=False, now=_now())
     get_db().commit()
     assert (third.new, third.seen) == (1, 1)
     rows = _versions(feed.id)
@@ -91,7 +95,7 @@ def test_a_304_keeps_what_the_last_response_carried_from_expiring():
     db.commit()
     db.expire_all()
 
-    assert mark_current_entries_seen(db.get(Feed, feed.id)) == 1
+    assert mark_current_entries_seen(db.get(Feed, feed.id), _now()) == 1
     db.commit()
     ages = dict(db.execute(text("SELECT identity, TIMESTAMPDIFF(DAY, last_seen_at, NOW()) FROM feed_entries")).all())
     assert ages == {"gone": 10, "current": 0}

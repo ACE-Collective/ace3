@@ -12,6 +12,7 @@ import json
 import logging
 from typing import Callable
 
+import yara
 from sqlalchemy import delete, func, select, update
 from sqlalchemy.dialects.mysql import insert
 
@@ -40,10 +41,32 @@ def start_replay(replay: FeedReplay, definitions: DefinitionSet, model: str,
     """Scans the replay's entries and asks for its decisions; the replay is then running until they
     are answered."""
     db = get_db()
-    config = get_config().feeds
     replay.state = "running"
     db.commit()
+    try:
+        _scan(replay, definitions, model, should_stop)
+    except Exception as e:
+        # nothing else would touch a running replay with no entry count again
+        db.rollback()
+        logging.exception("feed replay %s failed: %s", replay.id, e, extra={"feed_replay_id": replay.id})
+        _fail(replay, f"internal error: {e}")
 
+
+def requeue_interrupted() -> int:
+    """Queues again the replays a stopped or killed service left running before it had scanned them.
+    Run when the service starts: only one runs, so none of them is still being scanned."""
+    db = get_db()
+    count = db.execute(update(FeedReplay).where(FeedReplay.state == "running", FeedReplay.entry_count.is_(None))
+                       .values(state="queued")).rowcount
+    db.commit()
+    if count:
+        logging.info("queued %d interrupted feed replays again", count)
+    return count
+
+
+def _scan(replay: FeedReplay, definitions: DefinitionSet, model: str, should_stop: Callable[[], bool]) -> None:
+    db = get_db()
+    config = get_config().feeds
     rules = None
     if replay.yara:
         try:
@@ -74,7 +97,8 @@ def start_replay(replay: FeedReplay, definitions: DefinitionSet, model: str,
         if rules is not None:
             try:
                 scanned = scan_entry(rules, entry_fields(entry))
-            except Exception as e:
+            except yara.Error as e:
+                # the draft's rule timed out: the analyst's to fix, shown on the replay
                 _fail(replay, f"the rule failed on entry {entry.id}: {e}")
                 return
             matched = scanned.matched

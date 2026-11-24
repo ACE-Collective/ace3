@@ -1,7 +1,13 @@
 """Watch definitions from the repositories (docs/FEED_WATCHES.md, *Definitions*)."""
 
+import copy
+
 import pytest
+from pydantic import ValidationError
 from sqlalchemy import select
+
+from saq.configuration.config import get_config
+from saq.configuration.schema import ACEConfig
 
 from saq.database.model import FeedDefinition
 from saq.database.pool import get_db
@@ -84,3 +90,18 @@ def test_a_name_defined_in_two_repositories_keeps_the_first(tmp_path, monkeypatc
     assert any(record.levelname == "ERROR" and "is ignored" in record.getMessage() for record in caplog.records)
     # the prompt comes from the first repository, which has none
     assert loaded.prompt is None
+
+
+@pytest.mark.unit
+def test_the_repositories_must_be_git_repo_sections():
+    data = copy.deepcopy(get_config().raw._data)
+    data["git_repo_unittest_feed_definitions"] = {
+        "name": "feed_definitions", "description": "d", "local_path": "data/git/feed_definitions",
+        "git_url": "https://example.invalid/defs.git", "update_frequency": 300, "branch": "main"}
+    data["feeds"] = {**data.get("feeds", {}), "repositories": ["feed_definitions"]}
+    ACEConfig.model_validate(data)
+
+    # a typo would hold every entry's evaluation for good
+    data["feeds"]["repositories"] = ["feed_definitions", "feed_definitons"]
+    with pytest.raises(ValidationError, match="feeds.repositories names feed_definitons, but no git_repo_"):
+        ACEConfig.model_validate(data)

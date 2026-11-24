@@ -1,14 +1,17 @@
 """Replays of draft definitions (docs/FEED_WATCHES.md, *Replay*)."""
 
 import json
+import logging
 
 import pytest
+import yara
 from sqlalchemy import func, select, text
 
 from saq.database.model import FeedDecision, FeedEntry, FeedReplay, FeedReplayResult
 from saq.database.pool import get_db
 from saq.feeds.definitions import DefinitionSet, prompt_hash
-from saq.feeds.replay import finish_replays, prune_replays, run_replays
+from saq.feeds import replay as replay_module
+from saq.feeds.replay import finish_replays, prune_replays, requeue_interrupted, run_replays
 from tests.saq.feeds.conftest import EXPLOITED_RULE, LLM_MODEL, PROMPT, make_entry, make_feed
 
 DEFINITIONS = DefinitionSet(prompt=PROMPT, prompt_hash=prompt_hash(PROMPT))
@@ -87,6 +90,81 @@ def test_a_rule_that_does_not_compile_fails_the_replay():
     get_db().expire_all()
     failed = get_db().get(FeedReplay, replay.id)
     assert failed.state == "failed" and "does not compile" in failed.error
+
+
+def _replay_row(replay_id) -> FeedReplay:
+    get_db().expire_all()
+    return get_db().get(FeedReplay, replay_id)
+
+
+@pytest.mark.integration
+def test_a_rule_that_times_out_fails_the_replay(monkeypatch, caplog):
+    feed = make_feed()
+    entry = make_entry(feed, content="actively exploited")
+    replay = _replay(feed, yara=EXPLOITED_RULE)
+
+    def timeout(rules, fields):
+        raise yara.TimeoutError("internal error: 30")
+
+    monkeypatch.setattr(replay_module, "scan_entry", timeout)
+    with caplog.at_level(logging.INFO):
+        run_replays(DEFINITIONS, LLM_MODEL)
+
+    failed = _replay_row(replay.id)
+    assert failed.state == "failed" and failed.error == f"the rule failed on entry {entry.id}: internal error: 30"
+    assert not any(record.levelname == "ERROR" for record in caplog.records)
+
+
+@pytest.mark.integration
+def test_a_replay_that_breaks_while_it_runs_fails_and_is_logged(monkeypatch, caplog):
+    feed = make_feed()
+    make_entry(feed, content="actively exploited")
+    replay = _replay(feed, yara=EXPLOITED_RULE, question=QUESTION)
+
+    def broken(*args):
+        raise RuntimeError("lock wait timeout exceeded")
+
+    monkeypatch.setattr(replay_module, "replay_cache_key", broken)
+    with caplog.at_level(logging.ERROR):
+        run_replays(DEFINITIONS, LLM_MODEL)
+
+    failed = _replay_row(replay.id)
+    assert failed.state == "failed" and failed.error == "internal error: lock wait timeout exceeded"
+    assert failed.finished_at is not None
+    (record,) = [record for record in caplog.records if record.levelname == "ERROR"]
+    assert record.exc_info and record.feed_replay_id == replay.id
+    assert get_db().execute(select(FeedReplayResult)).first() is None
+
+
+@pytest.mark.integration
+def test_a_replay_stopped_while_it_scans_is_queued_again():
+    feed = make_feed()
+    for index in range(3):
+        make_entry(feed, identity=f"e{index}", content="actively exploited")
+    replay = _replay(feed, yara=EXPLOITED_RULE, question=QUESTION)
+    checks = iter([False, False, True])
+
+    assert run_replays(DEFINITIONS, LLM_MODEL, lambda: next(checks)) == 1
+
+    stopped = _replay_row(replay.id)
+    assert (stopped.state, stopped.entry_count) == ("queued", None)
+    assert get_db().execute(select(FeedReplayResult)).first() is None
+    assert get_db().execute(select(FeedDecision)).first() is None
+
+
+@pytest.mark.integration
+def test_a_replay_a_killed_service_left_running_is_queued_again():
+    feed = make_feed()
+    interrupted = _replay(feed, yara=EXPLOITED_RULE)
+    scanned = _replay(feed, question=QUESTION)
+    get_db().execute(text("UPDATE feed_replays SET state = 'running'"))
+    get_db().execute(text("UPDATE feed_replays SET entry_count = 0 WHERE id = :id"), {"id": scanned.id})
+    get_db().commit()
+
+    assert requeue_interrupted() == 1
+    assert _replay_row(interrupted.id).state == "queued"
+    # still waiting for its answers
+    assert _replay_row(scanned.id).state == "running"
 
 
 @pytest.mark.integration

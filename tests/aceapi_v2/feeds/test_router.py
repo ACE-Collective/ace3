@@ -59,6 +59,20 @@ async def test_a_feed_is_edited_and_its_credentials_kept_or_removed(client: Asyn
     assert _row(feed["id"]).auth_secret is None
 
 
+async def test_a_feed_moved_to_another_url_starts_with_a_baseline_again(client: AsyncClient):
+    feed = make_feed(etag='"v1"')
+    assert _row(feed.id).baselined_at is not None
+    renamed = await client.patch(f"/feeds/{feed.id}", json={"name": "renamed", "url": feed.url})
+    assert renamed.status_code == 200, renamed.text
+    assert _row(feed.id).baselined_at is not None
+
+    moved = await client.patch(f"/feeds/{feed.id}", json={"url": "https://other-vendor.example/atom.xml"})
+    assert moved.status_code == 200, moved.text
+    row = _row(feed.id)
+    # the next poll stores what the new url carries for preview only
+    assert row.baselined_at is None and row.etag is None
+
+
 async def test_a_deleted_feed_stops_at_once(client: AsyncClient):
     feed = (await client.post("/feeds/", json=BODY)).json()
     assert (await client.delete(f"/feeds/{feed['id']}")).status_code == 204

@@ -5097,7 +5097,9 @@ class FeedDecision(Base):
         Index('i_feed_decisions_pending', 'status', 'next_attempt_at', 'id'),
         Index('i_feed_decisions_watch', 'watch_id', 'entry_id'),
         Index('i_feed_decisions_entry', 'entry_id', 'id'),
-        Index('i_feed_decisions_undelivered', 'deliver', 'delivery_id', 'id'),
+        # what the delivery pass reads every loop: a delivering watch's no_match rows also have deliver
+        # set and no delivery, for as long as their entries are kept
+        Index('i_feed_decisions_undelivered_matches', 'deliver', 'delivery_id', 'status', 'decision', 'id'),
     )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)

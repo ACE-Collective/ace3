@@ -1,15 +1,16 @@
 """Delivering matches as alerts, once per entry and queue (docs/FEED_WATCHES.md, *Delivery*)."""
 
+import logging
 import os
 
 import pytest
-from sqlalchemy import func, select, text
+from sqlalchemy import delete, func, select, text
 
 from saq.analysis.root import RootAnalysis, Submission
 from saq.collectors.base_collector import CollectorService
 from saq.configuration.config import get_config
 from saq.constants import ALERT_TYPE_FEED_WATCH, ANALYSIS_MODE_CORRELATION
-from saq.database.model import FeedDecision, FeedDelivery, IncomingWorkload
+from saq.database.model import FeedDecision, FeedDelivery, FeedEntry, IncomingWorkload
 from saq.database.pool import get_db
 from saq.feeds import delivery
 from saq.feeds.delivery import deliver, submission_key
@@ -26,6 +27,10 @@ def _decision(entry, watch, status="decided", decision="match", **fields) -> Fee
     db.add(row)
     db.commit()
     return row
+
+
+def _crash(*args, **kwargs):
+    raise RuntimeError("disk full")
 
 
 @pytest.fixture
@@ -105,12 +110,25 @@ def test_a_match_waits_for_the_other_watches_of_its_queue(collector_service, mon
 
 
 @pytest.mark.integration
-def test_a_watch_edited_since_it_decided_delivers_nothing(collector_service):
+def test_a_match_is_delivered_to_its_queue_after_the_watch_is_edited(collector_service):
     feed = make_feed()
     entry = make_entry(feed)
     watch = make_watch(feed, "a")
     _decision(entry, watch)
-    get_db().execute(text("UPDATE feed_watches SET version = 2"))
+    # what saving the watch's form does, whatever it changed
+    get_db().execute(text("UPDATE feed_watches SET version = 2, name = 'renamed', queue = 'intel'"))
+    get_db().commit()
+    assert deliver(collector_service.file_manager) == 1
+    assert [root.queue for root in _staged(collector_service)] == ["default"]
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("change", ["mode = 'shadow'", "enabled = 0"])
+def test_a_watch_switched_off_since_it_decided_delivers_nothing(collector_service, change):
+    feed = make_feed()
+    entry = make_entry(feed)
+    _decision(entry, make_watch(feed, "a"))
+    get_db().execute(text(f"UPDATE feed_watches SET version = 2, {change}"))
     get_db().commit()
     assert deliver(collector_service.file_manager) == 0
 
@@ -133,7 +151,7 @@ def test_a_second_match_of_an_alerted_entry_is_ignored(collector_service):
 
 
 @pytest.mark.integration
-def test_a_delivery_interrupted_before_staging_is_staged_again(collector_service, monkeypatch):
+def test_a_delivery_interrupted_before_staging_is_staged_again(collector_service, monkeypatch, caplog):
     feed = make_feed()
     entry = make_entry(feed)
     _decision(entry, make_watch(feed, "a"))
@@ -142,14 +160,63 @@ def test_a_delivery_interrupted_before_staging_is_staged_again(collector_service
         raise RuntimeError("disk full")
 
     monkeypatch.setattr(delivery, "build_root", crash)
-    assert deliver(collector_service.file_manager) == 0
+    with caplog.at_level(logging.ERROR):
+        assert deliver(collector_service.file_manager) == 0
     row = get_db().execute(select(FeedDelivery)).scalar_one()
     assert row.state == "pending"
     root_uuid = row.root_uuid
+    (record,) = [record for record in caplog.records if record.levelname == "ERROR"]
+    assert record.exc_info and record.feed_delivery_id == row.id and record.root_uuid == root_uuid
 
     monkeypatch.undo()
     assert deliver(collector_service.file_manager) == 1
     assert [root.uuid for root in _staged(collector_service)] == [root_uuid]
+
+
+@pytest.mark.integration
+def test_a_delivery_that_fails_again_does_not_hold_up_the_others(collector_service, monkeypatch, caplog):
+    feed = make_feed()
+    watch = make_watch(feed, "a")
+    gone = make_entry(feed, identity="gone")
+    _decision(gone, watch)
+    monkeypatch.setattr(delivery, "build_root", _crash)
+    deliver(collector_service.file_manager)
+    monkeypatch.undo()
+    stuck = get_db().execute(select(FeedDelivery)).scalar_one()
+    # the entry expired while its delivery was pending
+    get_db().execute(delete(FeedEntry).where(FeedEntry.id == gone.id))
+    get_db().commit()
+    _decision(make_entry(feed, identity="new"), watch)
+
+    caplog.clear()
+    with caplog.at_level(logging.ERROR):
+        assert deliver(collector_service.file_manager) == 1
+
+    get_db().expire_all()
+    assert get_db().get(FeedDelivery, stuck.id).state == "pending"
+    assert [root.details["entry"]["identity"] for root in _staged(collector_service)] == ["new"]
+    (record,) = [record for record in caplog.records if record.levelname == "ERROR"]
+    assert "has no entry left" in record.getMessage() and record.exc_info and record.feed_delivery_id == stuck.id
+
+
+@pytest.mark.integration
+def test_a_stop_ends_the_delivery_pass(collector_service, monkeypatch):
+    feed = make_feed()
+    watch = make_watch(feed, "a")
+    _decision(make_entry(feed, identity="pending"), watch)
+    monkeypatch.setattr(delivery, "build_root", _crash)
+    deliver(collector_service.file_manager)
+    monkeypatch.undo()
+    _decision(make_entry(feed, identity="ready"), watch)
+
+    assert deliver(collector_service.file_manager, should_stop=lambda: True) == 0
+    assert get_db().execute(select(FeedDelivery.state)).scalars().all() == ["pending"]
+    # the first stop is after the pending deliveries
+    stops = iter([False, True])
+    assert deliver(collector_service.file_manager, should_stop=lambda: next(stops)) == 1
+    get_db().expire_all()
+    assert get_db().execute(select(FeedDelivery.state)).scalars().all() == ["staged"]
+    assert _staged(collector_service)[0].details["entry"]["identity"] == "pending"
 
 
 @pytest.mark.integration

@@ -1163,6 +1163,19 @@ class ACEConfig(BaseModel):
                 raise ValueError(f"service_svs: {'; '.join(error['msg'] for error in e.errors())}") from None
         return data
 
+    @model_validator(mode="before")
+    @classmethod
+    def _check_feed_repositories(cls, data):
+        # a name no git_repo section has would hold the evaluation of every feed entry for good
+        if isinstance(data, dict) and isinstance(data.get("feeds"), dict):
+            names = {value.get("name") for key, value in data.items()
+                     if key.startswith("git_repo_") and isinstance(value, dict)}
+            unknown = [name for name in data["feeds"].get("repositories") or [] if name not in names]
+            if unknown:
+                raise ValueError(f"feeds.repositories names {', '.join(map(str, unknown))}, but no git_repo_* "
+                                 f"section has that name")
+        return data
+
     @model_validator(mode="after")
     def _check_dispositions(self):
         for name in self.dispositions:

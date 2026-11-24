@@ -18,6 +18,8 @@ import threading
 import time
 from typing import Generator, Optional, Type, override
 
+import yara
+
 from saq.analysis.root import Submission
 from saq.collectors.base_collector import Collector, CollectorExecutionMode, CollectorService
 from saq.collectors.submission_file_manager import SubmissionFileManager
@@ -43,6 +45,10 @@ WAIT_POLL_SECONDS = 1
 
 # what a stopping thread needs beyond its slowest request
 STOP_MARGIN_SECONDS = 5
+
+# how long evaluation waits for a definitions repository's checkout (longer than a first clone takes)
+# before it says so at ERROR, and how often it says it again
+HELD_REPORT_SECONDS = 3600
 
 
 class FeedWatchCollector(Collector):
@@ -72,6 +78,8 @@ class Definitions:
         # evaluated without its definitions, an entry would never be evaluated again
         self.complete = False
         self.read = False
+        # time.monotonic() when the repositories were first read without a checkout of each
+        self.incomplete_since: Optional[float] = None
 
     @property
     def current(self) -> definitions.DefinitionSet:
@@ -104,6 +112,10 @@ class Definitions:
             self.compile_errors = errors
         self.read = True
         self.complete = all(commit is not None for _, commit in commits)
+        if self.complete:
+            self.incomplete_since = None
+        elif self.incomplete_since is None:
+            self.incomplete_since = time.monotonic()
         logging.info("read %d feed watch definitions (%d unusable) at %s", len(loaded.definitions),
                      len(errors) + len(loaded.errors), commits)
         return True
@@ -113,7 +125,10 @@ class Definitions:
             current, rules, errors = self._current, self.rules, self.compile_errors
 
         def scan(definition, fields):
-            found = scan_entry(rules[definition.name], fields)
+            try:
+                found = scan_entry(rules[definition.name], fields)
+            except yara.Error as e:
+                raise decisions.ScanError(str(e)) from e
             return found.matched, found.field, found.excerpt
 
         usable = {name for name in current.definitions if name not in errors}
@@ -137,6 +152,7 @@ class FeedWatchService(ACEServiceInterface):
         self.threads: list[threading.Thread] = []
         self.collector_started = False
         self.next_prune = 0.0
+        self.next_held_report = 0.0
 
     def should_stop(self) -> bool:
         return self.shutdown.is_set()
@@ -166,9 +182,25 @@ class FeedWatchService(ACEServiceInterface):
             polled += 1
         return polled
 
+    def report_held_evaluation(self) -> None:
+        """No entry is evaluated, so no watch alerts, while a repository has no checkout. read_definitions
+        logs it when it reads them; a checkout that never comes is said at ERROR again, hourly."""
+        now = time.monotonic()
+        since = self.definitions.incomplete_since
+        if since is None or now - since < HELD_REPORT_SECONDS or now < self.next_held_report:
+            return
+        self.next_held_report = now + HELD_REPORT_SECONDS
+        missing = [repository for repository, commit in self.definitions.current.commits if commit is None]
+        # an exception for the record, so ErrorReportHandler reports it
+        error = definitions.DefinitionError(f"no checkout of {', '.join(missing)}")
+        logging.error("no feed entry has been evaluated for %.0f minutes: feed watch definitions repositories %s "
+                      "have no checkout", (now - since) / 60, ", ".join(missing), exc_info=error,
+                      extra={"repositories": missing})
+
     def evaluate(self) -> int:
         if not self.definitions.complete:
-            # read_definitions logged the repository without a checkout; the entries wait for it
+            # the entries wait for the checkout: evaluated without their definitions, they never would be
+            self.report_held_evaluation()
             return 0
         total = 0
         while not self.should_stop():
@@ -220,6 +252,8 @@ class FeedWatchService(ACEServiceInterface):
         if not get_config().feeds.repositories:
             logging.warning("feeds.repositories is empty: feeds are polled, but no watch has a definition")
 
+        self._step("replay recovery", replay.requeue_interrupted)
+
         self.collector_service.start()
         self.collector_started = True
         for name, target in (("feed-watch", self.feed_loop), ("feed-watch-classifier", self.classify_loop)):
@@ -254,7 +288,8 @@ class FeedWatchService(ACEServiceInterface):
 
     def join_timeout(self) -> float:
         """The longest one step of a thread can take to notice the stop: its slowest request."""
-        longest = self.config.fetch_connect_timeout_seconds + self.config.fetch_read_timeout_seconds
+        longest = max(self.config.fetch_deadline_seconds,
+                      self.config.fetch_connect_timeout_seconds + self.config.fetch_read_timeout_seconds)
         if self.config.llm is not None:
             longest = max(longest, self.config.llm.connect_timeout_seconds + self.config.llm.read_timeout_seconds)
         return longest + STOP_MARGIN_SECONDS

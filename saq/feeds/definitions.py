@@ -126,7 +126,7 @@ def repository_checkout_or_none(repository: str) -> Optional[str]:
     try:
         path = repository_checkout(repository)
     except DefinitionError:
-        # read_definitions logs a repository it can't find, once per read
+        # read_definitions logs why, once per read
         return None
     return path if os.path.isdir(path) else None
 
@@ -136,10 +136,15 @@ def read_definitions(commits: tuple) -> DefinitionSet:
     logged at ERROR; one whose name it can read is also kept as that name's error."""
     result = DefinitionSet(commits=commits)
     for repository, commit in commits:
-        checkout = repository_checkout_or_none(repository)
-        if checkout is None:
-            logging.error("feed watch definitions repository %s has no checkout yet; is service_git running?",
-                          repository, extra={"repository": repository})
+        try:
+            checkout = repository_checkout(repository)
+        except DefinitionError as e:
+            logging.error("unable to read feed watch definitions repository %s: %s", repository, e, exc_info=e,
+                          extra={"repository": repository})
+            continue
+        if not os.path.isdir(checkout):
+            logging.error("feed watch definitions repository %s has no checkout yet at %s; is service_git running?",
+                          repository, checkout, extra={"repository": repository, "path": checkout})
             continue
 
         for path in sorted(glob.glob(os.path.join(checkout, DEFINITIONS_DIR, "**", "*.y*ml"), recursive=True)):

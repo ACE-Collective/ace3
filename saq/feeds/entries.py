@@ -99,10 +99,11 @@ class StoreResult:
     seen: int = 0
 
 
-def store_entries(feed_id: int, parsed: ParsedFeed, baseline: bool) -> StoreResult:
+def store_entries(feed_id: int, parsed: ParsedFeed, baseline: bool, now: datetime) -> StoreResult:
     """Stores the entries of one successful poll in the caller's transaction (the caller commits).
     A version already stored is only marked seen; a new one is added, and is evaluated later unless
-    this is the feed's first poll (baseline), whose entries are only for preview."""
+    this is the feed's first poll (baseline), whose entries are only for preview. now is the poll's
+    time by the database's clock, which the caller also writes to feed.last_content_at."""
     result = StoreResult()
     versions: dict[tuple[str, str], tuple[str, ParsedEntry]] = {}
     for entry in parsed.entries:
@@ -122,7 +123,7 @@ def store_entries(feed_id: int, parsed: ParsedFeed, baseline: bool) -> StoreResu
 
     seen_ids = [existing[key] for key in versions if key in existing]
     if seen_ids:
-        db.execute(update(FeedEntry).where(FeedEntry.id.in_(seen_ids)).values(last_seen_at=func.now()))
+        db.execute(update(FeedEntry).where(FeedEntry.id.in_(seen_ids)).values(last_seen_at=now))
         result.seen = len(seen_ids)
 
     for key, (identity, entry) in versions.items():
@@ -142,8 +143,8 @@ def store_entries(feed_id: int, parsed: ParsedFeed, baseline: bool) -> StoreResu
             content=entry.content,
             categories="\n".join(entry.categories) or None,
             baseline=baseline,
-            first_seen_at=func.now(),
-            last_seen_at=func.now(),
+            first_seen_at=now,
+            last_seen_at=now,
             evaluated_at=func.now() if baseline else None,
         ))
         result.new += 1
@@ -151,16 +152,17 @@ def store_entries(feed_id: int, parsed: ParsedFeed, baseline: bool) -> StoreResu
     return result
 
 
-def mark_current_entries_seen(feed: Feed) -> int:
+def mark_current_entries_seen(feed: Feed, now: datetime) -> int:
     """A 304 says the feed still carries what its last 200 did: every version that response carried
     (seen at or after feed.last_content_at) is seen again, so it does not expire while the feed is
-    unchanged. In the caller's transaction."""
+    unchanged. In the caller's transaction. The comparison holds only while a poll writes one time,
+    now, to both last_seen_at and feed.last_content_at: two NOW()s can fall in different seconds."""
     if feed.last_content_at is None:
         return 0
     return get_db().execute(
         update(FeedEntry)
         .where(FeedEntry.feed_id == feed.id, FeedEntry.last_seen_at >= feed.last_content_at)
-        .values(last_seen_at=func.now())).rowcount
+        .values(last_seen_at=now)).rowcount
 
 
 def _delete_batches(statement_ids, delete_statement, batch_size: int, what: str, extra: dict) -> int:

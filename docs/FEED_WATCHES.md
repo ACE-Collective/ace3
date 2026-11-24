@@ -41,14 +41,14 @@ last 200 go back as `If-None-Match` and `If-Modified-Since`. feedparser parses t
 `saq/feeds/poller.py` imports it, so only this service loads it. HTML in the title, summary and content
 is stripped to text before anything matches.
 
-A poll that fails (no connection, an HTTP error, a body over `max_feed_bytes`, a document that is not a
-feed) is logged at WARNING and recorded on the feed as `last_failure_at` and `last_error`. The Feeds page
+A poll that fails (no connection, an HTTP error, a body over `max_feed_bytes`, a response still arriving
+after `fetch_deadline_seconds`, a document that is not a feed) is logged at WARNING and recorded on the feed as `last_failure_at` and `last_error`. The Feeds page
 shows these next to `last_success_at`. The feed monitor in `service_monitoring` emits a `feeds.stale`
 event, and logs a WARNING, for each enabled feed with no successful poll for `feeds.stale_after_minutes`,
 so a dead feed reaches the operator.
 
-A feed's first successful poll is a baseline: its entries can be previewed on the Feeds page but are never
-evaluated. Delivery starts with the entries a feed carries after that, and a watch sees only entries first
+A feed's first successful poll is a baseline, and so is the first after its URL changes: its entries can
+be previewed on the Feeds page but are never evaluated. Delivery starts with the entries a feed carries after that, and a watch sees only entries first
 evaluated after it exists. Use replay to see what a definition makes of older entries.
 
 ### Entries
@@ -59,7 +59,8 @@ categories, and leaves the entry's timestamps out. A vendor that edits an adviso
 row with the same identity. The rows persist the identity across restarts.
 
 Every poll moves `last_seen_at` forward on the versions the feed still carries. A 304 does the same for
-every version the last 200 carried. A version not seen for `feeds.entry_retention_days` (90) is deleted in
+every version the last 200 carried: those whose `last_seen_at` is not before the feed's `last_content_at`,
+which is why a poll reads the database's clock once and writes that one time to both. A version not seen for `feeds.entry_retention_days` (90) is deleted in
 primary-key batches of `feeds.prune_batch_size`, with its decisions, labels and replay results. Deleting
 a feed stops it at once; the service then deletes its entries in batches, and then the feed.
 
@@ -114,6 +115,11 @@ with `present` false. A file that can't be used (bad YAML, no name, a rule that 
 logged at ERROR and listed with its error. A watch whose definition is missing or unusable is flagged in
 the GUI and matches nothing.
 
+A name in `feeds.repositories` that no `git_repo_*` section has is refused when the configuration loads.
+While a repository has no checkout, no entry is evaluated, since an entry evaluated without its
+definitions would never be evaluated again: the service logs it at ERROR when it reads the
+repositories, and again every hour once it has waited an hour.
+
 ### Matching
 
 The service compiles each rule itself with yara-python. Rules never go into the yara service's ruleset,
@@ -125,7 +131,9 @@ rule can require a string in the title:
 condition: $a and field == "title"
 ```
 
-The supporting excerpt is the first matched string with 120 characters either side.
+The supporting excerpt is the first matched string with 120 characters either side. A rule that times
+out on an entry fails that decision, at WARNING; any other failure to run a rule is a bug, logged at
+ERROR with its traceback, and fails the decision too.
 
 ## Watches
 
@@ -203,18 +211,20 @@ What a failure does:
 | Failure | Effect |
 |---|---|
 | no connection, a timeout, a 5xx | logged through `log_peer_unavailable()` (or at WARNING for a 5xx); the decision stays pending, no attempt counted, the rest of the batch waits for the next pass |
+| a certificate that does not verify, a missing CA bundle | logged at ERROR with its traceback; the decision stays pending, as for no connection |
 | 429 | classification pauses for `Retry-After`, capped at `retry_after_cap_seconds`; the rest of the batch waits |
 | 401, 403 | logged at ERROR; nothing more is asked until `service_feed_watch.llm` changes |
 | an invalid reply, or another 4xx | an attempt: retried later, and after `max_attempts` the decision is `failed`, logged at ERROR and listed under *Failed decisions* on the Watches page |
-| the configured model or the prompt changed while it was pending | `failed`, with the reason |
+| the configured model or the prompt changed while it was pending | a watch's question is asked under the configuration of the time, which the decision records; a replay's is `failed`, with the reason, since its answers are found again by (question, prompt, entry, model) |
 
 The classifier runs on its own thread, so a slow endpoint never holds up polling. Every call is bounded
 by its timeouts and every loop checks for shutdown.
 
 ## Delivery
 
-A match of a delivering watch (at the version the watch still has) becomes an alert of type `feed_watch`
-on the watch's queue. Alert routers can still move it. There is one alert per entry identity and
+A match a watch made while it was delivering becomes an alert of type `feed_watch` on the queue the
+watch had then, as long as the watch is still enabled and delivering. An edit of the watch since does not
+drop it: the entry was evaluated under that version and is never evaluated again. Alert routers can still move it. There is one alert per entry identity and
 queue: every watch that matched the entry for that queue is on the same root, with its evidence. A match
 waits up to `feeds.delivery_wait_seconds` for the other delivering watches of the queue to decide on the
 same version, so they arrive together.
@@ -239,6 +249,8 @@ and, for each entry the rule matched (every entry without a rule), asks the ques
 decision keyed on (question, prompt, entry, model). Replaying the same draft again reuses the answers it
 already has. The page polls the replay and shows its progress, its matches and misses with their
 supporting text, and lets an analyst label each entry relevant or not relevant for a chosen watch.
+A replay that fails while it runs is `failed`
+with the error, and one a stopped or killed service left running is queued again when the service starts.
 Replays are deleted after `feeds.replay_retention_days`.
 
 ## Dispositions

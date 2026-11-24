@@ -20,7 +20,7 @@ from sqlalchemy.dialects.mysql import insert
 
 from saq.database.model import FeedDecision, FeedDelivery, FeedEntry, FeedWatch, FeedWatchFeed
 from saq.database.pool import get_db
-from saq.error.reporting import log_peer_unavailable
+from saq.error.reporting import log_loop_exception, log_peer_unavailable
 from saq.feeds.definitions import Definition, DefinitionSet
 from saq.feeds.entries import entry_fields, entry_text, seconds_from_now
 from saq.feeds.llm import (
@@ -69,10 +69,16 @@ def watch_version(row_version: Optional[int], definition_hash: Optional[str]) ->
     return f"v{row_version}:{(definition_hash or '')[:12]}"
 
 
+class ScanError(Exception):
+    """A definition's rule failed on an entry (it timed out): the definition's to fix, not a bug. Raised
+    by Matcher.scan, which wraps yara's error so this module, which the API imports, never loads yara."""
+
+
 @dataclass
 class Matcher:
     """What evaluate_entries needs of the definitions: which are usable and a way to run each rule.
-    scan(definition, fields) returns (matched, field, excerpt) and raises for a scan that failed."""
+    scan(definition, fields) returns (matched, field, excerpt) and raises ScanError for a scan that
+    failed."""
     definitions: DefinitionSet
     usable: set[str]
     scan: Callable[[Definition, dict[str, str]], tuple[bool, Optional[str], Optional[str]]]
@@ -90,11 +96,17 @@ def _decision_row(entry: FeedEntry, watch: FeedWatch, definition: Definition, ma
     matched = None
     if definition.yara:
         if definition.name not in scans:
+            extra = {"definition": definition.name, "feed_entry_id": entry.id}
             try:
                 scans[definition.name] = matcher.scan(definition, fields)
-            except Exception as e:
+            except ScanError as e:
                 logging.warning("the rule of feed watch definition %s failed on entry %s: %s", definition.name,
-                                entry.id, e, extra={"definition": definition.name, "feed_entry_id": entry.id})
+                                entry.id, e, extra=extra)
+                scans[definition.name] = e
+            except Exception as e:
+                # a bug in the scan, not the rule: the decision still fails, so the batch goes on
+                logging.error("unable to run the rule of feed watch definition %s on entry %s: %s", definition.name,
+                              entry.id, e, exc_info=e, extra=extra)
                 scans[definition.name] = e
         scanned = scans[definition.name]
         if isinstance(scanned, Exception):
@@ -225,16 +237,18 @@ def classify_pending(config: FeedWatchServiceConfig, definitions: DefinitionSet,
 
         extra = {"feed_decision_id": row.id, "feed_entry_id": row.entry_id, "feed_watch_id": row.watch_id,
                  "definition": row.definition_name, "llm_model": llm.model}
-        if row.model and row.model != llm.model:
-            _fail(row, f"asked of model {row.model}, but the endpoint is now configured for {llm.model}")
+        if row.kind == KIND_WATCH:
+            # an entry is evaluated once, so a watch's question is asked under the model and prompt
+            # configured now, which the row then records, rather than failed and its alert lost
+            row.model = llm.model
+            row.prompt_hash = definitions.prompt_hash
+        elif (row.model and row.model != llm.model) or (row.prompt_hash and row.prompt_hash != definitions.prompt_hash):
+            # a replay's answer is found again by its (question, prompt, entry, model) key, which an
+            # answer under another configuration would make wrong; the analyst replays the draft again
+            changed = "the configured model" if row.model and row.model != llm.model else "the system prompt"
+            _fail(row, f"{changed} changed before the question was asked")
             db.commit()
-            logging.warning("feed decision %s failed: the configured model changed", row.id, extra=extra)
-            handled += 1
-            continue
-        if row.prompt_hash and row.prompt_hash != definitions.prompt_hash:
-            _fail(row, "the system prompt changed before the question was asked")
-            db.commit()
-            logging.warning("feed decision %s failed: the system prompt changed", row.id, extra=extra)
+            logging.warning("feed replay decision %s failed: %s changed", row.id, changed, extra=extra)
             handled += 1
             continue
 
@@ -263,7 +277,13 @@ def classify_pending(config: FeedWatchServiceConfig, definitions: DefinitionSet,
         except LLMUnavailable as e:
             db.rollback()
             if not log_peer_unavailable(e, "feed watch llm endpoint", extra=extra):
-                logging.warning("feed watch llm endpoint failed: %s", e, extra=extra)
+                if e.__cause__ is None:
+                    # a 5xx: the endpoint is up and says it can't answer
+                    logging.warning("feed watch llm endpoint failed: %s", e, extra=extra)
+                else:
+                    # a certificate that does not verify, say: nothing is asked until an operator fixes
+                    # the configuration
+                    log_loop_exception(e, "feed watch llm endpoint failed", extra=extra)
             return handled
         except LLMRateLimited as e:
             db.rollback()

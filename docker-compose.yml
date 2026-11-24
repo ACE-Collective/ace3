@@ -696,6 +696,7 @@ services:
     command: /bin/bash -c "/opt/ace/docker/startup/start.sh ace service start feed_watch"
     init: true
     restart: always
+    stop_grace_period: 45s
     volumes: *common-volumes
     hostname: ace
     networks:

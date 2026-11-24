@@ -8,6 +8,10 @@ gone feeds.stale_after_minutes without a success."""
 
 import calendar
 import logging
+import os
+import socket
+import threading
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Optional
@@ -100,9 +104,24 @@ def _auth(feed: Feed) -> tuple[Optional[tuple[str, str]], dict[str, str]]:
     return None, {feed.auth_name: secret}
 
 
+def _shut_down(fileno: int) -> None:
+    """Shuts down the connection whose socket is fileno, so a read blocked on it returns at once."""
+    # a duplicate of the descriptor: closing it leaves the response's own socket for the response to close
+    sock = socket.socket(fileno=os.dup(fileno))
+    try:
+        sock.shutdown(socket.SHUT_RDWR)
+    except OSError:
+        # the peer closed it already: the read it would have ended has ended
+        pass
+    finally:
+        sock.close()
+
+
 def fetch_feed(feed: Feed, config: FeedWatchServiceConfig) -> FetchResult:
-    """One conditional GET of the feed, its body capped at max_feed_bytes. Raises FeedFetchError for
-    an HTTP error or a body that is too large, and requests' exceptions for a fetch that failed."""
+    """One conditional GET of the feed, its body capped at max_feed_bytes and cut off once the fetch
+    has run fetch_deadline_seconds (connecting and the headers are bounded by the timeouts). Raises FeedFetchError for an HTTP error, a body that is too large or a
+    fetch past its deadline, and requests' exceptions for a fetch that failed."""
+    deadline = time.monotonic() + config.fetch_deadline_seconds
     auth, headers = _auth(feed)
     headers = {"User-Agent": USER_AGENT, **headers}
     if feed.etag:
@@ -117,11 +136,47 @@ def fetch_feed(feed: Feed, config: FeedWatchServiceConfig) -> FetchResult:
         if response.status_code >= 400:
             raise FeedFetchError(f"HTTP {response.status_code}")
 
+        # the read timeout bounds each read, not the body: a server sending a byte at a time would
+        # keep this loop, and with it the whole feed loop, going for as long as it liked
+        try:
+            fileno = response.raw.fileno()
+        except OSError:
+            # no socket under it (a response read from memory): nothing to wait on
+            fileno = None
+        expired = threading.Event()
+        # held while the connection is shut down, and taken before the response closes its socket, so
+        # the descriptor is never another socket's by the time it is shut down
+        finished = threading.Lock()
+        done = False
+
+        def expire():
+            with finished:
+                if done:
+                    return
+                expired.set()
+                if fileno is not None:
+                    _shut_down(fileno)
+
+        watchdog = threading.Timer(max(0.0, deadline - time.monotonic()), expire)
+        watchdog.daemon = True
+        watchdog.start()
         body = bytearray()
-        for chunk in response.iter_content(65536):
-            body.extend(chunk)
-            if len(body) > config.max_feed_bytes:
-                raise FeedFetchError(f"the response is larger than {config.max_feed_bytes} bytes")
+        try:
+            for chunk in response.iter_content(65536):
+                body.extend(chunk)
+                if len(body) > config.max_feed_bytes:
+                    raise FeedFetchError(f"the response is larger than {config.max_feed_bytes} bytes")
+        except Exception as e:
+            if expired.is_set():
+                raise FeedFetchError(f"the response took longer than {config.fetch_deadline_seconds:g}s") from e
+            raise
+        finally:
+            with finished:
+                done = True
+            watchdog.cancel()
+        if expired.is_set():
+            # a body without a length simply ends when its connection is shut down
+            raise FeedFetchError(f"the response took longer than {config.fetch_deadline_seconds:g}s")
 
         return FetchResult(not_modified=False, body=bytes(body), etag=response.headers.get("ETag"),
                            last_modified=response.headers.get("Last-Modified"))
@@ -152,18 +207,20 @@ def poll_feed(feed_id: int, config: FeedWatchServiceConfig) -> bool:
     db.commit()
     try:
         fetched = fetch_feed(feed, config)
+        # one time for every row this poll writes (mark_current_entries_seen)
+        now = db.execute(select(func.now())).scalar()
         if fetched.not_modified:
-            seen = mark_current_entries_seen(feed)
-            feed.last_content_at = func.now()
+            seen = mark_current_entries_seen(feed, now)
+            feed.last_content_at = now
             result_text = f"not modified ({seen} entries still current)"
         else:
             parsed = parse_feed(fetched.body)
             baseline = feed.baselined_at is None
-            stored = store_entries(feed.id, parsed, baseline=baseline)
+            stored = store_entries(feed.id, parsed, baseline=baseline, now=now)
             feed.title = (parsed.title or feed.title or "")[:512] or None
             feed.etag = (fetched.etag or "")[:512] or None
             feed.last_modified = (fetched.last_modified or "")[:128] or None
-            feed.last_content_at = func.now()
+            feed.last_content_at = now
             if baseline:
                 feed.baselined_at = func.now()
             result_text = f"{stored.new} new versions, {stored.seen} already stored" + (" (first poll: preview only)" if baseline else "")

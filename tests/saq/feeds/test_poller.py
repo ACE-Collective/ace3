@@ -1,6 +1,10 @@
 """Polling feeds (docs/FEED_WATCHES.md, *Polling*)."""
 
 import logging
+import threading
+import time
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from types import SimpleNamespace
 
 import pytest
 import requests
@@ -13,6 +17,7 @@ from saq.feeds import poller
 from saq.feeds.entries import ParsedEntry, ParsedFeed
 from saq.feeds.poller import html_to_text, poll_feed
 from tests.saq.feeds.conftest import fresh, make_feed, service_config
+from tests.saq.helpers import wait_for_condition
 
 URL = "https://vendor.example/feed.xml"
 
@@ -96,6 +101,32 @@ def test_a_poll_stores_the_entries_and_its_validators(requests_mock, monkeypatch
 
 
 @pytest.mark.integration
+def test_a_304_keeps_the_entries_current_when_the_clock_ticks_during_a_poll(requests_mock, monkeypatch, caplog):
+    monkeypatch.setattr(poller, "parse_feed", lambda body: PARSED)
+    feed = make_feed(url=URL)
+    requests_mock.get(URL, content=b"<rss/>", headers={"ETag": '"v1"'})
+    assert poll_feed(feed.id, service_config())
+
+    # the database's clock moves to the next second between storing the entries and recording the
+    # feed's content
+    original = poller.store_entries
+
+    def store_then_tick(*args, **kwargs):
+        result = original(*args, **kwargs)
+        stored_at = get_db().execute(text("SELECT NOW()")).scalar()
+        wait_for_condition(lambda: get_db().execute(text("SELECT NOW()")).scalar() > stored_at, timeout=3, delay=0.05)
+        return result
+
+    monkeypatch.setattr(poller, "store_entries", store_then_tick)
+    assert poll_feed(feed.id, service_config())
+
+    requests_mock.get(URL, status_code=304)
+    with caplog.at_level(logging.INFO):
+        assert poll_feed(feed.id, service_config())
+    assert any("not modified (1 entries still current)" in record.getMessage() for record in caplog.records)
+
+
+@pytest.mark.integration
 @pytest.mark.parametrize("auth_type, expected", [("basic", "Basic dXNlcjpwYXNzd29yZA=="), ("header", "Bearer token")])
 def test_a_poll_sends_the_decrypted_credentials(requests_mock, monkeypatch, auth_type, expected):
     monkeypatch.setattr(poller, "parse_feed", lambda body: PARSED)
@@ -127,6 +158,53 @@ def test_a_failed_poll_is_logged_and_recorded(requests_mock, caplog, failure, me
     assert feed.last_failure_at is not None and feed.last_success_at is None and feed.next_poll_at is not None
     (record,) = [record for record in caplog.records if "unable to poll feed" in record.getMessage()]
     assert record.levelname == "WARNING" and record.feed_id == feed.id
+
+
+class _Drip(BaseHTTPRequestHandler):
+    """A feed that sends its body a byte at a time, each well within the read timeout, for up to 8s."""
+
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header("Content-Type", "application/rss+xml")
+        if self.server.length:
+            self.send_header("Content-Length", str(self.server.length))
+        self.end_headers()
+        end = time.monotonic() + 8
+        try:
+            while time.monotonic() < end and not self.server.stop.wait(0.1):
+                self.wfile.write(b"<")
+                self.wfile.flush()
+        except OSError:
+            # the client shut the connection down: what the test waits for
+            return
+
+    def log_message(self, *args):
+        pass
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("length", [None, 1000000])
+def test_a_feed_that_trickles_its_body_fails_at_the_deadline(monkeypatch, length):
+    monkeypatch.setattr(poller, "proxies", lambda name=None: {})
+    server = ThreadingHTTPServer(("127.0.0.1", 0), _Drip)
+    server.daemon_threads = True
+    server.stop = threading.Event()
+    server.length = length
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    config = service_config()
+    config.fetch_read_timeout_seconds = 1
+    config.fetch_deadline_seconds = 1.5
+    feed = SimpleNamespace(url=f"http://127.0.0.1:{server.server_port}/feed.xml", auth_type="none", auth_secret=None,
+                           etag=None, last_modified=None)
+    try:
+        started = time.monotonic()
+        with pytest.raises(poller.FeedFetchError, match="took longer than 1.5s"):
+            poller.fetch_feed(feed, config)
+        assert time.monotonic() - started < 4
+    finally:
+        server.stop.set()
+        server.shutdown()
+        server.server_close()
 
 
 @pytest.mark.integration

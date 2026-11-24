@@ -38,6 +38,7 @@ class FeedWatchServiceConfig(CollectorServiceConfiguration):
     loop_interval_seconds: float = Field(default=15, gt=0, description="how often the service looks for feeds that are due, entries to evaluate, decisions to ask and replays to run")
     fetch_connect_timeout_seconds: float = Field(default=10, gt=0)
     fetch_read_timeout_seconds: float = Field(default=30, gt=0)
+    fetch_deadline_seconds: float = Field(default=120, gt=0, description="the longest one fetch may take, its body included; a response still arriving then is a failed poll. The read timeout bounds each read only, so a server sending a byte at a time would otherwise hold the feed loop")
     max_feed_bytes: int = Field(default=10 * 1024 * 1024, ge=1024, description="a larger response is refused")
     fetch_proxy: Optional[str] = Field(default=None, description="a named proxy (proxy_<name>) for fetching feeds; unset for global.default_proxy")
     llm: Optional[LLMEndpointConfig] = Field(default=None, description="the LLM endpoint; without one no question is asked and those decisions stay pending")

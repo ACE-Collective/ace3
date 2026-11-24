@@ -19,7 +19,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Callable, Optional
 
-from sqlalchemy import func, select, update
+from sqlalchemy import func, select, true, update
 from sqlalchemy.exc import IntegrityError
 
 from saq.analysis.root import RootAnalysis, Submission
@@ -58,19 +58,21 @@ class Group:
 
 
 def _live_matches():
-    """Matches that a delivering watch made at the version it still has, not yet delivered."""
+    """Matches a watch made while it was delivering, not yet delivered, of a watch that is still enabled
+    and delivering. A match goes to the queue it was decided for, whatever the watch was edited to
+    since: the entry was evaluated under that version, and is never evaluated again."""
     return (select(FeedDecision, FeedEntry.feed_id, FeedEntry.identity_hash)
             .join(FeedEntry, FeedEntry.id == FeedDecision.entry_id)
             .join(FeedWatch, FeedWatch.id == FeedDecision.watch_id)
             .where(FeedDecision.kind == KIND_WATCH,
-                   FeedDecision.deliver.is_(True),
+                   # = rather than IS: MySQL looks an IS TRUE up in no index, and this query is run every
+                   # loop over every decision a delivering watch kept (i_feed_decisions_undelivered_matches)
+                   FeedDecision.deliver == true(),
                    FeedDecision.delivery_id.is_(None),
                    FeedDecision.status == STATUS_DECIDED,
                    FeedDecision.decision == DECISION_MATCH,
                    FeedWatch.enabled.is_(True),
-                   FeedWatch.mode == "delivering",
-                   FeedWatch.version == FeedDecision.watch_row_version,
-                   FeedWatch.queue == FeedDecision.queue))
+                   FeedWatch.mode == "delivering"))
 
 
 def ready_groups(wait_seconds: int) -> list[Group]:

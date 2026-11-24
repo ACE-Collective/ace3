@@ -223,6 +223,32 @@ def test_review_disposition_rejects_a_correction_analysts_may_not_set(web_client
 
 
 @pytest.mark.integration
+def test_review_disposition_refuses_a_correction_the_alert_type_may_not_have(web_client, caplog):
+    alert = insert_alert()
+    get_db().execute(Alert.__table__.update().where(Alert.id == alert.id).values(alert_type="feed_watch"))
+    get_db().commit()
+    set_dispositions([alert.uuid], "RELEVANT", person(1))
+
+    with caplog.at_level(logging.ERROR):
+        response = web_client.post(url_for("analysis.review_disposition"), data={
+            "review_result": DISPOSITION_REVIEW_INCORRECT,
+            "corrected_disposition": DISPOSITION_FALSE_POSITIVE,
+            "comment": "not a real advisory",
+            "alert_uuid": alert.uuid,
+        })
+
+    assert response.status_code == 302
+    db = get_db()
+    db.expire_all()
+    reviewed = db.get(Alert, alert.id)
+    assert (reviewed.disposition, reviewed.disposition_review) == ("RELEVANT", DISPOSITION_REVIEW_UNREVIEWED)
+    with web_client.session_transaction() as session:
+        flashes = [message for _, message in session.get("_flashes", [])]
+    assert flashes == ["disposition review not recorded: FALSE_POSITIVE is not a disposition of feed_watch alerts"]
+    assert not [record for record in caplog.records if record.levelno >= logging.ERROR]
+
+
+@pytest.mark.integration
 def test_review_disposition_does_not_correct_a_simulated_alert(web_client):
     simulated = insert_alert()
     make_simulated(simulated)

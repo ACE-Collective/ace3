@@ -2,14 +2,22 @@
 
 import json
 import logging
+import ssl
 
 import pytest
 import requests
-from sqlalchemy import select, text
+from sqlalchemy import func, select, text
 
 from saq.database.model import FeedDecision, FeedDelivery, FeedEntry
 from saq.database.pool import get_db
-from saq.feeds.decisions import ClassifierState, Matcher, classify_pending, evaluate_entries
+from saq.feeds.decisions import (
+    ClassifierState,
+    Matcher,
+    ScanError,
+    classify_pending,
+    evaluate_entries,
+    replay_cache_key,
+)
 from saq.feeds.definitions import Definition, DefinitionSet, prompt_hash
 from saq.feeds.matching import compile_rule, scan_entry
 from tests.saq.feeds.conftest import EXPLOITED_RULE, LLM_MODEL, LLM_URL, PROMPT, make_entry, make_feed, make_watch, service_config
@@ -84,6 +92,44 @@ def test_each_watch_of_the_feed_decides_on_a_new_version():
     assert get_db().get(FeedEntry, entry.id).evaluated_at is not None
     # evaluated once
     assert evaluate_entries(_matcher(definitions)) == 0
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("failure, level", [(ScanError("timeout"), "WARNING"), (KeyError("a bug"), "ERROR")])
+def test_a_rule_that_fails_on_an_entry_fails_its_decision(caplog, failure, level):
+    feed = make_feed()
+    definitions = _definitions(_definition("pattern", yara=EXPLOITED_RULE),
+                               _definition("asked", yara=EXPLOITED_RULE, question=QUESTION))
+    make_watch(feed, "pattern")
+    make_watch(feed, "asked")
+    entry = make_entry(feed, content=EXPLOITED_TEXT)
+
+    def scan(definition, fields):
+        raise failure
+
+    matcher = Matcher(definitions=definitions, usable=set(definitions.definitions), scan=scan, model=LLM_MODEL)
+    with caplog.at_level(logging.WARNING):
+        assert evaluate_entries(matcher) == 1
+
+    rows = _decisions()
+    assert {name: row.status for name, row in rows.items()} == {"pattern": "failed", "asked": "failed"}
+    assert all(row.last_error.startswith("the rule failed:") and row.decided_at is not None for row in rows.values())
+    get_db().expire_all()
+    assert get_db().get(FeedEntry, entry.id).evaluated_at is not None
+    records = [record for record in caplog.records if "feed watch definition" in record.getMessage()]
+    assert {(record.levelname, record.definition) for record in records} == {(level, "pattern"), (level, "asked")}
+    assert all(bool(record.exc_info) == (level == "ERROR") for record in records)
+
+
+@pytest.mark.integration
+def test_a_stop_ends_the_evaluation_before_the_next_entry():
+    feed = make_feed()
+    make_watch(feed, "pattern")
+    entry = make_entry(feed, content=EXPLOITED_TEXT)
+    assert evaluate_entries(_matcher(_definitions(_definition("pattern", yara=EXPLOITED_RULE))), lambda: True) == 0
+    assert get_db().execute(select(FeedDecision)).first() is None
+    get_db().expire_all()
+    assert get_db().get(FeedEntry, entry.id).evaluated_at is None
 
 
 @pytest.mark.integration
@@ -177,6 +223,31 @@ def test_an_unreachable_endpoint_leaves_the_decision_pending(requests_mock, capl
 
 
 @pytest.mark.integration
+def test_a_stop_ends_the_classification_before_the_next_question(requests_mock):
+    _pending()
+    requests_mock.post(COMPLETIONS, json=_completion())
+    definitions = _definitions(_definition("question_only", question=QUESTION))
+    assert classify_pending(service_config(), definitions, ClassifierState(), lambda: True) == 0
+    assert requests_mock.call_count == 0
+    assert _decisions()["question_only"].status == "pending"
+
+
+@pytest.mark.integration
+def test_an_endpoint_certificate_that_does_not_verify_is_an_error(requests_mock, caplog):
+    _pending()
+    failure = requests.exceptions.SSLError("certificate verify failed")
+    failure.__cause__ = ssl.SSLCertVerificationError("unable to get local issuer certificate")
+    requests_mock.post(COMPLETIONS, exc=failure)
+    definitions = _definitions(_definition("question_only", question=QUESTION))
+
+    with caplog.at_level(logging.WARNING):
+        assert classify_pending(service_config(), definitions, ClassifierState()) == 0
+    assert _decisions()["question_only"].status == "pending"
+    (record,) = [record for record in caplog.records if "llm endpoint" in record.getMessage()]
+    assert record.levelname == "ERROR" and record.exc_info and record.feed_entry_id is not None
+
+
+@pytest.mark.integration
 def test_a_429_pauses_classification(requests_mock):
     _pending()
     requests_mock.post(COMPLETIONS, status_code=429, headers={"Retry-After": "3600"})
@@ -228,11 +299,43 @@ def test_nothing_is_asked_without_a_system_prompt(requests_mock, caplog):
 
 
 @pytest.mark.integration
-def test_a_decision_asked_of_another_model_fails(requests_mock):
+@pytest.mark.parametrize("change", ["model", "prompt"])
+def test_a_watch_question_is_asked_under_the_configuration_it_finds(requests_mock, change):
+    # the model or the prompt changed while the question waited (an endpoint outage, say)
     _pending()
     requests_mock.post(COMPLETIONS, json=_completion())
-    definitions = _definitions(_definition("question_only", question=QUESTION))
-    classify_pending(service_config(model="another-model"), definitions, ClassifierState())
+    model = "another-model" if change == "model" else LLM_MODEL
+    prompt = PROMPT if change == "model" else PROMPT + " Answer conservatively."
+    definitions = _definitions(_definition("question_only", question=QUESTION), prompt=prompt)
+
+    assert classify_pending(service_config(model=model), definitions, ClassifierState()) == 1
+
     row = _decisions()["question_only"]
-    assert row.status == "failed" and "another-model" in row.last_error
+    assert (row.status, row.decision) == ("decided", "match")
+    assert (row.model, row.prompt_hash) == (model, prompt_hash(prompt))
+    sent = requests_mock.last_request.json()
+    assert sent["model"] == model and sent["messages"][0]["content"].startswith(prompt)
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("change", ["model", "prompt"])
+def test_a_replay_question_asked_under_another_configuration_fails(requests_mock, caplog, change):
+    entry = make_entry(make_feed(), content=EXPLOITED_TEXT)
+    db = get_db()
+    db.add(FeedDecision(cache_key=replay_cache_key(QUESTION, prompt_hash(PROMPT), entry.id, LLM_MODEL), kind="replay",
+                        entry_id=entry.id, question=QUESTION, model=LLM_MODEL, prompt_hash=prompt_hash(PROMPT),
+                        status="pending", attempts=0, created_at=func.now()))
+    db.commit()
+    requests_mock.post(COMPLETIONS, json=_completion())
+    model = "another-model" if change == "model" else LLM_MODEL
+    prompt = PROMPT if change == "model" else PROMPT + " Answer conservatively."
+
+    with caplog.at_level(logging.WARNING):
+        assert classify_pending(service_config(model=model), _definitions(prompt=prompt), ClassifierState()) == 1
+
+    db.expire_all()
+    row = db.execute(select(FeedDecision)).scalar_one()
+    expected = "the configured model" if change == "model" else "the system prompt"
+    assert row.status == "failed" and row.last_error == f"{expected} changed before the question was asked"
     assert requests_mock.call_count == 0
+    assert any(record.levelname == "WARNING" and record.feed_decision_id == row.id for record in caplog.records)

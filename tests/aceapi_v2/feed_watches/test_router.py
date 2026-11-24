@@ -142,6 +142,93 @@ async def test_the_evaluation_of_a_watch(client: AsyncClient):
     assert (await client.get("/feed-watches/999999/evaluation")).status_code == 404
 
 
+async def _all_pages(client: AsyncClient, path: str, **params) -> list[list]:
+    """Every page of a listing, followed through next_cursor: what feeds.js's all_pages does."""
+    pages, cursor = [], None
+    while True:
+        page = (await client.get(path, params={**params, **({"cursor": cursor} if cursor else {})})).json()
+        pages.append(page["data"])
+        cursor = page["next_cursor"]
+        if cursor is None:
+            return pages
+
+
+async def test_the_definitions_are_listed_in_pages(client: AsyncClient):
+    for name in ("one", "two", "three"):
+        _definition(name, question="q")
+    _definition("broken", yara="rule broken {", error="the rule does not compile: syntax error")
+    _definition("twice", question="q", error="also defined in defs/definitions/copy.yaml, which is ignored: names must be unique")
+
+    pages = await _all_pages(client, "/feed-watches/definitions", limit=2)
+    assert [len(page) for page in pages] == [2, 2, 1]
+    usable = {item["name"]: item["usable"] for page in pages for item in page}
+    assert usable == {"one": True, "two": True, "three": True, "broken": False, "twice": True}
+
+
+async def test_the_watches_are_listed_in_pages_and_read_one_at_a_time(client: AsyncClient):
+    _definition("exploited", question="q")
+    feed = make_feed()
+    watches = [make_watch(feed, "exploited", name=f"watch{index}") for index in range(3)]
+
+    pages = await _all_pages(client, "/feed-watches/", limit=2)
+    assert [[item["id"] for item in page] for page in pages] == [[watches[0].id, watches[1].id], [watches[2].id]]
+    one = await client.get(f"/feed-watches/{watches[1].id}")
+    assert one.status_code == 200 and one.json()["name"] == "watch1"
+    assert (await client.get("/feed-watches/999999")).status_code == 404
+
+
+async def test_each_field_of_a_watch_is_edited(client: AsyncClient):
+    _definition("exploited", question="q")
+    _definition("widget", yara="rule r { condition: true }")
+    feed = make_feed()
+    watch = make_watch(feed, "exploited", name="first", mode="shadow")
+    make_watch(feed, "exploited", name="taken")
+
+    edited = await client.patch(f"/feed-watches/{watch.id}", json={
+        "name": " renamed ", "definition_name": "widget", "queue": " intel ", "enabled": False})
+    assert edited.status_code == 200, edited.text
+    body = edited.json()
+    assert (body["name"], body["definition_name"], body["queue"], body["enabled"], body["version"]) == \
+        ("renamed", "widget", "intel", False, 2)
+    assert (await client.patch(f"/feed-watches/{watch.id}", json={})).json()["version"] == 2
+
+    conflict = await client.patch(f"/feed-watches/{watch.id}", json={"name": "taken"})
+    assert conflict.status_code == 409 and "already named taken" in conflict.text
+    unknown = await client.patch(f"/feed-watches/{watch.id}", json={"definition_name": "nope"})
+    assert unknown.status_code == 422
+    assert (await client.get(f"/feed-watches/{watch.id}")).json()["name"] == "renamed"
+    assert (await client.patch("/feed-watches/999999", json={"name": "x"})).status_code == 404
+
+
+async def test_the_decisions_of_a_watch_and_the_results_of_a_replay_are_listed_in_pages(client: AsyncClient):
+    feed = make_feed()
+    watch = make_watch(feed, "asked")
+    other = make_watch(feed, "asked", name="other")
+    entries = [make_entry(feed, identity=f"e{index}") for index in range(3)]
+    db = get_db()
+    for entry in entries:
+        for decided_by in (watch, other):
+            db.add(FeedDecision(cache_key=os.urandom(32).hex(), kind="watch", entry_id=entry.id, watch_id=decided_by.id,
+                                watch_row_version=1, definition_name="asked", definition_hash="d" * 64,
+                                status="decided", decision="no_match", created_at=func.now()))
+    replay = FeedReplay(yara="rule r { condition: true }", feed_ids=json.dumps([feed.id]), state="done", entry_count=3,
+                        created_at=func.now())
+    db.add(replay)
+    db.flush()
+    db.add_all(FeedReplayResult(replay_id=replay.id, entry_id=entry.id, yara_matched=True) for entry in entries)
+    db.commit()
+
+    pages = await _all_pages(client, "/feed-watches/decisions", watch_id=watch.id, limit=2)
+    assert [len(page) for page in pages] == [2, 1]
+    decided = [item for page in pages for item in page]
+    assert {item["watch_id"] for item in decided} == {watch.id}
+    assert [item["entry"]["id"] for item in decided] == [entry.id for entry in reversed(entries)]
+
+    pages = await _all_pages(client, f"/feed-watches/replays/{replay.id}/results", limit=2)
+    assert [[item["entry"]["id"] for item in page] for page in pages] == \
+        [[entries[2].id, entries[1].id], [entries[0].id]]
+
+
 async def test_reading_and_writing_need_their_permissions(noperm_client: AsyncClient):
     assert (await noperm_client.get("/feed-watches/")).status_code == 403
     assert (await noperm_client.post("/feed-watches/replays", json={"question": "q", "feed_ids": [1]})).status_code == 403

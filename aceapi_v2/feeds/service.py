@@ -114,8 +114,10 @@ def update_feed(feed_id: int, body: schemas.FeedUpdate, auth: ApiAuthResult) -> 
         feed.name = body.name.strip()
     if body.url is not None and body.url.strip() != feed.url:
         feed.url = _check_url(body.url)
-        # the validators belong to the old url
+        # the validators belong to the old url, and so does the baseline: the new url's first poll is
+        # one, or its whole backlog would be evaluated as new
         feed.etag = feed.last_modified = None
+        feed.baselined_at = None
     if body.poll_interval_seconds is not None:
         feed.poll_interval_seconds = _check_interval(body.poll_interval_seconds)
     if body.enabled is not None:
