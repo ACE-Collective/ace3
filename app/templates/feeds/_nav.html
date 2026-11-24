@@ -1,0 +1,13 @@
+<ul class="nav nav-tabs mb-3">
+    {% if has_permission('feed_watch', 'read') %}
+    <li class="nav-item"><a class="nav-link {{ 'active' if active == 'watches' }}" href="{{ url_for('feeds.watches_page') }}">Watches</a></li>
+    {% endif %}
+    {% if has_permission('feed', 'read') %}
+    <li class="nav-item"><a class="nav-link {{ 'active' if active == 'feeds' }}" href="{{ url_for('feeds.feeds_page') }}">Feeds</a></li>
+    {% endif %}
+    {% if has_permission('feed_watch', 'read') %}
+    <li class="nav-item"><a class="nav-link {{ 'active' if active == 'replay' }}" href="{{ url_for('feeds.replay_page') }}">Replay</a></li>
+    {% endif %}
+</ul>
+<div id="feeds_error" class="alert alert-danger d-none" role="alert"></div>
+<div id="feeds_notice" class="alert alert-info d-none" role="status"></div>

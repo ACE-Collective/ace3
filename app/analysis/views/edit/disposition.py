@@ -9,7 +9,7 @@ from saq.database.pool import get_db
 from saq.database.util.alert import describe_skipped, set_dispositions
 from saq.detection_verdicts.query import list_alert_detection_points
 from saq.detection_verdicts.store import VerdictNotAllowed, clear_verdict, confirm_alert, set_verdict
-from saq.disposition import DISPOSITION_CLASS_TP, get_disposition_class, is_selectable_disposition
+from saq.disposition import DISPOSITION_CLASS_TP, DispositionNotAllowed, get_disposition_class, is_selectable_disposition
 from saq.logging import log_audit
 
 
@@ -86,6 +86,8 @@ def set_disposition():
                 apply_detection_verdicts(alert_uuids[0], request.form)
             except VerdictNotAllowed as e:
                 flash(f"detection verdicts not saved: {e}")
+    except DispositionNotAllowed as e:
+        flash(f"disposition not set: {e}")
     except Exception as e:
         flash("unable to set disposition (review error logs)")
         logging.exception("unable to set disposition for {} alerts: {}".format(len(alert_uuids), e))

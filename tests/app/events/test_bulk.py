@@ -431,6 +431,57 @@ def test_bulk_review_disposition_skips_and_reports_a_simulated_alert(web_client)
         "disposition review recorded for 1 alerts; left 1 SIMULATED alert alone (only ACE sets that disposition)"]
 
 
+def _feed_watch_alert(disposition=None) -> Alert:
+    alert = insert_alert()
+    get_db().execute(Alert.__table__.update().where(Alert.id == alert.id).values(alert_type="feed_watch"))
+    get_db().commit()
+    if disposition:
+        set_dispositions([alert.uuid], disposition, person(1))
+    return alert
+
+
+def test_bulk_set_disposition_refuses_one_an_alert_of_the_selection_may_not_have(web_client, caplog):
+    feed_watch = _feed_watch_alert()
+    other = insert_alert()
+    before = {alert.id: alert.disposition for alert in (feed_watch, other)}
+
+    with caplog.at_level(logging.ERROR):
+        response = web_client.post(url_for("events.bulk_set_disposition"), data={
+            "event_id": EVENT_ID,
+            "alert_uuids": f"{other.uuid},{feed_watch.uuid}",
+            "disposition": DISPOSITION_FALSE_POSITIVE,
+        })
+
+    assert response.status_code == 302
+    db = get_db()
+    db.expire_all()
+    assert {alert_id: db.get(Alert, alert_id).disposition for alert_id in before} == before
+    assert _flashes(web_client) == ["disposition not set: FALSE_POSITIVE is not a disposition of feed_watch alerts"]
+    assert not [record for record in caplog.records if record.levelno >= logging.ERROR]
+
+
+def test_bulk_review_disposition_refuses_a_correction_an_alert_may_not_have(web_client, caplog):
+    feed_watch = _feed_watch_alert("RELEVANT")
+
+    with caplog.at_level(logging.ERROR):
+        response = web_client.post(url_for("events.bulk_review_disposition"), data={
+            "event_id": EVENT_ID,
+            "alert_uuids": feed_watch.uuid,
+            "review_result": DISPOSITION_REVIEW_INCORRECT,
+            "corrected_disposition": DISPOSITION_FALSE_POSITIVE,
+            "comment": "not a real advisory",
+        })
+
+    assert response.status_code == 302
+    db = get_db()
+    db.expire_all()
+    reviewed = db.get(Alert, feed_watch.id)
+    assert (reviewed.disposition, reviewed.disposition_review) == ("RELEVANT", DISPOSITION_REVIEW_UNREVIEWED)
+    assert _flashes(web_client) == [
+        "disposition review not recorded: FALSE_POSITIVE is not a disposition of feed_watch alerts"]
+    assert not [record for record in caplog.records if record.levelno >= logging.ERROR]
+
+
 #
 # the paths the tests above do not take
 #

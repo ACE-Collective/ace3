@@ -403,6 +403,19 @@ def test_light_service_does_not_import_heavy_packages(module):
     _assert_loads_none(f"import importlib\nimportlib.import_module({module!r})\n", forbidden, timeout=300)
 
 
+def test_the_feed_watch_service_does_not_import_the_gui_or_feedparser():
+    # feedparser is imported when a feed is parsed, and only by this service (docs/FEED_WATCHES.md)
+    _assert_loads_none("import importlib\nimportlib.import_module('saq.feeds.service').FeedWatchService\n",
+                       ["flask", "werkzeug", "saq.gui.alert", "app", "aceapi_v2", "feedparser", "qdrant_client"],
+                       timeout=300)
+
+
+def test_the_feed_watch_api_does_not_import_the_matching_or_feedparser():
+    # the rules are compiled and run, and feeds parsed, in service_feed_watch only
+    _assert_loads_none("import aceapi_v2.feed_watches.router, aceapi_v2.feeds.router\n",
+                       ["saq.feeds.matching", "saq.feeds.poller", "feedparser"], timeout=300)
+
+
 def test_the_hunter_does_not_import_the_gui():
     # the hunter builds observables and renders summaries with jinja2, but serves no page; it reaches the
     # observable types, which used to load urlfinderlib for one method

@@ -333,6 +333,9 @@ DISPOSITION_COMMAND_AND_CONTROL = 'COMMAND_AND_CONTROL'
 DISPOSITION_EXFIL = 'EXFIL'
 DISPOSITION_DAMAGE = 'DAMAGE'
 DISPOSITION_SIMULATED = 'SIMULATED'
+# a feed watch alert's dispositions (docs/FEED_WATCHES.md); alert_type_dispositions keeps them to feed_watch alerts
+DISPOSITION_RELEVANT = 'RELEVANT'
+DISPOSITION_NOT_RELEVANT = 'NOT_RELEVANT'
 
 # disposition review states
 # tracks whether an alert's disposition has been reviewed by a senior analyst and, if so, the result
@@ -692,6 +695,9 @@ SERVICE_EXTERNAL_REMEDIATION_CHECK = "external_remediation_check"
 SERVICE_YARA_SCANNER = "yara"
 SERVICE_MONITORING = "monitoring"
 SERVICE_SVS = "svs"
+SERVICE_FEED_WATCH = "feed_watch"
+# the alert type of a feed watch alert; persisted on alerts and named by alert_type_dispositions
+ALERT_TYPE_FEED_WATCH = "feed_watch"
 
 SERVICE_STATUS_RUNNING = 'running'
 SERVICE_STATUS_STOPPED = 'stopped'

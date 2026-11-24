@@ -690,6 +690,16 @@ is written there, change the tag to point at it.
   that contract.** See `tests/saq/svs/test_logging_contract.py`. [docs/SVS.md Part 5]
 - **`signature_version` is the repository commit, not the rule text; use `content_hash` for the
   rule's identity.** [#1131]
+- **Every analyst disposition change goes through `set_dispositions` or `set_disposition_reviews`,
+  which refuse a disposition the alert's type may not have.** `alert_type_dispositions` hides every
+  disposition a list names from the types without one, except OPEN and IGNORE, which every alert
+  needs. A new path that writes `alerts.disposition` for an analyst checks
+  `saq/disposition.py::is_disposition_allowed`. See
+  `saq/database/util/alert.py::_ensure_disposition_allowed`. [docs/FEED_WATCHES.md]
+- **A feed watch alert is made once per entry identity and queue by its `feed_deliveries` row,
+  written before the root is staged.** A later version of the entry is ignored for that queue, and
+  a pending row is staged again under the same root uuid. See `saq/feeds/delivery.py::claim` and
+  `saq/feeds/delivery.py::stage`. [docs/FEED_WATCHES.md]
 
 ## 19. Search
 

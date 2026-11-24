@@ -21,7 +21,7 @@ from saq.database.util.alert import (
     touch_alerts,
 )
 from saq.database.util.locking import acquire_lock, release_lock
-from saq.disposition import is_selectable_disposition
+from saq.disposition import DispositionNotAllowed, is_selectable_disposition
 from saq.logging import log_audit
 from saq.gui.alert import GUIAlert
 from saq.search.tasks import submit_index_task
@@ -191,6 +191,8 @@ def bulk_set_disposition():
         message = "disposition set for {} alerts".format(len(ownership.permitted))
         skipped = describe_skipped(ownership)
         flash(f"{message}; {skipped}" if skipped else message)
+    except DispositionNotAllowed as e:
+        flash(f"disposition not set: {e}")
     except Exception as e:
         flash("unable to set disposition (review error logs)")
         logging.exception("unable to set disposition for {} alerts: {}".format(len(alert_uuids), e))
@@ -239,6 +241,8 @@ def bulk_review_disposition():
         message = "disposition review recorded for {} alerts".format(len(reviewed))
         skipped = describe_frozen(frozen)
         flash(f"{message}; {skipped}" if skipped else message)
+    except DispositionNotAllowed as e:
+        flash(f"disposition review not recorded: {e}")
     except Exception as e:
         flash("unable to record disposition review (review error logs)")
         logging.exception("unable to review disposition for {} alerts: {}".format(len(alert_uuids), e))

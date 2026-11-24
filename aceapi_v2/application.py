@@ -14,6 +14,8 @@ from aceapi_v2.email.router import router as email_router
 from aceapi_v2.engine.router import router as engine_router
 from aceapi_v2.app_factory import new_app
 from aceapi_v2.events.router import router as events_router
+from aceapi_v2.feed_watches.router import router as feed_watches_router
+from aceapi_v2.feeds.router import router as feeds_router
 from aceapi_v2.file_collection.router import router as file_collection_router
 from aceapi_v2.filter_screens.router import router as filter_screens_router
 from aceapi_v2.health.router import router as health_router
@@ -63,6 +65,8 @@ def create_app() -> FastAPI:
     app.include_router(email_router, prefix="/email", tags=["email"])
     app.include_router(engine_router, prefix="/engine", tags=["engine"])
     app.include_router(events_router, prefix="/events", tags=["events"])
+    app.include_router(feeds_router, prefix="/feeds", tags=["feeds"])
+    app.include_router(feed_watches_router, prefix="/feed-watches", tags=["feeds"])
     app.include_router(file_collection_router, prefix="/file-collections", tags=["file-collections"])
     app.include_router(filter_screens_router, prefix="/filter-screens", tags=["saved-filters"])
     app.include_router(health_router, prefix="/health", tags=["health"])

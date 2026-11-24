@@ -1,0 +1,68 @@
+{% extends "base.html" %}
+
+{% block page_content %}
+{% set active = 'watches' %}
+{% include "feeds/_nav.html" %}
+
+<div id="watches_page" data-can-write="{{ 'true' if has_permission('feed_watch', 'write') else 'false' }}"
+     data-can-read-feeds="{{ 'true' if has_permission('feed', 'read') else 'false' }}"
+     data-evaluation-url="{{ url_for('feeds.evaluation', watch_id=0) }}">
+    <h2 class="mb-1">Feed watches</h2>
+    <p class="text-muted">
+        A watch runs one definition from the definitions repositories over its feeds and delivers each match to one
+        queue, or, in shadow mode, records its decisions and delivers nothing. Every edit is a new version.
+    </p>
+
+    <table class="table table-sm table-hover" id="watch_table">
+        <thead>
+            <tr><th>Name</th><th>Definition</th><th>Feeds</th><th>Queue</th><th>Mode</th><th>Version</th><th>Pending / failed</th><th></th></tr>
+        </thead>
+        <tbody></tbody>
+    </table>
+
+    {% if has_permission('feed_watch', 'write') %}
+    <h4 class="mt-4" id="watch_form_title">Create a watch</h4>
+    <form id="watch_form" class="row g-2" autocomplete="off">
+        <input type="hidden" id="watch_id">
+        <div class="col-md-3"><label class="form-label" for="watch_name">Name</label><input class="form-control form-control-sm" id="watch_name" required maxlength="256"></div>
+        <div class="col-md-3"><label class="form-label" for="watch_definition">Definition</label><select class="form-select form-select-sm" id="watch_definition" required></select></div>
+        <div class="col-md-2"><label class="form-label" for="watch_queue">Queue</label><input class="form-control form-control-sm" id="watch_queue" required maxlength="64" value="default"></div>
+        <div class="col-md-2">
+            <label class="form-label" for="watch_mode">Mode</label>
+            <select class="form-select form-select-sm" id="watch_mode">
+                <option value="shadow">shadow (record only)</option>
+                <option value="delivering">delivering</option>
+            </select>
+        </div>
+        <div class="col-md-2 d-flex align-items-end"><div class="form-check"><input class="form-check-input" type="checkbox" id="watch_enabled" checked><label class="form-check-label" for="watch_enabled">Enabled</label></div></div>
+        <div class="col-md-6"><label class="form-label" for="watch_feeds">Feeds</label><select class="form-select form-select-sm" id="watch_feeds" multiple size="5" required></select></div>
+        <div class="col-md-6"><div id="watch_definition_warning" class="alert alert-warning small d-none mt-4"></div></div>
+        <div class="col-12">
+            <button type="submit" class="btn btn-sm btn-primary">Save</button>
+            <button type="button" class="btn btn-sm btn-outline-secondary" id="watch_form_reset">Clear</button>
+        </div>
+    </form>
+    {% endif %}
+
+    <h4 class="mt-4">Definitions</h4>
+    <p class="text-muted small">As the feed watch service last read them. A definition becomes live by being committed to its repository.</p>
+    <table class="table table-sm" id="definition_table">
+        <thead><tr><th>Name</th><th>Where</th><th>Rule</th><th>Question</th><th>Status</th></tr></thead>
+        <tbody></tbody>
+    </table>
+
+    <h4 class="mt-4">Failed decisions</h4>
+    <p class="text-muted small">Questions the LLM endpoint gave no valid answer to after the configured attempts. They match nothing.</p>
+    <table class="table table-sm" id="failed_table">
+        <thead><tr><th>When</th><th>Watch</th><th>Entry</th><th>Attempts</th><th>Error</th></tr></thead>
+        <tbody></tbody>
+    </table>
+    <button type="button" class="btn btn-sm btn-outline-secondary d-none" id="failed_more">More</button>
+</div>
+{% endblock %}
+
+{% block scripts %}
+{{ super() }}
+<script src="{{ url_for('static', filename='js/ace_api.js') }}"></script>
+<script src="{{ url_for('static', filename='js/feeds.js') }}"></script>
+{% endblock %}

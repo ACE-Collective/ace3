@@ -879,6 +879,24 @@ class SVSAttributionConfig(BaseModel):
 SVS_LOG_SEARCH_FIELDS = ("run_uuid", "marker", "test_guid", "earliest", "latest")
 
 
+class FeedsConfig(BaseModel):
+    """RSS and Atom feeds and the watches over them (docs/FEED_WATCHES.md). service_feed_watch
+    polls and matches; the API and the GUI read these settings too, so none of them is a secret.
+    The LLM endpoint is service_feed_watch.llm, which only that service resolves."""
+    model_config = ConfigDict(extra="forbid")
+    repositories: list[str] = Field(default_factory=list, description="the names (the name field) of the git_repo_* sections whose definitions/*.yaml are the watch definitions. service_git keeps each checkout at its local_path current. A definition name must be unique across them")
+    prompt_repository: Optional[str] = Field(default=None, description="the repository (one of repositories) whose system_prompt.md is the LLM system prompt; unset for the first of repositories")
+    min_poll_interval_seconds: int = Field(default=300, ge=60, description="the shortest poll interval a feed may have")
+    default_poll_interval_seconds: int = Field(default=900, ge=60, description="the poll interval of a feed added without one")
+    entry_retention_days: int = Field(default=90, ge=1, description="an entry not seen in its feed for this long is deleted, with its decisions and labels")
+    prune_batch_size: int = Field(default=500, ge=1, le=5000, description="entries deleted per transaction when they expire")
+    stale_after_minutes: int = Field(default=1440, ge=1, description="the feed monitor reports a feed with no successful poll for this long")
+    replay_days: int = Field(default=14, ge=1, description="how far back replay looks: the entries first seen in the last this many days")
+    replay_max_entries: int = Field(default=2000, ge=1, description="the most entries one replay evaluates (the newest first)")
+    replay_retention_days: int = Field(default=30, ge=1, description="how long a replay and its results are kept")
+    delivery_wait_seconds: int = Field(default=600, ge=0, description="how long a match waits for the other watches on the same entry and queue to decide, so that one alert carries every match")
+
+
 class SVSConfig(BaseModel):
     """The Signature Validation System (docs/SVS.md)."""
     model_config = ConfigDict(extra="forbid")
@@ -1047,6 +1065,8 @@ class ACEConfig(BaseModel):
     alert_routers: list[AlertRouterConfig] = Field(default_factory=list, description="alert routers to load in every process that creates or analyzes alerts, next to the built-in ones (see docs/INTEGRATIONS.md)")
     dispositions: dict[str, DispositionConfig] = Field(default_factory=dict, description="the alert dispositions, in the order the disposition modals show them; the only list of dispositions there is")
     disposition_classification: dict[str, Literal["tp", "fp"]] = Field(default_factory=dict, description="disposition -> tp (the detections found malicious activity) or fp (they did not); a disposition not listed is unclassified")
+    alert_type_dispositions: dict[str, list[str]] = Field(default_factory=dict, description="alert type -> the only dispositions an alert of that type may have. A disposition named in any list is hidden from every alert type that has no list; every other disposition applies to every alert type")
+    feeds: FeedsConfig = Field(default_factory=FeedsConfig, description="RSS and Atom feeds and the watches over them (docs/FEED_WATCHES.md)")
 
     @model_validator(mode="before")
     @classmethod
@@ -1143,6 +1163,19 @@ class ACEConfig(BaseModel):
                 raise ValueError(f"service_svs: {'; '.join(error['msg'] for error in e.errors())}") from None
         return data
 
+    @model_validator(mode="before")
+    @classmethod
+    def _check_feed_repositories(cls, data):
+        # a name no git_repo section has would hold the evaluation of every feed entry for good
+        if isinstance(data, dict) and isinstance(data.get("feeds"), dict):
+            names = {value.get("name") for key, value in data.items()
+                     if key.startswith("git_repo_") and isinstance(value, dict)}
+            unknown = [name for name in data["feeds"].get("repositories") or [] if name not in names]
+            if unknown:
+                raise ValueError(f"feeds.repositories names {', '.join(map(str, unknown))}, but no git_repo_* "
+                                 f"section has that name")
+        return data
+
     @model_validator(mode="after")
     def _check_dispositions(self):
         for name in self.dispositions:
@@ -1156,6 +1189,13 @@ class ACEConfig(BaseModel):
             raise ValueError(
                 f"disposition_classification names dispositions that are not configured in "
                 f"dispositions: {', '.join(unknown)}")
+
+        for alert_type, names in self.alert_type_dispositions.items():
+            unknown = [name for name in names if name not in self.dispositions]
+            if unknown:
+                raise ValueError(
+                    f"alert_type_dispositions.{alert_type} names dispositions that are not configured in "
+                    f"dispositions: {', '.join(unknown)}")
         return self
 
     def model_post_init(self, __context: Any) -> None:

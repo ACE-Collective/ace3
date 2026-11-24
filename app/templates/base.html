@@ -109,6 +109,13 @@
                     <li class="nav-item"><a class="nav-link" href="{{ url_for('svs.runs') }}">SVS<span id="svs_nav_count" class="small ms-1" title="runs that need attention" data-count-url="{{ svs_nav_count_url() }}"></span></a></li>
                     <li class="nav-item"><span class="nav-separator"></span></li>
                     {% endif %}
+                    {% if has_permission('feed_watch', 'read') %}
+                    <li class="nav-item"><a class="nav-link" href="{{ url_for('feeds.watches_page') }}">Feeds</a></li>
+                    <li class="nav-item"><span class="nav-separator"></span></li>
+                    {% elif has_permission('feed', 'read') %}
+                    <li class="nav-item"><a class="nav-link" href="{{ url_for('feeds.feeds_page') }}">Feeds</a></li>
+                    <li class="nav-item"><span class="nav-separator"></span></li>
+                    {% endif %}
                     {% if has_permission('admin', 'read') %}
                     <li class="nav-item"><a class="nav-link" href="{{ url_for('admin.admin_hub') }}">Admin</a></li>
                     <li class="nav-item"><span class="nav-separator"></span></li>

@@ -330,6 +330,27 @@ svs:
       memory_limit: 4294967296
       allowed_tcp_ports: []
 
+# RSS and Atom feeds and the watches over them (docs/FEED_WATCHES.md)
+feeds:
+  # the names (the name field) of the git_repo_* sections whose definitions/*.yaml are the watch
+  # definitions; definition names must be unique across them
+  repositories: []
+  # the repository whose system_prompt.md is the LLM system prompt; unset for the first one
+  # prompt_repository:
+  min_poll_interval_seconds: 300
+  default_poll_interval_seconds: 900
+  # an entry not seen in its feed for this long is deleted with its decisions and labels
+  entry_retention_days: 90
+  prune_batch_size: 500
+  # the feed monitor (service_monitoring) reports feeds with no successful poll for this long
+  stale_after_minutes: 1440
+  # replay evaluates the entries first seen in the last replay_days days, newest first
+  replay_days: 14
+  replay_max_entries: 2000
+  replay_retention_days: 30
+  # how long a match waits for the other watches on its entry and queue, so one alert carries them all
+  delivery_wait_seconds: 600
+
 # analysis result cache (Phase 2+) configuration
 analysis_cache:
   # global kill switch — set to false to stop all cache writes without touching per-module cache_ttl settings
@@ -529,6 +550,46 @@ service_default:
   enabled: true
 
 # ACE Services
+service_feed_watch:
+  name: feed_watch
+  python_module: saq.feeds.service
+  python_class: FeedWatchService
+  description: Feed Watch - polls RSS and Atom feeds and alerts on the entries a watch matches (docs/FEED_WATCHES.md)
+  enabled: true
+  workload_type: feed_watch
+  delete_files: true
+  # how often the service looks for feeds that are due, entries to evaluate, decisions and replays
+  loop_interval_seconds: 15
+  # fetching a feed
+  fetch_connect_timeout_seconds: 10
+  fetch_read_timeout_seconds: 30
+  # the longest a whole fetch may take, from connecting to the end of its body (the read timeout bounds each read only)
+  fetch_deadline_seconds: 120
+  max_feed_bytes: 10485760
+  # a named proxy (proxy_<name>) for fetching feeds; unset for global.default_proxy
+  # fetch_proxy:
+  # the LLM that answers a definition's question: an OpenAI-compatible chat completions endpoint.
+  # Unset (the default), questions are never asked and those decisions stay pending.
+  #
+  # With a hosted endpoint, every question and the text of every entry it is asked of leave the
+  # network. A question can reveal which products a team runs.
+  # llm:
+  #   base_url: http://llm:8080       # ACE posts to <base_url>/v1/chat/completions
+  #   model: google/gemma-4-E4B-it
+  #   api_key: env:FEED_WATCH_LLM_API_KEY   # an env: or file: reference; never logged or stored
+  #   proxy: null                     # a named proxy (proxy_<name>)
+  #   connect_timeout_seconds: 10
+  #   read_timeout_seconds: 120
+  #   max_tokens: 512
+  #   temperature: 0
+  #   response_format: json_schema    # json_schema, json_object or none
+  #   max_entry_chars: 8000           # the entry text sent is cut to this; the decision records it
+  #   max_attempts: 3                 # invalid replies before a decision fails
+  #   retry_after_cap_seconds: 300    # the longest a 429's Retry-After pauses classification
+  #   batch_size: 20                  # decisions asked per pass
+  #   extra_body: {}                  # extra request-body fields, e.g. a router's provider preferences
+  #   headers: {}                     # extra request headers; none are sent by default (no attribution)
+
 service_hunter:
   name: hunter
   # ACE Hunter Collector
@@ -754,6 +815,12 @@ service_monitoring:
     cas_pools:
       python_module: saq.monitoring.monitors.cas_pool_monitor
       python_class: CASPoolMonitor
+      frequency: 300
+    # feeds without a successful poll for feeds.stale_after_minutes (docs/FEED_WATCHES.md); a
+    # distributed monitor like the ones above
+    feeds:
+      python_module: saq.monitoring.monitors.feed_monitor
+      python_class: FeedMonitor
       frequency: 300
 
 service_network_semaphore:
@@ -2998,6 +3065,15 @@ dispositions:
   DAMAGE:              {rank: 160, css: danger,    show_save_to_event: true}
   # a red-team test run's alert (docs/SVS_RUNS.md): set only by SVS, ranked below GRAYWARE
   SIMULATED:           {rank: 55,  css: info,      show_save_to_event: false, analyst_selectable: false}
+  # a feed watch alert's (docs/FEED_WATCHES.md): the article is, or is not, relevant to what the watch looks for
+  NOT_RELEVANT:        {rank: 25,  css: success,   show_save_to_event: false}
+  RELEVANT:            {rank: 45,  css: warning,   show_save_to_event: false}
+
+# alert type -> the only dispositions its alerts may have. A disposition named in any list here is
+# hidden from (and refused for) every alert type that has no list; every other disposition applies
+# to every alert type
+alert_type_dispositions:
+  feed_watch: [OPEN, IGNORE, RELEVANT, NOT_RELEVANT]
 
 # What a disposition says about the alert's detections (docs/SVS.md, Part 1):
 #   tp -- they detected malicious activity
@@ -3017,6 +3093,8 @@ disposition_classification:
   EXFIL: tp
   DAMAGE: tp
   SIMULATED: tp
+  RELEVANT: tp
+  NOT_RELEVANT: fp
 
 config:
   git_repos_default: etc/saq.git_repos.default.yaml

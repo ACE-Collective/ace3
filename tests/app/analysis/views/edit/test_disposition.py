@@ -5,7 +5,7 @@ from unittest.mock import patch
 from saq.configuration.config import get_config
 from saq.configuration.schema import DispositionConfig
 from saq.constants import DISPOSITION_FALSE_POSITIVE, DISPOSITION_IGNORE
-from saq.disposition import get_selectable_dispositions
+from saq.disposition import get_alert_type_dispositions, get_selectable_dispositions
 from saq.database.model import Alert, Comment, Workload
 from saq.database.pool import get_db
 from saq.database.util.user_management import add_user, delete_user
@@ -306,9 +306,12 @@ def test_set_disposition_empty_uuid_list(web_client):
 
 @pytest.mark.integration 
 def test_set_disposition_all_valid_dispositions(web_client):
-    """Test setting each disposition an analyst may set (SIMULATED is set only by ACE)."""
-    dispositions = list(get_selectable_dispositions())
-    alerts = [insert_alert() for _ in dispositions]
+    """Test setting each disposition an analyst may set (SIMULATED is set only by ACE, and RELEVANT and
+    NOT_RELEVANT are a feed watch alert's)."""
+    alerts = [insert_alert()]
+    dispositions = list(get_alert_type_dispositions(alerts[0].alert_type))
+    assert "RELEVANT" not in dispositions
+    alerts.extend(insert_alert() for _ in dispositions[1:])
 
     for i, disposition in enumerate(dispositions):
         alert = alerts[i]
@@ -472,3 +475,24 @@ def test_set_disposition_rejects_a_disposition_analysts_may_not_set(web_client, 
     html = page.get_data(as_text=True)
     assert 'id="option_GRAYWARE"' not in html
     assert 'id="option_DELIVERY"' in html
+
+
+@pytest.mark.integration
+def test_set_disposition_refuses_one_the_alert_type_may_not_have(web_client):
+    """A feed watch alert has only OPEN, IGNORE, RELEVANT and NOT_RELEVANT; the server refuses the rest."""
+    alert = insert_alert()
+    get_db().execute(Alert.__table__.update().where(Alert.id == alert.id).values(alert_type="feed_watch"))
+    get_db().commit()
+
+    response = web_client.post(url_for("analysis.set_disposition"), data={
+        "disposition": DISPOSITION_FALSE_POSITIVE, "alert_uuid": alert.uuid}, follow_redirects=False)
+    assert response.status_code == 302
+    with web_client.session_transaction() as session:
+        flashes = [message for _, message in session.get("_flashes", [])]
+    assert flashes == ["disposition not set: FALSE_POSITIVE is not a disposition of feed_watch alerts"]
+    get_db().refresh(alert)
+    assert alert.disposition != DISPOSITION_FALSE_POSITIVE
+
+    web_client.post(url_for("analysis.set_disposition"), data={"disposition": "RELEVANT", "alert_uuid": alert.uuid})
+    get_db().refresh(alert)
+    assert alert.disposition == "RELEVANT"

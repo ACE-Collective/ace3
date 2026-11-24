@@ -1,0 +1,60 @@
+{% extends "base.html" %}
+
+{% block page_content %}
+{% set active = 'feeds' %}
+{% include "feeds/_nav.html" %}
+
+<div id="feeds_page" data-can-write="{{ 'true' if has_permission('feed', 'write') else 'false' }}">
+    <h2 class="mb-1">Feeds</h2>
+    <p class="text-muted">
+        RSS and Atom feeds ACE polls, once per interval however many watches read them. A new feed's first poll is
+        for preview only: watches see the entries that come after it.
+    </p>
+
+    <table class="table table-sm table-hover" id="feed_table">
+        <thead>
+            <tr><th>Name</th><th>URL</th><th>Publisher</th><th>Every</th><th>Last success</th><th>Last failure</th><th></th></tr>
+        </thead>
+        <tbody></tbody>
+    </table>
+    <button type="button" class="btn btn-sm btn-outline-secondary d-none" id="feed_more">More</button>
+
+    {% if has_permission('feed', 'write') %}
+    <h4 class="mt-4" id="feed_form_title">Add a feed</h4>
+    <form id="feed_form" class="row g-2" autocomplete="off">
+        <input type="hidden" id="feed_id">
+        <div class="col-md-3"><label class="form-label" for="feed_name">Name</label><input class="form-control form-control-sm" id="feed_name" required maxlength="256"></div>
+        <div class="col-md-5"><label class="form-label" for="feed_url">URL</label><input class="form-control form-control-sm" id="feed_url" required maxlength="2048" placeholder="https://..."></div>
+        <div class="col-md-2"><label class="form-label" for="feed_interval">Poll every (seconds)</label><input type="number" class="form-control form-control-sm" id="feed_interval" min="{{ config_feeds.min_poll_interval_seconds }}" placeholder="{{ config_feeds.default_poll_interval_seconds }}"></div>
+        <div class="col-md-2 d-flex align-items-end"><div class="form-check"><input class="form-check-input" type="checkbox" id="feed_enabled" checked><label class="form-check-label" for="feed_enabled">Enabled</label></div></div>
+        <div class="col-md-2">
+            <label class="form-label" for="feed_auth_type">Authentication</label>
+            <select class="form-select form-select-sm" id="feed_auth_type">
+                <option value="none">none</option>
+                <option value="basic">basic auth</option>
+                <option value="header">custom header (e.g. a bearer token)</option>
+            </select>
+        </div>
+        <div class="col-md-3"><label class="form-label" for="feed_auth_name">User, or header name</label><input class="form-control form-control-sm" id="feed_auth_name" maxlength="256"></div>
+        <div class="col-md-4"><label class="form-label" for="feed_auth_secret">Password, or header value</label><input type="password" class="form-control form-control-sm" id="feed_auth_secret" maxlength="4096" placeholder="stored encrypted; never shown again"></div>
+        <div class="col-12">
+            <button type="submit" class="btn btn-sm btn-primary">Save</button>
+            <button type="button" class="btn btn-sm btn-outline-secondary" id="feed_form_reset">Clear</button>
+        </div>
+    </form>
+    {% endif %}
+
+    <div id="entry_panel" class="mt-4 d-none">
+        <h4>Entries of <span id="entry_feed_name"></span></h4>
+        <p class="text-muted small">The titles and text ACE receives, newest first. Each change of an entry's text is a new version.</p>
+        <div id="entry_list"></div>
+        <button type="button" class="btn btn-sm btn-outline-secondary d-none" id="entry_more">More</button>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+{{ super() }}
+<script src="{{ url_for('static', filename='js/ace_api.js') }}"></script>
+<script src="{{ url_for('static', filename='js/feeds.js') }}"></script>
+{% endblock %}

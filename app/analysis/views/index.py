@@ -31,6 +31,7 @@ from saq.analysis.detection_chain import (
 from saq.analysis.detection_identity import detection_content_hash, node_identity
 from saq.detection_verdicts.query import list_alert_detection_points
 from saq.disposition import (
+    get_alert_type_dispositions,
     get_disposition_class,
     get_selectable_dispositions,
     is_frozen_disposition,
@@ -518,6 +519,9 @@ def detection_verdict_context(alert) -> dict:
         # which selectable disposition classifies how, so the dialog knows when to offer the step
         "selectable_disposition_classes": {
             name: get_disposition_class(name) for name in get_selectable_dispositions()},
+        # the dialogs on this page offer only what the alert's type may have (alert_type_dispositions);
+        # this overrides the context processor's full list
+        "selectable_dispositions": get_alert_type_dispositions(alert.alert_type),
     }
 
 
