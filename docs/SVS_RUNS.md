@@ -1100,12 +1100,12 @@ how many test alerts they left out (`docs/SEARCH.md`, *Read path*):
 - **`POST /api/v2/search/alerts` and `/similar`**, and the AI API's `/ai/v1/search/*`, take
   `include_test_alerts` and answer `excluded_test_alerts`.
 - **`ace search query` and `ace search similar`** take `--include-tests`.
-- **Naming a queue** (`queue:svs`, a Queue filter, the `queues` field) always gets exactly that
-  queue, test queue included.
+- **Naming a queue** (`queue:svs`, a Queue filter, the `queues` field of a search or of
+  `POST /api/v2/observables/lookup`) always gets exactly that queue, test queue included.
 
 `GET /api/v2/alerts`, the export listing, returns test alerts like any other; leaving them out is
 the caller's choice. Prevalence and disposition history count only the `default` queue, so test
-alerts were never in those.
+alerts are never in those unless an `/observables/lookup` request names their queue.
 
 ```yaml
 svs:

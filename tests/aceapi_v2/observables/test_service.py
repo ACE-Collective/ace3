@@ -93,6 +93,7 @@ class TestLookupObservables:
             recent_alert_limit=5,
             exclude_alert_uuids=[],
             since=None,
+            queues=None,
         )
         assert len(response.results) == 5
         assert all(r.found for r in response.results)
@@ -110,6 +111,7 @@ class TestLookupObservables:
             recent_alert_limit=5,
             exclude_alert_uuids=[],
             since=None,
+            queues=None,
         )
         (result,) = response.results
         assert result.found is True

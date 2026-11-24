@@ -47,4 +47,5 @@ async def lookup_observables(
         recent_alert_limit=body.recent_alert_limit,
         exclude_alert_uuids=body.exclude_alert_uuids,
         since=body.since,
+        queues=body.queues,
     )
