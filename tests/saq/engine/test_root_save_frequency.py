@@ -184,7 +184,7 @@ def _run_one_pass(root_analysis, modules, frequency):
     # clear the global fallback so the mode's own value is what decides the policy -- the
     # unittest config pins global_settings.root_save_frequency to 0, which would otherwise
     # turn the "unset" case back into "write every invocation". the per-test config deep
-    # copy in tests/conftest.py::global_function_setup undoes both of these afterwards.
+    # copy in tests/harness.py::global_function_setup undoes both of these afterwards.
     get_config().global_settings.root_save_frequency = None
     get_config().get_analysis_mode_config(root_analysis.analysis_mode).root_save_frequency = frequency
 

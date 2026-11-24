@@ -13,7 +13,7 @@ DELETE_LOGS_OLDER_THAN=30
 /usr/sbin/logrotate -s data/var/logrotate.state -f etc/logrotate.conf
 
 # if any integrations define a logrotate configuration, run those as well
-ace integration list | awk 'NR>2 && $2=="ENABLED" {print $1, $4}' | while read integration_name integration_dir
+ace integration list | awk 'NR>2 && $2=="ENABLED" {print $1, $3}' | while read integration_name integration_dir
 do
     if [ -e "${integration_dir}/etc/logrotate.conf" ]
     then

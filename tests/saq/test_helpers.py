@@ -126,7 +126,7 @@ def test_each_checkout_gets_its_own_qdrant_collections(tmp_path, monkeypatch):
 
 @pytest.mark.unit
 def test_passwords_are_hashed_at_bcrypt_cost_4_in_the_tests():
-    # tests/conftest.py lowers the cost: at production's 12, each test user and each login
+    # tests/harness.py lowers the cost: at production's 12, each test user and each login
     # cost about 180 ms
     assert hash_password("password").startswith("$2b$04$")
 

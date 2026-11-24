@@ -4,7 +4,6 @@
 #
 #   - integrations/<name>: a detached worktree of each integration repository in the main
 #     checkout, at the commit the main checkout has checked out
-#   - tests/test_external_integration_*: the main checkout's links into those repositories
 #   - local: a link to the main checkout's local/, so what is written there outlives the worktree
 #   - data: a link to /opt/ace/data, the stack's data volume where the dev container mounts it, so
 #     that ace run from the worktree there has the main checkout's data directory (logs, data/etc,
@@ -85,28 +84,6 @@ for repo in "$main"/integrations/*/; do
         status=1
     fi
 done
-
-linked=0
-for link in "$main"/tests/test_external_integration_*; do
-    [ -L "$link" ] || continue
-    name=$(basename "$link")
-    target=$(readlink "$link")
-    [ -e "$worktree/tests/$name" ] || [ -L "$worktree/tests/$name" ] && continue
-
-    case $target in
-        /*)
-            # an absolute link would run the main checkout's integration tests, not this worktree's
-            echo "tests/$name: not linked, because the main checkout's link is absolute ($target)" >&2
-            status=1
-            continue
-            ;;
-    esac
-
-    # skip a link whose integration this worktree does not have, rather than leave it dangling
-    (cd "$worktree/tests" && [ -e "$target" ]) || continue
-    ln -s "$target" "$worktree/tests/$name" && linked=$((linked + 1))
-done
-[ $linked -gt 0 ] && echo "tests: linked $linked test_external_integration_* directories"
 
 case $worktree in
     "$main"/*)

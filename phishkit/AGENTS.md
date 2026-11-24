@@ -57,7 +57,7 @@ ace phishkit scan <url-or-file> <output_dir> [--async] [--id <task-id>] [--proxy
 ace phishkit maintain-files [--max-file-age-days N]
 ```
 
-Tests must run in the test image: `tests/conftest.py` and `tests/test_scanner.py` import `scanner` / `phishkit` as top-level modules from `/opt/app`, and the scanner's dependencies are not installed on the host. The root `pytest.ini` sets `testpaths = tests`, so `phishkit/tests/` is **not** collected by the repo's `pytest` run. ACE-side coverage lives in `tests/saq/test_phishkit.py` and `tests/saq/modules/test_phishkit.py`.
+Tests must run in the test image: `phishkit/tests/conftest.py` and `phishkit/tests/test_scanner.py` import `scanner` / `phishkit` as top-level modules from `/opt/app`, and the scanner's dependencies are not installed on the host. The root `pytest.ini`'s `testpaths` (core's `tests` and each integration's) leave out `phishkit/tests/`, so the repo's `pytest` run does **not** collect it. ACE-side coverage lives in `tests/saq/test_phishkit.py` and `tests/saq/modules/test_phishkit.py`.
 
 Tests are marked `unit`; the local `conftest.py` registers the marker and sets `asyncio_mode = auto` (this package has no access to the root `pytest.ini`).
 

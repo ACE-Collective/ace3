@@ -168,7 +168,7 @@ class _V2Response:
 class _V2HuntApi:
     """POST /api/v2/hunt/validate, with the request built from the keyword arguments these tests
     pass. Run on the loop the cached async database engine is bound to (see
-    tests/conftest.py::mock_api_call)."""
+    tests/harness.py::mock_api_call)."""
 
     def __init__(self, raise_app_exceptions: bool = True):
         # Starlette re-raises an unhandled exception after its handler has answered 500; False

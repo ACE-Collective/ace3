@@ -1,6 +1,6 @@
 """tests for resolving signature locations out of the runtime configuration
 
-these mutate the loaded configuration objects directly. tests/conftest.py deep
+these mutate the loaded configuration objects directly. tests/harness.py deep
 copies and restores the configuration around every test, so that is safe."""
 
 import logging

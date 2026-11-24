@@ -168,7 +168,7 @@ CONFIG_SERVICE_FILE_COLLECTION = f"service_{SERVICE_FILE_COLLECTION}"
 
 
 def _set_file_collection_section(section: dict | None):
-    """Replaces service_file_collection (None removes it); tests/conftest.py restores the configuration."""
+    """Replaces service_file_collection (None removes it); tests/harness.py restores the configuration."""
     raw = get_config().raw._data
     raw.pop(CONFIG_SERVICE_FILE_COLLECTION, None)
     if section is not None:

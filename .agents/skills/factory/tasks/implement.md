@@ -32,7 +32,7 @@ Read the ticket and its comments (`gh issue view N --comments`, or `az boards wo
 All of these, before the PR opens:
 
 - `bin/exec-in-container.sh /venv/bin/python .agents/skills/ace-review/scripts/prepare.py --check` prints nothing (and `--repo integrations/<name>` or `--repo signatures` for each internal repo touched).
-- The tests of the touched paths pass: `bin/exec-in-container.sh pytest <paths> -n auto`. Integration tests go through their `tests/test_external_integration_*` symlinks.
+- The tests of the touched paths pass: `bin/exec-in-container.sh pytest <paths> -n auto`. An integration's tests run by their own path, `integrations/<name>/tests`.
 - Changed-line coverage: `pytest --cov --cov-report=xml` on those tests, then `diff-cover coverage.xml --compare-branch=origin/main` (AGENTS.md, *Tests*).
 - An analysis module, engine or YARA change: the `verify-ace-engine` skill. A GUI change: the `verify-ace-gui` skill. When the skill isn't available in this checkout, say so in the PR body's Testing section instead.
 - Each internal repo touched: `$F checks TICKET --repo <name>`, which runs every `[[check]]` in its `.factory/config.toml` on what the branch changes, and must report `ok`.

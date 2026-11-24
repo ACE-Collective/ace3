@@ -186,8 +186,6 @@ def test_an_integration_is_judged_by_cores_rules_and_its_own_base_claude_md(tmp_
     write(core, "AGENTS.md", AGENTS_MD + "\nCore's working tree.\n")
     integration = core / "integrations" / "foo"
     integration.mkdir(parents=True)
-    (core / "tests").mkdir()
-    (core / "tests" / "test_external_integration_foo").symlink_to(integration / "tests")
     git(integration, "init", "-q", "-b", "main")
     write(integration, "integration.md", "# foo\n")
     write(integration, "CLAUDE.md", "# foo\n\nNever call the vendor twice.\n")
@@ -208,7 +206,8 @@ def test_an_integration_is_judged_by_cores_rules_and_its_own_base_claude_md(tmp_
     assert bundle_file(target, "rules/AGENTS.md").read_text() == core_rules
     assert bundle_file(target, "rules/repo-AGENTS.md").read_text() == "# foo\n\nNever call the vendor twice.\n"
     assert target["rule_changes"] == ["CLAUDE.md"]
-    assert bundle_file(target, "tests.txt").read_text() == "tests/test_external_integration_foo/test_client.py\n"
+    # an integration's tests run where they are
+    assert bundle_file(target, "tests.txt").read_text() == "integrations/foo/tests/test_client.py\n"
     assert bundle_file(target, "cov_sources.txt").read_text() == "--cov=integrations/foo/src\n"
 
 

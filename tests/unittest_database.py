@@ -455,7 +455,7 @@ def sweep_stale() -> list[str]:
     """Drops every registered set of databases other than this process's own.
 
     Only call this from the process that holds the session lock, before any session of the
-    run has provisioned (tests/conftest.py::pytest_configure does): the lock is what makes
+    run has provisioned (tests/harness.py::pytest_configure does): the lock is what makes
     every other registry entry provably stale, and under pytest-xdist the workers' own
     records must not exist yet. Returns the names dropped. A record that cannot be dropped
     is logged and left in place for the next attempt."""

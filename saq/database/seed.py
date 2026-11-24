@@ -2,7 +2,7 @@
 
 ``seed()`` is what ``docker/startup/setup.sh`` runs against the primary database on every
 start. ``seed_unittest()`` is the much smaller set a test database needs: the rows that
-``tests/conftest.py::execute_global_db_setup`` does not delete and re-create itself.
+``tests/harness.py::execute_global_db_setup`` does not delete and re-create itself.
 Both connect as the superuser (saq.database.admin) and are idempotent.
 
 The command line front end is ``bin/seed_database.py``.

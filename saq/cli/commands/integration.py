@@ -33,58 +33,23 @@ def disable_integration(args):
 def list_integrations(args):
     from saq.integration.integration_loader import get_valid_integration_dirs
     from saq.integration.integration_util import get_integration_name_from_path
-    from saq.integration.integration_manager import is_integration_enabled, is_integration_installed
+    # local, like the imports around it: the full help imports every command module
+    from saq.integration.integration_manager import is_integration_enabled
     from tabulate import tabulate
 
     integration_info = []
     for dir_path in get_valid_integration_dirs():
         name = get_integration_name_from_path(dir_path)
         enabled = is_integration_enabled(name)
-        installed = is_integration_installed(name)
-        integration_info.append((name, "ENABLED" if enabled else "DISABLED", "YES" if installed else "NO", dir_path))
+        integration_info.append((name, "ENABLED" if enabled else "DISABLED", dir_path))
 
-    headers = ["Integration", "Status", "Installed", "Directory"]
+    headers = ["Integration", "Status", "Directory"]
     print(tabulate(integration_info, headers=headers, tablefmt="simple"))
-
-    sys.exit(0)
-
-def install_integration(args):
-    from saq.integration.integration_manager import install_integration, is_integration_installed
-    if not _integration_exists(args.name):
-        sys.exit(1)
-
-    if install_integration(args.name):
-        sys.exit(0)
-
-    if is_integration_installed(args.name):
-        print(f"integration {args.name} is already installed")
-        sys.exit(0)
-
-    logging.error(f"integration {args.name} has no tests directory to install")
-    sys.exit(1)
-
-def uninstall_integration(args):
-    from saq.integration.integration_manager import uninstall_integration
-    if not uninstall_integration(args.name):
-        logging.error(f"integration {args.name} is not installed")
-        sys.exit(1)
 
     sys.exit(0)
 
 integration_parser = get_cli_subparsers().add_parser('integration')
 integration_sp = integration_parser.add_subparsers(dest='integration_cmd')
-
-install_integration_parser = integration_sp.add_parser('install',
-    help="Installs the given integration.")
-install_integration_parser.add_argument('name',
-    help="The name of the integration to install.")
-install_integration_parser.set_defaults(func=install_integration)
-
-uninstall_integration_parser = integration_sp.add_parser('uninstall',
-    help="Uninstalls the given integration.")
-uninstall_integration_parser.add_argument('name',
-    help="The name of the integration to uninstall.")
-uninstall_integration_parser.set_defaults(func=uninstall_integration)
 
 enable_integration_parser = integration_sp.add_parser('enable',
     help="Enables the given integration.")

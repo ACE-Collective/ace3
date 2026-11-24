@@ -111,7 +111,7 @@ An integration's routes move into the integration, not into `aceapi_v2/`: a pack
 - **Reuse the core services.** An observable action that adds a directive and queues the alert is `request_observable_analysis()` with the integration's directive; one that only reads is `load_observable()` (both `aceapi_v2/alerts/service.py`). These give the integration the core actions' behavior: 409 on a locked alert, 422 for an observable of another type, correlation mode on a dispositioned alert.
 - **Permissions.** Keep the route's legacy pair. A route that had only `@login_required` gets the pair of the closest core route (`observable:write` for an action that changes the alert or sends its content somewhere, `observable:read` for one that reads).
 - **Callers** are the integration's templates: call the route through `aceApi`, as the core action templates do.
-- **Tests** import the `tests/aceapi_v2/conftest.py` client fixtures into the test module; see `docs/INTEGRATIONS.md`. Give the module a name no other test module has (`test_<integration>_api.py`): some integration test directories are not packages.
+- **Tests** import the `tests/aceapi_v2/conftest.py` client fixtures into the test module; see `docs/INTEGRATIONS.md`.
 - **Two repositories, two changes.** The integration's change needs a release of ACE that reads `api_router`; merge it after that release, and write its PR description in its own repository.
 
 ### Auth
@@ -145,7 +145,7 @@ Consequences for a migration:
 
 The following plumbing was set up during the `common` migration and generally does **not** need to change for subsequent groups:
 
-- **`tests/conftest.py :: mock_api_call`** — dispatches `v2/*` ace_api commands through the FastAPI ASGI app in-process. It routes via `aceapi_v2.sync.run_async` + `httpx.AsyncClient(ASGITransport(fastapi_app))` so requests run on the same persistent background loop that the cached async SQLAlchemy engine is bound to (avoids "Future attached to a different loop").
+- **`tests/harness.py :: mock_api_call`** — dispatches `v2/*` ace_api commands through the FastAPI ASGI app in-process. It routes via `aceapi_v2.sync.run_async` + `httpx.AsyncClient(ASGITransport(fastapi_app))` so requests run on the same persistent background loop that the cached async SQLAlchemy engine is bound to (avoids "Future attached to a different loop").
 - **`tests/saq/helpers.py :: execute_api_server`** — serves the FastAPI app at `/api/v2` through uvicorn, where nginx puts it on a node, so `ace_api` clients reach it unchanged.
 
 If a new group adds endpoints that require new client-side support (file uploads, streaming, etc.), these fixtures may need extension.
@@ -311,7 +311,7 @@ No new endpoint. In six months of production access logs, `resubmit`, `submissio
 Notes:
 - **Alerts only.** The legacy route also served a root that had not become an alert (still in the workload, or analyzed without a detection). `GET /api/v2/alerts/{uuid}` answers 404 for those, which `ace_api.get_analysis` raises as `requests.HTTPError`.
 - `aceapi/analysis.py` holds `submit` alone. Its tests read what a submission saved from storage (`RootAnalysis.load()`, encoded with the legacy `_JSONEncoder`) instead of through the deleted routes, so their assertions are unchanged; the `ace_api` client test of `Analysis.add_file` does the same.
-- `tests/aceapi/test_engine_node_to_node.py::test_automation_scope_still_denies_out_of_scope_endpoints` probed `GET /api/analysis/<uuid>`. No Flask route requires `alert:read` now, so it probes `GET /api/v2/alerts/{uuid}` with the same config key, dispatched on the shared event loop like `tests/conftest.py::_dispatch_v2`.
+- `tests/aceapi/test_engine_node_to_node.py::test_automation_scope_still_denies_out_of_scope_endpoints` probed `GET /api/analysis/<uuid>`. No Flask route requires `alert:read` now, so it probes `GET /api/v2/alerts/{uuid}` with the same config key, dispatched on the shared event loop like `tests/harness.py::mock_api_call`.
 
 ### GUI reads → `aceapi_v2/alerts/`
 

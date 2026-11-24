@@ -36,7 +36,7 @@ Read first: `AGENTS.md` § Testing and § Engineering values → Tests. Then rea
 - `time.sleep` used to wait for something. Use `wait_for_condition` or `wait_for_log_count` from `tests/saq/helpers.py`.
 - Tests that depend on order. pytest-randomly shuffles the order.
 - Fixed ports or paths outside the per-slot data dir. Wall-clock comparisons without tolerance.
-- New module-level state in production code (a cache, a registry, a singleton) that `global_function_setup` in `tests/conftest.py` doesn't reset.
+- New module-level state in production code (a cache, a registry, a singleton) that `global_function_setup` in `tests/harness.py` doesn't reset.
 
 **Fixture hygiene.** Customer data, production GUIDs, Message-IDs or tenant ids in fixtures. This repo is public, so that is a blocker. Live malware samples added without need.
 

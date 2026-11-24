@@ -1,6 +1,9 @@
 """Tests for the `ace integration` commands."""
 
 import os
+import re
+import subprocess
+from pathlib import Path
 
 import pytest
 
@@ -20,19 +23,14 @@ def _ace(*argv) -> int:
 
 @pytest.fixture
 def integrations(monkeypatch, tmp_path):
-    """alpha (nested in a group dir, with tests) and beta (without tests), in a scratch base, tests and var dir."""
+    """alpha (nested in a group dir) and beta, in a scratch base and var dir."""
     base = tmp_path / "integrations"
-    for path, has_tests in ((base / "group" / "alpha", True), (base / "beta", False)):
+    for path in (base / "group" / "alpha", base / "beta"):
         path.mkdir(parents=True)
         (path / "integration.md").write_text("# integration\n")
-        if has_tests:
-            (path / "tests").mkdir()
 
-    tests_dir = tmp_path / "tests"
-    tests_dir.mkdir()
     var_dir = tmp_path / "var"
     monkeypatch.setattr(integration_util, "get_integration_base_dir", lambda: str(base))
-    monkeypatch.setattr(integration_manager, "_get_tests_dir", lambda: str(tests_dir))
     monkeypatch.setattr(integration_manager, "get_integration_var_base_dir", lambda: str(var_dir))
     return tmp_path
 
@@ -47,7 +45,7 @@ def test_disable_and_enable(integrations):
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize("verb", ["enable", "disable", "install"])
+@pytest.mark.parametrize("verb", ["enable", "disable"])
 def test_unknown_integration_is_an_error(integrations, caplog, verb):
     assert _ace(verb, "gamma") == 1
 
@@ -57,41 +55,22 @@ def test_unknown_integration_is_an_error(integrations, caplog, verb):
 
 
 @pytest.mark.unit
-def test_install_and_uninstall(integrations, capsys, caplog):
-    link = integrations / "tests" / "test_external_integration_alpha"
-
-    assert _ace("install", "alpha") == 0
-    assert os.path.islink(link)
-    assert os.readlink(link) == os.path.join("..", "integrations", "group", "alpha", "tests")
-
-    assert _ace("install", "alpha") == 0
-    assert capsys.readouterr().out == "integration alpha is already installed\n"
-
-    assert _ace("uninstall", "alpha") == 0
-    assert not os.path.lexists(link)
-
-    assert _ace("uninstall", "alpha") == 1
-    assert "integration alpha is not installed" in caplog.text
-
-
-@pytest.mark.unit
-def test_install_without_tests_dir_is_an_error(integrations, caplog):
-    assert _ace("install", "beta") == 1
-
-    assert "integration beta has no tests directory to install" in caplog.text
-
-
-@pytest.mark.unit
 def test_list(integrations, capsys):
     assert _ace("disable", "beta") == 0
-    assert _ace("install", "alpha") == 0
     capsys.readouterr()
 
     assert _ace("list") == 0
 
-    rows = {line.split()[0]: line.split()[1:] for line in capsys.readouterr().out.splitlines()[2:]}
+    output = capsys.readouterr().out
+    rows = {line.split()[0]: line.split()[1:] for line in output.splitlines()[2:]}
     base = integrations / "integrations"
     assert rows == {
-        "alpha": ["ENABLED", "YES", str(base / "group" / "alpha")],
-        "beta": ["DISABLED", "NO", str(base / "beta")],
+        "alpha": ["ENABLED", str(base / "group" / "alpha")],
+        "beta": ["DISABLED", str(base / "beta")],
     }
+
+    # the daily log rotation reads the enabled integrations' names and directories from this table
+    rotate_logs = (Path(__file__).resolve().parents[2] / "etc" / "cron" / "daily" / "rotate-logs").read_text()
+    program = re.search(r"ace integration list \| awk '([^']+)'", rotate_logs).group(1)
+    awk = subprocess.run(["awk", program], input=output, capture_output=True, text=True, check=True, timeout=10)
+    assert awk.stdout == f"alpha {base / 'group' / 'alpha'}\n"
