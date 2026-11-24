@@ -6,15 +6,15 @@ import json
 import logging
 
 import pytest
-from sqlalchemy import delete
+from sqlalchemy import delete, func, text, update
 
 from saq.alert_automation import rules
 from saq.alert_automation.rules import AlertAutomationAction, ActionOutcome, ActionStatus, sweep_rule
-from saq.alert_automation.runs import alert_states
+from saq.alert_automation.runs import alert_states, pending_runs, take_run
 from saq.configuration.config import get_config
 from saq.configuration.schema import AlertAutomationTypeConfig
 from saq.constants import DISPOSITION_DELIVERY, DISPOSITION_FALSE_POSITIVE, DISPOSITION_OPEN, DISPOSITION_SIMULATED, F_EMAIL_DELIVERY
-from saq.database.model import ExternalRemediationCheck
+from saq.database.model import Alert, AlertAutomationRun, Comment, ExternalRemediationCheck
 from saq.database.pool import get_db
 from saq.database.util.alert import ALERT
 from saq.remediation.target import RemediationTarget
@@ -296,8 +296,10 @@ def test_a_check_row_with_no_alert_row_fires_once_the_alert_exists():
 class FailingAction(AlertAutomationAction):
     """An action type an integration could register; it fails as often as the test says."""
     failures = 0
+    calls = 0
 
     def run(self, context):
+        FailingAction.calls += 1
         if FailingAction.failures:
             FailingAction.failures -= 1
             raise RuntimeError("the remediation system is down")
@@ -309,6 +311,7 @@ def failing_action(monkeypatch):
     get_config().alert_automation.action_types.append(AlertAutomationTypeConfig(
         name="failing", python_module=__name__, python_class="FailingAction"))
     monkeypatch.setattr(FailingAction, "failures", 0)
+    monkeypatch.setattr(FailingAction, "calls", 0)
     return FailingAction
 
 
@@ -367,9 +370,10 @@ def test_an_observable_with_no_remediation_target_is_logged_at_error(caplog):
 
     sweep(make_rule())
 
-    (record,) = logged_with(caplog, logging.ERROR, alert_uuid=alert_uuid,
-                            observable=f"{F_EMAIL_DELIVERY}:{DELIVERY_ALICE}")
+    record = the_error_with_traceback(caplog, alert_uuid=alert_uuid, observable=f"{F_EMAIL_DELIVERY}:{DELIVERY_ALICE}")
     assert record.rule == RULE
+    # the error report groups by the exception's text, which names the type and not the observable
+    assert str(record.exc_info[1]) == f"no remediation target for {F_EMAIL_DELIVERY}"
     assert removals() == {}
     (run,) = runs(alert_uuid)
     assert _actions(run)[1]["detail"]["untargeted"] == [f"{F_EMAIL_DELIVERY}:{DELIVERY_ALICE}"]
@@ -435,3 +439,283 @@ def test_the_sweep_pages_through_every_candidate():
     sweep_rule(make_rule(), batch_size=2, max_attempts=5)
 
     assert {alert_row(alert_uuid).disposition for alert_uuid in alert_uuids} == {DISPOSITION_DELIVERY}
+
+
+def _expire_lease(alert_uuid):
+    """As though the lease of the sweep that had the alert's run ran out."""
+    db = get_db()
+    db.execute(update(AlertAutomationRun).where(AlertAutomationRun.alert_uuid == alert_uuid).values(
+        lease_expires=func.DATE_SUB(func.NOW(), text("INTERVAL 1 SECOND"))))
+    db.commit()
+
+
+class Killed(BaseException):
+    """What the sweep sees of the process dying: nothing catches it."""
+
+
+@pytest.mark.usefixtures("remediable")
+def test_a_sweep_that_dies_after_the_disposition_leaves_the_removal_to_a_later_sweep(monkeypatch):
+    alert_uuid = make_alert(DELIVERY_ALICE)
+    confirm(alert_uuid, DELIVERY_ALICE)
+    rule = make_rule()
+
+    def killed(self, context):
+        raise Killed()
+
+    with monkeypatch.context() as patched:
+        patched.setattr(type(rule.actions[1]), "run", killed)
+        with pytest.raises(Killed):
+            sweep(rule)
+
+    assert alert_row(alert_uuid).disposition == DISPOSITION_DELIVERY
+    (run,) = runs(alert_uuid)
+    assert [(a["status"], a["attempts"]) for a in _actions(run)] == [("done", 1), ("pending", 0)]
+
+    # the dead sweep's claim holds the run until its lease runs out
+    sweep(rule)
+    assert removals() == {}
+
+    _expire_lease(alert_uuid)
+    sweep(rule)
+
+    assert removals() == {DELIVERY_ALICE: _automation()}
+    (run,) = runs(alert_uuid)
+    assert run.status == "done"
+    assert [(a["status"], a["attempts"]) for a in _actions(run)] == [("done", 1), ("done", 1)]
+    assert len(comments(alert_uuid)) == 1
+
+
+class BadWriteAction(AlertAutomationAction):
+    """Fails in a get_db() write on the alerts the test names, and does nothing on the others."""
+    alert_uuids: set = set()
+
+    def run(self, context):
+        if context.alert_uuid in BadWriteAction.alert_uuids:
+            get_db().add(Comment(user_id=None, uuid=context.alert_uuid, comment="never written"))
+            get_db().commit()
+        return ActionOutcome(ActionStatus.DONE)
+
+
+def test_a_failed_write_on_one_alert_does_not_fail_the_next_alert(monkeypatch, caplog):
+    get_config().alert_automation.action_types.append(AlertAutomationTypeConfig(
+        name="bad_write", python_module=__name__, python_class="BadWriteAction"))
+    first_uuid, second_uuid = sorted(make_alert(DELIVERY_ALICE) for _ in range(2))
+    for alert_uuid in (first_uuid, second_uuid):
+        confirm(alert_uuid, DELIVERY_ALICE)
+    monkeypatch.setattr(BadWriteAction, "alert_uuids", {first_uuid})
+
+    sweep(make_rule(actions=[{"type": "bad_write"}, {"type": "comment", "comment": "after"}]))
+
+    the_error_with_traceback(caplog, alert_uuid=first_uuid, action="bad_write")
+    assert logged_with(caplog, logging.ERROR, alert_uuid=second_uuid) == []
+    assert comments(second_uuid) == [(_automation(), "after")]
+    assert [run.status for run in runs(second_uuid)] == ["done"]
+
+
+@pytest.mark.usefixtures("remediable")
+def test_a_sweep_that_read_a_pending_run_another_sweep_finished_leaves_it_alone(failing_action, caplog):
+    failing_action.failures = 1
+    alert_uuid = make_alert(DELIVERY_ALICE)
+    confirm(alert_uuid, DELIVERY_ALICE)
+    rule = make_rule(actions=[{"type": "failing"}, {"type": "comment", "comment": "once"}])
+    sweep(rule)
+    # a second instance reads the pending run, and the first retries it to the end before it acts
+    (stale,) = pending_runs(RULE, "enforce", 0, 10)
+    sweep(rule)
+
+    caplog.clear()
+
+    rules.process_alert(rule, alert_uuid, stale.evidence, alert_states([alert_uuid])[alert_uuid], stale, 5)
+
+    # the failure, then the other sweep's retry: the stale sweep ran nothing
+    assert failing_action.calls == 2
+    assert [r for r in caplog.records if r.levelno >= logging.ERROR] == []
+    assert comments(alert_uuid) == [(_automation(), "once")]
+    (run,) = runs(alert_uuid)
+    assert run.status == "done"
+    assert [(a["status"], a["attempts"]) for a in _actions(run)] == [("done", 2), ("done", 1)]
+
+
+@pytest.mark.usefixtures("remediable")
+def test_a_run_another_sweep_has_claimed_is_not_retried_until_its_lease_runs_out(failing_action):
+    failing_action.failures = 1
+    alert_uuid = make_alert(DELIVERY_ALICE)
+    confirm(alert_uuid, DELIVERY_ALICE)
+    rule = make_rule(actions=[{"type": "failing"}, {"type": "comment", "comment": "once"}])
+    sweep(rule)
+    (other,) = pending_runs(RULE, "enforce", 0, 10)
+    assert take_run(other)
+
+    sweep(rule)
+
+    assert comments(alert_uuid) == []
+    assert [run.status for run in runs(alert_uuid)] == ["pending"]
+
+    _expire_lease(alert_uuid)
+    sweep(rule)
+
+    assert comments(alert_uuid) == [(_automation(), "once")]
+    assert [run.status for run in runs(alert_uuid)] == ["done"]
+
+
+class HookAction(AlertAutomationAction):
+    """Runs the test's hook on the alert, then is done."""
+    hook = None
+
+    def run(self, context):
+        HookAction.hook(context.alert_uuid)
+        return ActionOutcome(ActionStatus.DONE)
+
+
+@pytest.fixture
+def hook_action(monkeypatch):
+    get_config().alert_automation.action_types.append(AlertAutomationTypeConfig(
+        name="hook", python_module=__name__, python_class="HookAction"))
+    return HookAction
+
+
+@pytest.mark.usefixtures("remediable")
+def test_a_sweep_whose_run_another_sweep_took_over_logs_it_and_stops(hook_action, monkeypatch, caplog):
+    alert_uuid = make_alert(DELIVERY_ALICE)
+    confirm(alert_uuid, DELIVERY_ALICE)
+
+    def taken_over(alert_uuid):
+        # the action outlasts the sweep's lease, and another sweep claims the run
+        _expire_lease(alert_uuid)
+        (other,) = pending_runs(RULE, "enforce", 0, 10)
+        assert take_run(other)
+
+    monkeypatch.setattr(hook_action, "hook", taken_over)
+    sweep(make_rule(actions=[{"type": "hook"}, {"type": "comment", "comment": "after"}]))
+
+    record = the_error_with_traceback(caplog, alert_uuid=alert_uuid, rule=RULE)
+    assert "another sweep claimed the run" in record.getMessage()
+    assert comments(alert_uuid) == []
+    (run,) = runs(alert_uuid)
+    # what the other sweep claimed is left as it was
+    assert run.status == "pending"
+    assert [(a["status"], a["attempts"]) for a in _actions(run)] == [("pending", 0), ("pending", 0)]
+
+
+@pytest.mark.usefixtures("remediable")
+@pytest.mark.parametrize("before, after", [
+    ([{"type": "failing"}], [{"type": "failing"}, {"type": "comment", "comment": "added"}]),
+    ([{"type": "failing"}, {"type": "comment", "comment": "kept"}], [{"type": "comment", "comment": "kept"}]),
+])
+def test_a_pending_run_of_a_rule_whose_actions_changed_is_marked_failed(failing_action, caplog, before, after):
+    failing_action.failures = 1
+    alert_uuid = make_alert(DELIVERY_ALICE)
+    confirm(alert_uuid, DELIVERY_ALICE)
+    sweep(make_rule(actions=before))
+    caplog.clear()
+
+    sweep(make_rule(actions=after))
+
+    record = the_error_with_traceback(caplog, alert_uuid=alert_uuid, rule=RULE)
+    assert "was started for" in record.getMessage()
+    assert comments(alert_uuid) == []
+    (run,) = runs(alert_uuid)
+    assert run.status == "failed"
+    assert [(a["type"], a["status"], a["attempts"]) for a in _actions(run)] == [
+        (step["type"], "pending", 1 if step["type"] == "failing" else 0) for step in before]
+
+
+def test_a_dry_run_comment_is_recorded_and_not_added():
+    alert_uuid = make_alert(DELIVERY_ALICE)
+    confirm(alert_uuid, DELIVERY_ALICE)
+
+    sweep(make_rule(mode="dry_run", actions=[{"type": "comment", "comment": "rule {rule} acted"}]))
+
+    assert comments(alert_uuid) == []
+    (run,) = runs(alert_uuid)
+    assert (run.status, _actions(run)[0]["detail"]) == ("done", {"comment": f"rule {RULE} acted"})
+
+
+@pytest.mark.usefixtures("remediable")
+def test_a_started_run_stops_while_an_analyst_has_the_alert(failing_action, caplog):
+    caplog.set_level(logging.INFO)
+    failing_action.failures = 1
+    alert_uuid = make_alert(DELIVERY_ALICE)
+    confirm(alert_uuid, DELIVERY_ALICE)
+    rule = make_rule(actions=[ACTIONS[0], {"type": "failing"}])
+    sweep(rule)
+    set_alert(alert_uuid, owner_id=analyst_id())
+
+    sweep(rule)
+
+    (run,) = runs(alert_uuid)
+    assert run.status == "pending"
+    assert [(a["status"], a["attempts"]) for a in _actions(run)] == [("done", 1), ("pending", 1)]
+    assert logged_with(caplog, logging.INFO, alert_uuid=alert_uuid, reason=f"user {analyst_id()} owns the alert")
+
+    set_alert(alert_uuid, owner_id=None)
+    sweep(rule)
+
+    (run,) = runs(alert_uuid)
+    assert run.status == "done"
+
+
+def test_a_started_run_whose_disposition_defers_is_kept(monkeypatch):
+    alert_uuid = make_alert(DELIVERY_ALICE)
+    confirm(alert_uuid, DELIVERY_ALICE)
+
+    def read_then_taken(alert_uuids):
+        states = alert_states(alert_uuids)
+        _taken(alert_uuid)
+        return states
+
+    monkeypatch.setattr(rules, "alert_states", read_then_taken)
+    sweep(make_rule(actions=[{"type": "comment", "comment": "first"}, ACTIONS[0]]))
+
+    assert alert_row(alert_uuid).disposition == DISPOSITION_OPEN
+    assert comments(alert_uuid) == [(_automation(), "first")]
+    # the comment was added, so the run is kept and the comment is not added again
+    (run,) = runs(alert_uuid)
+    assert run.status == "pending"
+    assert [(a["status"], a["attempts"]) for a in _actions(run)] == [("done", 1), ("pending", 0)]
+
+
+@pytest.mark.usefixtures("remediable")
+def test_a_pending_run_whose_alert_was_deleted_is_left_as_it_is(failing_action, caplog):
+    caplog.set_level(logging.INFO)
+    failing_action.failures = 1
+    alert_uuid = make_alert(DELIVERY_ALICE)
+    confirm(alert_uuid, DELIVERY_ALICE)
+    rule = make_rule(actions=[ACTIONS[0], {"type": "failing"}])
+    sweep(rule)
+    (before,) = runs(alert_uuid)
+    actions_before = _actions(before)
+    db = get_db()
+    db.execute(delete(Alert).where(Alert.uuid == alert_uuid))
+    db.commit()
+    caplog.clear()
+
+    sweep(rule)
+
+    (run,) = runs(alert_uuid)
+    assert (run.status, _actions(run)) == ("pending", actions_before)
+    assert [r for r in caplog.records if r.levelno >= logging.ERROR] == []
+    assert logged_with(caplog, logging.INFO, alert_uuid=alert_uuid, reason="the alert does not exist")
+
+
+@pytest.mark.usefixtures("remediable")
+def test_a_sweep_stops_between_alerts_when_it_is_stopping(monkeypatch):
+    alert_uuids = [make_alert(f"<stop-{index}@example.com>|alice@example.com") for index in range(2)]
+    for index, alert_uuid in enumerate(alert_uuids):
+        confirm(alert_uuid, f"<stop-{index}@example.com>|alice@example.com")
+    processed = []
+    real_process_alert = rules.process_alert
+
+    def process_alert(rule, alert_uuid, *args):
+        processed.append(alert_uuid)
+        real_process_alert(rule, alert_uuid, *args)
+
+    monkeypatch.setattr(rules, "process_alert", process_alert)
+    # the sweep is told to stop once it has acted on an alert
+    sweep_rule(make_rule(), batch_size=100, max_attempts=5, stopping=lambda: bool(processed))
+
+    (first,) = processed
+    (second,) = set(alert_uuids) - {first}
+    assert alert_row(first).disposition == DISPOSITION_DELIVERY
+    assert alert_row(second).disposition == DISPOSITION_OPEN
+    assert runs(second) == []

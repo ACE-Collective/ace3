@@ -19,6 +19,7 @@ from saq.alert_automation.runs import (
     ACTION_FINISHED,
     RUN_DONE,
     RUN_FAILED,
+    RUN_LEASE_SECONDS,
     AlertState,
     Run,
     alert_states,
@@ -27,11 +28,13 @@ from saq.alert_automation.runs import (
     delete_run,
     pending_runs,
     save_run,
+    take_run,
 )
 from saq.auth import ApiAuthResult
 from saq.configuration.config import get_config
 from saq.configuration.schema import AlertAutomationRuleConfig, AlertAutomationStepConfig
 from saq.constants import DISPOSITION_OPEN
+from saq.database.pool import remove_all_sessions
 from saq.error.reporting import log_loop_exception
 
 MODE_DRY_RUN = "dry_run"
@@ -265,14 +268,34 @@ def _log_fields(rule: Rule, alert_uuid: str, action_type: Optional[str] = None) 
     return fields
 
 
+def _log_error(message: str, extra: dict) -> None:
+    # at ERROR with an exception, so an operator gets an error report, and one report per message
+    logging.error(message, exc_info=RuntimeError(message), extra=extra)
+
+
+def _saved(rule: Rule, run: Run, hold: bool = False) -> bool:
+    """save_run(), logging at ERROR when another sweep has the run: it claimed the run after this
+    sweep's lease ran out, so an action may run twice."""
+    if save_run(run, hold):
+        return True
+
+    _log_error(f"alert automation rule {rule.name}: another sweep claimed the run on alert {run.alert_uuid} "
+               f"while this one had it, after its {RUN_LEASE_SECONDS}s lease ran out; what this sweep did "
+               f"since its last save is not recorded", _log_fields(rule, run.alert_uuid))
+    return False
+
+
 def process_alert(rule: Rule, alert_uuid: str, evidence: dict, state: Optional[AlertState],
                   run: Optional[Run], max_attempts: int) -> None:
-    """Runs the rule's unfinished actions on the alert, in order, recording each outcome. Stops at
-    the first action that fails (retried on a later sweep, until max_attempts) or defers."""
+    """Runs the rule's unfinished actions on the alert, in order, recording each outcome as it
+    finishes. Stops at the first action that fails (retried on a later sweep, until max_attempts)
+    or defers."""
     reason = _left_alone_because(state, run)
     if reason is not None:
-        logging.debug("alert automation rule %s leaves alert %s alone: %s", rule.name, alert_uuid, reason,
-                      extra=_log_fields(rule, alert_uuid))
+        # a pending run left alone is retried on every sweep until the guard lets it through
+        logging.log(logging.DEBUG if run is None else logging.INFO,
+                    "alert automation rule %s leaves alert %s alone: %s", rule.name, alert_uuid, reason,
+                    extra={**_log_fields(rule, alert_uuid), "reason": reason})
         return
 
     if run is None:
@@ -280,6 +303,21 @@ def process_alert(rule: Rule, alert_uuid: str, evidence: dict, state: Optional[A
                         [action.config.type for action in rule.actions])
         if run is None:
             return
+    elif not take_run(run):
+        logging.info("alert automation rule %s: another sweep has its run on alert %s", rule.name, alert_uuid,
+                     extra=_log_fields(rule, alert_uuid))
+        return
+
+    recorded = [record["type"] for record in run.actions]
+    configured = [action.config.type for action in rule.actions]
+    if recorded != configured:
+        # the rule was edited after the run started: which of its actions are done is not known
+        run.status = RUN_FAILED
+        _log_error(f"alert automation rule {rule.name}: its actions are now {', '.join(configured)}, but its "
+                   f"run on alert {alert_uuid} was started for {', '.join(recorded)}; the run is marked "
+                   f"failed and nothing more runs", _log_fields(rule, alert_uuid))
+        _saved(rule, run)
+        return
 
     context = ActionContext(rule_name=rule.name, alert_uuid=alert_uuid, mode=rule.mode, evidence=run.evidence,
                             trigger=rule.trigger)
@@ -301,17 +339,18 @@ def process_alert(rule: Rule, alert_uuid: str, evidence: dict, state: Optional[A
                 run.status = RUN_FAILED
                 message += f"; gave up after {record['attempts']} attempts, and the rule's later actions do not run"
             logging.exception(message, extra=extra)
-            save_run(run)
+            _saved(rule, run)
             return
 
         if outcome.status is ActionStatus.DEFERRED:
             logging.info("alert automation rule %s: action %s left alert %s alone: %s", rule.name, record["type"],
                          alert_uuid, outcome.reason, extra={**extra, "reason": outcome.reason})
             if run.started:
-                save_run(run)
-            else:
-                # nothing was done, so the rule considers the alert again on a later sweep
-                delete_run(run)
+                _saved(rule, run)
+            # nothing was done, so the run is deleted and the rule considers the alert again on a later sweep
+            elif not delete_run(run):
+                _log_error(f"alert automation rule {rule.name}: another sweep claimed the run on alert "
+                           f"{alert_uuid} while this one had it, so it was not deleted", extra)
             return
 
         record["attempts"] += 1
@@ -322,9 +361,13 @@ def process_alert(rule: Rule, alert_uuid: str, evidence: dict, state: Optional[A
                      outcome.status.value, alert_uuid, rule.mode,
                      extra={**extra, "status": outcome.status.value, "detail": outcome.detail,
                             "reason": outcome.reason})
+        # recorded before the next action runs: a sweep that dies now must not leave the alert, which
+        # this action may have taken out of OPEN, with a run that says nothing has started
+        if not _saved(rule, run, hold=True):
+            return
 
     run.status = RUN_DONE
-    save_run(run)
+    _saved(rule, run)
 
 
 def _process_each(rule: Rule, items: list[tuple[str, dict, Optional[Run]]], max_attempts: int,
@@ -340,6 +383,10 @@ def _process_each(rule: Rule, items: list[tuple[str, dict, Optional[Run]]], max_
             # recording the run failed; the alert is considered again on the next sweep
             log_loop_exception(e, f"alert automation rule {rule.name} failed on alert {alert_uuid}",
                                extra=_log_fields(rule, alert_uuid))
+        finally:
+            # a write that failed in an action leaves the thread's get_db() session unusable (#852),
+            # so each alert starts with a fresh one
+            remove_all_sessions()
 
 
 def sweep_rule(rule: Rule, batch_size: int, max_attempts: int, stopping: Callable[[], bool] = lambda: False) -> None:

@@ -83,3 +83,35 @@ def test_a_rule_whose_sweep_fails_is_logged_and_the_service_goes_on(monkeypatch,
     assert search_log("alert automation rule confirmed_removal sweep failed")
     assert any(r.levelno == logging.ERROR and getattr(r, "rule", None) == "confirmed_removal" and r.exc_info
                for r in caplog.records)
+
+
+def test_the_service_stops_between_rules(monkeypatch):
+    service = AlertAutomationService()
+    service.rules = ["first", "second"]
+    swept = []
+
+    def sweep_rule(rule, *args):
+        swept.append(rule)
+        service.stop()
+
+    monkeypatch.setattr("saq.alert_automation.service.sweep_rule", sweep_rule)
+    service.sweep()
+
+    assert swept == ["first"]
+
+
+def test_a_sweep_that_outlasts_the_shutdown_deadline_is_logged(caplog):
+    get_config().get_service_config("alert_automation").shutdown_deadline_seconds = 0.1
+    release = threading.Event()
+    service = AlertAutomationService()
+    # an action that is still running when the service is stopped
+    service.thread = threading.Thread(target=release.wait, args=(10,), daemon=True)
+    service.thread.start()
+    try:
+        service.stop()
+        service.wait()
+    finally:
+        release.set()
+
+    assert any(r.levelno == logging.WARNING and "did not stop within the shutdown deadline" in r.getMessage()
+               for r in caplog.records)

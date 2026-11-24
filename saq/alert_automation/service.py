@@ -1,6 +1,7 @@
 """service_alert_automation: sweeps every enabled alert automation rule each interval_seconds, on
 the primary node only (docs/ALERT_AUTOMATION.md, *The service*). It is not a queue service: the
-runs table's unique key, not a row lock, keeps a rule from acting twice on an alert."""
+runs table's unique key and the claim on a pending run, not a row lock, keep a rule from acting
+twice on an alert."""
 
 import logging
 import threading

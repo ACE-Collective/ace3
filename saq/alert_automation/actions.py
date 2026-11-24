@@ -126,9 +126,12 @@ class RemediateAction(AlertAutomationAction):
             if not observable_targets:
                 # ACE's removal is the backstop for an external product's; without a target there is none
                 untargeted.append(f"{observable.type}:{observable.value}")
+                # the exception gives the operator an error report, and names only the type, so there is
+                # one report per type every ten minutes rather than one per observable
                 logging.error(f"alert automation rule {context.rule_name}: no remediation target for "
                               f"{observable.type} {observable.value} in alert {context.alert_uuid}, so ACE "
                               f"can't remove it; check the remediation configuration for {observable.type}",
+                              exc_info=LookupError(f"no remediation target for {observable.type}"),
                               extra={"rule": context.rule_name, "alert_uuid": context.alert_uuid,
                                      "action": self.config.type, "mode": context.mode,
                                      "observable": f"{observable.type}:{observable.value}"})

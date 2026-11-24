@@ -3617,7 +3617,8 @@ class AlertAutomationRun(Base):
 
     The unique key is what makes a rule act at most once per alert and mode: the service inserts
     the row before any action runs, so a second instance that overlaps it fails the insert and
-    leaves the alert alone. status is pending while an action is still to be (re)tried, done once
+    leaves the alert alone, and a sweep that retries a pending run claims it first (version,
+    lease_expires). status is pending while an action is still to be (re)tried, done once
     every action is done or skipped, and failed once an action ran out of attempts. evidence is
     the trigger's evidence and actions is one entry per action of the rule, in its order, each
     {type, status, attempts, detail, reason}; both are JSON-serialized (no native JSON column
@@ -3644,6 +3645,11 @@ class AlertAutomationRun(Base):
         TIMESTAMP, nullable=False, index=True, server_default=text('CURRENT_TIMESTAMP'))
     update_time: Mapped[datetime] = mapped_column(
         TIMESTAMP, nullable=False, server_default=text('CURRENT_TIMESTAMP'))
+    # a sweep claims a pending run before it runs any of its actions by raising version, and every
+    # later write of the run is conditional on the version it claimed; until lease_expires no other
+    # sweep claims it, and a sweep that dies leaves the run to whichever sweep comes after the lease
+    version: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text('0'))
+    lease_expires: Mapped[Optional[datetime]] = mapped_column(TIMESTAMP, nullable=True)
 
 
 class Tag(Base):

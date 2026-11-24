@@ -3,9 +3,9 @@
 The new table is empty. idx_erc_probe_result_time is a plain ADD INDEX on
 external_remediation_check, which InnoDB builds in place while reads and writes go on.
 
-Revision ID: 2f6abd4bffec
+Revision ID: 07ebd9de6df2
 Revises: 21ef0452ff5a
-Create Date: 2026-11-24 21:47:57.335216
+Create Date: 2026-11-24 22:31:01.155667
 
 """
 from typing import Sequence, Union
@@ -15,7 +15,7 @@ import sqlalchemy as sa
 from sqlalchemy.dialects import mysql
 
 # revision identifiers, used by Alembic.
-revision: str = '2f6abd4bffec'
+revision: str = '07ebd9de6df2'
 down_revision: Union[str, None] = '21ef0452ff5a'
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
@@ -33,6 +33,8 @@ def upgrade() -> None:
     sa.Column('actions', mysql.MEDIUMTEXT(), nullable=False),
     sa.Column('insert_date', sa.TIMESTAMP(), server_default=sa.text('CURRENT_TIMESTAMP'), nullable=False),
     sa.Column('update_time', sa.TIMESTAMP(), server_default=sa.text('CURRENT_TIMESTAMP'), nullable=False),
+    sa.Column('version', sa.Integer(), server_default=sa.text('0'), nullable=False),
+    sa.Column('lease_expires', sa.TIMESTAMP(), nullable=True),
     sa.PrimaryKeyConstraint('id'),
     sa.UniqueConstraint('rule_name', 'alert_uuid', 'mode', name='uq_aar_rule_alert_mode')
     )

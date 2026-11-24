@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Iterator, Optional
 
-from sqlalchemy import delete, func, select, update
+from sqlalchemy import delete, func, or_, select, text, update
 from sqlalchemy.exc import IntegrityError
 
 from saq.configuration.config import get_config
@@ -27,6 +27,10 @@ ACTION_SKIPPED = "skipped"
 ACTION_FAILED = "failed"
 ACTION_FINISHED = (ACTION_DONE, ACTION_SKIPPED)
 
+# how long a sweep has a run it claimed before another sweep may claim it: longer than a rule's
+# actions take, so it only runs out when the sweep that had the run died
+RUN_LEASE_SECONDS = 600
+
 
 @dataclass
 class Run:
@@ -39,6 +43,8 @@ class Run:
     # one dict per action of the rule, in its order: type, status, attempts, detail, reason
     actions: list[dict]
     insert_date: Optional[datetime] = None
+    # the version this sweep claimed, or read when it has not claimed the run
+    version: int = 0
 
     @property
     def started(self) -> bool:
@@ -56,18 +62,29 @@ class AlertState:
 
 def _run(row: AlertAutomationRun) -> Run:
     return Run(id=row.id, rule_name=row.rule_name, alert_uuid=row.alert_uuid, mode=row.mode, status=row.status,
-               evidence=json.loads(row.evidence), actions=json.loads(row.actions), insert_date=row.insert_date)
+               evidence=json.loads(row.evidence), actions=json.loads(row.actions), insert_date=row.insert_date,
+               version=row.version)
+
+
+def _lease_expires():
+    return func.DATE_ADD(func.NOW(), text(f"INTERVAL {RUN_LEASE_SECONDS} SECOND"))
+
+
+def _unclaimed():
+    return or_(AlertAutomationRun.lease_expires.is_(None), AlertAutomationRun.lease_expires < func.NOW())
 
 
 def claim_run(rule_name: str, alert_uuid: str, mode: str, evidence: dict, action_types: list[str]) -> Optional[Run]:
-    """Records a new run, before any of its actions runs. None when the alert already has a run of
-    this rule and mode: another sweep got there first, and this one leaves the alert alone."""
+    """Records a new run, claimed by this sweep, before any of its actions runs. None when the alert
+    already has a run of this rule and mode: another sweep got there first, and this one leaves the
+    alert alone."""
     actions = [{"type": action_type, "status": ACTION_PENDING, "attempts": 0, "detail": {}, "reason": None}
                for action_type in action_types]
     try:
         with private_transaction() as session:
             row = AlertAutomationRun(rule_name=rule_name, alert_uuid=alert_uuid, mode=mode, status=RUN_PENDING,
-                                     evidence=json.dumps(evidence), actions=json.dumps(actions))
+                                     evidence=json.dumps(evidence), actions=json.dumps(actions), version=1,
+                                     lease_expires=_lease_expires())
             session.add(row)
             session.flush()
             run_id = row.id
@@ -78,28 +95,55 @@ def claim_run(rule_name: str, alert_uuid: str, mode: str, evidence: dict, action
         return None
 
     return Run(id=run_id, rule_name=rule_name, alert_uuid=alert_uuid, mode=mode, status=RUN_PENDING,
-               evidence=evidence, actions=actions)
+               evidence=evidence, actions=actions, version=1)
 
 
-def save_run(run: Run) -> None:
+def take_run(run: Run) -> bool:
+    """Claims a pending run read by pending_runs() for this sweep. False when another sweep claimed
+    or changed it since it was read: that sweep has it, and this one leaves it alone."""
     with private_transaction() as session:
-        session.execute(update(AlertAutomationRun).where(AlertAutomationRun.id == run.id).values(
-            status=run.status, actions=json.dumps(run.actions), update_time=func.now()))
+        result = session.execute(
+            update(AlertAutomationRun)
+            .where(AlertAutomationRun.id == run.id, AlertAutomationRun.version == run.version,
+                   AlertAutomationRun.status == RUN_PENDING, _unclaimed())
+            .values(version=AlertAutomationRun.version + 1, lease_expires=_lease_expires()))
+        if result.rowcount != 1:
+            return False
+
+    run.version += 1
+    return True
 
 
-def delete_run(run: Run) -> None:
-    """Removes a run none of whose actions finished, so the rule considers the alert again."""
+def save_run(run: Run, hold: bool = False) -> bool:
+    """Records the run as this sweep has it. hold keeps the claim, for a run whose next action runs
+    now; otherwise the run is left to a later sweep. False when another sweep claimed the run since
+    this one did, and nothing was written."""
     with private_transaction() as session:
-        session.execute(delete(AlertAutomationRun).where(AlertAutomationRun.id == run.id))
+        result = session.execute(
+            update(AlertAutomationRun)
+            .where(AlertAutomationRun.id == run.id, AlertAutomationRun.version == run.version)
+            .values(status=run.status, actions=json.dumps(run.actions), update_time=func.now(),
+                    lease_expires=_lease_expires() if hold else None))
+        return result.rowcount == 1
+
+
+def delete_run(run: Run) -> bool:
+    """Removes a run none of whose actions finished, so the rule considers the alert again. False
+    when another sweep claimed the run since this one did, and it was kept."""
+    with private_transaction() as session:
+        result = session.execute(delete(AlertAutomationRun).where(
+            AlertAutomationRun.id == run.id, AlertAutomationRun.version == run.version))
+        return result.rowcount == 1
 
 
 def pending_runs(rule_name: str, mode: str, after_id: int, limit: int) -> list[Run]:
-    """The rule's runs with an action still to be retried, in id order after after_id."""
+    """The rule's runs with an action still to be retried that no sweep has claimed, in id order
+    after after_id."""
     with private_transaction() as session:
         rows = session.execute(
             select(AlertAutomationRun)
             .where(AlertAutomationRun.rule_name == rule_name, AlertAutomationRun.mode == mode,
-                   AlertAutomationRun.status == RUN_PENDING, AlertAutomationRun.id > after_id)
+                   AlertAutomationRun.status == RUN_PENDING, AlertAutomationRun.id > after_id, _unclaimed())
             .order_by(AlertAutomationRun.id).limit(limit)).scalars().all()
         return [_run(row) for row in rows]
 

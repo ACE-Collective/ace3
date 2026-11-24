@@ -115,8 +115,9 @@ removed or is gone.
   a confirmed delivery's, including deliveries a module added to the tree after the original ones.
 
 An observable that yields no remediation target means the backstop does not exist for it. That is
-logged at ERROR with the alert uuid and the observable, because an operator has to fix the
-remediation configuration. An alert with no observable to remediate skips the action.
+logged at ERROR with the alert uuid and the observable, with an exception that names only the
+observable type, so the operator who has to fix the remediation configuration gets an error report
+once per type every ten minutes. An alert with no observable to remediate skips the action.
 
 ### `comment`
 
@@ -140,13 +141,17 @@ These apply to every rule, and rule authors cannot turn them off.
   first, so that the ownership check under the row lock decides whether anything else runs.
 
 Once an action of a run has finished, the alert is in the state the run put it in, so a retry of
-that run's later actions skips the OPEN guard. The ownership guard still applies.
+that run's later actions skips the OPEN guard. The ownership guard still applies: a pending run on
+an alert an analyst owns, or on an alert that was deleted, is left as it is, and each sweep logs
+that at INFO.
 
 ## Runs and modes
 
 `alert_automation_runs` records each rule's run on an alert: the rule name, the alert uuid, the
 mode, the evidence, each action's outcome and attempt count, and timestamps. Its unique key is
-`(rule_name, alert_uuid, mode)`, and the service inserts the row before any action runs.
+`(rule_name, alert_uuid, mode)`, and the service inserts the row before any action runs. Each
+action's outcome is saved as soon as it finishes, so a sweep that dies part way through a run
+leaves a record of what it did.
 
 - A rule acts at most once per alert and mode. Reopening the alert, or restoring the email, does
   not set it off again.
@@ -163,7 +168,16 @@ mode, the evidence, each action's outcome and attempt count, and timestamps. Its
 Each action logs an INFO record with `alert_uuid`, `rule`, `action` and `mode` in `extra`.
 
 A run is `pending` while an action is still to be tried, `done` once every action is done or
-skipped, and `failed` once an action ran out of attempts.
+skipped, and `failed` once an action ran out of attempts, or once the rule's actions no longer
+match the ones the run was started for (an edited rule; logged at ERROR).
+
+A sweep claims a run before it runs any of its actions: the insert claims a new run, and a retry
+claims a pending one with a conditional UPDATE on the version it read, which also sets a lease
+(`RUN_LEASE_SECONDS` in `saq/alert_automation/runs.py`, ten minutes). Every later write of the run
+is conditional on the version the sweep claimed. A sweep that finds the run claimed or changed
+since it read it leaves it alone, and a sweep that dies leaves its run to the first sweep after
+the lease runs out. A sweep that outlasts its lease and finds another one has claimed the run logs
+that at ERROR and stops; the action it ran may then run twice.
 
 ## The service
 
@@ -173,7 +187,8 @@ rule first retries its pending runs, then reads the trigger's candidates `batch_
 with keyset paging on the alert uuid, and leaves out the alerts the rule already has a run on.
 
 It runs on the primary node only and stays idle elsewhere, as `service_svs` does. If two instances
-ever overlap, the runs table's unique key keeps them from acting twice. It is not a queue service,
+ever overlap, the runs table's unique key keeps them from starting a rule twice on an alert, and
+the claim on a pending run keeps them from retrying it twice. It is not a queue service,
 so it is clear of #1213. It installs no signal handlers, checks `is_shutting_down()` between
 alerts, and waits on its own stop event.
 
