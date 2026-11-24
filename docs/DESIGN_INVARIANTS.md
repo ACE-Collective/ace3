@@ -45,7 +45,7 @@ is written there, change the tag to point at it.
   are not. A missing include is skipped with only an INFO record. See
   `saq/configuration/yaml_parser.py::YAMLConfig.resolve_references`,
   `saq/configuration/yaml_parser.py::_read_file_value`,
-  `saq/configuration/loader.py::_load_env_config_paths` and
+  `saq/configuration/loader.py::_env_config_paths` and
   `saq/analysis/file_manager/local_file_manager.py::LocalFileManager.file_dir`. [docs/PROCESS_ENVIRONMENT.md]
 - **`GlobalRuntimeSettings` holds hard-coded defaults until the line of
   `initialize_environment()` that sets each field.** The defaults are `/opt/ace` paths,
@@ -394,6 +394,17 @@ is written there, change the tag to point at it.
 - **The layer order is fixed: lists append, scalars override, later files win.** Integrations
   depend on appending to add query sources, command types and alert routers.
   [AGENTS.md; docs/INTEGRATIONS.md]
+- **An integration is off only through the merged `enabled:` of its `integration_*:` sections,
+  and when it is off only those sections and its `observable_types.classes` are merged of its
+  files.** A later layer can change `enabled:`, so the loader merges every layer, then merges again
+  without the files of the integrations whose every section is disabled. A top-level key such an
+  integration's files declared before any other file did, and no enabled integration declares, is
+  then removed with what later layers set on it, since a site overlay's part of a block does not
+  validate alone. Its `src/` stays on `sys.path` and its classes stay mapped so that saved alerts
+  still load its analysis and observable classes. See
+  `saq/configuration/loader.py::load_configuration`,
+  `saq/configuration/yaml_parser.py::_disabled_integration_sections` and
+  `saq/integration/integration_manager.py::is_integration_dir_enabled`. [docs/INTEGRATIONS.md]
 - **`analysis_module_*` blocks register under their `name:` field, not the section key, and a
   duplicate name silently wins last.** See
   `saq/configuration/lazy_registry.py::LazyConfigRegistry.add_raw` and

@@ -1,47 +1,23 @@
-import logging
 import sys
 
 from saq.cli.cli_main import get_cli_subparsers
+from saq.integration.integration_util import get_integration_name_from_path, get_valid_integration_dirs
 
-
-def _integration_exists(name: str) -> bool:
-    from saq.integration.integration_util import get_integration_path_from_name
-    try:
-        get_integration_path_from_name(name)
-    except (FileNotFoundError, ValueError) as e:
-        logging.error(f"unknown integration {name}: {e}")
-        return False
-
-    return True
-
-def enable_integration(args):
-    from saq.integration.integration_manager import enable_integration
-    if not _integration_exists(args.name):
-        sys.exit(1)
-
-    enable_integration(args.name)
-    sys.exit(0)
-
-def disable_integration(args):
-    from saq.integration.integration_manager import disable_integration
-    if not _integration_exists(args.name):
-        sys.exit(1)
-
-    disable_integration(args.name)
-    sys.exit(0)
 
 def list_integrations(args):
-    from saq.integration.integration_loader import get_valid_integration_dirs
-    from saq.integration.integration_util import get_integration_name_from_path
-    # local, like the imports around it: the full help imports every command module
-    from saq.integration.integration_manager import is_integration_enabled
+    # local: the full help imports every command module
+    from saq.integration.integration_manager import get_integration_dir_configs
     from tabulate import tabulate
 
     integration_info = []
     for dir_path in get_valid_integration_dirs():
-        name = get_integration_name_from_path(dir_path)
-        enabled = is_integration_enabled(name)
-        integration_info.append((name, "ENABLED" if enabled else "DISABLED", dir_path))
+        configs = get_integration_dir_configs(dir_path)
+        if not configs:
+            # still on: its configuration is merged and its cron tasks run
+            integration_info.append((get_integration_name_from_path(dir_path), "UNDECLARED", dir_path))
+
+        for config in configs:
+            integration_info.append((config.name, "ENABLED" if config.enabled else "DISABLED", dir_path))
 
     headers = ["Integration", "Status", "Directory"]
     print(tabulate(integration_info, headers=headers, tablefmt="simple"))
@@ -51,18 +27,6 @@ def list_integrations(args):
 integration_parser = get_cli_subparsers().add_parser('integration')
 integration_sp = integration_parser.add_subparsers(dest='integration_cmd')
 
-enable_integration_parser = integration_sp.add_parser('enable',
-    help="Enables the given integration.")
-enable_integration_parser.add_argument('name',
-    help="The integration to enable. Use ace integration list to get the list of available integrations.")
-enable_integration_parser.set_defaults(func=enable_integration)
-
 list_integration_parser = integration_sp.add_parser('list',
-    help="List the available integrations and show enabled/disabled status.")
+    help="List the available integrations and the enabled setting of each integration_*: section they declare.")
 list_integration_parser.set_defaults(func=list_integrations)
-
-disable_integration_parser = integration_sp.add_parser('disable',
-    help="Disables the given integration.")
-disable_integration_parser.add_argument('name',
-    help="The integration to disable. Use ace integration list to get the list of available integrations.")
-disable_integration_parser.set_defaults(func=disable_integration)

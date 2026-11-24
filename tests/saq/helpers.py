@@ -27,6 +27,8 @@ from saq.analysis.root import RootAnalysis, Submission
 from saq.auth import ApiAuthResult
 from saq.configuration import config as config_module
 from saq.configuration.config import get_config
+from saq.configuration.loader import load_configuration
+from saq.configuration.schema import ACEConfig
 from saq.constants import (
     ANALYSIS_MODE_ANALYSIS,
     DISPOSITION_SIMULATED,
@@ -864,3 +866,15 @@ def tls_handshake_failure() -> requests.exceptions.RequestException:
         conn.sendall(b"HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\n\r\n")
 
     return _requests_error_from_local_server(_answer_in_plain_http)
+
+
+def configure_integrations(monkeypatch):
+    """Loads the configuration with the integration files now in integration_config_paths, as
+    initialize_configuration() does, and makes it the one the integration code reads. Returns it."""
+    raw = load_configuration(config_paths=[])
+    config = ACEConfig.model_validate(raw._data)
+    config.raw = raw
+    for target in ("saq.integration.integration_manager.get_config", "saq.integration.integration_loader.get_config"):
+        monkeypatch.setattr(target, lambda: config)
+
+    return config

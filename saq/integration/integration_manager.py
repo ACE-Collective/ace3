@@ -1,41 +1,15 @@
-import os
-from saq.integration.integration_util import get_integration_var_base_dir
+from saq.configuration.config import get_config
+from saq.configuration.schema import IntegrationConfig
+from saq.integration.integration_util import get_integration_config_path
 
-def _ensure_var_dir_exists(var_dir: str):
-    if not os.path.exists(var_dir):
-        os.makedirs(var_dir)
 
-def _get_disabled_path(var_dir: str) -> str:
-    return os.path.join(var_dir, "disabled")
+def is_integration_dir_enabled(dir_path: str) -> bool:
+    """Returns False for an integration directory that is off: it declares at least one
+    integration_*: section and every one of them is disabled (see load_configuration())."""
+    return get_integration_config_path(dir_path) not in get_config().raw.disabled_integration_paths
 
-def enable_integration(name: str) -> bool:
-    """Enables the integration. This is done by removing the disabled file if it exists."""
-    var_dir = os.path.join(get_integration_var_base_dir(), name)
-    disabled_path = _get_disabled_path(var_dir)
-    if os.path.exists(disabled_path):
-        os.remove(disabled_path)
 
-    return not os.path.exists(disabled_path)
-
-def disable_integration(name: str):
-    """Disables the integration. This is done by creating a disabled file in the integration's var directory."""
-    var_dir = os.path.join(get_integration_var_base_dir(), name)
-    _ensure_var_dir_exists(var_dir)
-    disabled_path = _get_disabled_path(var_dir)
-    if not os.path.exists(disabled_path):
-        with open(disabled_path, "w") as _:
-            pass
-
-    return os.path.exists(disabled_path)
-
-def is_integration_enabled(name: str) -> bool:
-    """Returns True if the integration is enabled, False otherwise.
-    
-    Parameters
-    ----------
-    dir_path : str
-        The path to the integration directory.
-    """
-    var_dir = os.path.join(get_integration_var_base_dir(), name)
-    disabled_path = _get_disabled_path(var_dir)
-    return not os.path.exists(disabled_path)
+def get_integration_dir_configs(dir_path: str) -> list[IntegrationConfig]:
+    """Returns the configuration of each integration_*: section the integration directory declares."""
+    sections = get_config().raw.integration_blocks.get(get_integration_config_path(dir_path), [])
+    return [get_config().get_integration_config(section) for section in sections]

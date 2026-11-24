@@ -52,7 +52,8 @@ An enabled integration adds tasks by shipping the same layout in its own directo
 integrations/<name>/etc/cron/daily/<task>
 ```
 
-Tasks of disabled integrations (`ace integration disable <name>`) are not run. See
+Tasks of disabled integrations (`enabled: false`, `docs/INTEGRATIONS.md`, *Disabling an
+integration*) are not run. See
 `integrations.example/example/etc/cron/daily/example-task`.
 
 ## Logs and monitoring

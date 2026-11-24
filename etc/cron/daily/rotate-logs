@@ -13,8 +13,11 @@ DELETE_LOGS_OLDER_THAN=30
 /usr/sbin/logrotate -s data/var/logrotate.state -f etc/logrotate.conf
 
 # if any integrations define a logrotate configuration, run those as well
-ace integration list | awk 'NR>2 && $2=="ENABLED" {print $1, $3}' | while read integration_name integration_dir
+# (one row per integration_*: section, so once per directory that is on: one with a section that is
+# not disabled, or with no section at all)
+ace integration list | awk 'NR>2 && $2!="DISABLED" && !seen[$3]++ {print $3}' | while read integration_dir
 do
+    integration_name=$(basename "$integration_dir")
     if [ -e "${integration_dir}/etc/logrotate.conf" ]
     then
         echo "running logrotate for $integration_name"

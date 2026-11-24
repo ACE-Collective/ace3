@@ -12,7 +12,7 @@ this to work.
 I want to be able to...
 
 - Install an integration from a local directory.
-- Enable and disable the integration.
+- Enable and disable the integration through its configuration.
 - Add features to the application without having to modify the core project.
 
 ## Implementation Overview
@@ -24,7 +24,8 @@ I want to be able to...
 - The presence of an `install.sh` script is executed at image build time.
 - The presence of a `src` directory is automatically appended to PYTHONPATH.
 - The presence of a `etc` directory with the file `saq.integration.yaml` is automatically loaded.
-- The presence of a `bin` directory is appended to PATH.
+- The presence of a `bin` directory is appended to PATH, unless the integration is disabled (see
+  [Disabling an integration](#disabling-an-integration)).
 - See below for what happens with the `tests` directory.
 
 ## Instructions
@@ -35,14 +36,16 @@ To install an integration, simply copy (or clone) the integration directly into 
 ( cd integrations && git clone git@github.com:unixfreak0037/ace3-integrations.git )
 ```
 
-Then rebuild the docker image and redeploy. The integration is enabled by default. You can use the ace cli to enable, disable and list the integrations.
+Then rebuild the docker image and redeploy. The `enabled:` of its `integration_<name>:` section
+turns it on and off (see [Disabling an integration](#disabling-an-integration)).
 
 ```bash
 ace integration --help # get the list of supported integration commands
-ace integration list # list the status of all available integrations
-ace integration enable NAME # enable the integration named NAME (requires restart)
-ace integration disable NAME # disable the integration named NAME (required restart)
+ace integration list   # each integration_*: section of each integration, its enabled: and its directory
 ```
+
+`ace integration list` prints one row per section, with `ENABLED` or `DISABLED` from the merged
+configuration, and `UNDECLARED` for a directory that declares no section.
 
 ## Integration Tests
 
@@ -94,7 +97,7 @@ Each integration requires an integration configuration section, in a file named 
 # where NAME is a unique name for the integration
 integration_example:
   name: example
-  # required -- an integration with enabled: false is not imported
+  # required -- false turns the integration off (see Disabling an integration)
   enabled: true
   # a brief description of what the integration provides
   description: "Example Integration"
@@ -127,6 +130,40 @@ needs (`register_integration_configuration()`, `register_directive()`) and impor
 
 ACE logs a warning at startup for any discovered integration directory that has no
 `integration_*:` block.
+
+### Disabling an integration
+
+`enabled: false` in the `integration_<name>:` section is the only switch, and it turns the whole
+integration off:
+
+- None of its files are merged into the configuration except its `integration_*:` sections and
+  its `observable_types.classes`, so its analysis modules, services, alert routers, query sources
+  and command types are not there. That covers the files its `etc/saq.integration.yaml` pulls in
+  through `config:`.
+- A block the integration declares first (one no earlier file and no enabled integration declares,
+  such as its `service_*:` or `module_group_*:`) is left out together with what later files set on
+  it, so a site file that turns the integration off can keep its settings for it. An analysis mode
+  that still lists the integration's module group or analysis module skips it with an INFO record.
+- Nothing imports its `python_module`, `api_router` or `gui_blueprint`, its cron tasks do not run
+  (`docs/CRON.md`) and its `bin/` is not on `PATH`.
+- Its `src/` stays on `sys.path` and its observable classes stay mapped, so alerts saved while it
+  was enabled still load their analysis and observables.
+
+Any later configuration file can set `enabled:`, so a deployment turns an integration off in its
+own `SAQ_CONFIG_PATHS` file, and one node does it in a file named only in that node's `.env`:
+
+```yaml
+integration_example:
+  enabled: false
+```
+
+A directory that declares more than one section is off only when every one of them is disabled.
+Until then its files are merged, its cron tasks run and its `bin/` is on `PATH`, and each section's
+`python_module`, `api_router` and `gui_blueprint` follow that section's `enabled:`.
+
+`ace integration disable` and `enable` are gone, and so is the file the first one wrote,
+`data/var/integrations/<directory>/disabled`. Nothing reads it, so an integration it turned off is
+on again; ACE logs an ERROR at every start for each such file it finds, until it is removed.
 
 ## Extending correlation hunts
 

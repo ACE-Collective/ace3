@@ -213,7 +213,6 @@ def initialize_environment(
         initialize_base_dir(saq_home)
         load_integrations()
         initialize_configuration(config_paths=config_paths)
-        initialize_integrations()
 
         get_global_runtime_settings().data_dir = data_dir if data_dir else os.path.join(
             get_base_dir(), get_config().global_settings.data_dir
@@ -234,6 +233,9 @@ def initialize_environment(
             int, get_config().global_settings.lock_timeout.split(":")
         )
         get_global_runtime_settings().lock_timeout_seconds = (minutes * 60) + seconds
+
+        # after the data directory is set: it looks for the files ace integration disable left there
+        initialize_integrations()
 
         # if the logging configuration path is not specified, see if it's set in the environment
         if logging_config_path is None:

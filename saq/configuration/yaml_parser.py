@@ -14,6 +14,8 @@ ENCRYPTED_PREFIX = "encrypted:"
 FILE_PREFIX = "file:"
 # a file: URL (RFC 8089), such as a git_url naming a local repository, is a value, not a file to read
 FILE_URL_PREFIX = "file://"
+# the prefix of every integration_<name>: block
+INTEGRATION_SECTION_PREFIX = "integration_"
 
 
 class DuplicateKeyWarningLoader(yaml.SafeLoader):
@@ -142,21 +144,51 @@ def resolve_model_fields(model_class: type, data: dict[str, Any], path: str = ""
             for key, value in data.items() if key in names}
 
 
+def _disabled_integration_sections(yaml_root: dict[str, Any]) -> dict[str, Any]:
+    """What is merged of a disabled integration's file: its integration_*: sections, and the
+    observable classes it maps, since its src/ stays importable and the observables of its types in
+    saved alerts must not load as DefaultObservable."""
+    sections = {key: value for key, value in yaml_root.items() if key.startswith(INTEGRATION_SECTION_PREFIX)}
+    observable_types = yaml_root.get("observable_types")
+    if isinstance(observable_types, dict) and "classes" in observable_types:
+        sections["observable_types"] = {"classes": observable_types["classes"]}
+
+    return sections
+
+
 class YAMLConfig:
     """YAML-based configuration interface.
     - Supports recursive includes via top-level 'config' mapping or list of paths.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, parsed_files: dict[str, dict[str, Any]] | None = None) -> None:
+        """parsed_files caches each file's parsed contents by path, and may be shared with another
+        YAMLConfig that merges the same files (saq/configuration/loader.py merges twice)."""
         self._data: dict[str, dict[str, Any]] = {}
         self.loaded_files: set[str] = set()
         self._yaml_loader_cls = DuplicateKeyWarningLoader
+        self._parsed_files = {} if parsed_files is None else parsed_files
+        # set by load_configuration(): each integration's etc/saq.integration.yaml -> the
+        # integration_*: sections it and the files it includes declare
+        self.integration_blocks: dict[str, list[str]] = {}
+        # and those of the integrations whose every section is disabled, merged without the rest
+        # of their files
+        self.disabled_integration_paths: set[str] = set()
+        # the top-level keys those integrations' files declared first, which are left out of the
+        # merged configuration along with whatever later layers set on them
+        self.disabled_integration_keys: set[str] = set()
+        # each top-level key -> the first file merged that declares it
+        self.first_declared_by: dict[str, str] = {}
 
     def copy(self) -> "YAMLConfig":
         """Return a deep copy of this YAMLConfig object."""
         new_config = YAMLConfig()
         new_config._data = copy.deepcopy(self._data)
         new_config.loaded_files = copy.deepcopy(self.loaded_files)
+        new_config.integration_blocks = copy.deepcopy(self.integration_blocks)
+        new_config.disabled_integration_paths = set(self.disabled_integration_paths)
+        new_config.disabled_integration_keys = set(self.disabled_integration_keys)
+        new_config.first_declared_by = dict(self.first_declared_by)
         return new_config
 
     def merge(self, other: dict[str, dict[str, Any]]) -> None:
@@ -168,16 +200,24 @@ class YAMLConfig:
         custom_merger.merge(self._data, other)
 
     def _load_yaml_file(self, path: str) -> dict[str, Any]:
-        with open(path, "r", encoding="utf-8") as f:
-            data = yaml.load(f, Loader=self._yaml_loader_cls) or {}
+        if path not in self._parsed_files:
+            with open(path, "r", encoding="utf-8") as f:
+                data = yaml.load(f, Loader=self._yaml_loader_cls) or {}
 
-        if not isinstance(data, dict):
-            raise ValueError(f"YAML configuration root must be a mapping: {path}")
+            if not isinstance(data, dict):
+                raise ValueError(f"YAML configuration root must be a mapping: {path}")
 
-        return data
+            self._parsed_files[path] = data
 
-    def load_file(self, path: str) -> bool:
+        # merging puts the parsed mappings themselves into _data, and later merges change them
+        # in place, so the cached copy stays untouched for the next merge
+        return copy.deepcopy(self._parsed_files[path])
+
+    def load_file(self, path: str, integration_sections_only: bool = False) -> bool:
         """Load a YAML configuration file and merge it into this config.
+
+        With integration_sections_only, only its integration_*: sections and its
+        observable_types.classes are merged, and the same goes for the files it includes.
 
         Returns False if the file was already loaded, True otherwise.
         """
@@ -193,7 +233,11 @@ class YAMLConfig:
 
         yaml_root = self._load_yaml_file(path)
 
-        self.merge(yaml_root)
+        merged = _disabled_integration_sections(yaml_root) if integration_sections_only else yaml_root
+        for key in merged:
+            self.first_declared_by.setdefault(key, path)
+
+        self.merge(merged)
 
         #for top_key, top_value in yaml_root.items():
             #if top_key == "config":
@@ -216,10 +260,10 @@ class YAMLConfig:
                 ##self._data[top_key] = top_value
 
         self.loaded_files.add(path)
-        self.resolve_references(yaml_root)
+        self.resolve_references(yaml_root, integration_sections_only)
         return True
 
-    def resolve_references(self, yaml_root: dict[str, Any]) -> None:
+    def resolve_references(self, yaml_root: dict[str, Any], integration_sections_only: bool = False) -> None:
         """Recursively load additional configuration files from 'config'.
 
         The 'config' field may be a mapping of names->path or a list of paths.
@@ -250,7 +294,7 @@ class YAMLConfig:
                         logging.info(f"skipping non-existent YAML include path in YAML config: {include_path}")
                         continue
 
-                    loaded_any = self.load_file(include_path) or loaded_any
+                    loaded_any = self.load_file(include_path, integration_sections_only) or loaded_any
                 else:
                     logging.warning(
                         f"skipping non-YAML include path in YAML config: {include_path}"
