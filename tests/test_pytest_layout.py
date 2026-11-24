@@ -15,6 +15,8 @@ from pathlib import Path
 
 import pytest
 
+from tests import harness
+
 REPO = Path(__file__).resolve().parents[1]
 
 HARNESS = '''\
@@ -105,6 +107,36 @@ def test_integration_tests_run_in_place_with_the_suites_fixtures(tmp_path, args,
 
     assert result.returncode == 0, result.stdout + result.stderr
     assert f" {passed} passed" in result.stdout, result.stdout
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("path, ignored", [
+    # on the way to an integration in a repository that holds several
+    ("integrations/group-repo", False),
+    ("integrations/group-repo/integrations", False),
+    ("integrations/group-repo/integrations/gamma", False),
+    ("integrations/group-repo/integrations/gamma/tests", False),
+    ("integrations/group-repo/integrations/gamma/tests/test_gamma.py", False),
+    # beside the integrations, a project whose tests need an environment of their own
+    ("integrations/group-repo/standalone", True),
+    ("integrations/group-repo/standalone/tests", True),
+    ("integrations/group-repo/standalone/tests/test_standalone.py", True),
+    ("integrations/group-repo/test_loose.py", True),
+    ("integrations", False),
+    ("tests/test_core.py", False),
+])
+def test_collection_under_integrations_stays_in_the_integration_directories(tmp_path, monkeypatch, path, ignored):
+    for name in ["integrations/group-repo/integrations/gamma/integration.md",
+                 "integrations/group-repo/integrations/gamma/tests/test_gamma.py",
+                 "integrations/group-repo/standalone/tests/test_standalone.py",
+                 "integrations/group-repo/test_loose.py",
+                 "tests/test_core.py"]:
+        (tmp_path / name).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / name).write_text("")
+    monkeypatch.setattr(harness, "get_integration_base_dir", lambda: str(tmp_path / "integrations"))
+    monkeypatch.setattr(harness, "INTEGRATION_DIRS", [tmp_path / "integrations/group-repo/integrations/gamma"])
+
+    assert harness.pytest_ignore_collect(tmp_path / path, None) is (True if ignored else None)
 
 
 @pytest.mark.unit

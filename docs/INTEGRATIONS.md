@@ -58,8 +58,11 @@ pytest integrations/NAME/tests   # one integration
 pytest integrations              # all of them
 ```
 
-A plain `pytest` runs them too: `testpaths` in `pytest.ini` covers an integration directly under
-`integrations/` and one in a repository there that holds several. The suite's fixtures and hooks
+A plain `pytest` runs them too: `testpaths` in `pytest.ini` names `integrations/`, and
+`pytest_ignore_collect` in `tests/harness.py` keeps collection there inside the integration
+directories as discovery finds them (a directory with an `integration.md`, at any depth). Anything
+else a repository holding several integrations carries beside them, such as a standalone project
+whose tests run in an image of its own, is not collected. The suite's fixtures and hooks
 (`root_analysis`, the per-test reset, each integration's `src/` on `sys.path`) are in
 `tests/harness.py`, a plugin that the root `conftest.py` loads, so they apply to an integration's
 tests as they do to core's. A `conftest.py` in the integration's `tests/` adds fixtures of its own.

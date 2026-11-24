@@ -5,6 +5,7 @@ import logging
 import multiprocessing
 import os
 import os.path
+from pathlib import Path
 import shutil
 import socket
 import sys
@@ -35,7 +36,7 @@ from saq.environment import get_data_dir, get_global_runtime_settings, get_temp_
 
 import pytest
 from saq.integration.integration_loader import load_integration_component_src
-from saq.integration.integration_util import get_valid_integration_dirs
+from saq.integration.integration_util import get_integration_base_dir, get_valid_integration_dirs
 from saq.error.reporting import ErrorReportHandler
 from saq.modules import base_module
 from saq.sandbox import runner as sandbox_runner
@@ -662,11 +663,38 @@ def mock_api_call(monkeypatch):
 #
 
 def pytest_sessionstart(session):
+    global INTEGRATION_DIRS
+
     # the integrations are found under SAQ_HOME, which nothing has applied yet: without this they come from the
     # default /opt/ace, which a worktree's run would import ahead of its own
     initialize_base_dir()
-    for dir_path in get_valid_integration_dirs():
-        load_integration_component_src(dir_path)
+    INTEGRATION_DIRS = [Path(os.path.abspath(dir_path)) for dir_path in get_valid_integration_dirs()]
+    for dir_path in INTEGRATION_DIRS:
+        load_integration_component_src(str(dir_path))
+
+# the integration directories as discovery finds them (a directory with an integration.md, at any depth),
+# set when the session starts, before anything is collected
+INTEGRATION_DIRS: Optional[list[Path]] = None
+
+def pytest_ignore_collect(collection_path, config):
+    """Under integrations/, collects only what is in an integration directory or on the way to one. A
+    repository there that holds several integrations can carry other things beside them, such as a
+    standalone project whose tests run in an image of its own, with dependencies /venv does not have."""
+    if INTEGRATION_DIRS is None:
+        return None
+
+    integrations_dir = Path(os.path.abspath(get_integration_base_dir()))
+    path = Path(os.path.abspath(collection_path))
+    if path == integrations_dir or not path.is_relative_to(integrations_dir):
+        return None
+
+    for integration_dir in INTEGRATION_DIRS:
+        if path.is_relative_to(integration_dir):
+            return None
+        if path.is_dir() and integration_dir.is_relative_to(path):
+            return None
+
+    return True
 
 #
 # one *run* of the test suite at a time per container and per checkout: a run may spread over
