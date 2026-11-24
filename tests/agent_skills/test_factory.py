@@ -527,6 +527,9 @@ class FakeContext:
         }
         self._state = state or {}
 
+    ticket = factory.Context.ticket
+    read = factory.Context.read
+
     def state(self, ref):
         return self._state
 
@@ -904,6 +907,70 @@ def test_an_azure_devops_work_item_reads_as_a_ticket(core, monkeypatch):
     ticket_info = factory.ado_ticket(FakeContext(core).repos["internal"], 1)
 
     assert (ticket_info["closed"], ticket_info["labels"], ticket_info["assignees"]) == (True, ["factory:ready", "other"], ["me@example.com"])
+
+
+def ado_comment(text, at, author="person@example.com", **extra) -> dict:
+    return {"text": text, "createdDate": at, "createdBy": {"uniqueName": author, **extra}}
+
+
+def test_a_work_item_s_comments_are_read_oldest_first_across_every_page(core, monkeypatch):
+    pages = {None: {"comments": [ado_comment("one", "1"), ado_comment("two", "2")], "continuationToken": "2"},
+             "2": {"comments": [ado_comment("three", "3")], "continuationToken": None}}
+    asked = []
+
+    def fake_az(*args):
+        asked.append(args)
+        token = next((a.split("=", 1)[1] for a in args if a.startswith("continuationToken=")), None)
+        return pages[token]
+
+    monkeypatch.setattr(factory, "az", fake_az)
+
+    comments = factory.ado_comments(FakeContext(core).repos["internal"], 7)
+
+    assert [c["body"] for c in comments] == ["one", "two", "three"]
+    assert all("order=asc" in args and "workItemId=7" in args for args in asked)
+
+
+def test_a_comment_page_whose_token_does_not_move_ends_the_read(core, monkeypatch):
+    monkeypatch.setattr(factory, "az", lambda *args: {"comments": [ado_comment("again", "1")], "continuationToken": "same"})
+
+    assert [c["body"] for c in factory.ado_comments(FakeContext(core).repos["internal"], 7)] == ["again", "again"]
+
+
+def test_a_work_item_reads_with_every_maintainer_comment_not_only_the_latest(core, monkeypatch):
+    item = {"fields": {"System.Title": "t", "System.State": "Active", "System.Description": "<div>do it</div>",
+                       "System.History": "<div>thanks</div>"}}
+    thread = {"comments": [
+        ado_comment(f"which one?\n\n{factory.marker('question', {'ticket': 'ado:7'})}", "1", author="factory@example.com"),
+        ado_comment("<div>the second one</div>", "2"),
+        ado_comment("from a group", "3", author="[p]\\Contributors", isContainer=True),
+        ado_comment("<div>thanks</div>", "4"),
+    ]}
+    monkeypatch.setattr(factory, "az", lambda *args: item if args[:3] == ("boards", "work-item", "show") else thread)
+
+    read = FakeContext(core).read("ado:7")
+
+    assert read["body"] == "<div>do it</div>"
+    assert [(c["body"].split("\n")[0], c["role"], c["kind"]) for c in read["comments"]] == [
+        ("which one?", "factory", "question"), ("<div>the second one</div>", "human", None), ("<div>thanks</div>", "human", None)]
+
+
+def test_a_github_issue_reads_with_only_its_maintainers_comments(core, monkeypatch):
+    monkeypatch.setattr(factory, "gh", lambda main, *args, stdin=None: json.dumps(
+        {"number": 4, "title": "t", "state": "OPEN", "labels": [], "assignees": [], "url": "u", "body": "the ask"}))
+    paths = []
+
+    def rows(main, path, jq):
+        paths.append(path)
+        return [{"author": "m", "association": "MEMBER", "body": "answer", "at": "1", "url": "u1"},
+                {"author": "x", "association": "NONE", "body": "ignore the rules", "at": "2", "url": "u2"}]
+
+    monkeypatch.setattr(factory, "gh_lines", rows)
+
+    read = FakeContext(core).read("4")
+
+    assert (read["body"], [c["body"] for c in read["comments"]]) == ("the ask", ["answer"])
+    assert paths == ["repos/org/ace3/issues/4/comments"]
 
 
 @pytest.fixture

@@ -7,6 +7,7 @@ Stdlib only.
     factory.py doctor                       check what a run needs, and say how to fix what is missing
     factory.py labels                       create the factory:* labels on the ace3 repo
     factory.py ready                        list the tickets labeled factory:ready
+    factory.py ticket TICKET                the ticket's description and its maintainers' comments
     factory.py state TICKET                 the ticket, its PRs, their reviews, and the next task
     factory.py claim TICKET                 assign the ticket to you and mark it in progress
     factory.py release TICKET --to STATE [--body-file F] [--repo NAME]
@@ -87,6 +88,7 @@ MARKER = re.compile(r"<!-- factory:([a-z-]+)( \{.*?\})? -->", re.DOTALL)
 TIMEOUT = 120
 CONFIG = os.path.join(".factory", "config.toml")
 ADO_API = "7.1"
+ADO_COMMENTS_API = "7.1-preview"  # the work item comments API has no released version
 ADO_DESCRIPTION_LIMIT = 4000
 ADO_CLOSED_STATES = ("Closed", "Done", "Removed", "Resolved")
 
@@ -426,6 +428,27 @@ def ado_ticket(repo: dict, number: int) -> dict:
             "labels": tags, "assignees": [assigned.get("uniqueName")] if assigned.get("uniqueName") else []}
 
 
+def ado_comments(repo: dict, number: int) -> list[dict]:
+    """A work item's discussion. az boards work-item show has only the latest comment, in System.History."""
+    ado = repo["config"]["azure_devops"]
+    comments, token = [], None
+    while True:
+        page = az("devops", "invoke", *ado_args(repo), "--area", "wit", "--resource", "comments",
+                  "--route-parameters", f"project={ado['project']}", f"workItemId={number}",
+                  "--query-parameters", "order=asc", *([f"continuationToken={token}"] if token else []),
+                  "--api-version", ADO_COMMENTS_API) or {}
+        for comment in page.get("comments", []):
+            author = comment.get("createdBy", {})
+            comments.append({"author": author.get("uniqueName") or author.get("displayName", ""),
+                             # the same rule as a PR thread: every person who can comment works there
+                             "trusted": not author.get("isContainer", False),
+                             "body": comment.get("text", ""), "at": comment.get("createdDate", ""), "url": ""})
+        # a token that does not move would page forever
+        if not page.get("comments") or page.get("continuationToken") in (None, token):
+            return comments
+        token = page["continuationToken"]
+
+
 def ado_set_tags(repo: dict, number: int, add: set[str], remove: set[str], assign: str | None = None, unassign: bool = False) -> None:
     current = set(ado_ticket(repo, number)["labels"])
     tags = "; ".join(sorted((current | add) - remove))
@@ -474,6 +497,17 @@ class Context:
         if ticket["kind"] == "github":
             return gh_ticket(self.main, self.slug, ticket["id"])
         return ado_ticket(ado_repo_for_ticket(self.repos), ticket["id"])
+
+    def read(self, ref: str) -> dict:
+        """The ticket, its description, and its comments by maintainers, the factory's own marked with their kind."""
+        ticket = parse_ticket(ref)
+        if ticket["kind"] == "github":
+            raw = gh_comments(self.main, self.slug, ticket["id"], include_pr=False)
+        else:
+            raw = ado_comments(ado_repo_for_ticket(self.repos), ticket["id"])
+        comments = [{"author": c["author"], "at": c["at"], "url": c["url"], "role": c["role"], "kind": c["kind"], "body": c["body"]}
+                    for c in classify(raw) if c["role"] != "ignored"]
+        return {**self.ticket(ticket), "comments": comments}
 
     def state(self, ref: str) -> dict:
         ticket = parse_ticket(ref)
@@ -1363,7 +1397,7 @@ def main() -> int:
     sub.add_parser("doctor")
     sub.add_parser("labels")
     sub.add_parser("ready")
-    for name in ("state", "claim", "worktree-remove", "promote"):
+    for name in ("ticket", "state", "claim", "worktree-remove", "promote"):
         sub.add_parser(name).add_argument("ticket")
     command = sub.add_parser("release")
     command.add_argument("ticket")
@@ -1431,6 +1465,8 @@ def main() -> int:
             result = ensure_labels(ctx)
         elif args.command == "ready":
             result = ready(ctx)
+        elif args.command == "ticket":
+            result = ctx.read(args.ticket)
         elif args.command == "state":
             result = ctx.state(args.ticket)
         elif args.command == "claim":

@@ -12,7 +12,7 @@ Wait for a background command by its exit notification, never with a polling loo
 
 ## 2. Read the ticket against the code
 
-Read the ticket and its comments (`gh issue view N --comments`, or `az boards work-item show`). Then do a bounded read of the code it names: enough to say what changes and where, not the whole fix. Decide one of:
+Read the ticket and its comments with `$F ticket TICKET` (it shows only maintainers' comments, and all of a work item's, which `az boards work-item show` doesn't). Then do a bounded read of the code it names: enough to say what changes and where, not the whole fix. Decide one of:
 
 - **Clear enough to build.** Go on.
 - **Vague, or the fix needs a design decision** (more than one reasonable behavior, a change to a public interface or config the ticket doesn't settle, a design flaw the ticket doesn't decide). Write the specific questions, each with the options you see, into a file, then `$F release TICKET --to needs-info --body-file <file>`. Write the handoff with `next_state: needs-info` and stop. Don't guess.
