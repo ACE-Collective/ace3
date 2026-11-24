@@ -7,13 +7,14 @@ damage ACE or put a secret in front of whoever wrote it. So every command:
   the caller copies in whatever the command needs
 - can read only the system libraries, the python runtime and a short list of /etc files; nothing
   under SAQ_HOME, the data dir, /auth, the SQL volumes, /home or /proc is readable
-- runs under rlimits (memory, file size, open files, CPU seconds)
+- runs under rlimits (file size, open files, CPU seconds) and a memory limit on what its processes
+  use, not on the address space they reserve
 - can open TCP connections only to the caller's `allowed_tcp_ports`, which keeps it off the cloud
   metadata endpoint and ACE's own services
 - runs under launcher.py, which kills everything the command started when it exits, times out or
   writes more output than allowed (even a process that left the session), kills a command that
-  starts more than `max_processes` processes, and on Linux 6.12+ keeps the command from signalling
-  any process outside it
+  starts more than `max_processes` processes or uses more than `memory_limit` bytes of memory, and
+  on Linux 6.12+ keeps the command from signalling any process outside it
 
 Landlock (https://docs.kernel.org/userspace-api/landlock.html) is an unprivileged kernel access
 control: a process restricts itself, the restriction is inherited by every descendant and can
@@ -26,6 +27,7 @@ import datetime
 import logging
 import math
 import os
+import re
 import shutil
 import signal
 import subprocess
@@ -37,7 +39,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 
 from saq.configuration.schema import SandboxConfig
-from saq.sandbox.launcher import EXIT_SANDBOX_FAILURE
+from saq.sandbox.launcher import EXIT_MEMORY_LIMIT, EXIT_SANDBOX_FAILURE
 
 SETPRIV = "/usr/bin/setpriv"
 PRLIMIT = "/usr/bin/prlimit"
@@ -81,6 +83,9 @@ SANDBOX_READ_FILES = (
 # (EXIT_SANDBOX_FAILURE), or prlimit or setpriv could not execute the program (126: not executable or
 # not readable in the sandbox, 127: not found)
 NODE_FAILURE_EXIT_CODES = (EXIT_SANDBOX_FAILURE, 126, 127)
+
+# the last line the launcher writes on stderr when it kills the command for its memory (launcher.supervise)
+_MEMORY_LIMIT_LINE = re.compile(r"sandbox: the command used (?P<used>\d+) bytes of memory, more than its limit of \d+ bytes")
 
 # how much of stderr is kept in the error raised for a failed command
 STDERR_TAIL_BYTES = 16 * 1024
@@ -172,6 +177,7 @@ def build_sandbox_argv(argv: list[str], workdir: str, config: SandboxConfig, tim
 
     launcher_options = [
         f"--max-processes={config.max_processes}",
+        f"--memory-limit={config.memory_limit}",
         f"--deadline={(timeout + LAUNCHER_DEADLINE_GRACE).total_seconds()}",
     ]
     if config.allowed_tcp_ports is not None:
@@ -182,7 +188,6 @@ def build_sandbox_argv(argv: list[str], workdir: str, config: SandboxConfig, tim
         *launcher_options,
         "--",
         PRLIMIT,
-        f"--as={config.memory_limit}",
         f"--fsize={config.file_size_limit}",
         f"--nofile={config.open_files_limit}",
         f"--cpu={cpu_seconds or max(1, math.ceil(timeout.total_seconds()))}",
@@ -210,6 +215,8 @@ class SandboxResult:
     # the command was stopped for writing more than max_output_bytes; stdout and stderr are what it
     # wrote up to then
     output_exceeded: bool = False
+    # the launcher killed the command for using more than its memory limit: the bytes it was using then
+    memory_used: int | None = None
 
     def failure_reason(self, tool: str) -> str:
         return tool_failure_reason(tool, self.returncode, self.stderr)
@@ -380,16 +387,29 @@ def run_sandboxed(
     if timed_out:
         raise RuntimeError(f"command timed out after {timeout}")
 
+    stderr = buffers["stderr"][-STDERR_TAIL_BYTES:].decode("utf-8", errors="replace")
     result = SandboxResult(
         returncode=process.returncode,
         stdout=buffers["stdout"].decode("utf-8", errors="replace"),
-        stderr=buffers["stderr"][-STDERR_TAIL_BYTES:].decode("utf-8", errors="replace"),
+        stderr=stderr,
         output_exceeded=output_exceeded.is_set(),
+        memory_used=_memory_used(process.returncode, stderr),
     )
     if result.output_exceeded:
         raise SandboxOutputExceeded(f"command wrote more than {max_output_bytes} bytes of output", result)
 
     return result
+
+
+def _memory_used(returncode: int, stderr: str) -> int | None:
+    """The memory the launcher says it killed the command for using, or None if it did not. A command
+    can exit with EXIT_MEMORY_LIMIT itself; the launcher's line, the last on stderr, tells the two apart."""
+    if returncode != EXIT_MEMORY_LIMIT:
+        return None
+
+    lines = stderr.strip().splitlines()
+    match = _MEMORY_LIMIT_LINE.fullmatch(lines[-1]) if lines else None
+    return int(match["used"]) if match else None
 
 
 def create_workdir(root: str) -> tempfile.TemporaryDirectory:

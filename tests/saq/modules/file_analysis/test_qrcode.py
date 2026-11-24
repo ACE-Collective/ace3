@@ -1,5 +1,7 @@
 import logging
+import os
 import shutil
+import sys
 from pathlib import Path
 
 import pikepdf
@@ -12,6 +14,7 @@ from saq.constants import ANALYSIS_MODULE_QRCODE, F_FILE
 from saq.engine.core import Engine
 from saq.engine.enums import EngineExecutionMode
 from saq.modules.adapter import AnalysisModuleAdapter
+from saq.modules.file_analysis import qrcode
 from saq.modules.file_analysis.qrcode import QRCodeAnalysis, QRCodeAnalyzer, QRCodeFilter, _rendered_pages
 from saq.sandbox.runner import SandboxResult
 from saq.util.uuid import get_storage_dir
@@ -413,16 +416,8 @@ def test_opencv_failure_is_not_a_negative_result(tmp_path, monkeypatch, caplog):
 
 @pytest.mark.unit
 def test_opencv_that_cannot_load_is_an_error(tmp_path, monkeypatch, caplog):
-    # under this address space limit the interpreter starts but cv2's shared libraries do not map,
-    # as on a node whose tool_sandbox.memory_limit is too low for OpenCV
-    run_sandboxed_tool = QRCodeAnalyzer.run_sandboxed_tool
-
-    def starved(self, args, target, **kwargs):
-        if any(arg.endswith("qr_decode_opencv.py") for arg in args):
-            kwargs["memory_limit"] = 175 * 1024 ** 2
-        return run_sandboxed_tool(self, args, target, **kwargs)
-
-    monkeypatch.setattr(QRCodeAnalyzer, "run_sandboxed_tool", starved)
+    # the interpreter the venv was built from has no cv2, as on a node whose venv lacks it
+    monkeypatch.setattr(qrcode, "sandbox_python", lambda: os.path.join(sys.base_prefix, "bin", "python3"))
 
     _, observable, analysis = _analyze(tmp_path, LOGO_QR_IMAGE)
 

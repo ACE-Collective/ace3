@@ -72,7 +72,7 @@ from saq.modules.file_analysis.pcap import (
     is_keylog_file,
     read_keylog,
 )
-from saq.sandbox.launcher import EXIT_DEADLINE, EXIT_PROCESS_LIMIT, EXIT_SANDBOX_FAILURE
+from saq.sandbox.launcher import EXIT_DEADLINE, EXIT_MEMORY_LIMIT, EXIT_PROCESS_LIMIT, EXIT_SANDBOX_FAILURE
 from saq.sandbox.runner import SandboxCancelled, SandboxResult
 from saq.util.hashing import sha256_bytes
 from saq.util.uuid import get_storage_dir
@@ -1992,6 +1992,7 @@ def test_carving_never_takes_a_linked_file(tmp_path):
     (127, pcap.PcapNodeError),
     # the launcher's verdict on a run that did start: this capture's problem
     (EXIT_PROCESS_LIMIT, PcapError),
+    (EXIT_MEMORY_LIMIT, PcapError),
     (EXIT_DEADLINE, PcapError),
 ])
 def test_launcher_failure_is_told_from_a_capture_failure(monkeypatch, tmp_path, returncode, error):

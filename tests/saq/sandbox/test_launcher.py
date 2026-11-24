@@ -6,6 +6,7 @@ are skipped on a kernel older than the Landlock ABI they need.
 """
 
 import datetime
+import mmap
 import os
 import signal
 import socket
@@ -19,12 +20,14 @@ from saq.configuration.schema import SandboxConfig
 from saq.sandbox.launcher import (
     EXIT_DEADLINE,
     EXIT_KILLED,
+    EXIT_MEMORY_LIMIT,
     EXIT_PROCESS_LIMIT,
     EXIT_SANDBOX_FAILURE,
     EXIT_STOPPED,
     NET_ABI,
     SCOPE_ABI,
     landlock_abi,
+    memory_used,
 )
 from saq.sandbox.runner import LAUNCHER, SETPRIV, build_sandbox_argv, run_sandboxed, sandbox_python
 from tests.saq.helpers import wait_for_condition
@@ -41,10 +44,13 @@ print(child.pid, flush=True)
 
 
 def _launcher_argv(*command: str, max_processes: int | None = 16, deadline: float = 60, tcp_ports: str | None = None,
-                   term_grace: float | None = None, unconfined: bool = False) -> list[str]:
+                   term_grace: float | None = None, unconfined: bool = False,
+                   memory_limit: int | None = None) -> list[str]:
     options = [f"--deadline={deadline}"]
     if max_processes is not None:
         options.append(f"--max-processes={max_processes}")
+    if memory_limit is not None:
+        options.append(f"--memory-limit={memory_limit}")
     if tcp_ports is not None:
         options.append(f"--tcp-ports={tcp_ports}")
     if term_grace is not None:
@@ -156,6 +162,141 @@ class TestCleanup:
         result = _launch(PYTHON, "-c", code, max_processes=4)
         assert result.returncode == EXIT_PROCESS_LIMIT
         assert "more than 4 processes" in result.stderr
+
+
+MIB = 1024 ** 2
+
+# writes to every page of argv[1] MiB of private memory (b"x" * n), or of shared memory with "shared"
+# (an anonymous mmap is MAP_SHARED), prints "allocated" and waits to be killed
+_ALLOCATE = """
+import mmap, sys, time
+size = int(sys.argv[1]) * 1024 ** 2
+if sys.argv[2:] == ["shared"]:
+    memory = mmap.mmap(-1, size)
+    memory.write(b"x" * size)
+else:
+    memory = b"x" * size
+print("allocated", flush=True)
+time.sleep(300)
+"""
+
+# starts argv[1] children that each run _ALLOCATE with argv[2] MiB, prints their pids and waits
+_CHILDREN_ALLOCATE = f"""
+import subprocess, sys, time
+children = [subprocess.Popen([sys.executable, "-c", {_ALLOCATE!r}, sys.argv[2]], stdout=subprocess.DEVNULL)
+            for _ in range(int(sys.argv[1]))]
+print(" ".join(str(child.pid) for child in children), flush=True)
+time.sleep(300)
+"""
+
+
+@pytest.mark.unit
+class TestMemoryLimit:
+    def test_reserved_address_space_is_not_counted(self):
+        # what the .NET GC, the JVM and OpenBLAS's threads do at start: reserve far more than they use
+        code = ("import mmap\n"
+                "reserved = mmap.mmap(-1, 64 * 1024 ** 3, flags=mmap.MAP_PRIVATE | mmap.MAP_ANONYMOUS, prot=0)\n"
+                "print('started')")
+        result = _launch(PYTHON, "-c", code, memory_limit=256 * MIB)
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == "started\n"
+
+    def test_a_command_under_its_limit_runs(self):
+        code = "x = b'x' * (64 * 1024 ** 2)\nprint('done')"
+        result = _launch(PYTHON, "-c", code, memory_limit=256 * MIB)
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == "done\n"
+
+    @pytest.mark.parametrize("kind", ["private", "shared"])
+    def test_a_command_that_uses_more_than_its_limit_is_killed(self, kind):
+        result = _launch(PYTHON, "-c", _ALLOCATE, "512", kind, memory_limit=256 * MIB)
+        assert result.returncode == EXIT_MEMORY_LIMIT
+        used = int(result.stderr.split("sandbox: the command used ")[1].split()[0])
+        assert used > 256 * MIB
+        assert f"more than its limit of {256 * MIB} bytes" in result.stderr
+
+    def test_the_memory_of_every_process_it_started_is_counted(self):
+        # four children of 100 MiB, each under the limit alone
+        process, pids = _started_children(4, 100, memory_limit=256 * MIB)
+        assert process.wait(timeout=30) == EXIT_MEMORY_LIMIT
+        assert "more than its limit" in process.stderr.read()
+        process.stdout.close()
+        process.stderr.close()
+        assert not any(_alive(pid) for pid in pids)
+
+    def test_a_child_that_allocates_is_killed_with_the_command(self):
+        process, [pid] = _started_children(1, 512, memory_limit=256 * MIB)
+        assert process.wait(timeout=30) == EXIT_MEMORY_LIMIT
+        process.stdout.close()
+        process.stderr.close()
+        assert not _alive(pid)
+
+    def test_the_command_is_what_the_oom_killer_takes_first(self):
+        result = _launch("/bin/cat", "/proc/self/oom_score_adj", memory_limit=256 * MIB)
+        assert result.stdout.strip() == "1000"
+
+    def test_without_a_limit_the_command_keeps_the_launchers_oom_score(self):
+        # the GUI CLI runs `ace` without one
+        with open("/proc/self/oom_score_adj") as fp:
+            ours = fp.read().strip()
+        assert _launch("/bin/cat", "/proc/self/oom_score_adj").stdout.strip() == ours
+
+
+@pytest.mark.unit
+def test_memory_used_counts_what_is_written_and_not_what_is_reserved():
+    before = memory_used([os.getpid()])
+    reserved = mmap.mmap(-1, 16 * 1024 ** 3, flags=mmap.MAP_PRIVATE | mmap.MAP_ANONYMOUS, prot=0)
+    assert memory_used([os.getpid()]) - before < 64 * MIB
+    written = b"x" * (128 * MIB)
+    assert memory_used([os.getpid()]) - before >= 128 * MIB
+    del written
+    reserved.close()
+
+
+def _swap_active() -> bool:
+    with open("/proc/swaps") as fp:
+        return len(fp.read().splitlines()) > 1  # the first line is the header
+
+
+def _vm_swap() -> int:
+    with open("/proc/self/status", "rb") as fp:
+        for line in fp:
+            if line.startswith(b"VmSwap:"):
+                return int(line.split()[1]) * 1024
+    return 0
+
+
+_MADV_PAGEOUT = 21  # Linux 5.4; this Python does not export it
+
+
+@pytest.mark.unit
+@pytest.mark.skipif(not _swap_active(), reason="no swap to page out to")
+def test_memory_used_counts_what_is_swapped_out():
+    # under memory pressure the kernel swaps a tool's pages out, and they still count against its limit
+    before = memory_used([os.getpid()])
+    swap_before = _vm_swap()
+    written = mmap.mmap(-1, 128 * MIB, flags=mmap.MAP_PRIVATE | mmap.MAP_ANONYMOUS)
+    try:
+        written.write(b"\x5a" * (128 * MIB))  # not zero, so the pages are not deduplicated
+        written.madvise(_MADV_PAGEOUT)
+        if _vm_swap() - swap_before < 64 * MIB:
+            pytest.skip("the kernel did not page the memory out")
+        assert memory_used([os.getpid()]) - before >= 128 * MIB
+    finally:
+        written.close()
+
+
+@pytest.mark.unit
+def test_memory_used_skips_a_process_that_is_gone():
+    process = subprocess.Popen(["/bin/true"])
+    process.wait()
+    assert memory_used([process.pid]) == 0
+
+
+def _started_children(count: int, mib: int, **kwargs) -> tuple[subprocess.Popen, list[int]]:
+    process = subprocess.Popen(_launcher_argv(PYTHON, "-c", _CHILDREN_ALLOCATE, str(count), str(mib), **kwargs),
+                               stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, start_new_session=True)
+    return process, [int(pid) for pid in process.stdout.readline().split()]
 
 
 # prints its pid, then on SIGTERM prints "stopping" and exits with 7

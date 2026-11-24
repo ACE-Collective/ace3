@@ -559,6 +559,12 @@ is written there, change the tag to point at it.
 - **Sandbox output is hostile.** Only a regular file with exactly one link is taken. See
   `saq/modules/base_module.py::_keep_tool_output` and `saq/sandbox/runner.py::_force_rmtree`.
   [docs/TOOL_SANDBOX.md]
+- **A sandboxed command's memory limit is on the memory its processes use, measured by the
+  launcher, never an rlimit on address space.** Runtimes reserve far more than they use, and the
+  tools run with their default settings because of it. The launcher's last stderr line on a memory
+  kill is what `run_sandboxed()` reads the memory used from, since a command can exit with
+  `EXIT_MEMORY_LIMIT` itself. See `saq/sandbox/launcher.py::supervise` and
+  `saq/sandbox/runner.py::_MEMORY_LIMIT_LINE`. [docs/TOOL_SANDBOX.md; #1161]
 - **A sandboxed program located in a directory that holds `SAQ_HOME` or the data dir is
   refused.** See `saq/modules/base_module.py::_NEVER_TOOL_DIRS` and
   `saq/modules/base_module.py::_tool_dirs`. [docs/TOOL_SANDBOX.md]

@@ -227,7 +227,7 @@ class AlertRouterConfig(BaseModel):
 class SandboxConfig(BaseModel):
     """limits for a command run in the Landlock sandbox (saq/sandbox/runner.py)"""
     model_config = ConfigDict(extra="forbid")
-    memory_limit: int = Field(default=4 * 1024 ** 3, gt=0, description="address space limit in bytes (RLIMIT_AS)")
+    memory_limit: int = Field(default=4 * 1024 ** 3, gt=0, description="most memory the command's processes may use together, in bytes; a command that uses more is killed. It counts what they have written to (resident anonymous and shared memory), not the address space they reserve")
     file_size_limit: int = Field(default=256 * 1024 ** 2, gt=0, description="largest file the command may write, in bytes (RLIMIT_FSIZE)")
     open_files_limit: int = Field(default=1024, gt=0, description="maximum open file descriptors (RLIMIT_NOFILE)")
     max_output_bytes: int = Field(default=64 * 1024 ** 2, gt=0, description="maximum bytes read from each of stdout and stderr; a command that writes more is killed")

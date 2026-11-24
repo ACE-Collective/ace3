@@ -2,7 +2,8 @@
 
 It runs as a script, with the venv's python in isolated mode, so it uses the standard library only:
 
-    python3 -I -S launcher.py --max-processes=64 --deadline=330 --tcp-ports=443,53 -- prlimit ... -- setpriv ... -- command
+    python3 -I -S launcher.py --max-processes=64 --memory-limit=4294967296 --deadline=330 --tcp-ports=443,53 \
+        -- prlimit ... -- setpriv ... -- command
 
 The GUI CLI (aceapi_v2/cli/service.py) runs `ace` under it too, with --unconfined, which skips the
 Landlock domain (an `ace` command may signal and connect to anything a shell could), and with
@@ -32,14 +33,23 @@ things the command cannot undo:
   killed.
 - A process cap. A command with more than --max-processes live descendants is killed (no cap
   without it).
+- A memory cap. A command whose live descendants together use more than --memory-limit bytes of
+  memory is killed (no cap without it). Memory is what the processes have written to, their resident
+  anonymous and shared pages, and not the address space they reserve: a .NET GC, a JVM or OpenBLAS's
+  threads reserve gigabytes at start that they never touch, which RLIMIT_AS counted. File pages a
+  command maps are not counted either, because the kernel can drop them. The cap is polled, so a
+  command that allocates faster than the poll sees can go past it; the container's memory limit (or
+  the host's memory) is the backstop for that, and with --memory-limit the command runs with the highest oom_score_adj, so
+  the kernel's OOM killer takes it before the ACE process that started it.
 
 It exits with the command's exit status (128 + N for a command killed by signal N). When it killed
 the command itself, or could not start it, it says why on stderr and exits with a code that says
 which, so a caller can tell a node that cannot run sandboxed commands from a command that misbehaved
-without reading the message: EXIT_SANDBOX_FAILURE when the command never ran, EXIT_DEADLINE or
-EXIT_PROCESS_LIMIT when it was killed for that, and EXIT_STOPPED when it was told to stop (EXIT_KILLED
-when, with --term-grace, the stop ended in killing the command or what it left running). A command
-can exit with any of those codes itself; the message on stderr is what tells the two apart.
+without reading the message: EXIT_SANDBOX_FAILURE when the command never ran, EXIT_DEADLINE,
+EXIT_PROCESS_LIMIT or EXIT_MEMORY_LIMIT when it was killed for that, and EXIT_STOPPED when it was
+told to stop (EXIT_KILLED when, with --term-grace, the stop ended in killing the command or what it
+left running). A command can exit with any of those codes itself; the message on stderr, the last
+line the launcher writes, is what tells the two apart.
 """
 
 import ctypes
@@ -73,16 +83,21 @@ EXIT_SANDBOX_FAILURE = 125
 EXIT_DEADLINE = 124
 # the command had more than --max-processes live descendants
 EXIT_PROCESS_LIMIT = 123
+# the command's processes used more than --memory-limit bytes of memory
+EXIT_MEMORY_LIMIT = 122
 # the launcher was told to stop: what a command killed by SIGTERM exits with, which is what happened
 EXIT_STOPPED = 128 + signal.SIGTERM
 # told to stop with --term-grace, it had to kill the command or what the command left running: what
 # docker reports for a container that outlived its stop_grace_period
 EXIT_KILLED = 128 + signal.SIGKILL
 
-# how often descendants are counted while the command runs; SIGCHLD also wakes the loop
+# how often descendants are counted, and their memory measured, while the command runs; SIGCHLD also wakes the loop
 _POLL_SECONDS = 0.05
 # how long to keep killing descendants before giving up on stragglers
 _KILL_SECONDS = 5
+
+# the highest: the OOM killer takes this process, and so the command, before anything else in the container
+_OOM_SCORE_ADJ_MAX = 1000
 
 _STOP_SIGNALS = {signal.SIGTERM, signal.SIGINT, signal.SIGHUP}
 _WAKE_SIGNALS = {signal.SIGCHLD} | _STOP_SIGNALS
@@ -221,6 +236,34 @@ def _live_descendants() -> list[int]:
     return [pid for pid, state in descendants(os.getpid()).items() if state not in (b"Z", b"X")]
 
 
+def memory_used(pids: list[int]) -> int:
+    """The bytes of memory pids use: their resident anonymous and shared memory (RssAnon and RssShmem),
+    what the kernel cannot drop without swap, and their anonymous memory in swap (VmSwap), which leaves
+    RssAnon exactly when memory is short. Reserved address space they never touched and file pages
+    they map are not counted, and neither is swapped-out shared memory, which VmSwap leaves out."""
+    total = 0
+    for pid in pids:
+        try:
+            with open(f"/proc/{pid}/status", "rb") as fp:
+                status = fp.read()
+        except OSError:
+            # it exited while we looked
+            continue
+
+        for line in status.splitlines():
+            # in kB; a zombie, or a kernel thread, has none of them
+            if line.startswith((b"RssAnon:", b"RssShmem:", b"VmSwap:")):
+                total += int(line.split()[1]) * 1024
+
+    return total
+
+
+def raise_oom_score():
+    """Make this process, and what it starts, the OOM killer's first choice. Raising it needs no privilege."""
+    with open("/proc/self/oom_score_adj", "w") as fp:
+        fp.write(str(_OOM_SCORE_ADJ_MAX))
+
+
 def _say(message: str):
     """Write a sandbox: line to stderr. Unbuffered, and a closed pipe is ignored: a reader that is gone
     (an API worker that died, which is what sent the SIGTERM) must not stop the cleanup, and a buffered
@@ -278,10 +321,13 @@ def kill_descendants(command_pid: int) -> int:
 
 
 def _exec_command(command: list[str], abi: int | None, tcp_ports: list[int] | None, signal_mask: set,
-                  own_group: bool):
+                  own_group: bool, oom_first: bool):
     """In the forked child: undo what the launcher changed, enter the Landlock domain (none when abi
-    is None) and exec."""
+    is None) and exec. With oom_first the command is the OOM killer's first choice, and the launcher,
+    which has to clean up after it, is not."""
     try:
+        if oom_first:
+            raise_oom_score()
         if own_group:
             # so a graceful stop can SIGTERM the command and what stays in its group, but not the launcher
             os.setpgid(0, 0)
@@ -350,11 +396,12 @@ def _abort(command_pid: int, reason: str, exit_code: int, term_grace: float = 0)
     return exit_code
 
 
-def supervise(command_pid: int, max_processes: int | None, deadline: float, term_grace: float = 0) -> int:
-    """Wait for the command, enforcing the process cap and the deadline; return the exit code.
+def supervise(command_pid: int, max_processes: int | None, deadline: float, term_grace: float = 0,
+              memory_limit: int | None = None) -> int:
+    """Wait for the command, enforcing the process cap, the memory cap and the deadline; return the exit code.
 
     With term_grace, a stop or the deadline gives the command that long to exit after SIGTERM before
-    everything is killed. Going over the process cap kills at once."""
+    everything is killed. Going over the process cap or the memory cap kills at once."""
     while True:
         status = _reap(command_pid)
         if status is not None:
@@ -371,15 +418,24 @@ def supervise(command_pid: int, max_processes: int | None, deadline: float, term
         if info is not None and info.si_signo in _STOP_SIGNALS:
             return _abort(command_pid, "stopped", EXIT_STOPPED, term_grace)
 
-        if max_processes is not None and len(_live_descendants()) > max_processes:
+        if max_processes is None and memory_limit is None:
+            continue
+
+        live = _live_descendants()
+        if max_processes is not None and len(live) > max_processes:
             return _abort(command_pid, f"the command started more than {max_processes} processes", EXIT_PROCESS_LIMIT)
 
+        if memory_limit is not None and (used := memory_used(live)) > memory_limit:
+            # runner.py reads the bytes used from this line
+            return _abort(command_pid, f"the command used {used} bytes of memory, more than its limit of {memory_limit} bytes",
+                          EXIT_MEMORY_LIMIT)
 
-_USAGE = ("[--max-processes=N] --deadline=SECONDS [--tcp-ports=PORT,...] [--term-grace=SECONDS] [--unconfined] "
-          "-- command [args...]")
+
+_USAGE = ("[--max-processes=N] [--memory-limit=BYTES] --deadline=SECONDS [--tcp-ports=PORT,...] "
+          "[--term-grace=SECONDS] [--unconfined] -- command [args...]")
 
 
-def _parse_arguments(argv: list[str]) -> tuple[int | None, float, list[int] | None, float, bool, list[str]]:
+def _parse_arguments(argv: list[str]) -> tuple[int | None, int | None, float, list[int] | None, float, bool, list[str]]:
     """See _USAGE. Without --tcp-ports, TCP is unrestricted; `--tcp-ports=` (empty) allows no TCP
     connection.
 
@@ -395,7 +451,8 @@ def _parse_arguments(argv: list[str]) -> tuple[int | None, float, list[int] | No
     if not command:
         raise ValueError("no command given")
 
-    unknown = set(options) - {"--max-processes", "--deadline", "--tcp-ports", "--term-grace", "--unconfined"}
+    unknown = set(options) - {"--max-processes", "--memory-limit", "--deadline", "--tcp-ports", "--term-grace",
+                              "--unconfined"}
     if unknown:
         raise ValueError(f"unknown option(s) {sorted(unknown)}")
 
@@ -408,12 +465,14 @@ def _parse_arguments(argv: list[str]) -> tuple[int | None, float, list[int] | No
         raise ValueError("--tcp-ports needs the Landlock domain --unconfined skips")
 
     max_processes = int(options["--max-processes"]) if "--max-processes" in options else None
-    return max_processes, float(options["--deadline"]), tcp_ports, float(options.get("--term-grace", 0)), unconfined, command
+    memory_limit = int(options["--memory-limit"]) if "--memory-limit" in options else None
+    return (max_processes, memory_limit, float(options["--deadline"]), tcp_ports, float(options.get("--term-grace", 0)),
+            unconfined, command)
 
 
 def main(argv: list[str]) -> int:
     try:
-        max_processes, deadline_seconds, tcp_ports, term_grace, unconfined, command = _parse_arguments(argv)
+        max_processes, memory_limit, deadline_seconds, tcp_ports, term_grace, unconfined, command = _parse_arguments(argv)
     except (ValueError, KeyError) as e:
         _say(f"usage: {_USAGE} ({e})")
         return EXIT_SANDBOX_FAILURE
@@ -436,7 +495,7 @@ def main(argv: list[str]) -> int:
     signal_mask = signal.pthread_sigmask(signal.SIG_BLOCK, _WAKE_SIGNALS)
     command_pid = os.fork()
     if command_pid == 0:
-        _exec_command(command, abi, tcp_ports, signal_mask, own_group)
+        _exec_command(command, abi, tcp_ports, signal_mask, own_group, oom_first=memory_limit is not None)
 
     if own_group:
         try:
@@ -445,7 +504,7 @@ def main(argv: list[str]) -> int:
         except OSError:
             pass  # the child has already exec'd, so its own setpgid already ran
 
-    return supervise(command_pid, max_processes, deadline, term_grace)
+    return supervise(command_pid, max_processes, deadline, term_grace, memory_limit)
 
 
 if __name__ == "__main__":

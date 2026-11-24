@@ -123,7 +123,7 @@ once per `category`) wait for it and read it; they never run tshark.
 tshark's dissectors parse hostile bytes, so tshark only ever runs through
 `saq/sandbox/runner.py`: a private working directory (holding a copy of the capture, never a
 link, so tshark cannot change the evidence), nothing
-of ACE readable, no network (`sandbox.allowed_tcp_ports` stays empty), rlimits, a `tshark_timeout`
+of ACE readable, no network (`sandbox.allowed_tcp_ports` stays empty), rlimits, a memory limit, a `tshark_timeout`
 and an output cap. On a node without Landlock the module refuses to run tshark and records an
 error rather than running it unsandboxed.
 

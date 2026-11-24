@@ -189,7 +189,7 @@ The second line restarts nginx. It resolves its upstreams when it starts, so aft
 | `yara.max_archive_bytes` / `max_archive_members` | unset | Optional caps on one commit's export. |
 | `yara.mirror_dir` | `svs/mirrors` | SVS's own bare clone of each rule repository, under `DATA_DIR`. |
 | `yara.work_dir` | `svs/work` | Each validation's private directory, under `DATA_DIR`, with a plaintext copy of every sample while it runs. Must allow execution and have no `.` in its path. |
-| `yara.sandbox.memory_limit` | 4 GiB | Address-space limit of the sandboxed scan. |
+| `yara.sandbox.memory_limit` | 4 GiB | Most memory the sandboxed compile and scan may use. Reserved address space does not count. |
 | `yara.sandbox.allowed_tcp_ports` | `[]` | No network. Set `null` only on a kernel older than Linux 6.7, where every sandboxed command fails otherwise. |
 
 The observation window of a run comes from the test's own override, if an operator set one, then from the slowest signature the test is expected to fire plus `slack_minutes` (within the floor and ceiling), and for a test without expectations from the slowest enabled hunt, capped at the ceiling. Large `ceiling_hours` values make every first run of a test wait that long. The details are in [`docs/SVS_RUNS.md`](https://github.com/ACE-Collective/ace3/blob/main/docs/SVS_RUNS.md), *Windows*.
