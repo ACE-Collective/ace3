@@ -292,7 +292,11 @@ RUN apt-get update && apt-get upgrade -y
 ARG CLAUDE_CODE_VERSION=latest
 ARG BUILD_TYPE
 
+# bubblewrap is what codex sandboxes the commands it runs with on linux
 RUN if [ "$BUILD_TYPE" = "development" ]; then \
+        apt-get update && \
+        apt-get install -y --no-install-recommends bubblewrap && \
+        rm -rf /var/lib/apt/lists/* && \
         mkdir -p /usr/local/share/npm-global /home/ace/.claude && \
         chown -R ace:ace /usr/local/share /home/ace/.claude; \
     fi
@@ -301,7 +305,7 @@ USER ace
 RUN if [ "$BUILD_TYPE" = "development" ]; then \
         npm install -g @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION} && \
         npm install -g @openai/codex && \
-        npm install -g cline; \
+        npm install -g @earendil-works/pi-coding-agent; \
     fi
 
 # ------------------------------------------------------------------------------------------------

@@ -3,7 +3,7 @@
 An agent (or a person) can check a GUI change in a real browser from inside the `dev` container, in two ways:
 
 - the Python `playwright` package in `/venv` (development images only), for scripted checks
-- the `playwright-mcp` server (`@playwright/mcp`), which gives MCP clients (Claude Code, codex, cline) browser
+- the `playwright-mcp` server (`@playwright/mcp`), which gives MCP clients (Claude Code, codex) browser
   tools: navigate, click, type, accessibility snapshot, screenshot, console messages, network requests
 
 The headless Chromium both of them drive is not in the ACE image, which every ACE service runs. It is in an
