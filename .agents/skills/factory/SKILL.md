@@ -7,7 +7,7 @@ argument-hint: "[TICKET | retro]"
 
 # /factory
 
-The arguments are `$ARGUMENTS`. `$F` is `.agents/skills/factory/scripts/factory.py` in this checkout, run as `python3 $F` **on the host**, where `gh` and `az` are logged in. Every write to GitHub or Azure DevOps goes through it, so nothing reaches the public repo without the internal-detail check. Never post with `gh` or `az` directly.
+The arguments are `$ARGUMENTS`. `$F` is `.agents/skills/factory/scripts/factory.py` in this checkout, run as `python3 $F` **on the host**, where `gh` and `az` are logged in (`az` through `az login` or `AZURE_DEVOPS_EXT_PAT`). Every write to GitHub or Azure DevOps goes through it, so nothing reaches the public repo without the internal-detail check. Never post with `gh` or `az` directly.
 
 ## Words
 

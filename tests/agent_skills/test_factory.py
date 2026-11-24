@@ -2,10 +2,13 @@
 internal detail out of the public repo, and factory.py, which reads ticket and PR state and decides
 the next task."""
 
+import base64
+import http.server
 import importlib.util
 import json
 import subprocess
 import sys
+import threading
 from pathlib import Path
 
 import pytest
@@ -626,7 +629,7 @@ def test_doctor_counts_the_terms_it_loads_without_a_warning(core, monkeypatch):
     monkeypatch.setattr(factory, "gh_me", lambda main: "me")
     monkeypatch.setattr(factory, "dev_mounts", lambda main: None)
     monkeypatch.setattr(factory, "label_names", lambda ctx: set(factory.LABELS))
-    monkeypatch.setattr(factory, "ado_me", lambda: "me")
+    monkeypatch.setattr(factory, "ado_me", lambda repo: "me")
 
     result = factory.doctor(FakeContext(core))
 
@@ -901,6 +904,71 @@ def test_an_azure_devops_work_item_reads_as_a_ticket(core, monkeypatch):
     ticket_info = factory.ado_ticket(FakeContext(core).repos["internal"], 1)
 
     assert (ticket_info["closed"], ticket_info["labels"], ticket_info["assignees"]) == (True, ["factory:ready", "other"], ["me@example.com"])
+
+
+@pytest.fixture
+def ado_org(core):
+    """A FakeContext whose organization is a local server answering connectionData: 200 for the PAT "good", else 401."""
+    seen = []
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            seen.append((self.path, self.headers.get("Authorization")))
+            if self.headers.get("Authorization") != "Basic " + base64.b64encode(b":good").decode():
+                self.send_response(401)
+                self.end_headers()
+                return
+            body = json.dumps({"authenticatedUser": {"properties": {"Account": {"$value": "me@example.com"}}}}).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args):
+            pass  # keep the server's access log out of the test output
+
+    server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    ctx = FakeContext(core)
+    ctx.repos["internal"]["config"]["azure_devops"]["organization"] = f"http://127.0.0.1:{server.server_port}/org/"
+    yield ctx, seen
+    server.shutdown()
+    thread.join(timeout=10)
+    server.server_close()
+
+
+def test_with_a_pat_you_are_who_azure_devops_says_the_pat_belongs_to(ado_org, monkeypatch):
+    ctx, seen = ado_org
+    monkeypatch.setenv("AZURE_DEVOPS_EXT_PAT", "good")
+    monkeypatch.setattr(factory, "run", lambda *args, **kwargs: pytest.fail("az account show needs az login"))
+
+    assert factory.ado_me(ctx.repos["internal"]) == "me@example.com"
+    assert seen == [("/org/_apis/connectionData", "Basic " + base64.b64encode(b":good").decode())]
+
+
+def test_a_rejected_pat_fails_doctor_without_printing_the_pat(ado_org, monkeypatch):
+    ctx, _ = ado_org
+    monkeypatch.setenv("AZURE_DEVOPS_EXT_PAT", "s3cret-pat")
+    monkeypatch.setattr(factory, "gh_me", lambda main: "me")
+    monkeypatch.setattr(factory, "dev_mounts", lambda main: None)
+    monkeypatch.setattr(factory, "label_names", lambda ctx: set(factory.LABELS))
+
+    result = factory.doctor(ctx)
+
+    [az] = [c for c in result["checks"] if c["check"] == "az"]
+    assert not az["ok"] and "AZURE_DEVOPS_EXT_PAT" in az["detail"] and "401" in az["detail"]
+    assert "s3cret-pat" not in json.dumps(result)
+
+
+def test_without_a_pat_you_are_the_az_login_account(core, monkeypatch):
+    monkeypatch.delenv("AZURE_DEVOPS_EXT_PAT", raising=False)
+    ran = []
+    monkeypatch.setattr(factory, "run", lambda cmd, **kwargs: ran.append(cmd) or "me@example.com\n")
+
+    assert factory.ado_me(FakeContext(core).repos["internal"]) == "me@example.com"
+    assert ran == [["az", "account", "show", "--query", "user.name", "-o", "tsv"]]
 
 
 def test_an_azure_devops_pr_reads_as_the_factory_s_pr(core, monkeypatch):
