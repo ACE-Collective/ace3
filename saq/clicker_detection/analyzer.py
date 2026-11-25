@@ -269,7 +269,11 @@ class ClickerDetectionMixin:
                 results = self.execute_query()
             except AnalysisDelay:
                 if analysis.query_elapsed < self.query_timeout:
-                    return self.delay_analysis(observable, analysis, seconds=self.async_delay_seconds)
+                    result = self.delay_analysis(observable, analysis, seconds=self.async_delay_seconds)
+                    if result != AnalysisExecutionResult.INCOMPLETE:
+                        # the engine refused the delay and closed the analysis, so nothing polls the search again
+                        self._abandon_query(observable, "delay refused")
+                    return result
                 logging.warning("%s clicker search %s timed out", self.config.source, name)
                 results = None
                 error = "timed out"

@@ -430,10 +430,16 @@ class BaseAPIAnalyzer(AnalysisModule):
 
     def abandon_query(self, reason: str) -> None:
         """Called when the caller gives up on the query execute_query is running for self.analysis, and will
-        not call execute_query for it again: after an AnalysisDelay past query_timeout (reason "timeout"), or
-        after execute_query raised (reason "error"). An analyzer whose query is a job on the remote side
+        not call execute_query for it again: after an AnalysisDelay past query_timeout (reason "timeout"),
+        after execute_query raised (reason "error"), when the engine refused the delay that would have polled
+        it again (reason "delay refused"), or when the engine dropped the pending delay because the root's
+        analysis aborted (reason "analysis aborted"). An analyzer whose query is a job on the remote side
         overrides it to stop that job. The callers log a failure of it and go on."""
         pass
+
+    def delayed_analysis_abandoned(self, observable: Observable, analysis: Analysis) -> None:
+        self.analysis = analysis
+        self._abandon_query(observable, 'analysis aborted')
 
     def _abandon_query(self, observable: Observable, reason: str) -> None:
         try:
@@ -642,8 +648,12 @@ class BaseAPIAnalyzer(AnalysisModule):
 
         except AnalysisDelay:
             # delay if not timed out
-            if analysis.query_elapsed < self.query_timeout: 
-                return self.delay_analysis(observable, analysis, seconds=self.async_delay_seconds)
+            if analysis.query_elapsed < self.query_timeout:
+                result = self.delay_analysis(observable, analysis, seconds=self.async_delay_seconds)
+                if result != AnalysisExecutionResult.INCOMPLETE:
+                    # the engine refused the delay and closed the analysis, so nothing polls the query again
+                    self._abandon_query(observable, 'delay refused')
+                return result
 
             # warn if timed out
             logging.warning(f'{self.api} query timed out: {self.target_query}')

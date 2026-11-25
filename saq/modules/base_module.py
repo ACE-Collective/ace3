@@ -1021,6 +1021,14 @@ class AnalysisModule(FileWatcherMixin):
         from the replayed analysis (available via observable.get_analysis)."""
         pass
 
+    def delayed_analysis_abandoned(self, observable: Observable, analysis: Analysis) -> None:
+        """Called when the engine drops this module's pending delayed analysis of observable, and so
+        never calls continue_analysis for it: the root's analysis aborted (an AnalysisTimeoutError or
+        any other failure) and its delayed requests are cleared. analysis is the delayed analysis, with
+        its details loaded. A module whose delay waits on a job elsewhere overrides it to stop that job.
+        The engine logs an exception it raises and goes on."""
+        pass
+
     # ========================================
     # Analysis Helpers
     # ========================================

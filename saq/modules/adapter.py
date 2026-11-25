@@ -140,6 +140,10 @@ class AnalysisModuleAdapter(AnalysisModuleInterface):
         """Called after a cached analysis has been replayed for this module."""
         self._module.on_cache_hit(root, observable)
 
+    def delayed_analysis_abandoned(self, observable: Observable, analysis: Analysis) -> None:
+        """Called when the engine drops this module's pending delayed analysis of observable."""
+        self._module.delayed_analysis_abandoned(observable, analysis)
+
     # Control methods
     def should_analyze(self, observable: Observable) -> bool:
         """Put your custom 'should I analyze this?' logic in this function."""

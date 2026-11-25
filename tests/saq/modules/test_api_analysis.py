@@ -174,6 +174,33 @@ def test_async_query_delays_until_timeout(root, delayed_analysis, caplog):
 
 
 @pytest.mark.unit
+def test_a_refused_delay_abandons_the_query(root, delayed_analysis):
+    analyzer = _analyzer(root, delayed_analysis, results=AnalysisDelay(), query_timeout=60)
+    observable = root.add_observable_by_spec(F_IP, "10.0.0.1")
+    # the engine refuses the delay: its deadline passed, or the request could not be recorded
+    delayed_analysis.delay_analysis.return_value = False
+
+    assert analyzer.execute_analysis(observable) == AnalysisExecutionResult.COMPLETED
+
+    assert observable.get_analysis(BaseAPIAnalysis).error == "timed out waiting for delayed analysis to complete"
+    assert analyzer.abandoned == [("delay refused", "search ip=10.0.0.1 type=ip")]
+
+
+@pytest.mark.unit
+def test_a_dropped_delayed_analysis_abandons_the_query(root, delayed_analysis):
+    analyzer = _analyzer(root, delayed_analysis, results=AnalysisDelay(), query_timeout=60)
+    observable = root.add_observable_by_spec(F_IP, "10.0.0.1")
+    assert analyzer.execute_analysis(observable) == AnalysisExecutionResult.INCOMPLETE
+    analysis = observable.get_analysis(BaseAPIAnalysis)
+    # the module instance has analyzed something else since this analysis delayed
+    analyzer.analysis = None
+
+    analyzer.delayed_analysis_abandoned(observable, analysis)
+
+    assert analyzer.abandoned == [("analysis aborted", "search ip=10.0.0.1 type=ip")]
+
+
+@pytest.mark.unit
 def test_continue_analysis_return_analysis(root, delayed_analysis):
     analyzer = _analyzer(root, delayed_analysis, results=[])
     observable = root.add_observable_by_spec(F_IP, "10.0.0.1")

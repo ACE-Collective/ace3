@@ -372,6 +372,46 @@ def test_pending_search_delays_then_times_out(test_context):
 
 
 @pytest.mark.unit
+def test_a_refused_delay_abandons_the_pending_search(test_context):
+    splunk = MockMultiSplunk({"edr_url_clicks": None, "index=proxy": [PROXY_ROW]})
+    with patch("saq.modules.splunk.SplunkClient", return_value=splunk):
+        analyzer = _make_analyzer(test_context, MULTI_CONFIG)
+        observable = RootAnalysis().add_observable_by_spec(F_URL, "https://evil.example/landing")
+        analysis = analyzer.create_analysis(observable)
+
+        abandoned = []
+        record = lambda reason: abandoned.append((reason, analysis.search_id))  # noqa: E731
+
+        # the engine refuses the delay and closes the analysis, so nothing polls the job again
+        with patch.object(analyzer, "delay_analysis", return_value=AnalysisExecutionResult.COMPLETED), \
+             patch.object(analyzer, "abandon_query", side_effect=record):
+            assert analyzer.continue_analysis(observable, analysis) == AnalysisExecutionResult.COMPLETED
+
+    assert abandoned == [("delay refused", "1")]
+
+
+@pytest.mark.unit
+def test_a_dropped_delayed_analysis_abandons_the_pending_search(test_context):
+    splunk = MockMultiSplunk({"edr_url_clicks": None, "index=proxy": [PROXY_ROW]})
+    with patch("saq.modules.splunk.SplunkClient", return_value=splunk):
+        analyzer = _make_analyzer(test_context, MULTI_CONFIG)
+        observable = RootAnalysis().add_observable_by_spec(F_URL, "https://evil.example/landing")
+        analysis = analyzer.create_analysis(observable)
+
+        abandoned = []
+        record = lambda reason: abandoned.append((reason, analyzer.analysis.search_id))  # noqa: E731
+
+        with patch.object(analyzer, "delay_analysis", return_value=AnalysisExecutionResult.INCOMPLETE):
+            assert analyzer.continue_analysis(observable, analysis) == AnalysisExecutionResult.INCOMPLETE
+        analyzer.analysis = None
+
+        with patch.object(analyzer, "abandon_query", side_effect=record):
+            analyzer.delayed_analysis_abandoned(observable, analysis)
+
+    assert abandoned == [("analysis aborted", "1")]
+
+
+@pytest.mark.unit
 def test_search_removed_from_config_mid_flight_is_skipped(test_context):
     splunk = MockMultiSplunk({"edr_url_clicks": [ROW_ALLOWED], "index=proxy": [PROXY_ROW]})
     with patch("saq.modules.splunk.SplunkClient", return_value=splunk):
