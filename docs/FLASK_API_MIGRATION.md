@@ -484,7 +484,7 @@ Notes:
 
 ### `/observables/lookup` — batch prevalence lookup (net-new)
 
-Net-new surface, no Flask ancestor: `POST /api/v2/observables/lookup` takes up to 1000 `{type, value}` pairs and returns, per pair: total non-faqueue alert count, first/last seen, a raw disposition histogram (OPEN/UNKNOWN included, so `total_alert_count == sum(disposition_counts.values())`), the newest `recent_alert_limit` alerts (uuid/disposition/insert_date), and distinct event memberships. Optional `exclude_alert_uuids` (drop the querying alert from its own counts) and `since` (bounds counts and recent alerts, deliberately not events). Gated on `observable:read`.
+Net-new surface, no Flask ancestor: `POST /api/v2/observables/lookup` takes up to 1000 `{type, value}` pairs and returns, per pair: total non-faqueue alert count, first/last seen, a raw disposition histogram (OPEN/UNKNOWN included, so `total_alert_count == sum(disposition_counts.values())`), the newest `recent_alert_limit` alerts (uuid/disposition/insert_date/queue), and distinct event memberships. Optional `exclude_alert_uuids` (drop the querying alert from its own counts), `since` (bounds counts and recent alerts, deliberately not events) and `queues` (the alert queues to count and list; only the default queue when omitted, again not events). Gated on `observable:read`.
 
 Results are positionally aligned with the request and carry `index`; the echoed type/value are the *normalized* forms. A bad pair gets a per-pair `error` rather than failing the batch.
 

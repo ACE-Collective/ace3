@@ -526,7 +526,7 @@ class TestObservableLookup:
         assert result["total_alert_count"] == 1
         assert result["disposition_counts"] == {"DELIVERY": 1}
         assert result["last_seen"].startswith("2026-01-01")
-        assert [a["uuid"] for a in result["recent_alerts"]] == [default.uuid]
+        assert [(a["uuid"], a["queue"]) for a in result["recent_alerts"]] == [(default.uuid, "default")]
 
     @pytest.mark.asyncio
     async def test_only_other_queues_is_found_with_zero_count(
@@ -545,6 +545,43 @@ class TestObservableLookup:
         assert result["disposition_counts"] == {}
         assert result["recent_alerts"] == []
         assert [e["name"] for e in result["events"]] == ["event-external"]
+
+    @pytest.mark.asyncio
+    async def test_named_queues_are_counted_instead_of_the_default(
+        self, session: AsyncSession, client: AsyncClient
+    ):
+        """An alert routed to another queue still answers "did this become an alert" for a caller
+        that names its queue."""
+        default = _alert("DELIVERY", insert_date=datetime(2026, 1, 1))
+        routed = _alert("FALSE_POSITIVE", insert_date=datetime(2026, 2, 1), queue="external")
+        unnamed = _alert("OPEN", insert_date=datetime(2026, 3, 1), queue="svs")
+        faqueue = _alert("OPEN", alert_type="faqueue", insert_date=datetime(2026, 4, 1), queue="external")
+        await _seed_mapped_alerts(
+            session, _observable("ipv4", "203.0.113.23"), [default, routed, unnamed, faqueue])
+
+        response = await client.post("/observables/lookup", json=_lookup_body(
+            ("ipv4", "203.0.113.23"), queues=["external"]))
+        (result,) = response.json()["results"]
+        assert result["total_alert_count"] == 1
+        assert result["disposition_counts"] == {"FALSE_POSITIVE": 1}
+        assert result["first_seen"].startswith("2026-02-01")
+        assert result["last_seen"].startswith("2026-02-01")
+        assert [(a["uuid"], a["queue"]) for a in result["recent_alerts"]] == [(routed.uuid, "external")]
+
+        response = await client.post("/observables/lookup", json=_lookup_body(
+            ("ipv4", "203.0.113.23"), queues=["default", "external"]))
+        (result,) = response.json()["results"]
+        assert result["total_alert_count"] == 2
+        assert result["disposition_counts"] == {"DELIVERY": 1, "FALSE_POSITIVE": 1}
+        assert [(a["uuid"], a["queue"]) for a in result["recent_alerts"]] == [
+            (routed.uuid, "external"), (default.uuid, "default")]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("queues", [[], [""], ["q" * 65], [f"queue-{n}" for n in range(101)]])
+    async def test_queue_bounds_are_422(self, client: AsyncClient, queues):
+        response = await client.post(
+            "/observables/lookup", json=_lookup_body(("ipv4", "1.2.3.4"), queues=queues))
+        assert response.status_code == 422
 
     @pytest.mark.asyncio
     async def test_exclude_alert_uuids(self, session: AsyncSession, client: AsyncClient):

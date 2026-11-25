@@ -703,8 +703,9 @@ is written there, change the tag to point at it.
 - **Only `download_model()` fetches the model.** See `saq/search/model.py::download_model` and
   `saq/search/model.py::load_model`. [docs/SEARCH.md]
 - **Search and "similar alerts" leave out `svs.queue` unless queues are named, and prevalence
-  counts only `default`.** See `saq/search/query.py::leave_out_test_alerts`.
-  [docs/SEARCH.md, docs/SVS_RUNS.md]
+  (`/observables/lookup`) counts only `default` unless the request names queues.** See
+  `saq/search/query.py::leave_out_test_alerts` and
+  `aceapi_v2/observables/service.py::_alert_predicates`. [docs/SEARCH.md, docs/SVS_RUNS.md]
 
 ## 20. API, auth, GUI
 
