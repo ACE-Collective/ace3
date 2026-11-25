@@ -69,8 +69,11 @@ matches its old rows. The state is one of:
 | `none` | nothing: the alert has no email, or the source made no attempt on it |
 
 Inverted, it is the exact complement, so `!remediation:Any:remediated` includes the alerts with no
-email at all. What is still to be done, every alert with an email still in some mailbox, is
-`remediation:Any:failed,Any:partial,Any:not_remediated,Any:watching,Any:remediating`.
+email at all. The alerts whose remediation started and fell short or is still going are
+`remediation:Any:failed,Any:partial,Any:not_remediated,Any:watching,Any:remediating`. Two states
+it leaves out can still have copies in mailboxes: `not_in_mailbox`, because the state does not
+tell "every copy gone" from "one copy gone, the rest still outstanding", and `none`, where
+nothing has been tried.
 
 **What it costs.** The state is computed when the query runs, not stored. An alert with no
 remediation activity costs about a microsecond; one with activity costs a read of its observables
