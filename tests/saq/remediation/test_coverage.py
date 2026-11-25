@@ -556,9 +556,20 @@ def _filter_values(alert) -> tuple[str, str]:
     return get_remediation_coverage([alert])[alert.uuid].filter_value, _sql_filter_value(alert)
 
 
+@pytest.fixture
+def decoy():
+    """Another alert, whose probes confirmed every value the scenarios use. The SQL reads one alert of
+    many, so a subquery that stops correlating to it reads this alert's rows too and changes the
+    answer; with the scenario's alert alone in the database it would not."""
+    values = (ALICE, BOB, CAROL, DL, NON_ASCII)
+    return insert_alert_with_email_targets((), checks=[
+        _check(value, result=CheckResult.CONFIRMED.value, events=[_event()], probe_name=probe)
+        for value in values for probe in ("fake_probe", "other_probe")])
+
+
 @pytest.mark.integration
 @pytest.mark.parametrize("scenario, expected", SCENARIOS)
-def test_the_filter_agrees_with_the_column(scenario, expected):
+def test_the_filter_agrees_with_the_column(scenario, expected, decoy):
     alert = insert_alert_with_email_targets(**scenario)
     assert _filter_values(alert) == (expected, expected)
 
@@ -639,7 +650,7 @@ def _from_source(scenario, source):
     ("other_probe", "watching"),
     ("nobody", "none"),
 ])
-def test_a_source_reads_only_its_own_rows(source, expected):
+def test_a_source_reads_only_its_own_rows(source, expected, decoy):
     alert = insert_alert_with_email_targets(**MIXED_SOURCES)
     assert _assemble(**_from_source(MIXED_SOURCES, source)).filter_value == expected
     assert _sql_filter_value(alert, source) == expected
@@ -648,6 +659,6 @@ def test_a_source_reads_only_its_own_rows(source, expected):
 @pytest.mark.integration
 @pytest.mark.parametrize("source", ["email_remediator", "fake_probe"])
 @pytest.mark.parametrize("scenario, expected", SCENARIOS)
-def test_the_filter_agrees_with_the_column_for_one_source(scenario, expected, source):
+def test_the_filter_agrees_with_the_column_for_one_source(scenario, expected, source, decoy):
     alert = insert_alert_with_email_targets(**scenario)
     assert _sql_filter_value(alert, source) == _assemble(**_from_source(scenario, source)).filter_value

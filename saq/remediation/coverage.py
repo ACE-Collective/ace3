@@ -549,18 +549,32 @@ def _from_remediator(remediation, source: str) -> ColumnElement[bool]:
     return true() if source == REMEDIATION_SOURCE_ANY else remediation.name == source
 
 
-def _alert_checks(alert, source: str, value_key, condition=None) -> ColumnElement[bool]:
-    """Whether the alert has an email_delivery probe row from the source for the target with this
-    key (and, given a condition, one meeting it). Nested two deep, so it names what it correlates:
-    left to itself it would select from its own `alerts` and match any alert's rows."""
+def _probe_values(alert, source: str):
+    """The source's email_delivery probe rows of the alert, one row per value: its key and whether
+    any of its rows is still polling, confirmed or superseded.
+
+    The targets join it on the key, so the alert's probe rows are read and hashed once. Nothing
+    indexes the hash, and an EXISTS per target and flag read them all again for every target, which
+    made a mass-mailed alert a probe watches cost its recipients squared."""
     check = aliased(ExternalRemediationCheck)
-    return exists().where(
-        check.alert_uuid == alert.uuid,
-        check.observable_type == F_EMAIL_DELIVERY,
-        _from_probe(check, source),
-        _value_key(check.observable_value) == value_key,
-        condition(check) if condition is not None else true(),
-    ).correlate_except(check)
+    value_key = _value_key(check.observable_value)
+
+    def any_row(condition: ColumnElement[bool]) -> ColumnElement[int]:
+        return func.max(case((condition, 1), else_=0))
+
+    return (
+        select(value_key.label("value_key"),
+               any_row(_check_pending(check)).label("pending"),
+               any_row(_check_confirmed(check)).label("confirmed"),
+               any_row(_check_superseded(check)).label("superseded"))
+        .where(check.alert_uuid == alert.uuid, check.observable_type == F_EMAIL_DELIVERY,
+               _from_probe(check, source))
+        .group_by(value_key)
+        # two levels below the query that selects the alert, which SQLAlchemy does not look through
+        # on its own: left to itself it selects from `alerts` and reads every alert's probe rows
+        .correlate(alert)
+        .lateral()
+    )
 
 
 def _mapped_targets(alert, source: str) -> _Targets:
@@ -582,6 +596,7 @@ def _mapped_targets(alert, source: str) -> _Targets:
         .correlate(observable)
         .scalar_subquery()
     )
+    probes = _probe_values(alert, source)
     # through the mapping row of the latest remediation (a primary key lookup), so the join
     # names the observable it belongs to
     rows = (
@@ -591,6 +606,7 @@ def _mapped_targets(alert, source: str) -> _Targets:
         .outerjoin(remediation_mapping, and_(remediation_mapping.observable_id == observable.id,
                                              remediation_mapping.remediation_id == latest_id))
         .outerjoin(remediation, remediation.id == remediation_mapping.remediation_id)
+        .outerjoin(probes, probes.c.value_key == observable.sha256)
         .where(mapping.alert_id == alert.id)
     )
 
@@ -606,9 +622,11 @@ def _mapped_targets(alert, source: str) -> _Targets:
 
     success = removal_result(RemediatorStatus.SUCCESS)
     not_found = removal_result(RemediatorStatus.NOT_FOUND)
-    confirmed = _alert_checks(alert, source, observable.sha256, _check_confirmed)
-    superseded = _alert_checks(alert, source, observable.sha256, _check_superseded)
-    pending = or_(ace_pending, _alert_checks(alert, source, observable.sha256, _check_pending))
+    # the probe columns are only NULL-free behind `probed`, as the remediation's are behind `ace`
+    probed = probes.c.value_key.is_not(None)
+    confirmed = and_(probed, probes.c.confirmed == 1)
+    superseded = and_(probed, probes.c.superseded == 1)
+    pending = or_(ace_pending, and_(probed, probes.c.pending == 1))
 
     # the journal explains the finished removal finding nothing (journal_explains): one
     # (tag, result) pair per combination it accepts, so the rule is not written out twice
@@ -631,7 +649,7 @@ def _mapped_targets(alert, source: str) -> _Targets:
 
     return _Targets(rows, _TargetFlags(
         counted=not_(not_delivered),
-        attempted=or_(ace, _alert_checks(alert, source, observable.sha256)),
+        attempted=or_(ace, probed),
         failed=removal_result(RemediatorStatus.FAILED, RemediatorStatus.ERROR),
         remediating=and_(ace_pending, remediation.action == RemediationAction.REMOVE.value),
         pending=pending,
@@ -641,34 +659,26 @@ def _mapped_targets(alert, source: str) -> _Targets:
 
 
 def _check_only_targets(alert, source: str) -> _Targets:
-    """The source's email_delivery probe rows of the alert for a value the alert does not map, one
-    row per probe row: each is a target of its own (assemble_coverage()), with no ACE rows or tags."""
-    check = aliased(ExternalRemediationCheck)
+    """The values the source's email_delivery probe rows of the alert name that the alert does not
+    map: each is a target of its own (assemble_coverage()), with no ACE rows or tags."""
+    probes = _probe_values(alert, source)
     mapping = aliased(ObservableMapping)
     observable = aliased(Observable)
-    key = _value_key(check.observable_value)
     mapped = exists().where(
         mapping.alert_id == alert.id,
         observable.id == mapping.observable_id,
         observable.type == F_EMAIL_DELIVERY,
-        observable.sha256 == key,
+        observable.sha256 == probes.c.value_key,
     ).correlate_except(mapping, observable)
-    rows = (
-        select(literal(1))
-        .select_from(check)
-        .where(check.alert_uuid == alert.uuid, check.observable_type == F_EMAIL_DELIVERY,
-               _from_probe(check, source), not_(mapped))
-    )
+    rows = select(literal(1)).select_from(probes).where(not_(mapped))
 
-    # the target is the value, so its state is read across every probe row for that value
-    remediated = _alert_checks(alert, source, key,
-                               lambda sibling: or_(_check_confirmed(sibling), _check_superseded(sibling)))
+    remediated = or_(probes.c.confirmed == 1, probes.c.superseded == 1)
     return _Targets(rows, _TargetFlags(
         counted=true(),
         attempted=true(),
         failed=false(),
         remediating=false(),
-        pending=_alert_checks(alert, source, key, _check_pending),
+        pending=probes.c.pending == 1,
         remediated=remediated,
         covered=remediated,
     ))

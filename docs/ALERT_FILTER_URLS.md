@@ -69,16 +69,17 @@ matches its old rows. The state is one of:
 | `none` | nothing: the alert has no email, or the source made no attempt on it |
 
 Inverted, it is the exact complement, so `!remediation:Any:remediated` includes the alerts with no
-email at all. What is still to be done is
-`remediation:Any:failed,Any:not_remediated,Any:watching,Any:remediating`.
+email at all. What is still to be done, every alert with an email still in some mailbox, is
+`remediation:Any:failed,Any:partial,Any:not_remediated,Any:watching,Any:remediating`.
 
 **What it costs.** The state is computed when the query runs, not stored. An alert with no
-remediation activity costs about a microsecond; one with activity costs a walk of its
-observables, about 0.13 ms on a development stack. Within the manage page's usual filters it
-adds little (155 ms at 100,000 alerts with the default open-alerts filter, 36 ms for a page of
-50), but on its own it reads every alert with activity: 0.9 s at 100,000 alerts of which 7%
-have some. A quick filter badge recounts every 30 seconds, so give a badge that uses it a date
-range too (`alert_date:-7d`).
+remediation activity costs about a microsecond; one with activity costs a read of its observables
+and its probe rows, which grows with how many it has (5 ms for one alert with 800 recipients a
+probe watched, on a development stack). Within the manage page's usual filters it adds little
+(130 ms at 100,000 alerts with the default open-alerts filter, 37 ms for a page of 50), but on its
+own it reads every alert with activity: 0.7 s at 100,000 alerts of which 7% have some. A quick
+filter badge recounts every 30 seconds, so give a badge that uses it a date range too
+(`alert_date:-7d`).
 
 ### Escaping
 
