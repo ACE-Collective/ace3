@@ -896,7 +896,9 @@ again. If the pinned work item ends without calling the module on it (the module
 no longer accepts the observable, the observable is excluded, a declared
 dependency defers it), `_release_unanswered_resume` unmarks it at the top of
 the next loop iteration and logs it at INFO: its row is deleted when the pass
-ends, so nothing would resume it.
+ends, so nothing would resume it. `AnalysisExecutor.execute()` does the same when
+the pass ends before the module was called on it (a cancel from shutdown or a lost
+lock, an `AnalysisTimeoutError`, an exception), before the root is saved.
 
 A module may delay again; each cycle inserts a new row.
 

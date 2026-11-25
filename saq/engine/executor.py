@@ -289,9 +289,17 @@ class AnalysisExecutor:
                 context.root.state[STATE_TOTAL_ANALYSIS_TIME_SECONDS] = 0
                 context.root.state[STATE_ANALYSIS_START_TIME] = local_time()
 
-            # don't even start if we're already cancelled
-            if not context.cancel_analysis_flag:
-                self._execute_recursive_analysis(context)
+            # the delayed analysis this pass resumes stays delayed until its module is called on it
+            if context.delayed_analysis_request is not None:
+                context.resuming_analysis = context.delayed_analysis_request.analysis
+
+            try:
+                # don't even start if we're already cancelled
+                if not context.cancel_analysis_flag:
+                    self._execute_recursive_analysis(context)
+            finally:
+                # a cancel or a timeout can end the pass before the module ran
+                self._release_unanswered_resume(context, pass_ended=True)
 
             # do we NOT have any outstanding delayed analysis requests?
             if not context.root.delayed:
@@ -578,13 +586,14 @@ class AnalysisExecutor:
         else:
             return None
 
-    def _release_unanswered_resume(self, context: EngineExecutionContext):
-        """Unmarks the resumed analysis once the work item that resumed it has been processed
-        without calling its module on it (the module no longer accepts the observable, the
-        observable is excluded, the module waits on a declared dependency). Its delayed_analysis
-        row is deleted when this pass ends, so nothing else would."""
+    def _release_unanswered_resume(self, context: EngineExecutionContext, pass_ended: bool = False):
+        """Unmarks the resumed analysis once the work item that resumed it has been processed, or
+        the pass has ended (pass_ended: a cancel, a timeout, an error), without calling its module
+        on it (the module no longer accepts the observable, the observable is excluded, the module
+        waits on a declared dependency). Its delayed_analysis row is deleted when this pass ends,
+        however it ends, so nothing else would."""
         analysis = context.resuming_analysis
-        if analysis is None or context.first_pass:
+        if analysis is None or (context.first_pass and not pass_ended):
             return
 
         context.resuming_analysis = None
@@ -1953,8 +1962,6 @@ class AnalysisExecutor:
 
         # we use this when we're dealing with delayed analysis
         context.first_pass = True
-        if context.delayed_analysis_request is not None:
-            context.resuming_analysis = context.delayed_analysis_request.analysis
 
         # we use this when we're executing in final analysis mode
         context.final_analysis_mode = False

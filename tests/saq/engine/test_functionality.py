@@ -28,6 +28,8 @@ from saq.database.util.workload import add_workload
 from saq.engine.core import Engine
 from saq.engine.engine_configuration import EngineConfiguration
 from saq.engine.enums import EngineExecutionMode, EngineType
+from saq.engine.errors import AnalysisTimeoutError
+from saq.engine.executor import AnalysisExecutor
 from saq.engine.execution_context import EngineExecutionContext
 from saq.environment import get_data_dir, get_global_runtime_settings, get_temp_dir, reset_node
 from saq.modules.test import BasicTestAnalysis, ConfigurableModuleTestAnalysis, CrossDepTargetAnalysis, CrossReqSourceAnalysis, CustomReqFalseAnalysis, CustomReqFalseDependentAnalysis, CustomReqSeesDepAnalysis, DeclaredDepAnalysis_A, DeclaredDepAnalysis_B, DeclaredDepAnalysis_C, DeclaredDepOnNoProduceAnalysis, DelayedAnalysisTestAnalysis, DelayedAnalysisTestModule, DependsOnRetryAnalysis, DependsOnRetryModule, FileSizeLimitAnalysis, FinalAnalysisTestAnalysis, GenericTestAnalysis, GroupedByTimeRangeAnalysis, GroupingTargetAnalysis, LowPriorityAnalysis, RetryOnFailureAnalysis, TestInstanceAnalysis, WaitAnalysis_A, WaitAnalysis_B, WaitAnalysis_C, WaitAnalyzerModule_B
@@ -582,6 +584,52 @@ def test_resumed_analysis_its_module_no_longer_accepts(root_analysis, monkeypatc
     assert not root_analysis.delayed
     assert log_count("was not continued") == 1
     assert log_count("entering final analysis for") == 1
+
+def _interrupt_resume_pass(monkeypatch, method: str, interrupt):
+    # interrupt(context) runs before method on the pass that resumes a delayed analysis only
+    original = getattr(AnalysisExecutor, method)
+
+    def interrupted(self, context, *args, **kwargs):
+        if context.is_delayed_analysis:
+            interrupt(context)
+
+        return original(self, context, *args, **kwargs)
+
+    monkeypatch.setattr(AnalysisExecutor, method, interrupted)
+
+def _raise_analysis_timeout(context):
+    raise AnalysisTimeoutError("cumulative analysis time exceeded")
+
+@pytest.mark.integration
+@pytest.mark.parametrize("method, interrupt", [
+    # a shutdown or lost lock before the executor starts the pass
+    ("execute", lambda context: context.cancel_analysis()),
+    # a cancel before the main loop's first iteration
+    ("_execute_pre_analysis", lambda context: context.cancel_analysis()),
+    # the pass starts already past the cumulative analysis time of the pass that delayed it
+    ("_check_for_analysis_timeout", _raise_analysis_timeout),
+], ids=["cancel-before-execute", "cancel-before-loop", "timeout-before-module"])
+def test_resume_pass_ended_before_its_module_ran(root_analysis, monkeypatch, method, interrupt):
+    # the pass's delayed_analysis row is deleted however it ends, so the saved analysis must
+    # not stay delayed, or the root never finishes (no final analysis, no post-analysis)
+    _interrupt_resume_pass(monkeypatch, method, interrupt)
+    observable = root_analysis.add_observable_by_spec(F_TEST, '0:00|0:01')
+    root_analysis.analysis_mode = "test_groups"
+    root_analysis.save()
+    root_analysis.schedule()
+
+    engine = Engine()
+    engine.configuration_manager.enable_module('test_delayed_analysis')
+    engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
+
+    root_analysis = load_root(get_storage_dir(root_analysis.uuid))
+    analysis = root_analysis.get_observable(observable.uuid).get_and_load_analysis(DelayedAnalysisTestAnalysis)
+    assert not analysis.delayed
+    assert not analysis.completed
+    assert analysis.request_count == 1
+    assert not root_analysis.delayed
+    assert log_count("was not continued") == 1
+    assert get_db().query(DelayedAnalysis).filter(DelayedAnalysis.uuid == root_analysis.uuid).count() == 0
 
 @pytest.mark.integration
 def test_stale_delayed_request_for_completed_analysis(root_analysis):
