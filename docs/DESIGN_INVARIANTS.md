@@ -293,7 +293,9 @@ is written there, change the tag to point at it.
 - **Before an aborted analysis clears the root's delayed requests, the module of each pending
   delay gets `delayed_analysis_abandoned`, and nothing it raises reaches the abort path.** A
   module is never called again for a cleared request, so this is its only chance to stop a job it
-  left running. See `saq/engine/executor.py::AnalysisExecutor.notify_delayed_analysis_abandoned`.
+  left running. It is called once per delay: the analysis's `delayed` flag is cleared after the
+  hook, so a later abort of the same root does not call it again. See
+  `saq/engine/executor.py::AnalysisExecutor.notify_delayed_analysis_abandoned`.
   [docs/ENGINE.md §6.4; #1363]
 - **`is_resuming_delayed_module` is true only for the module the delayed request names.** See
   `saq/engine/executor.py::AnalysisExecutor._execute_module_analysis`. [docs/ENGINE.md §8.1]

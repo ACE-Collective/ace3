@@ -28,6 +28,7 @@ from saq.modules.test import (
     KEY_REQUEST_COUNT,
     BasicTestAnalysis,
     DelayedAnalysisTestAnalysis,
+    DelayedAnalysisTestModule,
 )
 from saq.util.uuid import get_storage_dir
 from tests.saq.helpers import create_root_analysis, log_count
@@ -79,6 +80,24 @@ def test_each_pending_delay_is_handed_to_its_module():
 
 
 @pytest.mark.unit
+def test_a_dropped_delay_is_handed_over_once():
+    root = RootAnalysis()
+    first = _add(root, "first")
+    second = _add(root, "second")
+    module = Mock()
+    executor = _executor()
+
+    with patch.object(executor, "_get_analysis_module_by_generated_analysis", return_value=module):
+        executor.notify_delayed_analysis_abandoned(EngineExecutionContext(work_item=root))
+        # a later pass of the same root aborts too
+        executor.notify_delayed_analysis_abandoned(EngineExecutionContext(work_item=root))
+
+    calls = [c.args for c in module.delayed_analysis_abandoned.call_args_list]
+    assert len(calls) == 2 and first in calls and second in calls
+    assert not root.delayed
+
+
+@pytest.mark.unit
 def test_a_delay_whose_module_is_not_loaded_is_skipped(caplog):
     root = RootAnalysis()
     _add(root, "orphaned")
@@ -89,6 +108,8 @@ def test_a_delay_whose_module_is_not_loaded_is_skipped(caplog):
         executor.notify_delayed_analysis_abandoned(EngineExecutionContext(work_item=root))
 
     assert not [r for r in caplog.records if r.levelno >= logging.ERROR]
+    # the delay is dropped all the same
+    assert not root.delayed
 
 
 @pytest.mark.unit
@@ -112,6 +133,7 @@ def test_a_module_that_fails_is_logged_and_the_others_are_still_told(caplog):
         executor.notify_delayed_analysis_abandoned(EngineExecutionContext(work_item=root))
 
     assert told == [other]
+    assert not failing[1].delayed
     (record,) = [r for r in caplog.records if r.exc_info and "could not stop it" in str(r.exc_info[1])]
     assert record.levelno == logging.ERROR
     assert record.root_uuid == root.uuid
@@ -177,3 +199,40 @@ def test_an_aborted_analysis_tells_the_module_its_delay_was_dropped():
     # the module was told without being resumed, and with the details the first pass saved
     assert analysis.details[KEY_DELAYED_REQUEST] is False
     assert analysis.details[KEY_REQUEST_COUNT] == 1
+
+
+@pytest.mark.integration
+def test_a_delay_dropped_by_an_abort_is_not_handed_over_again():
+    root = create_root_analysis(analysis_mode="test_groups")
+    root.initialize_storage()
+    root.add_observable_by_spec(F_TEST, "0:00|0:30")
+    # a second delay on the root, not the one the resumed pass resumes
+    pending = root.add_observable_by_spec(F_TEST, "5:00|10:00")
+    root.save()
+    root.schedule()
+
+    engine = Engine()
+    engine.configuration_manager.enable_module("test_delayed_analysis", "test_groups")
+    engine.start_single_threaded(execution_mode=EngineExecutionMode.SINGLE_SHOT)
+
+    get_config().global_settings.maximum_cumulative_analysis_fail_time = 0
+    engine.start_single_threaded(execution_mode=EngineExecutionMode.SINGLE_SHOT)
+    aborts = log_count("ACE took too long to analyze")
+    assert aborts > 0
+
+    root = load_root(get_storage_dir(root.uuid))
+    assert not root.delayed
+
+    # a later pass of the same root (a mode change, a re-analysis) aborts too
+    with patch.object(DelayedAnalysisTestModule, "delayed_analysis_abandoned") as hook:
+        root.schedule()
+        engine = Engine()
+        engine.configuration_manager.enable_module("test_delayed_analysis", "test_groups")
+        engine.start_single_threaded(execution_mode=EngineExecutionMode.SINGLE_SHOT)
+
+    assert log_count("ACE took too long to analyze") > aborts
+    hook.assert_not_called()
+    analysis = load_root(get_storage_dir(root.uuid)).get_observable(pending.uuid).get_and_load_analysis(
+        DelayedAnalysisTestAnalysis
+    )
+    assert analysis.details[KEY_ABANDONED] is True

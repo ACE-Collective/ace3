@@ -429,31 +429,40 @@ class AnalysisExecutor:
                     if not (analysis.delayed or (analysis is resumed and not analysis.completed)):
                         continue
 
-                    analysis_module = self._get_analysis_module_by_generated_analysis(analysis.module_path)
-                    if analysis_module is None:
-                        # the module is no longer loaded, so nothing here can stop what it started
-                        continue
-
                     try:
-                        # details this pass never loaded are still on disk (a loaded or new one is modified)
-                        if not analysis.details_modified:
-                            analysis.load_details()
-
-                        analysis_module.delayed_analysis_abandoned(observable, analysis)
-                    except Exception:
-                        logging.exception(
-                            "%s failed to handle the abandoned delayed analysis of %s in %s",
-                            analysis_module, observable, root,
-                            extra={
-                                "root_uuid": root.uuid,
-                                "observable_uuid": observable.uuid,
-                                "module_name": analysis_module.name,
-                            },
-                        )
+                        self._hand_over_abandoned_delay(root, observable, analysis)
+                    finally:
+                        # the delay is dropped whatever the module did, and a flag left set would hand
+                        # it over again on every later abort of the root
+                        analysis.delayed = False
         except Exception:
             logging.exception(
                 "unable to tell modules about the abandoned delayed analysis of %s", root,
                 extra={"root_uuid": root.uuid},
+            )
+
+    def _hand_over_abandoned_delay(self, root: RootAnalysis, observable: Observable, analysis: Analysis) -> None:
+        """Calls delayed_analysis_abandoned on the module of analysis. Never raises."""
+        analysis_module = self._get_analysis_module_by_generated_analysis(analysis.module_path)
+        if analysis_module is None:
+            # the module is no longer loaded, so nothing here can stop what it started
+            return
+
+        try:
+            # details this pass never loaded are still on disk (a loaded or new one is modified)
+            if not analysis.details_modified:
+                analysis.load_details()
+
+            analysis_module.delayed_analysis_abandoned(observable, analysis)
+        except Exception:
+            logging.exception(
+                "%s failed to handle the abandoned delayed analysis of %s in %s",
+                analysis_module, observable, root,
+                extra={
+                    "root_uuid": root.uuid,
+                    "observable_uuid": observable.uuid,
+                    "module_name": analysis_module.name,
+                },
             )
 
     def _execute_post_analysis(self, context):

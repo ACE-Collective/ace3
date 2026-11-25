@@ -531,14 +531,15 @@ lost lock or a disposition stop, which all return normally from the executor).
 On any exception it calls `AnalysisExecutor.notify_delayed_analysis_abandoned`, which calls
 `delayed_analysis_abandoned(observable, analysis)` on the module of each analysis still waiting
 on a delay (marked `delayed`, or the one this work item resumes, unless it completed), with its
-details loaded, and logs what a module raises. Then it saves whatever it has, emits the same
-metrics with `outcome` `timed_out` (an `AnalysisTimeoutError`) or `failed`, sets
-`analysis_aborted = True`, clears every outstanding `delayed_analysis` row for the root, and
-re-raises. The hook is how a module whose delay waits on a job elsewhere (an API analyzer's
+details loaded, and logs what a module raises. It clears each such analysis's `delayed`
+flag, so a later pass of the root that aborts too does not hand the same delay over again. Then
+it saves whatever it has, emits the same metrics with `outcome` `timed_out` (an
+`AnalysisTimeoutError`) or `failed`, sets `analysis_aborted = True`, clears every outstanding
+`delayed_analysis` row for the root, and re-raises. The hook is how a module whose delay waits on a job elsewhere (an API analyzer's
 asynchronous search) stops that job, since no module is called again for a cleared row.
-`analysis_aborted` matters because abandoning the delayed rows leaves
-`root.delayed` stale — without forcing an index rebuild, the alert's observables
-would never reach `observable_mapping` and the alert would be unsearchable by
+`analysis_aborted` matters because `root.delayed` can still be stale after the
+delayed rows are cleared (when walking the tree failed) — without forcing an index
+rebuild, the alert's observables would never reach `observable_mapping` and the alert would be unsearchable by
 them.
 
 ---
