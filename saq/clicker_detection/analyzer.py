@@ -273,12 +273,14 @@ class ClickerDetectionMixin:
                 logging.warning("%s clicker search %s timed out", self.config.source, name)
                 results = None
                 error = "timed out"
+                self._abandon_query(observable, "timeout")
             except Exception as e:
                 logging.exception(f"{self.config.source} clicker search {name} failed for {observable.value}: {e}",
                                   extra={"clicker_source": self.config.source, "clicker_search": name,
                                          "observable": observable.value})
                 results = None
                 error = str(e) or type(e).__name__
+                self._abandon_query(observable, "error")
 
             if error is not None:
                 # recorded so that a search that never answered does not read as "no clicks found"

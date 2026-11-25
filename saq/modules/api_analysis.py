@@ -428,6 +428,22 @@ class BaseAPIAnalyzer(AnalysisModule):
         """
         pass
 
+    def abandon_query(self, reason: str) -> None:
+        """Called when the caller gives up on the query execute_query is running for self.analysis, and will
+        not call execute_query for it again: after an AnalysisDelay past query_timeout (reason "timeout"), or
+        after execute_query raised (reason "error"). An analyzer whose query is a job on the remote side
+        overrides it to stop that job. The callers log a failure of it and go on."""
+        pass
+
+    def _abandon_query(self, observable: Observable, reason: str) -> None:
+        try:
+            self.abandon_query(reason)
+        except Exception:
+            # the query is given up on either way; what is lost is the remote side's cleanup
+            logging.exception("%s failed to abandon its %s query", self.name, self.api,
+                              extra={"analysis_module": self.name, "abandon_reason": reason, "observable": observable.value,
+                                     "root_uuid": self.get_root().uuid})
+
     def process_query_results(self, query_results: Union[dict, list], analysis, observable: Observable) -> None:
         """Process the query results returned from execute_query.
 
@@ -633,11 +649,13 @@ class BaseAPIAnalyzer(AnalysisModule):
             logging.warning(f'{self.api} query timed out: {self.target_query}')
             analysis.query_results = None
             analysis.error = 'timed out'
+            self._abandon_query(observable, 'timeout')
 
         except Exception as e:
             logging.error(f"Error when executing {self.api} query {self.target_query}: {e}")
             analysis.query_results = None
             analysis.error = str(e) or type(e).__name__
+            self._abandon_query(observable, 'error')
 
         if analysis.query_results is None:
             return AnalysisExecutionResult.COMPLETED

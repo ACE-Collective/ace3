@@ -21,6 +21,8 @@ class _Analyzer(BaseAPIAnalyzer):
         self.queries = []
         self.processed = []
         self.finalized = []
+        self.abandoned = []
+        self.abandon_error = None
 
     def execute_query(self):
         self.queries.append(self.target_query)
@@ -33,6 +35,11 @@ class _Analyzer(BaseAPIAnalyzer):
 
     def process_finalize(self, analysis, observable):
         self.finalized.append(observable)
+
+    def abandon_query(self, reason):
+        self.abandoned.append((reason, self.analysis.query))
+        if self.abandon_error is not None:
+            raise self.abandon_error
 
 
 def _config(**kwargs):
@@ -73,6 +80,8 @@ def test_execute_analysis_processes_results(root, delayed_analysis):
     assert analyzer.processed == [[{"src": "10.0.0.2"}, {"src": "10.0.0.3"}]]
     assert analyzer.finalized == [observable]
     assert analysis.generate_summary() == "Test API: (2 results)"
+    # a query that answered is not abandoned
+    assert analyzer.abandoned == []
 
 
 @pytest.mark.unit
@@ -99,6 +108,25 @@ def test_execute_analysis_query_error(root, delayed_analysis, caplog):
     assert analyzer.processed == []
     assert analysis.generate_summary() == "Test API: ERROR: connection refused"
     assert any(r.levelno == logging.ERROR and "connection refused" in r.getMessage() for r in caplog.records)
+    # the analyzer is told that its query is given up on, so it can release a remote job
+    assert analyzer.abandoned == [("error", "search ip=10.0.0.1 type=ip")]
+
+
+@pytest.mark.unit
+def test_a_failing_abandon_query_is_logged_and_the_query_error_kept(root, delayed_analysis, caplog):
+    analyzer = _analyzer(root, delayed_analysis, results=RuntimeError("connection refused"))
+    analyzer.abandon_error = RuntimeError("could not stop the job")
+    observable = root.add_observable_by_spec(F_IP, "10.0.0.1")
+
+    assert analyzer.execute_analysis(observable) == AnalysisExecutionResult.COMPLETED
+
+    assert observable.get_analysis(BaseAPIAnalysis).error == "connection refused"
+    records = [r for r in caplog.records if r.levelno == logging.ERROR and r.exc_info
+               and "could not stop the job" in str(r.exc_info[1])]
+    assert len(records) == 1
+    assert records[0].analysis_module == "test_api_analyzer"
+    assert records[0].abandon_reason == "error"
+    assert records[0].observable == "10.0.0.1"
 
 
 @pytest.mark.unit
@@ -129,6 +157,8 @@ def test_async_query_delays_until_timeout(root, delayed_analysis, caplog):
 
     assert analyzer.execute_analysis(observable) == AnalysisExecutionResult.INCOMPLETE
     assert delayed_analysis.delay_analysis.call_args.kwargs["seconds"] == 7
+    # a query the caller still polls is not abandoned
+    assert analyzer.abandoned == []
 
     # the engine calls continue_analysis when the delay expires, and the query is not built again
     analysis = observable.get_analysis(BaseAPIAnalysis)
@@ -140,6 +170,7 @@ def test_async_query_delays_until_timeout(root, delayed_analysis, caplog):
     assert analysis.error == "timed out"
     assert analysis.query_results is None
     assert any(r.levelno == logging.WARNING and "query timed out" in r.getMessage() for r in caplog.records)
+    assert analyzer.abandoned == [("timeout", "search ip=10.0.0.1 already built")]
 
 
 @pytest.mark.unit
