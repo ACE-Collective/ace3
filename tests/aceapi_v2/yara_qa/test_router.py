@@ -30,7 +30,7 @@ from saq.signatures.yara_inventory import get_yara_inventory
 from saq.util import sha256_str
 from saq.yara_qa.store import QARecordStatus, QATarget, record_qa_match
 from saq.yara_scanning.match_record import serialize_match_record, summarize_match_record
-from tests.aceapi_v2.conftest import api_key_client, make_api_key
+from tests.aceapi_v2.conftest import api_key_client, make_api_key, open_encrypted_zip
 from tests.saq.helpers import audit_actor_of, audit_record
 
 pytestmark = pytest.mark.integration
@@ -121,13 +121,6 @@ async def _stored_match(session: AsyncSession, content: bytes, *, signature_uuid
     session.add(row)
     await session.flush()
     return row
-
-
-def _open_zip(content: bytes) -> tuple[zipfile.ZipFile, dict]:
-    archive = zipfile.ZipFile(io.BytesIO(content))
-    archive.setpassword(b"infected")
-    manifest_name = next(name for name in archive.namelist() if name.endswith("/manifest.json"))
-    return archive, json.loads(archive.read(manifest_name))
 
 
 #
@@ -328,7 +321,7 @@ async def test_download_one_match(client: AsyncClient, client_actor, session: As
     assert (*audit_actor_of(audit), audit.match_id, audit.signature_uuid, audit.sha256) == (
         *client_actor, row.id, row.signature_uuid, row.sha256)
 
-    archive, manifest = _open_zip(response.content)
+    archive, manifest = open_encrypted_zip(response.content)
     top = f"yara-qa-match-{row.id}"
     assert archive.read(f"{top}/{row.id}-{row.sha256}/evil.doc") == b"MZ live malware stand-in"
     assert json.loads(archive.read(f"{top}/{row.id}-{row.sha256}/match.json"))["rule"] == "matched_qa_rule"
@@ -351,19 +344,19 @@ async def test_bulk_download(client: AsyncClient, client_actor, session: AsyncSe
 
     response = await client.get(f"/signatures/yara-qa/{MATCHED_UUID}/download")
     assert response.status_code == 200
-    archive, manifest = _open_zip(response.content)
+    archive, manifest = open_encrypted_zip(response.content)
     assert sorted(m["match_id"] for m in manifest["matches"]) == [first.id, second.id]
     assert [(s["match_id"], s["reason"]) for s in manifest["skipped"]] == [(remote.id, "wrong_node")]
     assert archive.read(f"yara-qa-{MATCHED_UUID}/{second.id}-{second.sha256}/invoice.doc") == b"second sample"
 
     # one version
     response = await client.get(f"/signatures/yara-qa/{MATCHED_UUID}/download", params={"version": VERSION_A})
-    _, manifest = _open_zip(response.content)
+    _, manifest = open_encrypted_zip(response.content)
     assert [m["match_id"] for m in manifest["matches"]] == [first.id]
 
     # a selection
     response = await client.get(f"/signatures/yara-qa/{MATCHED_UUID}/download", params={"match_id": [second.id]})
-    _, manifest = _open_zip(response.content)
+    _, manifest = open_encrypted_zip(response.content)
     assert [m["match_id"] for m in manifest["matches"]] == [second.id]
     audit = audit_record(caplog, f"user unittest downloading 1 yara qa matches of signature {MATCHED_UUID} (version all)")
     assert (*audit_actor_of(audit), audit.signature_uuid, audit.match_ids) == (*client_actor, MATCHED_UUID, [second.id])

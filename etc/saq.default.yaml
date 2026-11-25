@@ -959,6 +959,10 @@ email_archive:
   # pool's ttl_days fails to load: it would lose the Message-ID of an email still in the pool
   # (docs/DATABASE_PARTITIONS.md)
   partition_retention_days: 30
+  # the most emails, and the most plaintext bytes, one POST /api/v2/email/archive/download zip may
+  # hold. the emails are decrypted to a temporary directory while the zip is built
+  max_bulk_download_files: 500
+  max_bulk_download_bytes: 1073741824
 
 memcached:
   # the address of the memcached system used by ACE

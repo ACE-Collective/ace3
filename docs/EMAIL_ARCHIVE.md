@@ -2,8 +2,8 @@
 
 ACE keeps a copy of every email the `email_archiver` module sees (files with the `archive`
 directive), so that an email can be pulled back later by its Message-ID: the `message_id_analyzer`
-does that when an alert names a Message-ID, and `GET /api/v2/email/archive?message_id=` streams one
-to an analyst. The code is `saq/email_archive/`.
+does that when an alert names a Message-ID, and the API hands them to analysts and scripts (see
+*Reading the archive through the API*). The code is `saq/email_archive/`.
 
 The archive is not searchable. Searching email (by URL, recipient, sender, subject) happens in the
 log platform, from the entry `email_logger` exports for every email, which carries the email's
@@ -42,6 +42,28 @@ since it would drop the Message-ID of an email the pool still has.
 The pool's index (`cas_objects`, `cas_touches`, ...) is in the email archive database, not the main
 one (`index_database: email_archive`). The email archive is the high-churn store that motivated
 keeping a ttl pool's index out of the main database (`docs/SVS_REVIEW.md`, CAS-7).
+
+## Reading the archive through the API
+
+Every route needs `email:read`.
+
+- `GET /api/v2/email/archive?message_id=` streams the newest email archived under one Message-ID,
+  as `message/rfc822`.
+- `POST /api/v2/email/archive/lookup` takes up to 1000 Message-IDs and returns, in request order,
+  every email archived under each: its sha256, when it was last archived and its size, newest
+  first. `expired_copies` counts the emails of a Message-ID that have expired, so a Message-ID
+  with no copies and no expired copies was never archived, or was archived too long ago for its
+  row to be kept.
+- `GET /api/v2/email/archive/{sha256}` streams one of those emails, unchanged. A script calls the
+  lookup and then fetches each email it wants, so a failure costs one email.
+- `POST /api/v2/email/archive/download` takes up to 1000 Message-IDs and returns every email of
+  each in one zip encrypted with the password `infected`, with a `manifest.json` listing the
+  emails and the Message-IDs it has none for, with why (`not_archived`, `expired`, or
+  `no_longer_stored` when it expired while the zip was built). The emails are decrypted into a
+  temporary directory to build it, so `email_archive.max_bulk_download_files` (500) and
+  `max_bulk_download_bytes` (1 GiB) bound it, with a 413 past either.
+
+The two downloads write an `AUDIT:` record naming who downloaded which emails.
 
 ## Single node and multi-node
 
@@ -126,9 +148,11 @@ what it stores.
   never be found again.
 - `saq/modules/email/message_id.py`: the `message_id_analyzer`, which materializes an archived
   email into an alert.
-- `aceapi_v2/email/`: `GET /api/v2/email/archive`. The email is looked up and verified (and
-  decrypted into the CAS read cache) before the response starts, so a corrupt email fails the
-  request instead of truncating it.
+- `aceapi_v2/email/`: the routes above. A streamed email is looked up and verified (and decrypted
+  into the CAS read cache) before the response starts, so a corrupt email fails the request
+  instead of truncating it. The lookup reads `archived_messages` one query per 500 Message-IDs
+  (`query_archived_copies()`), then which of the emails found the pool still has, one query per 500
+  emails (`CASPool.sizes()`).
 
 The email log entry that `email_logger` exports (fluent-bit, brocess) carries the email's digest as
 `archive_hash`. Its old `archive_path` field named the `.gz.e` file and is gone.

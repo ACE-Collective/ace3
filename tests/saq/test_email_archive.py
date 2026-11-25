@@ -10,7 +10,14 @@ from saq.configuration.config import get_config
 from saq.configuration.schema import ACEConfig
 from saq.constants import DB_EMAIL_ARCHIVE
 from saq.database import get_db_connection
-from saq.email_archive import archive_email, find_archived_email, get_email_archive_pool, query_archive_hashes
+from saq.email_archive import (
+    ArchivedCopy,
+    archive_email,
+    find_archived_email,
+    get_email_archive_pool,
+    query_archive_hashes,
+    query_archived_copies,
+)
 from saq.util.time import local_time
 from tests.saq.helpers import inject_deadlock
 
@@ -92,6 +99,38 @@ def test_the_newest_email_the_pool_still_has_is_found(tmpdir, caplog):
 
     assert any("has expired from the archive" in r.getMessage() and getattr(r, "message_id", None) == TEST_MESSAGE_ID
                for r in caplog.records)
+
+
+@pytest.mark.integration
+def test_query_archived_copies_of_many_message_ids(tmpdir):
+    now = local_time().replace(microsecond=0)
+    earlier, later = now - timedelta(minutes=10), now - timedelta(minutes=5)
+    older = archive_email(_write(tmpdir, b"older copy", "older"), "<a@example.com>", earlier)
+    newer = archive_email(_write(tmpdir, b"newer copy", "newer"), "<a@example.com>", later)
+    # archived again later: one copy, at its newest time
+    archive_email(_write(tmpdir, b"older copy", "older again"), "<a@example.com>", now)
+    other = archive_email(_write(tmpdir, b"other email", "other"), "<b@example.com>", earlier)
+
+    copies = query_archived_copies(["a@example.com", " <b@example.com> ", "<unknown@example.com>"])
+
+    naive = lambda when: when.replace(tzinfo=None)  # noqa: E731
+    assert copies == {
+        "<a@example.com>": [ArchivedCopy(older, naive(now)), ArchivedCopy(newer, naive(later))],
+        "<b@example.com>": [ArchivedCopy(other, naive(earlier))],
+    }
+    assert query_archived_copies([]) == {}
+
+
+@pytest.mark.integration
+def test_query_archived_copies_spans_batches(tmpdir, monkeypatch):
+    monkeypatch.setattr("saq.email_archive.archive._LOOKUP_BATCH", 2)
+    digests = {f"<{n}@example.com>": archive_email(_write(tmpdir, f"email {n}".encode(), str(n)), f"<{n}@example.com>", local_time())
+               for n in range(5)}
+
+    copies = query_archived_copies(list(digests))
+
+    assert {message_id: [copy.digest for copy in found] for message_id, found in copies.items()} == {
+        message_id: [digest] for message_id, digest in digests.items()}
 
 
 @pytest.mark.integration
