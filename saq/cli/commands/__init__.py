@@ -24,6 +24,7 @@ COMMANDS = {
     "user": "user",
     "test": "testing",
     "alert": "alerts",
+    "alert-automation": "alert_automation",
     "cache": "cache",
     "cas": "cas",
     "crash": "crash",

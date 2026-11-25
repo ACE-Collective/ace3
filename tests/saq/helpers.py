@@ -54,7 +54,7 @@ import pymysql
 import pymysql.cursors
 import pytest
 import requests
-from sqlalchemy import event
+from sqlalchemy import event, select
 from sqlalchemy.engine import Engine
 
 # expected values
@@ -652,6 +652,13 @@ def make_simulated(alert: Alert) -> None:
     db.query(Workload).filter(Workload.uuid == alert.uuid).delete()
     db.commit()
     db.expire_all()
+
+
+def alert_row(alert_uuid: str) -> Alert:
+    """The alert's row as the database has it now, not as this session last saw it."""
+    db = get_db()
+    db.expire_all()
+    return db.execute(select(Alert).where(Alert.uuid == alert_uuid)).unique().scalar_one()
 
 
 def workload_count(alert_uuid: str) -> int:

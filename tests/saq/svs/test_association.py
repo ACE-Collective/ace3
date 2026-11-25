@@ -40,7 +40,7 @@ from saq.svs import association, attribution, runs
 from saq.svs.association import AssociationConflict, InvalidAssociation, UnknownAlert
 from saq.svs.attribution import evaluate, write_attributions
 from saq.svs.constants import SVS_MANUAL_ROUTER, RunEventKind, RunState
-from tests.saq.helpers import audit_actors, create_root_analysis, insert_alert
+from tests.saq.helpers import alert_row as _row, audit_actors, create_root_analysis, insert_alert
 from tests.saq.svs.conftest import LAUNCHER, add_catalog_test, add_test_host, person, started_run, sync_alert
 
 # several runs on one test host are fixtures here; the host's claim is tested in test_runs.py
@@ -81,12 +81,6 @@ def _alert(*, marker=None, host="win10-01", analysis_mode=None, event_time=None)
     root.save()
     ALERT(root)
     return root
-
-
-def _row(alert_uuid: str) -> Alert:
-    db = get_db()
-    db.expire_all()
-    return db.execute(select(Alert).where(Alert.uuid == alert_uuid)).unique().scalar_one()
 
 
 def _attributions(alert_uuid: str, run_id: int) -> list[SVSAttribution]:
