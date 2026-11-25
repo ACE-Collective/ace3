@@ -5,9 +5,11 @@ from types import SimpleNamespace
 
 import pytest
 
+from sqlalchemy import select
+
 from saq.constants import F_EMAIL_DELIVERY, F_TEST, create_email_delivery
 from saq.database.database_observable import upsert_observable
-from saq.database.model import ExternalRemediationCheck, ObservableRemediationMapping, Remediation
+from saq.database.model import Alert, ExternalRemediationCheck, ObservableRemediationMapping, Remediation
 from saq.database.pool import get_db
 from saq.database.util.alert import ALERT
 from saq.configuration.config import get_config
@@ -22,10 +24,12 @@ from saq.remediation.coverage import (
     assemble_coverage,
     get_remediation_coverage,
     journal_explains,
+    remediation_filter_value,
 )
 from saq.remediation.external.database import ace_supersede_reason, probe_supersede_reason
 from saq.remediation.external.types import CheckResult, CheckStatus
-from tests.saq.helpers import create_root_analysis
+from saq.remediation.types import ALERT_REMEDIATION_FILTER_OPTIONS, REMEDIATION_SOURCE_ANY
+from tests.saq.helpers import create_root_analysis, insert_alert_with_email_targets
 
 ALICE = create_email_delivery("<msg-1@example.com>", "alice@example.com")
 BOB = create_email_delivery("<msg-1@example.com>", "bob@example.com")
@@ -33,8 +37,8 @@ CAROL = create_email_delivery("<msg-1@example.com>", "carol@example.com")
 ALERT_UUID = "alert-1"
 
 
-def _ace_row(status="COMPLETED", result="SUCCESS", action="remove"):
-    return SimpleNamespace(status=status, result=result, action=action)
+def _ace_row(status="COMPLETED", result="SUCCESS", action="remove", name="email_remediator"):
+    return SimpleNamespace(status=status, result=result, action=action, name=name)
 
 
 def _event(source="Fake Source", target="alice@example.com"):
@@ -432,3 +436,218 @@ def test_get_remediation_coverage_reads_the_delivery_tags():
 
     assert coverage.state is CoverageState.REMEDIATED
     assert coverage.label == "remediated 1/1 · ACE"
+
+
+# --- the manage page's Remediation filter ---
+#
+# The column's rule exists twice: RemediationCoverage.filter_value for the page that shows it, and
+# remediation_filter_value() for the query that filters on it. Every scenario here runs through
+# both, so neither copy can change without the other.
+
+NON_ASCII = create_email_delivery("<msg-ü@example.com>", "zoë@example.com")
+
+
+def _scenario(targets=(ALICE, BOB), ace=None, checks=None, undelivered=None):
+    return {"targets": targets, "ace": ace or {}, "checks": checks or [], "undelivered": undelivered or {}}
+
+
+SCENARIOS = [
+    pytest.param(_scenario(targets=()), "none", id="no_targets"),
+    pytest.param(_scenario(), "none", id="no_activity"),
+    pytest.param(_scenario(ace={ALICE: [_ace_row()], BOB: [_ace_row()]}), "remediated", id="ace_success"),
+    pytest.param(_scenario(targets=(ALICE,), ace={ALICE: [_ace_row(), _ace_row(action="restore")]}),
+                 "not_remediated", id="restored_after_removal"),
+    pytest.param(_scenario(targets=(ALICE,), ace={ALICE: [_ace_row(result="FAILED"), _ace_row()]}),
+                 "remediated", id="removed_after_failure"),
+    pytest.param(_scenario(checks=[_check(ALICE, result=CheckResult.CONFIRMED.value, events=[_event()]),
+                                   _check(BOB, status=CheckStatus.NEW.value)]),
+                 "partial", id="confirmed_and_watching"),
+    pytest.param(_scenario(ace={ALICE: [_ace_row(result="FAILED")], BOB: [_ace_row()]}), "failed", id="ace_failed"),
+    pytest.param(_scenario(ace={ALICE: [_ace_row(result="ERROR")]}), "failed", id="ace_error"),
+    pytest.param(_scenario(ace={ALICE: [_ace_row(result="FAILED")], BOB: [_ace_row()]},
+                           checks=[_check(ALICE, result=CheckResult.CONFIRMED.value, events=[_event()])]),
+                 "remediated", id="ace_failed_but_vendor_confirmed"),
+    pytest.param(_scenario(targets=(ALICE,), ace={ALICE: [_ace_row(result="NOT_FOUND")]}),
+                 "not_in_mailbox", id="not_found"),
+    pytest.param(_scenario(targets=(ALICE,), ace={ALICE: [_ace_row(result="NOT_FOUND")]},
+                           checks=[_check(ALICE, status=CheckStatus.NEW.value)]),
+                 "not_in_mailbox", id="not_found_while_watching"),
+    pytest.param(_scenario(targets=(ALICE,), ace={ALICE: [_ace_row(result="NOT_FOUND")]},
+                           checks=[_check(ALICE, result=CheckResult.CONFIRMED.value, events=[_event()])]),
+                 "remediated", id="not_found_then_vendor_confirmed"),
+    pytest.param(_scenario(ace={ALICE: [_ace_row(result="NOT_FOUND")], BOB: [_ace_row()]}),
+                 "remediated", id="not_found_and_removed"),
+    pytest.param(_scenario(targets=(ALICE, BOB, CAROL), ace={ALICE: [_ace_row(result="NOT_FOUND")], BOB: [_ace_row()]},
+                           checks=[_check(CAROL, status=CheckStatus.NEW.value)]),
+                 "partial", id="not_found_removed_and_watching"),
+    pytest.param(_scenario(ace={ALICE: [_ace_row(result="NOT_FOUND")]}, checks=[_check(BOB, status=CheckStatus.NEW.value)]),
+                 "not_in_mailbox", id="not_found_and_watching"),
+    pytest.param(_scenario(checks=[_check(ALICE, status=CheckStatus.NEW.value),
+                                   _check(BOB, status=CheckStatus.IN_PROGRESS.value)]),
+                 "watching", id="probes_watching"),
+    pytest.param(_scenario(ace={ALICE: [_ace_row(status="IN_PROGRESS", result=None)]},
+                           checks=[_check(BOB, status=CheckStatus.IN_PROGRESS.value)]),
+                 "remediating", id="removal_in_flight"),
+    pytest.param(_scenario(targets=(ALICE,), ace={ALICE: [_ace_row(status="NEW", result=None, action="restore")]}),
+                 "watching", id="restore_in_flight"),
+    pytest.param(_scenario(checks=[_check(ALICE, result=CheckResult.EXPIRED.value),
+                                   _check(BOB, result=CheckResult.NOT_FOUND.value)]),
+                 "not_remediated", id="probes_finished_unconfirmed"),
+    pytest.param(_scenario(checks=[_check(ALICE, result=CheckResult.SUPERSEDED.value, result_message="???"),
+                                   _check(BOB, result=CheckResult.SUPERSEDED.value, result_message="???")]),
+                 "remediated", id="superseded"),
+    pytest.param(_scenario(targets=(ALICE,), ace={ALICE: [_ace_row(result=None)]}),
+                 "not_remediated", id="completed_removal_without_a_result"),
+    pytest.param(_scenario(targets=(ALICE,), ace={ALICE: [_ace_row(result=None, action="restore")]}),
+                 "not_remediated", id="completed_restore_without_a_result"),
+    pytest.param(_scenario(targets=(ALICE,), ace={ALICE: [_ace_row(result="CANCELLED")]}),
+                 "not_remediated", id="removal_cancelled"),
+    pytest.param(_scenario(targets=(ALICE,), checks=[_check(BOB, result=CheckResult.CONFIRMED.value, events=[_event()])]),
+                 "partial", id="check_only_target_confirmed"),
+    pytest.param(_scenario(targets=(), checks=[_check(BOB, status=CheckStatus.NEW.value)]),
+                 "watching", id="check_only_target_watching"),
+    pytest.param(_scenario(targets=(), checks=[_check(BOB, result=CheckResult.EXPIRED.value),
+                                               _check(BOB, result=CheckResult.CONFIRMED.value, events=[_event()])]),
+                 "remediated", id="check_only_target_confirmed_by_a_sibling"),
+    pytest.param(_scenario(targets=(ALICE,), ace={ALICE: [_ace_row()]}, checks=[_check(BOB, result=CheckResult.EXPIRED.value)]),
+                 "partial", id="check_only_target_beside_a_removed_one"),
+    pytest.param(_scenario(targets=(NON_ASCII,), checks=[_check(NON_ASCII, result=CheckResult.CONFIRMED.value,
+                                                                 events=[_event()])]),
+                 "remediated", id="non_ascii_value"),
+    pytest.param(_scenario(targets=(ALICE, DL), ace={ALICE: [_ace_row()], DL: [_ace_row(result="FAILED")]},
+                           undelivered={DL: DELIVERY_EXPANDED}),
+                 "remediated", id="distribution_list_failure_left_out"),
+    pytest.param(_scenario(targets=(ALICE, DL), ace={ALICE: [_ace_row()], DL: [_ace_row(result="FAILED")]},
+                           undelivered={DL: DELIVERY_NOT_JOURNALED}),
+                 "failed", id="unjournaled_failure_still_fails"),
+    pytest.param(_scenario(targets=(ALICE, DL), ace={ALICE: [_ace_row()], DL: [_ace_row(result="ERROR")]},
+                           undelivered={DL: DELIVERY_FORWARDED}),
+                 "failed", id="forwarded_error_still_fails"),
+    pytest.param(_scenario(targets=(ALICE, DL), ace={ALICE: [_ace_row()], DL: [_ace_row(status="IN_PROGRESS", result=None)]},
+                           undelivered={DL: DELIVERY_FORWARDED}),
+                 "partial", id="undelivered_address_still_counts_while_pending"),
+    pytest.param(_scenario(targets=(ALICE, DL), ace={ALICE: [_ace_row()], DL: [_ace_row(result="FAILED")]},
+                           checks=[_check(DL, status=CheckStatus.NEW.value)], undelivered={DL: DELIVERY_EXPANDED}),
+                 "failed", id="undelivered_address_still_counts_while_a_probe_watches"),
+    pytest.param(_scenario(targets=(ALICE, DL), ace={DL: [_ace_row(result="FAILED")]},
+                           checks=[_check(DL, result=CheckResult.SUPERSEDED.value, result_message="???")],
+                           undelivered={DL: DELIVERY_EXPANDED}),
+                 "none", id="superseded_after_the_journal_left_it_out"),
+]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("scenario, expected", SCENARIOS)
+def test_filter_value(scenario, expected):
+    assert _assemble(**scenario).filter_value == expected
+
+
+@pytest.mark.unit
+def test_scenarios_cover_every_filter_value():
+    assert {param.values[1] for param in SCENARIOS} == set(ALERT_REMEDIATION_FILTER_OPTIONS)
+
+
+def _sql_filter_value(alert, source=REMEDIATION_SOURCE_ANY) -> str:
+    return get_db().execute(select(remediation_filter_value(Alert, source)).where(Alert.id == alert.id)).scalar_one()
+
+
+def _filter_values(alert) -> tuple[str, str]:
+    """The alert's filter value as the column computes it (a page of one) and as the filter does."""
+    return get_remediation_coverage([alert])[alert.uuid].filter_value, _sql_filter_value(alert)
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("scenario, expected", SCENARIOS)
+def test_the_filter_agrees_with_the_column(scenario, expected):
+    alert = insert_alert_with_email_targets(**scenario)
+    assert _filter_values(alert) == (expected, expected)
+
+
+@pytest.mark.integration
+def test_the_filter_reads_only_the_alerts_own_checks_and_tags():
+    # ACE's rows belong to the observable and show on every alert that maps it; checks and the
+    # journal's delivery tags belong to the alert
+    left_out = insert_alert_with_email_targets(
+        (DL,), ace={DL: [_ace_row(result="FAILED")]}, undelivered={DL: DELIVERY_EXPANDED},
+        checks=[_check(BOB, result=CheckResult.CONFIRMED.value, events=[_event()])])
+    other = insert_alert_with_email_targets((BOB, DL))
+
+    assert _filter_values(left_out) == ("remediated", "remediated")
+    assert _filter_values(other) == ("failed", "failed")
+
+
+@pytest.mark.integration
+def test_the_filter_ignores_other_observable_types():
+    alert = insert_alert_with_email_targets((ALICE,))
+    db = get_db()
+    remediation = Remediation(type="url", name="url_remediator", key=ALICE, action="remove", status="COMPLETED",
+                              result="SUCCESS", user_id=get_config().global_settings.automation_user_id)
+    db.add(remediation)
+    db.flush()
+    db.add(ObservableRemediationMapping(observable_id=upsert_observable(create_observable(F_EMAIL_DELIVERY, ALICE)),
+                                        remediation_id=remediation.id))
+    db.add(ExternalRemediationCheck(probe_name="fake_probe", observable_type="url", observable_value=ALICE,
+                                    alert_uuid=alert.uuid, status=CheckStatus.COMPLETED.value,
+                                    result=CheckResult.CONFIRMED.value, max_retries=3,
+                                    deadline=datetime.now(timezone.utc) + timedelta(hours=1)))
+    db.commit()
+
+    root = create_root_analysis()
+    root.initialize_storage()
+    root.add_observable_by_spec(F_TEST, "not an email")
+    root.save()
+    not_email = ALERT(root)
+
+    assert _filter_values(alert) == ("none", "none")
+    assert _filter_values(not_email) == ("none", "none")
+
+
+@pytest.mark.integration
+def test_a_check_only_target_never_takes_ace_rows():
+    # ALICE is removed through the alert that maps it; the other alert only has a probe watching
+    # for ALICE and does not map her, so for it ALICE is still being watched
+    insert_alert_with_email_targets((ALICE,), ace={ALICE: [_ace_row()]})
+    watching = insert_alert_with_email_targets((), checks=[_check(ALICE, status=CheckStatus.NEW.value)])
+
+    assert _filter_values(watching) == ("watching", "watching")
+
+
+# ACE's removal of ALICE failed and a probe confirmed it; another remediator removed BOB, whom another
+# probe is still watching. Each source sees only its own rows.
+MIXED_SOURCES = _scenario(
+    ace={ALICE: [_ace_row(result="FAILED")], BOB: [_ace_row(name="other_remediator")]},
+    checks=[_check(ALICE, result=CheckResult.CONFIRMED.value, events=[_event()]),
+            _check(BOB, status=CheckStatus.NEW.value, probe_name="other_probe")],
+)
+
+
+def _from_source(scenario, source):
+    """The scenario with only the source's rows: what the filter means by naming one."""
+    if source == REMEDIATION_SOURCE_ANY:
+        return scenario
+    return dict(scenario,
+                ace={target: [row for row in rows if row.name == source] for target, rows in scenario["ace"].items()},
+                checks=[check for check in scenario["checks"] if check.probe_name == source])
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("source, expected", [
+    (REMEDIATION_SOURCE_ANY, "remediated"),
+    ("email_remediator", "failed"),
+    ("other_remediator", "partial"),
+    ("fake_probe", "partial"),
+    ("other_probe", "watching"),
+    ("nobody", "none"),
+])
+def test_a_source_reads_only_its_own_rows(source, expected):
+    alert = insert_alert_with_email_targets(**MIXED_SOURCES)
+    assert _assemble(**_from_source(MIXED_SOURCES, source)).filter_value == expected
+    assert _sql_filter_value(alert, source) == expected
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("source", ["email_remediator", "fake_probe"])
+@pytest.mark.parametrize("scenario, expected", SCENARIOS)
+def test_the_filter_agrees_with_the_column_for_one_source(scenario, expected, source):
+    alert = insert_alert_with_email_targets(**scenario)
+    assert _sql_filter_value(alert, source) == _assemble(**_from_source(scenario, source)).filter_value

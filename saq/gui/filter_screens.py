@@ -120,7 +120,7 @@ ALERTS_SCREEN = FilterScreen(
     name="alerts",
     entry_model=FilterEntry,
     slugs=FILTER_SLUGS,
-    pair_filter_names=frozenset(["Observable", "Observable Pattern"]),
+    pair_filter_names=frozenset(["Observable", "Observable Pattern", "Remediation"]),
 )
 
 # detections with their verdicts (GET /api/v2/detection-points, docs/SVS_API.md)

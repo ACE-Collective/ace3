@@ -5,6 +5,7 @@ import csv
 import io
 import json
 from datetime import datetime, time, timedelta, timezone
+from types import SimpleNamespace
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -29,7 +30,13 @@ from saq.database.pool import get_db
 from saq.database.util.alert import ALERT, touch_alerts
 from tests.aceapi_v2.conftest import api_key_client, make_api_key, v2_app
 from saq.detection_verdicts.store import confirm_alert
-from tests.saq.helpers import create_root_analysis, insert_alert, insert_alert_with_detections, person
+from tests.saq.helpers import (
+    create_root_analysis,
+    insert_alert,
+    insert_alert_with_detections,
+    insert_alert_with_email_targets,
+    person,
+)
 from tests.saq.svs.conftest import SIGNATURE_UUID, attribute_to_run
 
 pytestmark = pytest.mark.integration
@@ -345,6 +352,30 @@ class TestFilters:
 
         response = await client.get("/alerts/", params={"f": "unconfirmed_detections:maybe"})
         assert response.status_code == 422
+
+    @pytest.mark.asyncio
+    async def test_remediation(self, client: AsyncClient):
+        """The state the manage page's Remediation column shows (saq/remediation/coverage.py)."""
+        target = "<m@x>|alice@example.com"
+        failed = insert_alert_with_email_targets((target,), ace={target: [
+            SimpleNamespace(status="COMPLETED", result="FAILED", action="remove", name="email_remediator")]})
+        no_email = insert_alert()
+
+        rows = (await client.get("/alerts/", params={"f": "remediation:any:Failed"})).json()["data"]
+        assert [row["uuid"] for row in rows] == [failed.uuid]
+
+        rows = (await client.get("/alerts/", params={"f": "!remediation:Any:failed"})).json()["data"]
+        assert [row["uuid"] for row in rows] == [no_email.uuid]
+
+        rows = (await client.get("/alerts/", params={"f": "remediation:email_remediator:failed"})).json()["data"]
+        assert [row["uuid"] for row in rows] == [failed.uuid]
+
+        rows = (await client.get("/alerts/", params={"f": "remediation:some_probe:none"})).json()["data"]
+        assert {row["uuid"] for row in rows} == {failed.uuid, no_email.uuid}
+
+        assert (await client.get("/alerts/count", params={"f": "remediation:Any:failed,Any:none"})).json() == {"count": 2}
+        for bad in ("remediation:Any:gone", "remediation:failed"):
+            assert (await client.get("/alerts/", params={"f": bad})).status_code == 422, bad
 
     @pytest.mark.asyncio
     async def test_filters_are_anded(self, client: AsyncClient):

@@ -35,7 +35,12 @@ from saq.gui.filter_query import (
     get_analysis_type_labels,
 )
 from saq.gui.observable_pattern import ObservablePatternError
-from tests.saq.helpers import attach_observable, insert_alert, insert_alert_with_detections
+from tests.saq.helpers import (
+    attach_observable,
+    insert_alert,
+    insert_alert_with_detections,
+    insert_alert_with_email_targets,
+)
 
 pytestmark = pytest.mark.integration
 
@@ -510,6 +515,69 @@ class TestObservablePatternFilter:
             filter_query.resolve_observable_pattern("fqdn", "*.evil.com")
 
 
+def _removal(result, name="email_remediator"):
+    return SimpleNamespace(status="COMPLETED", result=result, action="remove", name=name)
+
+
+@pytest.fixture
+def remediations():
+    """An alert ACE failed to remediate, one it remediated, one a probe is still watching, and
+    one with no email at all."""
+    failed = insert_alert_with_email_targets(("<m@x>|alice@example.com",),
+                                             ace={"<m@x>|alice@example.com": [_removal("FAILED")]})
+    remediated = insert_alert_with_email_targets(("<m@x>|bob@example.com",),
+                                                 ace={"<m@x>|bob@example.com": [_removal("SUCCESS")]})
+    watching = insert_alert_with_email_targets(("<m@x>|carol@example.com",), checks=[SimpleNamespace(
+        observable_value="<m@x>|carol@example.com", status="NEW", result=None, probe_name="fake_probe",
+        result_message=None, events_json=None)])
+    # ACE removed it with another remediator
+    other_remediator = insert_alert_with_email_targets(("<m@x>|dave@example.com",),
+                                                       ace={"<m@x>|dave@example.com": [_removal("SUCCESS", "other")]})
+    no_email = insert_alert()
+    return SimpleNamespace(failed=failed, remediated=remediated, watching=watching, no_email=no_email,
+                           other_remediator=other_remediator)
+
+
+def _remediation(*states, source="Any", inverted=False):
+    return [{"name": "Remediation", "inverted": inverted, "values": [[source, state] for state in states]}]
+
+
+class TestRemediationFilter:
+    def test_finds_alerts_in_the_state(self, remediations):
+        assert _uuids(_remediation("failed")) == {remediations.failed.uuid}
+        assert _uuids(_remediation("none")) == {remediations.no_email.uuid}
+
+    def test_values_within_one_entry_are_ored(self, remediations):
+        assert _uuids(_remediation("failed", "watching")) == {remediations.failed.uuid, remediations.watching.uuid}
+
+    def test_a_source_reads_only_its_own_rows(self, remediations):
+        assert _uuids(_remediation("remediated")) == {remediations.remediated.uuid, remediations.other_remediator.uuid}
+        assert _uuids(_remediation("remediated", source="other")) == {remediations.other_remediator.uuid}
+        assert _uuids(_remediation("watching", source="fake_probe")) == {remediations.watching.uuid}
+        # to a probe, ACE's removals are no attempt at all
+        assert remediations.remediated.uuid in _uuids(_remediation("none", source="fake_probe"))
+
+    def test_pairs_of_different_sources_are_ored(self, remediations):
+        filters = [{"name": "Remediation", "inverted": False,
+                    "values": [["other", "remediated"], ["fake_probe", "watching"]]}]
+        assert _uuids(filters) == {remediations.other_remediator.uuid, remediations.watching.uuid}
+
+    def test_inverted_is_the_exact_complement(self, remediations):
+        # an alert with no email is not a failed one
+        assert _uuids(_remediation("failed", inverted=True)) == {
+            remediations.remediated.uuid, remediations.watching.uuid, remediations.no_email.uuid,
+            remediations.other_remediator.uuid}
+        assert remediations.no_email.uuid not in _uuids(_remediation("none", inverted=True))
+
+    def test_count_alerts(self, remediations):
+        assert count_alerts(_remediation("failed", "watching"), entity=Alert, tz=pytz.utc, locations=None) == 2
+
+    @pytest.mark.parametrize("values", [[["Any", "gone"]], ["failed"], [["Any"]]])
+    def test_an_impossible_value_matches_nothing_rather_than_raising(self, remediations, values):
+        # validation keeps these out of stored filters; the query must still not raise on them
+        assert _uuids([{"name": "Remediation", "inverted": False, "values": values}]) == set()
+
+
 class TestOtherFilters:
     def test_tag(self, corpus):
         _, tagged, _ = corpus
@@ -589,6 +657,11 @@ class TestAliasedEntity:
     def test_analysis(self, analyzed):
         qr, qr_and_urls, _, _ = analyzed
         assert self._aliased_uuids(_analysis_filter(QR_CODE_ANALYSIS)) == {qr.uuid, qr_and_urls.uuid}
+
+    def test_remediation(self, remediations):
+        assert self._aliased_uuids(_remediation("failed")) == {remediations.failed.uuid}
+        assert remediations.failed.uuid not in self._aliased_uuids(_remediation("failed", inverted=True))
+        assert self._aliased_uuids(_remediation("watching", source="fake_probe")) == {remediations.watching.uuid}
 
     def test_unconfirmed_detections(self):
         detections = [{"description": "a", "signature_uuid": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"},

@@ -740,6 +740,14 @@ is written there, change the tag to point at it.
 - **Filter slugs are permanent, `LEGACY_FILTER_NAME_ALIASES` is append-only, and the encoding
   lives only in `filter_url.py`.** See `saq/gui/filter_names.py::FILTER_SLUGS` and
   `saq/gui/filter_names.py::LEGACY_FILTER_NAME_ALIASES`. [docs/ALERT_FILTER_URLS.md]
+- **An alert's remediation state is computed in exactly two places, which must agree: the
+  Remediation column's Python and the Remediation filter's SQL.** A probe's target the alert does
+  not map never takes ACE's remediation rows in the SQL, and a filter that names a source reads
+  only that remediator's or probe's rows. See
+  `saq/remediation/coverage.py::RemediationCoverage.filter_value` and
+  `saq/remediation/coverage.py::remediation_filter_value`;
+  `tests/saq/remediation/test_coverage.py::test_the_filter_agrees_with_the_column` pins it.
+  [docs/ALERT_FILTER_URLS.md]
 - **Polled Datastar endpoints never write the session and send `private, no-store`.** See
   `app/analysis/views/manage.py::manage_refresh`. [docs/GUI_DATASTAR.md]
 - **Durable preferences go only through `PREFERENCE_SCHEMAS`; view state stays in the

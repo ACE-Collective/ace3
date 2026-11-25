@@ -24,11 +24,18 @@ the alert-level state alongside remediated targets, while its own line reads
 
 The sources reported per target are the same ``RemediationEvent.source``
 labels the alert page's Remediation Timeline shows, so the two views agree.
+
+The manage page's Remediation filter needs the state of every alert, not of a
+page of them, so ``remediation_filter_value()`` at the end of this module is the
+same rule again in SQL. A test holds the two copies to agree.
 """
 from collections import defaultdict
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Iterable, Optional
+from typing import Callable, Iterable, NamedTuple, Optional
+
+from sqlalchemy import ColumnElement, Select, and_, case, exists, false, func, literal, not_, or_, select, true
+from sqlalchemy.orm import aliased
 
 from saq.constants import F_EMAIL_DELIVERY, parse_email_delivery
 from saq.database.model import (
@@ -46,7 +53,7 @@ from saq.modules.email.constants import DELIVERY_EXPANDED, DELIVERY_NOT_JOURNALE
 from saq.remediation.external.database import superseding_source_from_reason
 from saq.remediation.external.events import events_from_check
 from saq.remediation.external.types import CheckResult, CheckStatus
-from saq.remediation.types import RemediationAction, RemediationStatus, RemediatorStatus
+from saq.remediation.types import REMEDIATION_SOURCE_ANY, RemediationAction, RemediationStatus, RemediatorStatus
 
 ACE_SOURCE = "ACE"
 """Source label for ACE's own remediations. Matches the timeline's label."""
@@ -222,6 +229,27 @@ class RemediationCoverage:
         }[self.state]
 
     @property
+    def _removal_in_flight(self) -> bool:
+        """ACE is still removing one of the targets; this splits PENDING into "remediating" and
+        "watching". Over every target, not only the counted ones."""
+        return any(t.remediating for t in self.targets)
+
+    @property
+    def filter_value(self) -> str:
+        """This alert's value of the manage page's Remediation filter, a key of
+        ``ALERT_REMEDIATION_FILTER_OPTIONS``. ``remediation_filter_value()`` is the same rule in SQL."""
+        if self.state is CoverageState.PENDING:
+            return "remediating" if self._removal_in_flight else "watching"
+        return {
+            CoverageState.NONE: "none",
+            CoverageState.UNREMEDIATED: "not_remediated",
+            CoverageState.NOT_FOUND: "not_in_mailbox",
+            CoverageState.PARTIAL: "partial",
+            CoverageState.REMEDIATED: "remediated",
+            CoverageState.FAILED: "failed",
+        }[self.state]
+
+    @property
     def status_label(self) -> str:
         """State and counts only, e.g. ``remediated 3/3``."""
         if self.state is CoverageState.NOT_FOUND:
@@ -234,7 +262,7 @@ class RemediationCoverage:
             CoverageState.FAILED: "remediation failed",
             # "watching" tells the analyst ACE is still looking for a vendor action,
             # as opposed to "not remediated", which reads as final
-            CoverageState.PENDING: "remediating" if any(t.remediating for t in self.targets) else "watching",
+            CoverageState.PENDING: "remediating" if self._removal_in_flight else "watching",
             CoverageState.UNREMEDIATED: "not remediated",
             CoverageState.NOT_FOUND: "not in mailbox",
             CoverageState.NONE: "",
@@ -455,3 +483,252 @@ def _apply_check(target: TargetCoverage, check) -> None:
     if check.result == CheckResult.CONFIRMED.value:
         sources = {event.source for event in events_from_check(check) if event.source}
         target.sources.update(sources or {check.probe_name})
+
+
+# --- the same rule in SQL, for the manage page's Remediation filter ---
+#
+# The filter runs over every alert the rest of the filter list leaves in play, so it cannot load
+# rows and call assemble_coverage() the way a page of alerts does. This is the rule above again as
+# one SQL expression per alert. test_the_filter_agrees_with_the_column in
+# tests/saq/remediation/test_coverage.py runs every coverage scenario through both copies, so a
+# change to one without the other fails there.
+#
+# One difference from assemble_coverage() as the manage page calls it: a probe's target the alert
+# does not map never takes ACE's remediation rows. assemble_coverage() gives it the rows of any
+# alert on the same page that maps the value, which a query of one alert cannot see.
+#
+# The filter can also name a source: one remediator or one probe. The state is then the same rule
+# over that source's rows alone (remediation.name, external_remediation_check.probe_name); the
+# alert's email targets, and the journal's delivery tags on them, are the same for every source.
+
+
+class _TargetFlags(NamedTuple):
+    """The TargetCoverage flags of one kind of target, as SQL booleans over its rows. Each one
+    must be strictly true or false, never NULL: the CASE negates them."""
+    counted: ColumnElement[bool]
+    attempted: ColumnElement[bool]
+    failed: ColumnElement[bool]
+    remediating: ColumnElement[bool]
+    pending: ColumnElement[bool]
+    remediated: ColumnElement[bool]
+    covered: ColumnElement[bool]
+
+
+class _Targets(NamedTuple):
+    """One kind of target of an alert: a select of one row per target, correlated to the alert,
+    and the flags over those rows."""
+    rows: Select
+    flags: _TargetFlags
+
+
+def _value_key(value) -> ColumnElement[bytes]:
+    """The observables.sha256 of the email_delivery with this value: the sha256 of its UTF-8
+    bytes (Observable.sha256_bytes). Matching on it is byte-exact like assemble_coverage()'s
+    string keys, and uses i_type_sha256."""
+    return func.unhex(func.sha2(value, 256))
+
+
+def _check_pending(check) -> ColumnElement[bool]:
+    return check.status != CheckStatus.COMPLETED.value
+
+
+def _check_confirmed(check) -> ColumnElement[bool]:
+    return and_(check.status == CheckStatus.COMPLETED.value, check.result == CheckResult.CONFIRMED.value)
+
+
+def _check_superseded(check) -> ColumnElement[bool]:
+    # whatever its status, as assemble_coverage() credits it
+    return check.result == CheckResult.SUPERSEDED.value
+
+
+def _from_probe(check, source: str) -> ColumnElement[bool]:
+    return true() if source == REMEDIATION_SOURCE_ANY else check.probe_name == source
+
+
+def _from_remediator(remediation, source: str) -> ColumnElement[bool]:
+    return true() if source == REMEDIATION_SOURCE_ANY else remediation.name == source
+
+
+def _alert_checks(alert, source: str, value_key, condition=None) -> ColumnElement[bool]:
+    """Whether the alert has an email_delivery probe row from the source for the target with this
+    key (and, given a condition, one meeting it). Nested two deep, so it names what it correlates:
+    left to itself it would select from its own `alerts` and match any alert's rows."""
+    check = aliased(ExternalRemediationCheck)
+    return exists().where(
+        check.alert_uuid == alert.uuid,
+        check.observable_type == F_EMAIL_DELIVERY,
+        _from_probe(check, source),
+        _value_key(check.observable_value) == value_key,
+        condition(check) if condition is not None else true(),
+    ).correlate_except(check)
+
+
+def _mapped_targets(alert, source: str) -> _Targets:
+    """The email_delivery observables mapped to the alert, each joined to the source's latest
+    remediation of it (the only one that decides its ACE state, see _apply_ace_rows)."""
+    mapping = aliased(ObservableMapping)
+    observable = aliased(Observable)
+    remediation_mapping = aliased(ObservableRemediationMapping)
+    remediation = aliased(Remediation)
+
+    latest_mapping = aliased(ObservableRemediationMapping)
+    latest = aliased(Remediation)
+    latest_id = (
+        select(func.max(latest.id))
+        .select_from(latest_mapping)
+        .join(latest, latest.id == latest_mapping.remediation_id)
+        .where(latest_mapping.observable_id == observable.id, latest.type == F_EMAIL_DELIVERY,
+               _from_remediator(latest, source))
+        .correlate(observable)
+        .scalar_subquery()
+    )
+    # through the mapping row of the latest remediation (a primary key lookup), so the join
+    # names the observable it belongs to
+    rows = (
+        select(literal(1))
+        .select_from(mapping)
+        .join(observable, and_(observable.id == mapping.observable_id, observable.type == F_EMAIL_DELIVERY))
+        .outerjoin(remediation_mapping, and_(remediation_mapping.observable_id == observable.id,
+                                             remediation_mapping.remediation_id == latest_id))
+        .outerjoin(remediation, remediation.id == remediation_mapping.remediation_id)
+        .where(mapping.alert_id == alert.id)
+    )
+
+    # remediation.status and .action are NOT NULL, so these are only NULL-free behind `ace`
+    ace = remediation.id.is_not(None)
+    ace_pending = and_(ace, remediation.status != RemediationStatus.COMPLETED.value)
+    removed = and_(ace, remediation.status == RemediationStatus.COMPLETED.value,
+                   remediation.action == RemediationAction.REMOVE.value)
+
+    def removal_result(*statuses: RemediatorStatus) -> ColumnElement[bool]:
+        return and_(removed, remediation.result.is_not(None),
+                    remediation.result.in_([status.value for status in statuses]))
+
+    success = removal_result(RemediatorStatus.SUCCESS)
+    not_found = removal_result(RemediatorStatus.NOT_FOUND)
+    confirmed = _alert_checks(alert, source, observable.sha256, _check_confirmed)
+    superseded = _alert_checks(alert, source, observable.sha256, _check_superseded)
+    pending = or_(ace_pending, _alert_checks(alert, source, observable.sha256, _check_pending))
+
+    # the journal explains the finished removal finding nothing (journal_explains): one
+    # (tag, result) pair per combination it accepts, so the rule is not written out twice
+    tag_index = aliased(ObservableTagIndex)
+    tag = aliased(Tag)
+    explained_pairs = [
+        and_(tag.name == tag_name, remediation.result == status.value)
+        for tag_name, reason in DELIVERY_TAG_REASONS.items()
+        for status in RemediatorStatus
+        if journal_explains(reason, status.value)
+    ]
+    explained = and_(removed, remediation.result.is_not(None), exists().where(
+        tag_index.alert_id == alert.id,
+        tag_index.observable_id == observable.id,
+        tag.id == tag_index.tag_id,
+        or_(*explained_pairs),
+    ).correlate_except(tag_index, tag))
+    # SUPERSEDED is left out on purpose: assemble_coverage() credits it after deciding this
+    not_delivered = and_(explained, not_(or_(success, confirmed)), not_(pending))
+
+    return _Targets(rows, _TargetFlags(
+        counted=not_(not_delivered),
+        attempted=or_(ace, _alert_checks(alert, source, observable.sha256)),
+        failed=removal_result(RemediatorStatus.FAILED, RemediatorStatus.ERROR),
+        remediating=and_(ace_pending, remediation.action == RemediationAction.REMOVE.value),
+        pending=pending,
+        remediated=or_(success, confirmed, superseded),
+        covered=or_(success, confirmed, superseded, not_found),
+    ))
+
+
+def _check_only_targets(alert, source: str) -> _Targets:
+    """The source's email_delivery probe rows of the alert for a value the alert does not map, one
+    row per probe row: each is a target of its own (assemble_coverage()), with no ACE rows or tags."""
+    check = aliased(ExternalRemediationCheck)
+    mapping = aliased(ObservableMapping)
+    observable = aliased(Observable)
+    key = _value_key(check.observable_value)
+    mapped = exists().where(
+        mapping.alert_id == alert.id,
+        observable.id == mapping.observable_id,
+        observable.type == F_EMAIL_DELIVERY,
+        observable.sha256 == key,
+    ).correlate_except(mapping, observable)
+    rows = (
+        select(literal(1))
+        .select_from(check)
+        .where(check.alert_uuid == alert.uuid, check.observable_type == F_EMAIL_DELIVERY,
+               _from_probe(check, source), not_(mapped))
+    )
+
+    # the target is the value, so its state is read across every probe row for that value
+    remediated = _alert_checks(alert, source, key,
+                               lambda sibling: or_(_check_confirmed(sibling), _check_superseded(sibling)))
+    return _Targets(rows, _TargetFlags(
+        counted=true(),
+        attempted=true(),
+        failed=false(),
+        remediating=false(),
+        pending=_alert_checks(alert, source, key, _check_pending),
+        remediated=remediated,
+        covered=remediated,
+    ))
+
+
+def has_remediation_activity(alert, source: str = REMEDIATION_SOURCE_ANY) -> ColumnElement[bool]:
+    """Whether the source (any remediator or probe by default) has a remediation row for an
+    observable the alert maps, or a probe row for the alert: a superset of the alerts whose filter
+    value for that source is anything but "none".
+
+    The two subqueries are not correlated, so MySQL materializes each once per statement and
+    probes it per alert. The filter's CASE walks every observable an alert maps, and most alerts
+    have no remediation at all; this answers "none" for those without the walk (3.4 s down to
+    a fraction of a second over 100k alerts with 30 observables each)."""
+    mapping = aliased(ObservableMapping)
+    remediation_mapping = aliased(ObservableRemediationMapping)
+    remediation = aliased(Remediation)
+    check = aliased(ExternalRemediationCheck)
+    remediated = (
+        select(mapping.alert_id)
+        .join(remediation_mapping, remediation_mapping.observable_id == mapping.observable_id)
+        .join(remediation, and_(remediation.id == remediation_mapping.remediation_id,
+                                remediation.type == F_EMAIL_DELIVERY, _from_remediator(remediation, source)))
+        .correlate(None)
+    )
+    probed = (
+        select(check.alert_uuid)
+        .where(check.observable_type == F_EMAIL_DELIVERY, _from_probe(check, source))
+        .correlate(None)
+    )
+    return or_(alert.id.in_(remediated), alert.uuid.in_(probed))
+
+
+def remediation_filter_value(alert, source: str = REMEDIATION_SOURCE_ANY) -> ColumnElement[str]:
+    """The alert's state for the manage page's Remediation filter (``RemediationCoverage.filter_value``
+    as SQL) over the source's rows, correlated to ``alert``, the entity or alias the outer query
+    selects. Never NULL, so ``NOT IN`` is the exact complement of ``IN``."""
+    mapped = _mapped_targets(alert, source)
+    check_only = _check_only_targets(alert, source)
+
+    def any_target(predicate: Callable[[_TargetFlags], ColumnElement[bool]]) -> ColumnElement[bool]:
+        # Over the mapped targets an aggregate of the select the CASE runs in, so the alert's
+        # observable_mapping rows are walked once rather than once per predicate; COALESCE because
+        # an alert with no email maps no rows, and MAX of nothing is NULL.
+        mapped_any = func.coalesce(func.max(case((predicate(mapped.flags), 1), else_=0)), 0) == 1
+        return or_(mapped_any, check_only.rows.where(predicate(check_only.flags)).correlate(alert).exists())
+
+    # in the order RemediationCoverage.state decides, PENDING split as filter_value splits it
+    state = case(
+        (not_(any_target(lambda t: and_(t.counted, t.attempted))), "none"),
+        (any_target(lambda t: and_(t.counted, t.failed, not_(t.remediated))), "failed"),
+        (and_(any_target(lambda t: and_(t.counted, t.covered)),
+              not_(any_target(lambda t: and_(t.counted, t.remediated)))), "not_in_mailbox"),
+        (not_(any_target(lambda t: and_(t.counted, not_(t.covered)))), "remediated"),
+        (any_target(lambda t: and_(t.counted, t.covered)), "partial"),
+        # a removal in flight is pending and counted
+        (any_target(lambda t: t.remediating), "remediating"),
+        (any_target(lambda t: and_(t.counted, t.pending)), "watching"),
+        else_="not_remediated",
+    )
+    # an aggregate without GROUP BY, so exactly one row per alert, email or not
+    per_alert = mapped.rows.with_only_columns(state).correlate(alert).scalar_subquery()
+    return case((not_(has_remediation_activity(alert, source)), "none"), else_=per_alert)

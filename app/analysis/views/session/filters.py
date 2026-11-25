@@ -4,7 +4,7 @@ from flask import g, session
 from flask_login import current_user
 import pytz
 
-from app.filters import AnalysisFilter, AutoTextFilter, DateRangeFilter, DetectionPointFilter, MultiSelectFilter, ObservablePatternFilter, SelectFilter, TextFilter, TypeValueFilter, UnconfirmedDetectionsFilter
+from app.filters import AnalysisFilter, AutoTextFilter, DateRangeFilter, DetectionPointFilter, MultiSelectFilter, ObservablePatternFilter, RemediationFilter, SelectFilter, TextFilter, TypeValueFilter, UnconfirmedDetectionsFilter
 from saq.configuration.config import get_config
 from aceapi_v2.sync import run_async, run_async_with_session
 from aceapi_v2.observable_types.service import get_observable_types
@@ -94,10 +94,10 @@ def getFilters():
         'Observable Pattern': ObservablePatternFilter(Observable.type, Observable.value, options=run_async(get_observable_types())),
         'Owner': SelectFilter(Owner.display_name, nullable=True),
         'Queue': SelectFilter(GUIAlert.queue),
+        'Remediation': RemediationFilter(entity=GUIAlert),
         'Reviewed': MultiSelectFilter(GUIAlert.disposition_review, nullable=False, options=VALID_DISPOSITION_REVIEWS),
         #'Remediated By': SelectFilter(RemediatedBy.display_name, nullable=True),
         #'Remediated Date': DateRangeFilter(GUIAlert.removal_time),
-        #'Remediation Status': BoolFilter(Remediation.status, nullable=True, option_names=REMEDIATION_STATUS_GUI),
         'Tag': AutoTextFilter(Tag.name, case_sensitive=False, wildcardable=True),
         'Unconfirmed Detections': UnconfirmedDetectionsFilter(entity=GUIAlert),
     }

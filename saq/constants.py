@@ -663,12 +663,6 @@ SUMMARY_DETAIL_FORMAT_TXT = 'txt' # plain text display
 SUMMARY_DETAIL_FORMAT_MD = 'md' # markdown
 SUMMARY_DETAIL_FORMAT_JINJA = 'jinja' # jinja2 templating
 
-REMEDIATION_STATUS_GUI = {
-    'NEW': 'New',
-    'IN_PROGRESS': 'In Progress',
-    'COMPLETED': 'Completed',
-}
-
 # the list of tabs available in the gui
 # this is used in the navigation_tabs property of the [gui] configuration section
 GUI_TABS = [

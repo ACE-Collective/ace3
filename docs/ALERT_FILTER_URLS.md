@@ -35,9 +35,50 @@ f = [!] <slug> : <value> [, <value> ...]
 | `disposition_by` | Disposition By | | `tag` | Tag |
 | `disposition_date` | Disposition Date | | `detection_point` | Detection Point |
 | `unconfirmed_detections` | Unconfirmed Detections | | `observable_pattern` | Observable Pattern |
+| `remediation` | Remediation | | | |
 
 `unconfirmed_detections:True` finds alerts with a detection whose verdict nobody has confirmed: an
 inherited TP on a TP alert where several signatures fired (`docs/SVS.md`, Part 1); `False` the rest.
+
+`remediation` finds alerts by the state of their email remediation, the one the manage page's
+Remediation column shows (`saq/remediation/coverage.py`). Like `observable`, its value is a pair,
+`<source>:<state>`, with the colon between them literal:
+
+```
+f=remediation:Any:failed
+f=remediation:defender_email_probe:watching
+```
+
+The source is `Any` for every remediator and probe, which is what the column counts, or the name
+of one: an email remediator (`remediator_*`, matched on `remediation.name`) or an email probe
+(`external_remediation_probe_*`, matched on `external_remediation_check.probe_name`). The state is
+then read from that source's rows alone, so an alert whose removal by ACE failed and a probe then
+confirmed is `remediated` for `Any`, `failed` for the remediator and `remediated` for the probe.
+The editor lists `Any` and the sources configured now; a source that is no longer configured still
+matches its old rows. The state is one of:
+
+| state | the column shows |
+|---|---|
+| `remediated` | remediated, every email removed or not in the mailbox |
+| `partial` | remediated, some emails still outstanding |
+| `failed` | remediation failed: a removal failed and nothing else removed that email |
+| `remediating` | remediating: ACE is still removing an email |
+| `watching` | watching: a probe is still polling for a vendor's removal |
+| `not_remediated` | not remediated: every attempt finished without confirming a removal |
+| `not_in_mailbox` | not in mailbox: ACE found nothing to remove, and nothing was removed |
+| `none` | nothing: the alert has no email, or the source made no attempt on it |
+
+Inverted, it is the exact complement, so `!remediation:Any:remediated` includes the alerts with no
+email at all. What is still to be done is
+`remediation:Any:failed,Any:not_remediated,Any:watching,Any:remediating`.
+
+**What it costs.** The state is computed when the query runs, not stored. An alert with no
+remediation activity costs about a microsecond; one with activity costs a walk of its
+observables, about 0.13 ms on a development stack. Within the manage page's usual filters it
+adds little (155 ms at 100,000 alerts with the default open-alerts filter, 36 ms for a page of
+50), but on its own it reads every alert with activity: 0.9 s at 100,000 alerts of which 7%
+have some. A quick filter badge recounts every 30 seconds, so give a badge that uses it a date
+range too (`alert_date:-7d`).
 
 ### Escaping
 
@@ -200,7 +241,7 @@ collection requests with theirs (`status`, `result`, `created`, …), newest fir
 
 The manage-page search box understands these slugs too, so `queue:default` means the same
 thing typed as it does in a link (`docs/SEARCH.md`, section 2). It is a sibling grammar, not
-the same one, and it differs in three ways on purpose:
+the same one, and it differs in four ways on purpose:
 
 - **Values are literal.** A link is generated, so it percent-encodes `:`, `,` and `%`; a search
   box is typed, so it must not demand that. Quote instead: `url:"https://evil.com/a,b"`.
@@ -209,6 +250,7 @@ the same one, and it differs in three ways on purpose:
   `observable:ipv4:1.2.3.4`, and `uuid:` means the *alert* uuid rather than the observable
   type of that name. A pattern has no shorthand: it is `observable_pattern:fqdn:*.evil.com`,
   with the type `any` for any type.
+- **`remediation:failed` is every source**, shorthand for `remediation:Any:failed`.
 
 ## Links that outlive a filter type
 
@@ -297,6 +339,15 @@ their mapping tables, in both directions**, correlated to the entity the caller 
 (`create_filter(..., entity=)`: `GUIAlert`, `Alert` or an alias of either). Inverted, that is the only form that is true for an alert with no matching rows
 at all -- a `NOT` evaluated against a joined row cannot be. Non-inverted it avoids the row
 fan-out, which is what lets two `observable` filters mean "carries both".
+
+The `Remediation` filter gives every alert exactly one state per source, never NULL, so its
+inverted form is `NOT`. It is the column's rule written again in SQL (`remediation_filter_value()`
+next to `RemediationCoverage.filter_value` in `saq/remediation/coverage.py`), because the column
+computes it in Python for one page of alerts and the filter has to run over all of them. Two
+uncorrelated subqueries (`has_remediation_activity()`) answer `none` for an alert with no
+remediation activity before the rest runs; the rest is one aggregate over the alert's email
+targets. `test_the_filter_agrees_with_the_column` runs every coverage scenario through both, for
+`Any` and for one source, so change them together.
 
 **Slugs are a permanent contract.** Never rename or repurpose one; a link written today has
 to mean the same thing in five years. Adding new slugs is fine.

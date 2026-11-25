@@ -70,6 +70,27 @@
                                    value="{% if name == filter_name %}{{value}}{% endif %}"/>
                         </div>
                         <div class="form-text relative-date-hint">{% if is_relative %}{{ value | resolve_date_range }}{% endif %}</div>
+                    {% elif filters[name].__class__.__name__ == 'RemediationFilter' %}
+                        {# a [source, state] pair; a source no longer configured keeps its own option,
+                           as an Analysis value does, so editing the row does not change it #}
+                        {% set sources = filters[name].source_options | map('first') | list %}
+                        <div style="float:left;width:50%;padding-right:3px;">
+                            <select class="form-control" name="filter_{{unique_reference}}_value_{{name}}">
+                            {% if name == filter_name and value[0] not in sources %}
+                                <option value="{{value[0]}}" SELECTED>{{value[0]}}</option>
+                            {% endif %}
+                            {% for source, label in filters[name].source_options %}
+                                <option value="{{source}}" {% if (name == filter_name and source == value[0]) or (name != filter_name and loop.first) %}SELECTED{% endif %}>{{label}}</option>
+                            {% endfor %}
+                            </select>
+                        </div>
+                        <div style="overflow:auto;">
+                            <select class="form-control" name="filter_{{unique_reference}}_value_{{name}}">
+                            {% for state, label in filters[name].state_options %}
+                                <option value="{{state}}" {% if (name == filter_name and state == value[1]) or (name != filter_name and loop.first) %}SELECTED{% endif %}>{{label}}</option>
+                            {% endfor %}
+                            </select>
+                        </div>
                     {% elif filters[name].__class__.__name__ in ['TypeValueFilter', 'ObservablePatternFilter'] %}
                         <div style="float:left;width:50%;padding-right:3px;">
                             <select class="form-control" name="filter_{{unique_reference}}_value_{{name}}">
