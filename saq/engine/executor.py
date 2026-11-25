@@ -578,6 +578,31 @@ class AnalysisExecutor:
         else:
             return None
 
+    def _release_unanswered_resume(self, context: EngineExecutionContext):
+        """Unmarks the resumed analysis once the work item that resumed it has been processed
+        without calling its module on it (the module no longer accepts the observable, the
+        observable is excluded, the module waits on a declared dependency). Its delayed_analysis
+        row is deleted when this pass ends, so nothing else would."""
+        analysis = context.resuming_analysis
+        if analysis is None or context.first_pass:
+            return
+
+        context.resuming_analysis = None
+        if not analysis.delayed:
+            return
+
+        analysis.delayed = False
+        request = context.delayed_analysis_request
+        logging.info(
+            f"resumed analysis {analysis} of {request.observable} was not continued by "
+            f"{request.analysis_module}: it is no longer delayed",
+            extra={
+                "root_uuid": context.root.uuid,
+                "observable_uuid": request.observable.uuid,
+                "module_name": request.analysis_module.name,
+            },
+        )
+
     def _get_completed_dependency_work_item(self, context: EngineExecutionContext) -> Optional[WorkTarget]:
         assert isinstance(context.root, RootAnalysis)
         logging.debug(
@@ -940,7 +965,11 @@ class AnalysisExecutor:
                     analysis_module.generated_analysis_type,
                     instance=analysis_module.instance,
                 )
-                if target_analysis and target_analysis.delayed:
+                if (
+                    target_analysis
+                    and target_analysis.delayed
+                    and target_analysis is not context.resuming_analysis
+                ):
                     logging.debug(
                         "analysis for {} by {} has been delayed".format(
                             work_item, analysis_module
@@ -1542,6 +1571,10 @@ class AnalysisExecutor:
                 )
             )
 
+            # the module answers for the analysis this work item resumes now (AnalysisModule.analyze)
+            if existing_analysis is not None and existing_analysis is context.resuming_analysis:
+                context.resuming_analysis = None
+
             # track the analysis module that is currently analyzing this work item
             self.tracking_message_manager.track_current_analysis_module(analysis_module, work_item.observable)
 
@@ -1611,7 +1644,7 @@ class AnalysisExecutor:
                             snapshot_after = ModuleExecutionSnapshot.wide(root, work_item.observable, analysis_module)
                         else:
                             snapshot_after = ModuleExecutionSnapshot.narrow(root, work_item.observable, analysis_module)
-                        delta = ModuleExecutionSnapshot.diff(snapshot_before, snapshot_after, analysis_module, work_item.observable, is_resuming_delayed_module)
+                        delta = ModuleExecutionSnapshot.diff(snapshot_before, snapshot_after, analysis_module, work_item.observable)
                         delta.execution_time_ms = (time.monotonic_ns() - delta_start_ns) // 1_000_000
 
                         # Compute the cache key before recording: the recorded
@@ -1920,6 +1953,8 @@ class AnalysisExecutor:
 
         # we use this when we're dealing with delayed analysis
         context.first_pass = True
+        if context.delayed_analysis_request is not None:
+            context.resuming_analysis = context.delayed_analysis_request.analysis
 
         # we use this when we're executing in final analysis mode
         context.final_analysis_mode = False
@@ -1940,6 +1975,8 @@ class AnalysisExecutor:
             while not context.cancel_analysis_flag:
                 # the current WorkTarget
                 work_item = None
+
+                self._release_unanswered_resume(context)
 
                 # are we done?
                 if (

@@ -6,6 +6,7 @@ from multiprocessing import cpu_count
 import os
 import re
 import signal
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 import uuid
 import pytest
@@ -19,6 +20,7 @@ from saq.constants import ANALYSIS_MODE_CORRELATION, ANALYSIS_MODE_DISPOSITIONED
 from saq.database.model import Alert, DelayedAnalysis, User, Workload, load_alert
 from saq.database.pool import get_db, get_db_connection
 from saq.database.util.alert import set_dispositions
+from saq.database.util.delayed_analysis import add_delayed_analysis_request
 from saq.database.util.locking import acquire_lock
 from saq.database.util.node import get_node_excluded_analysis_modes, get_node_included_analysis_modes, node_supports_any_analysis_mode, set_node_status
 from saq.database.util.tag_mapping import add_observable_tag_mapping
@@ -493,6 +495,123 @@ def test_delayed_analysis_single_instance(root_analysis):
     assert analysis.request_count == 2
     assert analysis.completed
     assert analysis.instance == 'instance1'
+
+@pytest.mark.integration
+def test_resumed_analysis_is_delayed_while_its_module_continues(root_analysis, monkeypatch):
+    # the tree alone says what is pending: the analysis being resumed is, until its module answers.
+    # the engine's worker is a child process, so what the module saw comes back through the log
+    continue_analysis = DelayedAnalysisTestModule.continue_analysis
+
+    def recording_continue_analysis(self, observable, analysis):
+        logging.info(f"resumed analysis delayed={analysis.delayed} root delayed={self.get_root().delayed}")
+        return continue_analysis(self, observable, analysis)
+
+    monkeypatch.setattr(DelayedAnalysisTestModule, "continue_analysis", recording_continue_analysis)
+    observable = root_analysis.add_observable_by_spec(F_TEST, '0:00|0:01')
+    root_analysis.analysis_mode = "test_groups"
+    root_analysis.save()
+    root_analysis.schedule()
+
+    engine = Engine()
+    engine.configuration_manager.enable_module('test_delayed_analysis')
+    engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
+
+    assert log_count("resumed analysis delayed=") == 1
+    assert log_count("resumed analysis delayed=True root delayed=True") == 1
+    root_analysis = load_root(get_storage_dir(root_analysis.uuid))
+    analysis = root_analysis.get_observable(observable.uuid).get_and_load_analysis(DelayedAnalysisTestAnalysis)
+    assert analysis.completed
+    assert not analysis.delayed
+    assert analysis.request_count == 2
+
+@pytest.mark.integration
+def test_resumed_analysis_delayed_again(root_analysis, monkeypatch):
+    continue_analysis = DelayedAnalysisTestModule.continue_analysis
+
+    def delay_once_more(self, observable, analysis):
+        if not analysis.details.get("delayed_again"):
+            analysis.details["delayed_again"] = True
+            return self.delay_analysis(observable, analysis, seconds=0, timeout_minutes=1)
+
+        return continue_analysis(self, observable, analysis)
+
+    monkeypatch.setattr(DelayedAnalysisTestModule, "continue_analysis", delay_once_more)
+    observable = root_analysis.add_observable_by_spec(F_TEST, '0:00|0:01')
+    root_analysis.analysis_mode = "test_groups"
+    root_analysis.save()
+    root_analysis.schedule()
+
+    engine = Engine()
+    engine.configuration_manager.enable_module('test_delayed_analysis')
+    engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
+
+    root_analysis = load_root(get_storage_dir(root_analysis.uuid))
+    analysis = root_analysis.get_observable(observable.uuid).get_and_load_analysis(DelayedAnalysisTestAnalysis)
+    assert analysis.completed
+    assert not analysis.delayed
+    assert analysis.request_count == 2
+    assert log_count("added delayed analysis uuid") == 2
+    assert log_count("seems to already be scheduled") == 0
+    assert get_db().query(DelayedAnalysis).filter(DelayedAnalysis.uuid == root_analysis.uuid).count() == 0
+
+@pytest.mark.integration
+def test_resumed_analysis_its_module_no_longer_accepts(root_analysis, monkeypatch):
+    # nothing resumes the analysis after this pass, so it must not be left delayed, or the
+    # root never finishes (no final analysis, no post-analysis)
+    accepted = []
+
+    def accept_once(self, observable):
+        accepted.append(observable)
+        return len(accepted) == 1
+
+    monkeypatch.setattr(DelayedAnalysisTestModule, "should_analyze", accept_once)
+    observable = root_analysis.add_observable_by_spec(F_TEST, '0:00|0:01')
+    root_analysis.analysis_mode = "test_groups"
+    root_analysis.save()
+    root_analysis.schedule()
+
+    engine = Engine()
+    engine.configuration_manager.enable_module('test_delayed_analysis')
+    engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
+
+    root_analysis = load_root(get_storage_dir(root_analysis.uuid))
+    analysis = root_analysis.get_observable(observable.uuid).get_and_load_analysis(DelayedAnalysisTestAnalysis)
+    assert not analysis.delayed
+    assert not analysis.completed
+    assert analysis.request_count == 1
+    assert not root_analysis.delayed
+    assert log_count("was not continued") == 1
+    assert log_count("entering final analysis for") == 1
+
+@pytest.mark.integration
+def test_stale_delayed_request_for_completed_analysis(root_analysis):
+    # a second row for an analysis its module already finished: nothing is continued or unmarked
+    observable = root_analysis.add_observable_by_spec(F_TEST, '0:00|0:01')
+    root_analysis.analysis_mode = "test_groups"
+    root_analysis.save()
+    root_analysis.schedule()
+
+    engine = Engine()
+    engine.configuration_manager.enable_module('test_delayed_analysis')
+    engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
+
+    root_analysis = load_root(get_storage_dir(root_analysis.uuid))
+    assert add_delayed_analysis_request(
+        root_analysis, root_analysis.get_observable(observable.uuid),
+        SimpleNamespace(name="test_delayed_analysis"), 0, 0, 0,
+    )
+
+    engine = Engine()
+    engine.configuration_manager.enable_module('test_delayed_analysis')
+    engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
+
+    root_analysis = load_root(get_storage_dir(root_analysis.uuid))
+    analysis = root_analysis.get_observable(observable.uuid).get_and_load_analysis(DelayedAnalysisTestAnalysis)
+    assert analysis.completed
+    assert not analysis.delayed
+    assert analysis.request_count == 2
+    assert log_count("was not continued") == 0
+    assert get_db().query(DelayedAnalysis).filter(DelayedAnalysis.uuid == root_analysis.uuid).count() == 0
 
 @pytest.mark.integration
 def test_delayed_analysis_timing():

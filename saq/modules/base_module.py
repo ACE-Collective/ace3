@@ -135,6 +135,9 @@ class AnalysisModule(FileWatcherMixin):
         # this parameter is provided for ease of use in tests
         self._context = context or AnalysisModuleContext()
 
+        # True once delay_analysis() has delayed an analysis in the current analyze() call
+        self._delay_accepted = False
+
     def verify_environment(self):
         """Called after module is loaded to verify that everything it needs exists.."""
         pass
@@ -862,6 +865,21 @@ class AnalysisModule(FileWatcherMixin):
         assert isinstance(observable, Observable)
         logging.debug(f"analyzing {observable} with {self} (final analysis={final_analysis}, delayed analysis={delayed_analysis})")
 
+        self._delay_accepted = False
+        if not delayed_analysis or self.generated_analysis_type is None:
+            return self._analyze(observable, final_analysis, delayed_analysis)
+
+        # a resumed analysis stays delayed while its module continues it, so the tree alone says
+        # it is pending. once the module has answered it is delayed only if the module delayed it
+        # again: the delayed_analysis row that resumed it is deleted when this pass ends
+        resumed = observable.get_analysis(self.generated_analysis_type, instance=self.instance)
+        try:
+            return self._analyze(observable, final_analysis, delayed_analysis)
+        finally:
+            if isinstance(resumed, Analysis) and not self._delay_accepted:
+                resumed.delayed = False
+
+    def _analyze(self, observable: Observable, final_analysis: bool, delayed_analysis: bool) -> AnalysisExecutionResult:
         # if we're watching any files, see if they've changed and need to be reloaded
         self.check_watched_files()
 
@@ -971,6 +989,10 @@ class AnalysisModule(FileWatcherMixin):
             timeout_minutes=timeout_minutes,
             timeout_seconds=timeout_seconds,
         ):
+            if self._delay_accepted:
+                logging.warning("analysis for {} by {} seems to already be scheduled".format(observable, self))
+
+            self._delay_accepted = True
             analysis.completed = False
             analysis.delayed = True
             return AnalysisExecutionResult.INCOMPLETE
