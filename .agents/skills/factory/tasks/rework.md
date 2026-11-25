@@ -24,6 +24,6 @@ Then the definition of done from `implement.md`, step 5, for what changed, with 
 ## 3. Push, update, reply
 
 1. Commit (messages say which finding or comment each fixes, by id), then `$F push TICKET --repo <name>`.
-2. Update the PR body's Testing section with this round's runs: `$F pr-body TICKET --repo <name> --body-file <file>`. When the rework changed what kind of change the PR is or what it touches, fix its labels too: `$F pr-labels TICKET --repo <name> --add <label> --remove <label>` (`implement.md`, step 6).
+2. Update the PR body's Testing section with this round's runs, and its *Site operators* section (`pr-description` skill) when the rework changed what a site has to do: `$F pr-body TICKET --repo <name> --body-file <file>`. When the rework changed what kind of change the PR is or what it touches, fix its labels too: `$F pr-labels TICKET --repo <name> --add <label> --remove <label>` (`implement.md`, step 6).
 3. Reply on the PR with one comment: for each finding and comment, its id or link and what you did (fixed in which commit, or answered and why): `$F comment TICKET --repo <name> --kind reply --body-file <file>`. The reply is what tells the next review, and `state`, that the comments are answered, so post it even when every answer was a reply rather than a commit.
 4. `$F worktree-remove TICKET`, then the handoff with `next_state: review`.
