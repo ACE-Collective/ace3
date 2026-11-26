@@ -8,7 +8,7 @@ Turn what humans had to do on merged factory PRs into proposed changes to the fa
 - the review rounds, with their verdicts and open findings;
 - the stops;
 - every maintainer comment;
-- `changed_after_ship`, a diffstat of what changed between the factory's last ship verdict and what merged. That diff is the work a human did that the factory didn't.
+- `changed_after_ship`, the commits on the branch after the factory's last ship verdict that the base didn't bring in, each with its stat. A merge of the base into the branch shows only what its author changed beyond git's own merge: a clean one has an empty stat, one that resolved a conflict lists the resolution's files. That is the work a human did that the factory didn't. A branch rebased after ship lists every commit the rebase rewrote, so read those commits before counting them as human work.
 
 Internal repos' PRs aren't in it yet; read them on Azure DevOps when the tickets had them.
 

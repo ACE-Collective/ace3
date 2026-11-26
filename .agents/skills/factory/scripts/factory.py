@@ -1248,6 +1248,26 @@ def file_backlog(ctx: Context, ref: str, repo_name: str, bundle: str) -> dict:
     return {"recorded": filed, "refused": refused}
 
 
+def work_after_ship(repo: str, shipped: str, head: str, merge_commit: str | None) -> str | None:
+    """The commits on the branch after its ship head that the base didn't bring in, each with its stat.
+
+    A merge shows only what its author changed beyond git's own merge (conflict resolutions and edits
+    made in the merge), so merging the base into the branch doesn't count the base's work as theirs."""
+    # the base as it was when the PR merged
+    exclude = [f"^{merge_commit}^1"] if merge_commit else []
+    try:
+        commits = git(repo, "rev-list", "--topo-order", "--reverse", "--parents", head, f"^{shipped}", *exclude).split("\n")
+    except FactoryError as e:
+        # a ship head that a force-push dropped: say so, rather than report nothing changed
+        return f"could not list the commits after ship: {e}"
+    shown = []
+    for line in filter(None, commits):
+        sha, *parents = line.split()
+        remerge = ["--remerge-diff"] if len(parents) > 1 else []
+        shown.append(git(repo, "show", *remerge, "--stat", "--format=%h %s", sha, check=False).strip())
+    return "\n\n".join(shown) or None
+
+
 def retro_data(ctx: Context, since: str | None, mark: bool) -> dict:
     """The merged ace3 factory PRs since the last retro: their review rounds, the maintainers'
     comments, and what changed after the factory's last ship verdict, which is what a human
@@ -1257,7 +1277,7 @@ def retro_data(ctx: Context, since: str | None, mark: bool) -> dict:
         with open(path) as fp:
             since = json.load(fp).get("last_merged_at")
     merged = json.loads(gh(ctx.main, "pr", "list", "--repo", ctx.slug, "--state", "merged", "--search", "head:factory/",
-                           "--json", "number,title,headRefName,mergedAt,url,headRefOid", "--limit", "200"))
+                           "--json", "number,title,headRefName,mergedAt,url,headRefOid,mergeCommit", "--limit", "200"))
     prs = []
     for pr in sorted(merged, key=lambda p: p["mergedAt"]):
         if not pr["headRefName"].startswith("factory/") or (since and pr["mergedAt"] <= since):
@@ -1267,8 +1287,9 @@ def retro_data(ctx: Context, since: str | None, mark: bool) -> dict:
         ships = [r for r in reviews if r.get("verdict") == "ship"]
         after_ship = None
         if ships and ships[-1].get("head") and ships[-1]["head"] != pr["headRefOid"]:
-            git(ctx.main, "fetch", "--quiet", "origin", f"pull/{pr['number']}/head")
-            after_ship = git(ctx.main, "diff", "--stat", ships[-1]["head"], pr["headRefOid"], check=False).strip()
+            merge_commit = (pr.get("mergeCommit") or {}).get("oid")
+            git(ctx.main, "fetch", "--quiet", "origin", f"pull/{pr['number']}/head", *([merge_commit] if merge_commit else []))
+            after_ship = work_after_ship(ctx.main, ships[-1]["head"], pr["headRefOid"], merge_commit)
         prs.append({"pr": pr["url"], "title": pr["title"], "merged_at": pr["mergedAt"],
                     "rounds": [{"round": r.get("round"), "verdict": r.get("verdict"), "open": r.get("open", [])} for r in reviews],
                     "stops": sum(1 for c in comments if c["role"] == "factory" and c["kind"] == "stop"),

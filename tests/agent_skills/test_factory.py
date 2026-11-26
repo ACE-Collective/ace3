@@ -6,6 +6,7 @@ import base64
 import http.server
 import importlib.util
 import json
+import re
 import subprocess
 import sys
 import threading
@@ -914,6 +915,66 @@ def test_retro_data_reads_the_prs_merged_since_the_last_retro_and_marks_where_it
     assert [c["body"] for c in result["prs"][0]["maintainer_comments"]] == ["please rename it"]
     assert json.loads((core / "local" / "factory" / "retro.json").read_text()) == {"last_merged_at": "2026-04-01"}
     assert factory.retro_data(ctx, None, mark=False)["prs"] == []
+
+
+def merge(repo: Path, branch: str, message: str, resolve: dict[str, str] | None = None) -> str:
+    """Merge branch into what repo has checked out, resolving any conflict with the files given."""
+    result = subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@example.com", "-C", str(repo), "merge",
+                             "--quiet", "--no-ff", "-m", message, branch], capture_output=True, text=True)
+    if result.returncode:
+        assert resolve, result.stdout + result.stderr
+        return commit(repo, resolve, message)
+    return git(repo, "rev-parse", "HEAD").strip()
+
+
+def test_retro_data_lists_only_the_work_done_on_the_branch_after_ship_not_what_merges_brought_in(remote, monkeypatch):
+    origin, clone = remote
+    git(origin, "switch", "--quiet", "-c", "factory/1-a")
+    shipped = commit(origin, {"a.py": "a, shipped\n"}, "the shipped work")
+    git(origin, "switch", "--quiet", "main")
+    commit(origin, {"main_only.py": "only main has this\n"}, "main moves on")
+    git(origin, "switch", "--quiet", "factory/1-a")
+    merge(origin, "main", "a clean merge of main")
+    commit(origin, {"fix.py": "after ship\n"}, "a fix after ship")
+    git(origin, "switch", "--quiet", "main")
+    commit(origin, {"b.py": "b on main\n", "main_too.py": "main again\n"}, "main changes b")
+    git(origin, "switch", "--quiet", "factory/1-a")
+    commit(origin, {"b.py": "b on the branch\n"}, "the branch changes b")
+    head = merge(origin, "main", "a merge that resolves b", resolve={"b.py": "b resolved\n"})
+    git(origin, "update-ref", "refs/pull/1/head", head)
+    git(origin, "switch", "--quiet", "main")
+    merged = merge(origin, "factory/1-a", "merge the PR")
+    commit(origin, {"later.py": "after the PR merged\n"}, "main after the merge")
+    pr_list = [{"number": 1, "title": "pr 1", "headRefName": "factory/1-a", "mergedAt": "2026-01-01", "url": "u1",
+                "headRefOid": head, "mergeCommit": {"oid": merged}}]
+    monkeypatch.setattr(factory, "gh", lambda main, *args, stdin=None: json.dumps(pr_list))
+    monkeypatch.setattr(factory, "gh_comments", lambda *args, **kwargs: [review("2026-01-01", shipped, "ship")])
+
+    after_ship = factory.retro_data(FakeContext(clone), "2025-01-01", mark=False)["prs"][0]["changed_after_ship"]
+
+    subjects = [line.split(" ", 1)[1] for line in after_ship.splitlines() if re.match(r"[0-9a-f]{7,} ", line)]
+    assert subjects == ["a clean merge of main", "a fix after ship", "the branch changes b", "a merge that resolves b"]
+    # a clean merge shows nothing; the conflicting one shows only its resolution
+    clean, fix, branch_b, resolving = re.split(r"^(?=[0-9a-f]{7,} )", after_ship, flags=re.MULTILINE)[1:]
+    assert "|" not in clean
+    assert "fix.py" in fix and "b.py" in branch_b
+    assert "b.py" in resolving and "main_too.py" not in resolving
+    assert "main_only.py" not in after_ship and "later.py" not in after_ship
+
+
+def test_retro_data_says_when_a_force_push_dropped_the_ship_head(remote, monkeypatch):
+    origin, clone = remote
+    git(origin, "switch", "--quiet", "-c", "factory/1-a")
+    head = commit(origin, {"a.py": "rewritten\n"}, "rewritten after ship")
+    git(origin, "update-ref", "refs/pull/1/head", head)
+    pr_list = [{"number": 1, "title": "pr 1", "headRefName": "factory/1-a", "mergedAt": "2026-01-01", "url": "u1",
+                "headRefOid": head, "mergeCommit": None}]
+    monkeypatch.setattr(factory, "gh", lambda main, *args, stdin=None: json.dumps(pr_list))
+    monkeypatch.setattr(factory, "gh_comments", lambda *args, **kwargs: [review("2026-01-01", "0" * 40, "ship")])
+
+    after_ship = factory.retro_data(FakeContext(clone), "2025-01-01", mark=False)["prs"][0]["changed_after_ship"]
+
+    assert after_ship.startswith("could not list the commits after ship")
 
 
 def test_an_azure_devops_work_item_reads_as_a_ticket(core, monkeypatch):
