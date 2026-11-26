@@ -75,8 +75,8 @@ When nothing applies, say in one sentence why the change can't break anything, w
 ```markdown
 ## Risks
 
-- **Medium.** An engine that can't start takes longer to fail. A site that raises the limit to 300 s waits five minutes before a stuck worker fails the engine's start (the behavior #978 added). It happens only at a site that raises the limit. *Guard:* the default stays 30 s, so nothing changes until a site sets it, and the setting's description says what a larger value costs.
 - **High, unguarded.** A site that sets the limit below its real start time keeps its engine from ever starting. It takes an operator lowering the limit below the default, and nothing checks the value against a measured start time. That is acceptable because the failure is loud: the engine exits at start, and its ERROR record names the worker and the limit.
+- **Medium.** An engine that can't start takes longer to fail. A site that raises the limit to 300 s waits five minutes before a stuck worker fails the engine's start (the behavior #978 added). It happens only at a site that raises the limit. *Guard:* the default stays 30 s, so nothing changes until a site sets it, and the setting's description says what a larger value costs.
 ```
 
 ## Detail

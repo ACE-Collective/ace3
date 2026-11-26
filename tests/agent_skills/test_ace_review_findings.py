@@ -81,6 +81,15 @@ def test_collect_plans_three_votes_for_a_blocker_and_batches_the_rest(bundle):
     assert list((bundle / "verify").iterdir()) == []
 
 
+def test_a_risk_free_fix_needs_no_guard(bundle):
+    write_json(bundle / "findings-logging.json", [finding(risks=[{"level": "none", "risk": "changes one log call; no behavior changes"}])])
+
+    findings.collect(str(bundle))
+
+    [candidate] = read_json(bundle / "candidates.json")
+    assert candidate["risks"] == [{"level": "none", "risk": "changes one log call; no behavior changes"}]
+
+
 def test_collect_numbers_files_in_name_order(bundle):
     write_json(bundle / "findings-uptime.json", [finding(title="uptime one")])
     write_json(bundle / "findings-design.json", [finding(dimension="design", title="design one")])
@@ -94,7 +103,9 @@ def test_collect_refuses_malformed_findings(bundle):
     write_json(bundle / "findings-logging.json", [finding(dimension="logging"), finding(severity="major", evidence=""),
                                                   finding(risks=[]), finding(risks="one string"),
                                                   finding(risks=["a plain string", {"level": "severe", "risk": "x", "guard": None},
-                                                                 {"level": "low", "risk": "no guard key"}])])
+                                                                 {"level": "low", "risk": "no guard key"}]),
+                                                  finding(risks=[{"level": "low", "risk": "x", "guard": ""},
+                                                                 {"level": "low", "risk": "y", "guard": 5}])])
 
     with pytest.raises(SystemExit) as exit_info:
         findings.collect(str(bundle))
@@ -108,6 +119,9 @@ def test_collect_refuses_malformed_findings(bundle):
     # each risk has a level and says what guards it, or null when nothing does
     assert ("findings-logging.json[4]: risks[0]='a plain string', risks[1]={'level': 'severe', 'risk': 'x', 'guard': None}, "
             "risks[2]={'level': 'low', 'risk': 'no guard key'}") in str(exit_info.value)
+    # a guard names what guards the risk, so an empty one or a number says nothing
+    assert ("findings-logging.json[5]: risks[0]={'level': 'low', 'risk': 'x', 'guard': ''}, "
+            "risks[1]={'level': 'low', 'risk': 'y', 'guard': 5}") in str(exit_info.value)
     assert not (bundle / "plan.json").exists()
 
 
