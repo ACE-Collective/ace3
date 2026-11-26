@@ -415,15 +415,21 @@ def flaw_issues(bundle: str, flaws: list[dict]) -> list[dict]:
     return recorded
 
 
+def flaw_issue_body(flaw: dict, worked_around: str, footer: str) -> str:
+    """A design flaw's issue body, for both /ace-review and /factory. Where the flaw was worked around
+    is the caller's to say: /factory files a core flaw found in an internal repo without its path."""
+    return (f"{flaw['flaw']}\n\n**Real fix** ({flaw['fix_size']}): {flaw.get('fix') or 'not sketched yet'}\n\n"
+            f"{risks_markdown(flaw.get('risks'))}"
+            f"**Area:** {flaw.get('area') or 'unknown'}\n\n"
+            f"**Worked around** {worked_around}:\n\n{flaw['workaround']}\n\n"
+            f"{footer}")
+
+
 def issue_body(target: dict, flaw: dict) -> str:
     # the repo by name: the checkout's path is different on every machine
     repo, branch = os.path.basename(target.get("repo", "")), target.get("branch", "")
     where = f"{flaw['file']}:{flaw['line']}" if flaw.get("line") else flaw["file"]
-    return (f"{flaw['flaw']}\n\n**Real fix** ({flaw['fix_size']}): {flaw.get('fix') or 'not sketched yet'}\n\n"
-            f"{risks_markdown(flaw.get('risks'))}"
-            f"**Area:** {flaw.get('area') or 'unknown'}\n\n"
-            f"**Worked around** in `{repo}` branch `{branch}`, `{where}`:\n\n{flaw['workaround']}\n\n"
-            "<sub>Filed by /ace-review.</sub>\n")
+    return flaw_issue_body(flaw, f"in `{repo}` branch `{branch}`, `{where}`", "<sub>Filed by /ace-review.</sub>\n")
 
 
 def file_flaw(bundle: str, fid: str) -> dict:

@@ -68,7 +68,7 @@ import urllib.request
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import public_text  # noqa: E402  (a sibling script, not a package)
 
-# /ace-review's script, for the Risks section it writes the same way in the issues it files itself
+# /ace-review's script, for the issue bodies it writes the same way when it files them itself
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "ace-review", "scripts"))
 import findings  # noqa: E402
 
@@ -1163,9 +1163,7 @@ def finding_body(candidate: dict, found_in: str) -> str:
 
 
 def flaw_body(candidate: dict, worked_around: str) -> str:
-    return (f"{candidate['flaw']}\n\n**Real fix** ({candidate['fix_size']}): {candidate.get('fix') or 'not sketched yet'}\n\n"
-            f"{findings.risks_markdown(candidate.get('risks'))}**Area:** {candidate.get('area') or 'unknown'}\n\n**Worked around** {worked_around}:\n\n{candidate['workaround']}\n\n"
-            "<sub>Found by /ace-review; filed by /factory.</sub>")
+    return findings.flaw_issue_body(candidate, worked_around, "<sub>Found by /ace-review; filed by /factory.</sub>")
 
 
 def ado_html(text: str) -> str:
