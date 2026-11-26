@@ -12,7 +12,7 @@ Wait for a background command by its exit notification, never with a polling loo
 
 ## 2. Read the ticket against the code
 
-Read the ticket and its comments (`gh issue view N --comments`, or `az boards work-item show`). Then do a bounded read of the code it names: enough to say what changes and where, not the whole fix. Decide one of:
+Read the ticket and its comments with `$F ticket TICKET` (it shows only maintainers' comments, and all of a work item's, which `az boards work-item show` doesn't). Then do a bounded read of the code it names: enough to say what changes and where, not the whole fix. Decide one of:
 
 - **Clear enough to build.** Go on.
 - **Vague, or the fix needs a design decision** (more than one reasonable behavior, a change to a public interface or config the ticket doesn't settle, a design flaw the ticket doesn't decide). Write the specific questions, each with the options you see, into a file, then `$F release TICKET --to needs-info --body-file <file>`. Write the handoff with `next_state: needs-info` and stop. Don't guess.
@@ -46,7 +46,7 @@ If a check can't pass and you can't see why after two attempts on the same idea,
 
 1. Commit in each repo touched, in small commits whose messages say why. End each message with the attribution line your instructions give. No internal detail in an ace3 commit.
 2. `$F push TICKET --repo <name>` for each repo. For ace3 it checks the commits, their messages, the added lines and the branch name against the denylists first, and refuses on a match: fix the commit (amend or rewrite your own unpushed commits), don't work around the check.
-3. Write the PR body with the `pr-description` skill, *A `/factory` run*: what the ticket asked, the fix, the Testing section with the red and green runs, coverage and live checks, and *Follow-ups*. One body per repo. An internal repo's body may link the ace3 PR; the ace3 body never names the internal one.
+3. Write the PR body with the `pr-description` skill, *A `/factory` run*: the *Site operators* section first when the change needs anything from a site, what the ticket asked, the fix, the Testing section with the red and green runs, coverage and live checks, and *Follow-ups*. One body per repo. An internal repo's body may link the ace3 PR; the ace3 body never names the internal one.
 4. `$F pr-create TICKET --repo <name> --title <title> --body-file <file>` for each repo. ace3 first, so the internal PR can link it. The ace3 PR gets `Fixes #N` for a GitHub ticket.
 5. Label each PR: `$F pr-labels TICKET --repo <name>` prints the repo's labels, then `--add <label>` once per label. Give it the kind of change (`bug` for a fix, `enhancement` for a new feature, `refactoring`, `documentation`) and each area it is about (`logging`, `performance`, `tests`, `GUI`, `security`), and `breaking change` when it removes or renames a config key, an API field or a CLI option. Only labels the repo has. `design flaw` labels the issue that describes a flaw, not the PR that fixes one, and the `factory:*` labels are the ticket's state, which `pr-labels` refuses.
 

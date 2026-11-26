@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project (tries to) adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.147] - 2026-11-25
+
+- [Call out what site operators must do in PR descriptions](https://github.com/ACE-Collective/ace3/pull/1360)
+- [Alert automation rules: act on an alert when a trigger fires](https://github.com/ACE-Collective/ace3/pull/1359)
+- [Let the observable lookup count alerts in named queues](https://github.com/ACE-Collective/ace3/pull/1358)
+- [Fetch archived emails for many Message-IDs at once](https://github.com/ACE-Collective/ace3/pull/1357)
+- [Read every comment on a factory ticket, not only the latest on a work item](https://github.com/ACE-Collective/ace3/pull/1354)
+- [factory: identify the Azure DevOps user from AZURE_DEVOPS_EXT_PAT](https://github.com/ACE-Collective/ace3/pull/1353)
+
 ## [3.0.146] - 2026-11-24
 
 - [Collect integration tests from every integration directory, and only those](https://github.com/ACE-Collective/ace3/pull/1350)

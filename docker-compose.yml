@@ -702,6 +702,24 @@ services:
     networks:
       - ace
 
+  alert-automation:
+    environment:
+      <<: *common-env
+      ACE_LOG_CONFIG_PATH: etc/logging_configs/ace_logging.yaml
+      FLUENT_BIT_TAG: ace-alert-automation
+    image: ${ACE3_IMAGE_URL:-ace3:latest}
+    depends_on:
+      ace:
+        condition: service_started
+    command: /bin/bash -c "/opt/ace/docker/startup/start.sh ace service start alert_automation"
+    init: true
+    restart: always
+    stop_grace_period: 45s
+    volumes: *common-volumes
+    hostname: ace
+    networks:
+      - ace
+
   monitoring:
     environment:
       <<: *common-env

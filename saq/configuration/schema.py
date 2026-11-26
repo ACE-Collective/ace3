@@ -335,6 +335,8 @@ class EmailArchiveConfig(BaseModel):
     pool: str = Field(default="email_archive", description="the CAS pool archived emails are stored in (docs/EMAIL_ARCHIVE.md)")
     archive_dir: str = Field(default="archive/email", description="the directory of the archive before it moved to the CAS (relative to the data directory); only `ace email-archive migrate` reads it")
     partition_retention_days: int = Field(default=30, description="days of archived_messages rows (Message-ID -> digest) to keep; `ace partitions maintain` drops a weekly partition once all of it is older than this. At least the pool's ttl_days, or the config fails to load (docs/DATABASE_PARTITIONS.md)")
+    max_bulk_download_files: int = Field(default=500, ge=1, description="most emails one POST /api/v2/email/archive/download zip may hold")
+    max_bulk_download_bytes: int = Field(default=1024 * 1024 * 1024, ge=1, description="most plaintext bytes one POST /api/v2/email/archive/download zip may hold")
 
 class MemcachedConfig(BaseModel):
     client_address: str = Field(..., description="the address of the memcached system used by ACE")
@@ -607,6 +609,42 @@ class ExternalRemediationProbeConfig(BaseModel):
                     "ingest late, and vendors act on their own schedules), so superseding "
                     "immediately can erase real timeline entries. 0 supersedes immediately.",
     )
+
+
+class AlertAutomationTypeConfig(BaseModel):
+    """A trigger or action type that alert automation rules name by its `name` (docs/ALERT_AUTOMATION.md)."""
+    model_config = ConfigDict(extra="forbid")
+    name: str = Field(..., description="the `type:` value a rule's trigger or action uses for this class")
+    python_module: str = Field(..., description="dotted module path containing the class")
+    python_class: str = Field(..., description="the AlertAutomationTrigger or AlertAutomationAction subclass within python_module")
+
+
+class AlertAutomationConfig(BaseModel):
+    """The trigger and action types alert automation rules can use. Core lists its own in
+    etc/saq.default.yaml; an integration appends entries from its own config (lists append when
+    config files merge)."""
+    model_config = ConfigDict(extra="forbid")
+    trigger_types: list[AlertAutomationTypeConfig] = Field(default_factory=list, description="trigger types rules can name")
+    action_types: list[AlertAutomationTypeConfig] = Field(default_factory=list, description="action types rules can name")
+
+
+class AlertAutomationStepConfig(BaseModel):
+    """A rule's trigger or one of its actions. Only `type` is read when the configuration loads, so
+    no process imports the type's class just to parse the config; the alert_automation service
+    validates the whole block against the type's config_class, which rejects unknown keys, when it
+    loads the rule (saq/alert_automation/rules.py)."""
+    model_config = ConfigDict(extra="allow")
+    type: str = Field(..., description="the name of a trigger or action type in alert_automation")
+
+
+class AlertAutomationRuleConfig(BaseModel):
+    """An alert_automation_rule_<name> block (docs/ALERT_AUTOMATION.md)."""
+    model_config = ConfigDict(extra="forbid")
+    name: str = Field(..., description="the rule's name; recorded with every run, so renaming a rule makes it act again on the alerts it already acted on")
+    enabled: bool = Field(default=False, description="whether the alert_automation service sweeps this rule")
+    mode: Literal["dry_run", "enforce"] = Field(default="dry_run", description="dry_run records what each action would do and changes nothing; enforce does it")
+    trigger: AlertAutomationStepConfig = Field(..., description="finds the alerts the rule applies to")
+    actions: list[AlertAutomationStepConfig] = Field(..., min_length=1, description="what the rule does to each alert, in this order")
 
 
 class NRDURLList(BaseModel):
@@ -988,6 +1026,7 @@ class ACEConfig(BaseModel):
     collection: Optional[CollectionConfig] = None
     query_hunter: Optional[QueryHunterConfig] = None
     hunter: HunterConfig = Field(default_factory=HunterConfig, description="hunting engine configuration (distinct from service_hunter, which configures the service lifecycle)")
+    alert_automation: AlertAutomationConfig = Field(default_factory=AlertAutomationConfig, description="the trigger and action types alert automation rules can use (docs/ALERT_AUTOMATION.md)")
     node_translation: Optional[dict[str, str]] = None
     node_translation_gui: Optional[dict[str, str]] = None
     SSL: Optional[SSLConfig] = None
@@ -1177,6 +1216,7 @@ class ACEConfig(BaseModel):
         self.__remediators: Optional[dict[str, RemediatorConfig]] = None
         self.__file_collectors: Optional[dict[str, FileCollectorConfig]] = None
         self.__external_remediation_probes: Optional[dict[str, ExternalRemediationProbeConfig]] = None
+        self.__alert_automation_rules: Optional[dict[str, AlertAutomationRuleConfig]] = None
         self.__observable_exports: Optional[LazyConfigRegistry[ObservableExportConfig]] = None
         # (python_module, instance) -> the names of the analysis module configs in that python
         # module; storing names rather than config objects keeps this in step with
@@ -1233,6 +1273,7 @@ class ACEConfig(BaseModel):
         self.load_remediator_configs()
         self.load_file_collector_configs()
         self.load_external_remediation_probe_configs()
+        self.load_alert_automation_rule_configs()
         self.load_observable_export_configs()
     #
     # integrations
@@ -1929,6 +1970,30 @@ class ACEConfig(BaseModel):
             raise ValueError(f"external remediation probe config for {name} not found")
 
         return self.__external_remediation_probes[name]
+
+    #
+    # alert automation rules
+    #
+
+    @property
+    def alert_automation_rules(self) -> list[AlertAutomationRuleConfig]:
+        if self.__alert_automation_rules is None:
+            self._raise_raw_data_error()
+
+        return list(self.__alert_automation_rules.values())
+
+    def load_alert_automation_rule_configs(self):
+        self.__alert_automation_rules = {}
+
+        for key, value in self.raw._data.items():
+            if not key.startswith("alert_automation_rule_"):
+                continue
+
+            rule_config = AlertAutomationRuleConfig.model_validate(resolve_values(value, key))
+            if rule_config.name in self.__alert_automation_rules:
+                raise ValueError(f"{key}: another alert automation rule is already named {rule_config.name}")
+
+            self.__alert_automation_rules[rule_config.name] = rule_config
 
     #
     # observable exports

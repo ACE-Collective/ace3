@@ -53,7 +53,7 @@ from saq.monitor_definitions import (
 )
 
 _CHUNK = 1024 * 1024
-_ORPHAN_LOOKUP_BATCH = 500
+_INDEX_LOOKUP_BATCH = 500
 _DELETING_POLL_SECONDS = 0.5
 # a verify run's record carries at most this many failed digests; the full list is on stdout
 _MAX_REPORTED_FAILURES = 20
@@ -439,6 +439,20 @@ class CASPool:
                 key_id=row.key_id, state=row.state, created_at=row.created_at,
                 last_held_at=row.last_held_at, verified_at=row.verified_at,
                 hold_count=index.count_holds(session, self.name, digest))
+
+    def sizes(self, digests: list[str]) -> dict[str, int]:
+        """The plaintext size of each of digests the pool has, in one query per batch. A digest the
+        pool does not have is left out. A deleting object counts as present, as it does for
+        exists() and open()."""
+        for digest in digests:
+            self._check_digest(digest)
+
+        sizes: dict[str, int] = {}
+        with index.transaction(self.database) as session:
+            for start in range(0, len(digests), _INDEX_LOOKUP_BATCH):
+                sizes.update(index.object_sizes(session, self.name, digests[start:start + _INDEX_LOOKUP_BATCH]))
+
+        return sizes
 
     def holds(self, digest: str) -> list[Hold]:
         self._check_digest(digest)
@@ -884,7 +898,7 @@ class CASPool:
                 continue
 
             pending.append(entry)
-            if len(pending) >= _ORPHAN_LOOKUP_BATCH:
+            if len(pending) >= _INDEX_LOOKUP_BATCH:
                 flush()
 
         flush()

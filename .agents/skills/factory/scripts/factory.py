@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 """The /factory skill's deterministic layer: ticket and PR state, claiming, worktrees, and
-every write to GitHub or Azure DevOps. Runs on the host, where gh and az are logged in.
+every write to GitHub or Azure DevOps. Runs on the host, where gh and az are logged in (az through
+az login or AZURE_DEVOPS_EXT_PAT).
 Stdlib only.
 
     factory.py doctor                       check what a run needs, and say how to fix what is missing
     factory.py labels                       create the factory:* labels on the ace3 repo
     factory.py ready                        list the tickets labeled factory:ready
+    factory.py ticket TICKET                the ticket's description and its maintainers' comments
     factory.py state TICKET                 the ticket, its PRs, their reviews, and the next task
     factory.py claim TICKET                 assign the ticket to you and mark it in progress
     factory.py release TICKET --to STATE [--body-file F] [--repo NAME]
@@ -50,6 +52,7 @@ public_text.py, and nothing is published when it finds a match or cannot run.
 """
 
 import argparse
+import base64
 import fnmatch
 import html
 import json
@@ -60,6 +63,7 @@ import subprocess
 import sys
 import tempfile
 import tomllib
+import urllib.request
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import public_text  # noqa: E402  (a sibling script, not a package)
@@ -84,6 +88,7 @@ MARKER = re.compile(r"<!-- factory:([a-z-]+)( \{.*?\})? -->", re.DOTALL)
 TIMEOUT = 120
 CONFIG = os.path.join(".factory", "config.toml")
 ADO_API = "7.1"
+ADO_COMMENTS_API = "7.1-preview"  # the work item comments API has no released version
 ADO_DESCRIPTION_LIMIT = 4000
 ADO_CLOSED_STATES = ("Closed", "Done", "Removed", "Resolved")
 
@@ -353,8 +358,20 @@ def ado_args(repo: dict) -> list[str]:
     return ["--org", repo["config"]["azure_devops"]["organization"]]
 
 
-def ado_me() -> str:
-    return run(["az", "account", "show", "--query", "user.name", "-o", "tsv"]).strip()
+def ado_me(repo: dict) -> str:
+    # az devops authenticates with AZURE_DEVOPS_EXT_PAT, but az account show knows only an az login session
+    pat = os.environ.get("AZURE_DEVOPS_EXT_PAT")
+    if not pat:
+        return run(["az", "account", "show", "--query", "user.name", "-o", "tsv"]).strip()
+    url = repo["config"]["azure_devops"]["organization"].rstrip("/") + "/_apis/connectionData"
+    token = base64.b64encode(f":{pat}".encode()).decode()
+    request = urllib.request.Request(url, headers={"Authorization": f"Basic {token}", "Accept": "application/json"})
+    try:
+        with urllib.request.urlopen(request, timeout=TIMEOUT) as response:
+            data = json.load(response)
+        return data["authenticatedUser"]["properties"]["Account"]["$value"]
+    except (OSError, ValueError, KeyError, TypeError) as e:
+        raise FactoryError(f"reading who AZURE_DEVOPS_EXT_PAT belongs to from {url} failed: {e}") from e
 
 
 def ado_threads(repo: dict, pr_id: int) -> list[dict]:
@@ -411,6 +428,27 @@ def ado_ticket(repo: dict, number: int) -> dict:
             "labels": tags, "assignees": [assigned.get("uniqueName")] if assigned.get("uniqueName") else []}
 
 
+def ado_comments(repo: dict, number: int) -> list[dict]:
+    """A work item's discussion. az boards work-item show has only the latest comment, in System.History."""
+    ado = repo["config"]["azure_devops"]
+    comments, token = [], None
+    while True:
+        page = az("devops", "invoke", *ado_args(repo), "--area", "wit", "--resource", "comments",
+                  "--route-parameters", f"project={ado['project']}", f"workItemId={number}",
+                  "--query-parameters", "order=asc", *([f"continuationToken={token}"] if token else []),
+                  "--api-version", ADO_COMMENTS_API) or {}
+        for comment in page.get("comments", []):
+            author = comment.get("createdBy", {})
+            comments.append({"author": author.get("uniqueName") or author.get("displayName", ""),
+                             # the same rule as a PR thread: every person who can comment works there
+                             "trusted": not author.get("isContainer", False),
+                             "body": comment.get("text", ""), "at": comment.get("createdDate", ""), "url": ""})
+        # a token that does not move would page forever
+        if not page.get("comments") or page.get("continuationToken") in (None, token):
+            return comments
+        token = page["continuationToken"]
+
+
 def ado_set_tags(repo: dict, number: int, add: set[str], remove: set[str], assign: str | None = None, unassign: bool = False) -> None:
     current = set(ado_ticket(repo, number)["labels"])
     tags = "; ".join(sorted((current | add) - remove))
@@ -453,12 +491,23 @@ class Context:
         return self._slug
 
     def me(self, ticket: dict) -> str:
-        return gh_me(self.main) if ticket["kind"] == "github" else ado_me()
+        return gh_me(self.main) if ticket["kind"] == "github" else ado_me(ado_repo_for_ticket(self.repos))
 
     def ticket(self, ticket: dict) -> dict:
         if ticket["kind"] == "github":
             return gh_ticket(self.main, self.slug, ticket["id"])
         return ado_ticket(ado_repo_for_ticket(self.repos), ticket["id"])
+
+    def read(self, ref: str) -> dict:
+        """The ticket, its description, and its comments by maintainers, the factory's own marked with their kind."""
+        ticket = parse_ticket(ref)
+        if ticket["kind"] == "github":
+            raw = gh_comments(self.main, self.slug, ticket["id"], include_pr=False)
+        else:
+            raw = ado_comments(ado_repo_for_ticket(self.repos), ticket["id"])
+        comments = [{"author": c["author"], "at": c["at"], "url": c["url"], "role": c["role"], "kind": c["kind"], "body": c["body"]}
+                    for c in classify(raw) if c["role"] != "ignored"]
+        return {**self.ticket(ticket), "comments": comments}
 
     def state(self, ref: str) -> dict:
         ticket = parse_ticket(ref)
@@ -941,7 +990,7 @@ def set_labels(ctx: Context, ref: str, add: set[str], remove: set[str], assign: 
         gh(ctx.main, *args)
     else:
         repo = ado_repo_for_ticket(ctx.repos)
-        ado_set_tags(repo, ticket["id"], add, remove, assign=ado_me() if assign else None, unassign=unassign)
+        ado_set_tags(repo, ticket["id"], add, remove, assign=ado_me(repo) if assign else None, unassign=unassign)
 
 
 def claim(ctx: Context, ref: str) -> dict:
@@ -1335,9 +1384,9 @@ def doctor(ctx: Context) -> dict:
         add("denylists", False, str(e), "nothing public can be posted until this passes")
     if any(r["host"] == "azure-devops" for r in ctx.repos.values()):
         try:
-            add("az", True, f"logged in as {ado_me()}")
+            add("az", True, f"logged in as {ado_me(ado_repo_for_ticket(ctx.repos))}")
         except FactoryError as e:
-            add("az", False, str(e), "az login")
+            add("az", False, str(e), "az login, or set AZURE_DEVOPS_EXT_PAT to a valid PAT")
     try:
         missing = sorted(set(LABELS) - label_names(ctx))
         add("labels", not missing, f"missing {', '.join(missing)}" if missing else "all present", "factory.py labels")
@@ -1354,7 +1403,7 @@ def main() -> int:
     sub.add_parser("doctor")
     sub.add_parser("labels")
     sub.add_parser("ready")
-    for name in ("state", "claim", "worktree-remove", "promote"):
+    for name in ("ticket", "state", "claim", "worktree-remove", "promote"):
         sub.add_parser(name).add_argument("ticket")
     command = sub.add_parser("release")
     command.add_argument("ticket")
@@ -1422,6 +1471,8 @@ def main() -> int:
             result = ensure_labels(ctx)
         elif args.command == "ready":
             result = ready(ctx)
+        elif args.command == "ticket":
+            result = ctx.read(args.ticket)
         elif args.command == "state":
             result = ctx.state(args.ticket)
         elif args.command == "claim":

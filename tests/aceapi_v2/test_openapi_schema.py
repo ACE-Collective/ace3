@@ -26,6 +26,8 @@ V2_BINARY_ROUTES = {
     "/alerts/{alert_uuid}/observables/{observable_uuid}/zip": "application/zip",
     "/crashes/{crash_id}/download": "application/zip",
     "/email/archive": "message/rfc822",
+    "/email/archive/download": "application/zip",
+    "/email/archive/{sha256}": "message/rfc822",
     "/engine/download/{uuid}": "application/x-tar",
     "/events/export": "text/csv",
     "/signatures/yara-qa/matches/{match_id}/download": "application/zip",
@@ -41,12 +43,14 @@ AI_BINARY_ROUTES = {
 
 
 def _content_types(schema: dict, path: str) -> set[str]:
-    """The media types the schema advertises for GET <path>'s 200 response.
+    """The media types the schema advertises for <path>'s 200 response. Each of these paths has
+    one operation (a GET, or a POST that takes a body), so it is not named here.
 
     Paths are the bare route paths; the schema does not carry the prefix the app is served
     under (/api/v2, /ai/v1).
     """
-    return set(schema["paths"][path]["get"]["responses"]["200"]["content"])
+    (operation,) = schema["paths"][path].values()
+    return set(operation["responses"]["200"]["content"])
 
 
 @pytest.mark.unit

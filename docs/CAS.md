@@ -53,6 +53,7 @@ pool.release(digest, Hold("svs_capture", capture_id))
 with pool.open(digest) as stream: ...        # integrity verified before any byte is released
 pool.materialize(digest, dest_path)          # hardlink if local + plaintext, else decrypt / download
 pool.exists(digest); pool.stat(digest)
+pool.sizes(digests)                          # {digest: size} of those the pool has, one query per 500
 pool.purge(digest, reason="…", actor=user)   # forced delete across holds, audited
 ```
 

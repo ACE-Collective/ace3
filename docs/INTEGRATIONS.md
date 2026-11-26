@@ -327,6 +327,15 @@ Checklist:
 `integrations.example/example/src/example/correlation.py` (`example_echo`) is a minimal working
 example.
 
+## Adding alert automation triggers and actions
+
+An alert automation rule (`docs/ALERT_AUTOMATION.md`) acts on an alert when its trigger fires.
+An integration adds a trigger type or an action type by appending an entry with a python module
+and class to `alert_automation.trigger_types` or `alert_automation.action_types` in its
+`etc/saq.integration.yaml`. Only the `alert_automation` service imports the class, when it loads a
+rule that names the type. "Adding a trigger or an action" in `docs/ALERT_AUTOMATION.md` gives the
+contract.
+
 ## Routing alerts
 
 An **alert router** decides which queue an alert belongs in (`saq/alert_routing/`). Routers run

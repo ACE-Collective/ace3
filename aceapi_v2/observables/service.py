@@ -89,7 +89,8 @@ async def get_interesting_observables_by_hashes(
 # Only alerts in the default queue count, and alerts with alert_type 'faqueue' are excluded,
 # everywhere an alert is counted or listed, matching saq/database/database_observable.py: "have we
 # seen this before?" means real alerts, and other queues (test runs, special-purpose queues) would
-# inflate it. Unlike that module's DispositionHistory, the histogram here keeps OPEN and UNKNOWN so
+# inflate it. A caller that asks "did this become an alert?" names the queues its alerts are routed
+# to instead (queues), and the faqueue exclusion still applies. Unlike that module's DispositionHistory, the histogram here keeps OPEN and UNKNOWN so
 # that total_alert_count == sum(disposition_counts.values()).
 #
 # No cap on per-observable work: the aggregate is a covering range scan of the observable_mapping
@@ -121,12 +122,14 @@ async def lookup_observables(
     recent_alert_limit: int,
     exclude_alert_uuids: list[str],
     since: datetime | None,
+    queues: list[str] | None,
 ) -> ObservableLookupResponse:
     """Batch observable prevalence lookup. See ObservableLookupRequest/-Result for semantics."""
     if since is not None and since.tzinfo is not None:
         # alerts.insert_date is a naive TIMESTAMP; compare in the same terms
         since = since.astimezone(timezone.utc).replace(tzinfo=None)
 
+    queues = queues or [QUEUE_DEFAULT]
     resolved, index_to_key, errors = _normalize_pairs(pairs)
     id_to_key = await _resolve_observable_ids(session, list(resolved.values()))
     observable_ids = list(id_to_key)
@@ -139,10 +142,10 @@ async def lookup_observables(
     recent: dict[int, list[RecentAlertSummary]] = {}
     events: dict[int, list[EventMembership]] = {}
     if observable_ids:
-        aggregates = await _load_alert_aggregates(session, observable_ids, exclude_alert_ids, since)
+        aggregates = await _load_alert_aggregates(session, observable_ids, exclude_alert_ids, since, queues)
         if recent_alert_limit > 0:
             recent = await _load_recent_alerts(
-                session, observable_ids, recent_alert_limit, exclude_alert_ids, since)
+                session, observable_ids, recent_alert_limit, exclude_alert_ids, since, queues)
         events = await _load_event_memberships(session, observable_ids, exclude_alert_ids)
 
     key_to_id = {key: observable_id for observable_id, key in id_to_key.items()}
@@ -222,12 +225,12 @@ async def _resolve_exclude_alert_ids(session: AsyncSession, uuids: list[str]) ->
 
 
 def _alert_predicates(
-    observable_ids: list[int], exclude_alert_ids: list[int], since: datetime | None
+    observable_ids: list[int], exclude_alert_ids: list[int], since: datetime | None, queues: list[str]
 ) -> list:
     predicates = [
         ObservableMapping.observable_id.in_(observable_ids),
         Alert.alert_type != ANALYSIS_TYPE_FAQUEUE,
-        Alert.queue == QUEUE_DEFAULT,
+        Alert.queue.in_(queues),
     ]
     if exclude_alert_ids:
         predicates.append(ObservableMapping.alert_id.notin_(exclude_alert_ids))
@@ -241,6 +244,7 @@ async def _load_alert_aggregates(
     observable_ids: list[int],
     exclude_alert_ids: list[int],
     since: datetime | None,
+    queues: list[str],
 ) -> dict[int, _AlertAggregate]:
     """One grouped statement per chunk: histogram, total, and first/last seen together."""
     aggregates: dict[int, _AlertAggregate] = {}
@@ -254,7 +258,7 @@ async def _load_alert_aggregates(
                 func.max(Alert.insert_date),
             )
             .join(Alert, Alert.id == ObservableMapping.alert_id)
-            .where(*_alert_predicates(chunk, exclude_alert_ids, since))
+            .where(*_alert_predicates(chunk, exclude_alert_ids, since, queues))
             .group_by(ObservableMapping.observable_id, Alert.disposition))
         for observable_id, disposition, count, first_seen, last_seen in result:
             aggregate = aggregates.setdefault(observable_id, _AlertAggregate())
@@ -273,6 +277,7 @@ async def _load_recent_alerts(
     limit: int,
     exclude_alert_ids: list[int],
     since: datetime | None,
+    queues: list[str],
 ) -> dict[int, list[RecentAlertSummary]]:
     """The newest `limit` alerts per observable via one windowed statement per chunk."""
     recent: dict[int, list[RecentAlertSummary]] = {}
@@ -289,18 +294,20 @@ async def _load_recent_alerts(
                 Alert.uuid,
                 Alert.disposition,
                 Alert.insert_date,
+                Alert.queue,
                 row_number,
             )
             .join(Alert, Alert.id == ObservableMapping.alert_id)
-            .where(*_alert_predicates(chunk, exclude_alert_ids, since))
+            .where(*_alert_predicates(chunk, exclude_alert_ids, since, queues))
             .subquery())
         result = await session.execute(
-            select(ranked.c.observable_id, ranked.c.uuid, ranked.c.disposition, ranked.c.insert_date)
+            select(ranked.c.observable_id, ranked.c.uuid, ranked.c.disposition, ranked.c.insert_date,
+                   ranked.c.queue)
             .where(ranked.c.row_number <= limit)
             .order_by(ranked.c.observable_id, ranked.c.row_number))
-        for observable_id, alert_uuid, disposition, insert_date in result:
+        for observable_id, alert_uuid, disposition, insert_date, queue in result:
             recent.setdefault(observable_id, []).append(RecentAlertSummary(
-                uuid=alert_uuid, disposition=disposition, insert_date=insert_date))
+                uuid=alert_uuid, disposition=disposition, insert_date=insert_date, queue=queue))
     return recent
 
 

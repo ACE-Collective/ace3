@@ -959,6 +959,10 @@ email_archive:
   # pool's ttl_days fails to load: it would lose the Message-ID of an email still in the pool
   # (docs/DATABASE_PARTITIONS.md)
   partition_retention_days: 30
+  # the most emails, and the most plaintext bytes, one POST /api/v2/email/archive/download zip may
+  # hold. the emails are decrypted to a temporary directory while the zip is built
+  max_bulk_download_files: 500
+  max_bulk_download_bytes: 1073741824
 
 memcached:
   # the address of the memcached system used by ACE
@@ -2736,6 +2740,55 @@ service_external_remediation_check:
   # ZAP hours after alert close) should still land on the timeline.
   stop_on_disposition: false
   disposition_sweep_interval_seconds: 300
+
+# ALERT AUTOMATION (docs/ALERT_AUTOMATION.md)
+# rules that act on an alert when their trigger fires. a rule is an alert_automation_rule_<name>
+# block; it acts at most once per (rule, alert, mode) and never on an alert a person owns.
+#
+# alert_automation_rule_example:
+#   name: example
+#   enabled: true
+#   mode: dry_run                  # dry_run records what it would do; enforce does it
+#   trigger:
+#     type: external_remediation_confirmed
+#     probe: some_probe            # an external_remediation_probe_* name
+#     max_age_hours: 120
+#   actions:
+#     - type: disposition
+#       disposition: DELIVERY
+#       comment: "{probe} confirmed removal of {observable} at {event_time}; ACE removal queued as a backstop"
+#     - type: remediate
+#       targets: same_message
+service_alert_automation:
+  name: alert_automation
+  python_module: saq.alert_automation.service
+  python_class: AlertAutomationService
+  description: Alert automation - acts on alerts when a rule's trigger fires
+  enabled: false
+  instance_types:
+    - ANY
+  interval_seconds: 60
+  batch_size: 100
+  # a failing action is retried on later sweeps, then marked failed
+  max_action_attempts: 5
+
+# the trigger and action types rules can name. integrations append entries from their own config
+# (lists append when config files merge). see "Adding a trigger or an action" in docs/ALERT_AUTOMATION.md
+alert_automation:
+  trigger_types:
+    - name: external_remediation_confirmed
+      python_module: saq.alert_automation.triggers
+      python_class: ExternalRemediationConfirmedTrigger
+  action_types:
+    - name: disposition
+      python_module: saq.alert_automation.actions
+      python_class: DispositionAction
+    - name: remediate
+      python_module: saq.alert_automation.actions
+      python_class: RemediateAction
+    - name: comment
+      python_module: saq.alert_automation.actions
+      python_class: CommentAction
 
 # ENGINE CONFIGURATION
 service_engine:
