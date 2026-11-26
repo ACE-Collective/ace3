@@ -285,6 +285,46 @@ def test_failed_search_is_reported_and_the_rest_still_run(test_context, caplog):
 
 
 @pytest.mark.unit
+def test_failed_search_is_abandoned_before_the_next_one_runs(test_context):
+    splunk = MockMultiSplunk({
+        "edr_url_clicks": RuntimeError("splunk said no"),
+        "index=proxy": [PROXY_ROW],
+    })
+    with patch("saq.modules.splunk.SplunkClient", return_value=splunk):
+        analyzer = _make_analyzer(test_context, MULTI_CONFIG)
+        observable = RootAnalysis().add_observable_by_spec(F_URL, "https://evil.example/landing")
+        abandoned = []
+        with patch.object(analyzer, "abandon_query",
+                          side_effect=lambda reason: abandoned.append((reason, analyzer.target_query))):
+            _run(analyzer, observable)
+
+    # once, for the failed search, while its query is still the active one
+    assert len(abandoned) == 1
+    reason, query = abandoned[0]
+    assert reason == "error"
+    assert "edr_url_clicks" in query
+
+
+@pytest.mark.unit
+def test_a_failing_abandon_query_is_logged_and_the_rest_still_run(test_context, caplog):
+    splunk = MockMultiSplunk({
+        "edr_url_clicks": RuntimeError("splunk said no"),
+        "index=proxy": [PROXY_ROW],
+    })
+    with patch("saq.modules.splunk.SplunkClient", return_value=splunk), caplog.at_level(logging.ERROR):
+        analyzer = _make_analyzer(test_context, MULTI_CONFIG)
+        observable = RootAnalysis().add_observable_by_spec(F_URL, "https://evil.example/landing")
+        with patch.object(analyzer, "abandon_query", side_effect=RuntimeError("could not stop the job")):
+            analysis = _run(analyzer, observable)
+
+    assert {e.source for e in analysis.get_clicker_events()} == {"splunk:proxy"}
+    assert analysis.get_clicker_error() == "safelinks: splunk said no"
+    records = [r for r in caplog.records if r.exc_info and "could not stop the job" in str(r.exc_info[1])]
+    assert len(records) == 1
+    assert records[0].abandon_reason == "error"
+
+
+@pytest.mark.unit
 def test_every_failed_search_is_named(test_context):
     splunk = MockMultiSplunk({
         "edr_url_clicks": RuntimeError("first"),
@@ -307,16 +347,24 @@ def test_pending_search_delays_then_times_out(test_context):
         observable = RootAnalysis().add_observable_by_spec(F_URL, "https://evil.example/landing")
         analysis = analyzer.create_analysis(observable)
 
+        abandoned = []
+        # the job of the search being abandoned, which the slot reset after it clears
+        record = lambda reason: abandoned.append((reason, analysis.search_id))  # noqa: E731
+
         # within the timeout the work item is delayed on the first search
-        with patch.object(analyzer, "delay_analysis", return_value=AnalysisExecutionResult.INCOMPLETE) as delay:
+        with patch.object(analyzer, "delay_analysis", return_value=AnalysisExecutionResult.INCOMPLETE) as delay, \
+             patch.object(analyzer, "abandon_query", side_effect=record):
             assert analyzer.continue_analysis(observable, analysis) == AnalysisExecutionResult.INCOMPLETE
         delay.assert_called_once_with(observable, analysis, seconds=analyzer.async_delay_seconds)
         assert analysis.details["clicker_index"] == 0
         assert analysis.get_clicker_error() is None
+        assert abandoned == []
 
         # once the timeout has passed the search is given up on and the next one runs
         analysis.query_start -= analyzer.query_timeout + 1
-        assert analyzer.continue_analysis(observable, analysis) == AnalysisExecutionResult.COMPLETED
+        with patch.object(analyzer, "abandon_query", side_effect=record):
+            assert analyzer.continue_analysis(observable, analysis) == AnalysisExecutionResult.COMPLETED
+        assert abandoned == [("timeout", "1")]
 
     assert analysis.details["clicker_index"] == 2
     assert {e.source for e in analysis.get_clicker_events()} == {"splunk:proxy"}
