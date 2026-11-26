@@ -1098,3 +1098,32 @@ def test_no_invariants_file_when_no_section_is_touched(repo, review):
 
     assert target["invariant_sections"] == []
     assert not bundle_file(target, "invariants.md").exists()
+
+
+COVERAGERC = """[run]
+omit =
+    tests/*
+source =
+    app
+    saq
+    aceapi_v2
+    aceapi_ai
+parallel = True
+"""
+
+
+@pytest.mark.parametrize("files, cov", [
+    # outside every configured source, so it is measured along with them
+    ({".agents/skills/x/scripts/a.py": "A = 1\n", "saq/worker.py": "def run():\n    return 2\n"},
+     "--cov=app --cov=saq --cov=aceapi_v2 --cov=aceapi_ai --cov=.agents/skills/x/scripts"),
+    ({"saq/worker.py": "def run():\n    return 2\n"}, "--cov"),
+    ({"tests/saq/test_worker.py": "import pytest\n\n@pytest.mark.unit\ndef test_run():\n    pass\n"}, "--cov"),
+    ({".agents/skills/x/SKILL.md": "# x\n"}, "--cov"),
+])
+def test_a_core_change_measures_the_changed_code_the_configured_sources_leave_out(repo, review, files, cov):
+    write(repo, ".coveragerc", COVERAGERC)
+    commit(repo, "coverage settings")
+    for path, text in files.items():
+        write(repo, path, text)
+
+    assert bundle_file(review(), "cov_sources.txt").read_text() == cov + "\n"

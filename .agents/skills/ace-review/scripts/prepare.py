@@ -46,6 +46,7 @@ one is redone in place. The bundle gets:
 import argparse
 import ast
 import codecs
+import configparser
 import difflib
 import hashlib
 import json
@@ -232,6 +233,27 @@ def unmarked_tests(path: str, source: str | None) -> list[str]:
                     if not class_marked and not has_run_marker(item.decorator_list):
                         missing.append(f"{path}:{item.lineno} {node.name}.{item.name}")
     return missing
+
+
+def core_coverage(repo: str, changed: list[tuple[str, str, str]], head_text) -> list[str]:
+    """pytest-cov's arguments for a core change. A bare --cov measures only .coveragerc's sources,
+    so changed code outside them (a skill's scripts, bin/) is named along with them."""
+    config = configparser.ConfigParser()
+    config.read_string(head_text(".coveragerc") or "")
+    sources = config.get("run", "source", fallback="").replace(",", " ").split()
+    extra = set()
+    for status, _, path in changed:
+        parts = path.split("/")
+        # a file at the root has no directory to name short of the whole checkout
+        if status.startswith("D") or not path.endswith(".py") or len(parts) < 2:
+            continue
+        if "tests" in parts or parts[-1].startswith("test_") or parts[-1] == "conftest.py":
+            continue
+        if not any(path.startswith(source.rstrip("/") + "/") for source in sources):
+            extra.add(os.path.relpath(os.path.join(repo, os.path.dirname(path)), SAQ_HOME))
+    if not sources or not extra:
+        return ["--cov"]
+    return [f"--cov={source}" for source in sources] + [f"--cov={d}" for d in sorted(extra)]
 
 
 def mirrored_test(rel_path: str) -> str | None:
@@ -969,7 +991,7 @@ def main() -> None:
     if kind == "integration":
         cov = [f"--cov={os.path.relpath(os.path.join(i, 'src'), SAQ_HOME)}" for i in integrations]
     elif kind == "core":
-        cov = ["--cov"]
+        cov = core_coverage(repo, changed, head_text)
     else:
         cov = []
     write(out, "cov_sources.txt", " ".join(cov) + "\n")
