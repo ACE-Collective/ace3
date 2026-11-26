@@ -94,6 +94,8 @@ VERDICTS = ("ship", "fix-first", "rework")
 FLAW_SIZES = ("small", "medium", "large")
 FLAW_RECOMMENDATIONS = ("stop", "keep going")
 FLAW_LABEL = "design flaw"
+# worst first, the order an issue lists its risks in; none is a fix that can't break anything
+RISK_LEVELS = ("high", "medium", "low", "none")
 # named, not read from a checkout's remote, so gh runs the same from the host, the container or any worktree
 FLAW_REPO = "ACE-Collective/ace3"
 GH_TIMEOUT = 60
@@ -129,14 +131,39 @@ def problems(finding: dict) -> list[str]:
 
 
 def risks_problems(item: dict) -> list[str]:
-    """A finding or flaw lists what its fix could break, one risk per string: the issue the backlog
-    files for it carries them as its Risks."""
+    """A finding or flaw lists what its fix could break: the issue the backlog files for it carries
+    them as its Risks. Each risk has a level and names its guard, or null when nothing guards it."""
     risks = item.get("risks")
     if not risks:
         return ["no risks"]
-    if not isinstance(risks, list) or not all(isinstance(r, str) and r.strip() for r in risks):
+    if not isinstance(risks, list):
         return [f"risks={risks!r}"]
-    return []
+    return [f"risks[{i}]={risk!r}" for i, risk in enumerate(risks) if not risk_ok(risk)]
+
+
+def risk_ok(risk) -> bool:
+    def text(value) -> bool:
+        return isinstance(value, str) and bool(value.strip())
+    return (isinstance(risk, dict) and risk.get("level") in RISK_LEVELS and text(risk.get("risk"))
+            and (risk["level"] == "none" or "guard" in risk) and (risk.get("guard") is None or text(risk["guard"])))
+
+
+def risks_markdown(risks: list | None) -> str:
+    """An issue's Risks section, worst first. A bundle from before reviewers recorded risks has none,
+    and one from before risks had levels has plain strings, listed as the reviewer wrote them."""
+    if not risks:
+        return "**Risks:** not assessed by the review\n\n"
+    lines = []
+    for risk in sorted(risks, key=lambda r: RISK_LEVELS.index(r["level"]) if isinstance(r, dict) else 0):
+        if isinstance(risk, str):
+            lines.append(f"- {risk}")
+        elif risk["level"] == "none":
+            lines.append(f"- **None.** {risk['risk']}")
+        elif risk.get("guard"):
+            lines.append(f"- **{risk['level'].capitalize()}.** {risk['risk']} *Guard:* {risk['guard']}")
+        else:
+            lines.append(f"- **{risk['level'].capitalize()}, unguarded.** {risk['risk']}")
+    return "**Risks:**\n\n" + "\n".join(lines) + "\n\n"
 
 
 def judgment_problems(finding: dict, previous: dict[str, dict]) -> list[str]:
@@ -392,10 +419,8 @@ def issue_body(target: dict, flaw: dict) -> str:
     # the repo by name: the checkout's path is different on every machine
     repo, branch = os.path.basename(target.get("repo", "")), target.get("branch", "")
     where = f"{flaw['file']}:{flaw['line']}" if flaw.get("line") else flaw["file"]
-    # a bundle from before reviewers recorded risks has none
-    risks = "\n\n" + "\n".join(f"- {r}" for r in flaw["risks"]) if flaw.get("risks") else " not assessed by the review"
     return (f"{flaw['flaw']}\n\n**Real fix** ({flaw['fix_size']}): {flaw.get('fix') or 'not sketched yet'}\n\n"
-            f"**Risks:**{risks}\n\n"
+            f"{risks_markdown(flaw.get('risks'))}"
             f"**Area:** {flaw.get('area') or 'unknown'}\n\n"
             f"**Worked around** in `{repo}` branch `{branch}`, `{where}`:\n\n{flaw['workaround']}\n\n"
             "<sub>Filed by /ace-review.</sub>\n")
