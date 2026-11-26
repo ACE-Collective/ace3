@@ -1240,7 +1240,11 @@ def test_new_backlog_is_filed_and_a_duplicate_is_only_recorded(core, tmp_path, b
     assert [(c[c.index("--title") + 1], c[c.index("--label") + 1]) for c in issues] == [
         ("old bug", "bug"), ("noisy log", "logging"), ("new flaw", "design flaw")]
     assert "#3" in issues[0][-1] and "`saq/x.py:10`" in issues[0][-1]
-    assert "in #3, `saq/x.py:20`" in issues[2][-1]
+    # the same body findings.py files a flaw with, but for where it was worked around and the footer
+    assert issues[2][-1] == ("the flaw\n\n**Real fix** (medium): real fix\n\n"
+                             "**Risks:**\n\n- **Medium, unguarded.** the fix may drop X\n- **Low.** old rows lack Y *Guard:* a default\n\n"
+                             "**Area:** engine\n\n**Worked around** in #3, `saq/x.py:20`:\n\nthe workaround\n\n"
+                             "<sub>Found by /ace-review; filed by /factory.</sub>")
     # each issue says what its fix could break
     assert all("**Risks:**\n\n- **Medium, unguarded.** the fix may drop X\n- **Low.** old rows lack Y *Guard:* a default\n\n" in issue[-1]
                for issue in issues)
