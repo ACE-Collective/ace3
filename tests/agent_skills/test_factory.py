@@ -6,6 +6,7 @@ import base64
 import http.server
 import importlib.util
 import json
+import re
 import subprocess
 import sys
 import threading
@@ -197,8 +198,8 @@ def comment(at: str, body: str, trusted: bool = True, author: str = "maintainer"
     return {"author": author, "trusted": trusted, "body": body, "at": at, "url": f"https://example.com/{at}"}
 
 
-def review(at: str, head: str, verdict: str, round_: int = 1) -> dict:
-    return comment(at, f"report\n{factory.marker('review', {'round': round_, 'head': head, 'verdict': verdict, 'open': []})}")
+def review(at: str, head: str, verdict: str, round_: int = 1, **extra) -> dict:
+    return comment(at, f"report\n{factory.marker('review', {'round': round_, 'head': head, 'verdict': verdict, 'open': [], **extra})}")
 
 
 def reply(at: str) -> dict:
@@ -255,6 +256,12 @@ def pr(head: str, comments: list[dict], draft: bool = True, state: str = "open",
     ("h3", [review("1", "h1", "fix-first"), review("2", "h2", "fix-first"), review("3", "h3", "fix-first")], True, "needs-human"),
     ("h4", [review("1", "h1", "fix-first"), review("2", "h2", "fix-first"), review("3", "h3", "fix-first")], True, "needs-human"),
     ("h3", [review("1", "h1", "fix-first"), review("2", "h2", "fix-first"), review("3", "h3", "ship")], True, "promote"),
+    # held only by rule changes, which rework cannot decide: a maintainer has to
+    ("h1", [review("1", "h1", "fix-first", held="rules")], True, "needs-human"),
+    ("h1", [review("1", "h1", "fix-first", held="rules", open=["R1-1"])], True, "rework"),
+    ("h1", [review("1", "h1", "fix-first", held="rules"), comment("2", "the rule changes are accepted")], True, "rework"),
+    # rework recorded the maintainer's decision, so the same head is reviewed again
+    ("h1", [review("1", "h1", "fix-first", held="rules"), reply("2")], True, "review"),
 ])
 def test_each_pr_s_next_step(head, comments, draft, step):
     assert factory.pr_step(pr(head, comments, draft)) == step
@@ -760,6 +767,17 @@ def test_a_review_is_posted_with_its_result_and_bundle_in_the_marker(core, calls
                                                     "bundle": "factory-1-factory-1-x/round-2", "ticket": "1"})
 
 
+def test_a_review_held_by_its_rule_changes_says_so_in_the_marker(core, calls, tmp_path):
+    (tmp_path / "report.md").write_text("r")
+    (tmp_path / "factory.json").write_text(json.dumps({"round": 1, "head": "h1", "verdict": "fix-first", "open": [],
+                                                       "held": "rules", "bundle": "b/round-1"}))
+
+    factory.post_review(FakeContext(core, ticket_state(prs=[open_pr()])), "1", "ace3", str(tmp_path))
+
+    [body] = [c[-1] for c in calls if c[1:3] == ("pr", "comment")]
+    assert factory.read_marker(body)[1]["held"] == "rules"
+
+
 def test_a_review_of_another_head_is_not_posted(core, calls, tmp_path):
     (tmp_path / "report.md").write_text("r")
     (tmp_path / "factory.json").write_text(json.dumps({"round": 1, "head": "old", "verdict": "ship", "open": [], "bundle": "b/round-1"}))
@@ -897,6 +915,66 @@ def test_retro_data_reads_the_prs_merged_since_the_last_retro_and_marks_where_it
     assert [c["body"] for c in result["prs"][0]["maintainer_comments"]] == ["please rename it"]
     assert json.loads((core / "local" / "factory" / "retro.json").read_text()) == {"last_merged_at": "2026-04-01"}
     assert factory.retro_data(ctx, None, mark=False)["prs"] == []
+
+
+def merge(repo: Path, branch: str, message: str, resolve: dict[str, str] | None = None) -> str:
+    """Merge branch into what repo has checked out, resolving any conflict with the files given."""
+    result = subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@example.com", "-C", str(repo), "merge",
+                             "--quiet", "--no-ff", "-m", message, branch], capture_output=True, text=True)
+    if result.returncode:
+        assert resolve, result.stdout + result.stderr
+        return commit(repo, resolve, message)
+    return git(repo, "rev-parse", "HEAD").strip()
+
+
+def test_retro_data_lists_only_the_work_done_on_the_branch_after_ship_not_what_merges_brought_in(remote, monkeypatch):
+    origin, clone = remote
+    git(origin, "switch", "--quiet", "-c", "factory/1-a")
+    shipped = commit(origin, {"a.py": "a, shipped\n"}, "the shipped work")
+    git(origin, "switch", "--quiet", "main")
+    commit(origin, {"main_only.py": "only main has this\n"}, "main moves on")
+    git(origin, "switch", "--quiet", "factory/1-a")
+    merge(origin, "main", "a clean merge of main")
+    commit(origin, {"fix.py": "after ship\n"}, "a fix after ship")
+    git(origin, "switch", "--quiet", "main")
+    commit(origin, {"b.py": "b on main\n", "main_too.py": "main again\n"}, "main changes b")
+    git(origin, "switch", "--quiet", "factory/1-a")
+    commit(origin, {"b.py": "b on the branch\n"}, "the branch changes b")
+    head = merge(origin, "main", "a merge that resolves b", resolve={"b.py": "b resolved\n"})
+    git(origin, "update-ref", "refs/pull/1/head", head)
+    git(origin, "switch", "--quiet", "main")
+    merged = merge(origin, "factory/1-a", "merge the PR")
+    commit(origin, {"later.py": "after the PR merged\n"}, "main after the merge")
+    pr_list = [{"number": 1, "title": "pr 1", "headRefName": "factory/1-a", "mergedAt": "2026-01-01", "url": "u1",
+                "headRefOid": head, "mergeCommit": {"oid": merged}}]
+    monkeypatch.setattr(factory, "gh", lambda main, *args, stdin=None: json.dumps(pr_list))
+    monkeypatch.setattr(factory, "gh_comments", lambda *args, **kwargs: [review("2026-01-01", shipped, "ship")])
+
+    after_ship = factory.retro_data(FakeContext(clone), "2025-01-01", mark=False)["prs"][0]["changed_after_ship"]
+
+    subjects = [line.split(" ", 1)[1] for line in after_ship.splitlines() if re.match(r"[0-9a-f]{7,} ", line)]
+    assert subjects == ["a clean merge of main", "a fix after ship", "the branch changes b", "a merge that resolves b"]
+    # a clean merge shows nothing; the conflicting one shows only its resolution
+    clean, fix, branch_b, resolving = re.split(r"^(?=[0-9a-f]{7,} )", after_ship, flags=re.MULTILINE)[1:]
+    assert "|" not in clean
+    assert "fix.py" in fix and "b.py" in branch_b
+    assert "b.py" in resolving and "main_too.py" not in resolving
+    assert "main_only.py" not in after_ship and "later.py" not in after_ship
+
+
+def test_retro_data_says_when_a_force_push_dropped_the_ship_head(remote, monkeypatch):
+    origin, clone = remote
+    git(origin, "switch", "--quiet", "-c", "factory/1-a")
+    head = commit(origin, {"a.py": "rewritten\n"}, "rewritten after ship")
+    git(origin, "update-ref", "refs/pull/1/head", head)
+    pr_list = [{"number": 1, "title": "pr 1", "headRefName": "factory/1-a", "mergedAt": "2026-01-01", "url": "u1",
+                "headRefOid": head, "mergeCommit": None}]
+    monkeypatch.setattr(factory, "gh", lambda main, *args, stdin=None: json.dumps(pr_list))
+    monkeypatch.setattr(factory, "gh_comments", lambda *args, **kwargs: [review("2026-01-01", "0" * 40, "ship")])
+
+    after_ship = factory.retro_data(FakeContext(clone), "2025-01-01", mark=False)["prs"][0]["changed_after_ship"]
+
+    assert after_ship.startswith("could not list the commits after ship")
 
 
 def test_an_azure_devops_work_item_reads_as_a_ticket(core, monkeypatch):

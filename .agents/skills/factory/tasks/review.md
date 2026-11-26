@@ -36,6 +36,6 @@ The report links each one where it lists it: the design flaw's issue under *Desi
 
 ## 3. Hand off
 
-`python3 $F state TICKET` now says what comes next: `rework` for fix-first or rework, `promote` once every open PR has shipped, `review` for another repo's PR, or `needs-human` when this was the third round without a ship. On `needs-human`, write a stop comment: the round count, the findings still open, and the one thing a human has to decide, and run `$F release TICKET --to needs-human --repo <name> --body-file <file>`, so the stop lands on this PR and its round count starts again from there.
+`python3 $F state TICKET` now says what comes next: `rework` for fix-first or rework, `promote` once every open PR has shipped, `review` for another repo's PR, or `needs-human` when this was the third round without a ship, or when the round's only hold is its rule changes (`factory.json` has `"held": "rules"` and nothing open), which rework can't decide. On `needs-human`, write a stop comment: the round count, the findings still open, and the one thing a human has to decide. For a round held by its rule changes, that is the rule changes from the report: ask a maintainer to accept or reject them in a comment on the PR, then remove `factory:needs-human`. Run `$F release TICKET --to needs-human --repo <name> --body-file <file>`, so the stop lands on this PR and its round count starts again from there.
 
 `$F worktree-remove TICKET`, then the handoff, with `head_sha` the reviewed head, `verdict` the round's, and `findings_open` from `$B/factory.json`.

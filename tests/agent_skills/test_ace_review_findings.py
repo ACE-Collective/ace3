@@ -975,3 +975,28 @@ def test_factory_result_floors_a_round_whose_tests_did_not_pass_at_fix_first(bun
 
     with pytest.raises(SystemExit, match="tests"):
         findings.factory_result(str(bundle), "ship")
+
+
+def test_a_round_held_only_by_pending_rule_changes_says_so(bundle):
+    finished_round(bundle, [], rule_changes_status="pending")
+
+    result = findings.factory_result(str(bundle), "fix-first")
+
+    assert (result["floor"], result["open"], result["held"]) == ("fix-first", [], "rules")
+    assert read_json(bundle / "factory.json")["held"] == "rules"
+
+
+@pytest.mark.parametrize("ranked, status, tests_exit", [
+    # the findings set the floor, so rework has them to fix
+    ([judged()], "pending", 0),
+    # rework has the rejected rule changes to take out
+    ([], "rejected", 0),
+    ([], "accepted", 0),
+    ([], None, 0),
+    # rework has the tests to fix
+    ([], "pending", 1),
+])
+def test_a_round_with_anything_else_to_do_is_not_held_by_the_rules(bundle, ranked, status, tests_exit):
+    finished_round(bundle, ranked, rule_changes_status=status, tests_exit=tests_exit)
+
+    assert "held" not in findings.factory_result(str(bundle), "fix-first")

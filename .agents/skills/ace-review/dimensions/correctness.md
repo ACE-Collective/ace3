@@ -55,6 +55,8 @@ A change that doesn't do what it says, or that works around a symptom whose caus
 
 **API and contract.** A response schema change that breaks existing callers (`ace_api.py`, the GUI JS, integrations). A cursor or format change with no version bump, which would invalidate cursors that clients already hold. A CLI flag removed or renamed without a deprecation path.
 
+**Other code that finds the same things.** When a change alters what a discovery, glob, filter or ignore list finds, search the tree for every other place that finds the same things, by their marker file or pattern: scripts in `bin/`, the `Dockerfile`, installers, `prepare.py`. A place that still finds what the change now skips, or skips what it now finds, is a finding.
+
 **Plain logic errors.** Off-by-one, inverted conditions, wrong variable, exceptions caught too broadly so that real errors are masked (the logging dimension owns how they're logged; you own that they're hidden), and early `return` inside a `finally`.
 
 ## Calibration
