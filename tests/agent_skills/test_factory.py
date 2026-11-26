@@ -1151,7 +1151,11 @@ def test_an_azure_devops_pr_is_labeled_through_its_labels_resource(core, label_c
 # ---------------------------------------------------------------- backlog
 
 
-def finished_round(path: Path, pre_existing=(), flaws=(), known_flaws=(), risks=("the fix may drop X", "old rows lack Y")) -> Path:
+DEFAULT_RISKS = ({"level": "low", "risk": "old rows lack Y", "guard": "a default"},
+                 {"level": "medium", "risk": "the fix may drop X", "guard": None})
+
+
+def finished_round(path: Path, pre_existing=(), flaws=(), known_flaws=(), risks=DEFAULT_RISKS) -> Path:
     """A finished /ace-review bundle: its verified findings, flaws and summary, as findings.py writes them.
     risks=None leaves them out, as a bundle from before the review recorded them does."""
     path.mkdir(parents=True, exist_ok=True)
@@ -1238,7 +1242,8 @@ def test_new_backlog_is_filed_and_a_duplicate_is_only_recorded(core, tmp_path, b
     assert "#3" in issues[0][-1] and "`saq/x.py:10`" in issues[0][-1]
     assert "in #3, `saq/x.py:20`" in issues[2][-1]
     # each issue says what its fix could break
-    assert all("**Risks:**\n\n- the fix may drop X\n- old rows lack Y\n\n" in issue[-1] for issue in issues)
+    assert all("**Risks:**\n\n- **Medium, unguarded.** the fix may drop X\n- **Low.** old rows lack Y *Guard:* a default\n\n" in issue[-1]
+               for issue in issues)
     assert result["recorded"]["P1-3"] == {"ref": "#12", "filed": False}
     assert result["refused"] == []
     # findings.py reads this, so the round's summary names the flaw's new issue once finish runs again
@@ -1321,7 +1326,8 @@ def test_a_flaw_in_an_internal_repo_s_own_code_is_its_work_item_with_the_detail(
     assert work_item[:4] == ("az", "boards", "work-item", "create")
     assert "System.Tags=factory:backlog; design flaw; internal" in work_item
     assert "saq/x.py:20" in work_item[work_item.index("--description") + 1]
-    assert "<p>- the fix may drop X<br>- old rows lack Y</p>" in work_item[work_item.index("--description") + 1]
+    assert ("<p>- **Medium, unguarded.** the fix may drop X<br>- **Low.** old rows lack Y *Guard:* a default</p>"
+            in work_item[work_item.index("--description") + 1])
     assert json.loads((bundle / "filed-flaws.json").read_text())["F1"]["url"] == result["recorded"]["F1"]["ref"]
 
 

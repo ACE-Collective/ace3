@@ -107,12 +107,12 @@ Each reviewer writes a JSON array to `$B/findings-<dim>.json`:
     "evidence": "what the code does, quoting or citing file:line, including the caller/input that triggers it",
     "impact": "what happens in production because of it",
     "fix": "the smallest change that resolves it; name the existing helper to use if there is one",
-    "risks": ["what making the fix could break, one risk per string"]
+    "risks": [{"level": "high | medium | low | none", "risk": "what making the fix could break, for whom, and how anyone would find out", "guard": "what guards against it, or null when nothing does"}]
   }
 ]
 ```
 
-`risks` are the risks of making the `fix`, not of leaving the problem, which `impact` covers. Each one says what breaks and for whom, how anyone would find out, and what guards against it; check the fix against the list under *Risks* in `.agents/skills/issue-authoring/SKILL.md` and write only what applies. A fix that can't break anything gets one entry saying why ("changes one log call; no behavior changes"). A pre-existing finding and a design flaw are filed as issues with their risks, so a flaw's risks are written in core's terms like the flaw itself.
+`risks` are the risks of making the `fix`, not of leaving the problem, which `impact` covers. Each one says what breaks and for whom and how anyone would find out, and `guard` names what guards against it (a test, a default that keeps today's behavior), or is null. Its `level` rates the harm if it happens, not how likely it is, by the levels under *Risks* in `.agents/skills/issue-authoring/SKILL.md`: high is blocker-class harm, medium a wrong result or failure with limited blast radius that something notices, low extra work or noise. Check the fix against that section's list and write only what applies. A fix that can't break anything gets one entry with level `none` saying why ("changes one log call; no behavior changes"). A pre-existing finding and a design flaw are filed as issues with their risks, so a flaw's risks are written in core's terms like the flaw itself.
 
 In a fix round, `answers` names the earlier finding whose fix put the code there. Write `[]` if there's nothing. Don't pad.
 
@@ -130,7 +130,7 @@ A reviewer that finds a design flaw also writes `$B/flaws-<dim>.json`, an array 
     "line": 123,
     "fix_size": "small | medium | large",
     "fix": "a sketch of the real fix",
-    "risks": ["what making the real fix could break, one risk per string"],
+    "risks": [{"level": "high | medium | low | none", "risk": "what making the real fix could break", "guard": "what guards against it, or null"}],
     "recommendation": "stop | keep going",
     "why": "one line: why stop or keep going",
     "known": "the issue number when known-flaws.json already has it, else omit"

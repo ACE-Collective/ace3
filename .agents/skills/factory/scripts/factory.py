@@ -68,6 +68,10 @@ import urllib.request
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import public_text  # noqa: E402  (a sibling script, not a package)
 
+# /ace-review's script, for the Risks section it writes the same way in the issues it files itself
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "ace-review", "scripts"))
+import findings  # noqa: E402
+
 CORE = "ace3"
 LABELS = {
     "factory:ready": ("0e8a16", "A maintainer has cleared this issue for /factory"),
@@ -1151,22 +1155,16 @@ def backlog(ctx: Context, ref: str, repo_name: str, bundle: str) -> dict:
     return {"candidates": candidates}
 
 
-def risks_section(candidate: dict) -> str:
-    # a round from before reviewers recorded risks has none
-    risks = "\n\n" + "\n".join(f"- {r}" for r in candidate["risks"]) if candidate.get("risks") else " not assessed by the review"
-    return f"**Risks:**{risks}\n\n"
-
-
 def finding_body(candidate: dict, found_in: str) -> str:
     where = f"`{candidate['file']}:{candidate['line']}`" if candidate.get("line") else f"`{candidate['file']}`"
     return (f"{candidate['evidence']}\n\n**Impact:** {candidate['impact']}\n\n**Fix:** {candidate['fix']}\n\n"
-            f"{risks_section(candidate)}**Where:** {where}\n\n<sub>Found by /ace-review as pre-existing ({candidate['dimension']}, {candidate['severity']}) "
+            f"{findings.risks_markdown(candidate.get('risks'))}**Where:** {where}\n\n<sub>Found by /ace-review as pre-existing ({candidate['dimension']}, {candidate['severity']}) "
             f"in code {found_in} touches; filed by /factory.</sub>")
 
 
 def flaw_body(candidate: dict, worked_around: str) -> str:
     return (f"{candidate['flaw']}\n\n**Real fix** ({candidate['fix_size']}): {candidate.get('fix') or 'not sketched yet'}\n\n"
-            f"{risks_section(candidate)}**Area:** {candidate.get('area') or 'unknown'}\n\n**Worked around** {worked_around}:\n\n{candidate['workaround']}\n\n"
+            f"{findings.risks_markdown(candidate.get('risks'))}**Area:** {candidate.get('area') or 'unknown'}\n\n**Worked around** {worked_around}:\n\n{candidate['workaround']}\n\n"
             "<sub>Found by /ace-review; filed by /factory.</sub>")
 
 

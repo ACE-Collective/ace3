@@ -45,13 +45,20 @@ A small issue, such as a missing traceback, takes a few lines: the problem, wher
 
 The Risks section names what could break, or get worse, because of the proposed change. The cost of leaving the problem alone goes in the problem statement, not here.
 
-For each risk, say:
+Each risk opens with its level and whether anything guards it, then says:
 
 - what breaks and for whom (which processes, nodes, alerts or analysts);
-- how anyone would find out, or that nobody would, since a silent failure ranks above a loud one;
-- what guards against it: a test, a default that keeps today's behavior, a check to run before merging. Or say that nothing does and why that is acceptable.
+- what triggers it and how often that happens, in words;
+- how anyone would find out, or that nobody would;
+- what guards against it: a test, a default that keeps today's behavior, a check to run before merging. When nothing does, the risk is **unguarded**: say so in its opening and why that is acceptable.
 
-Put the worst first, ranked by uptime, then logging, tests and performance. Check the change against each of these, and write up only what applies:
+The level rates the harm if it happens, not how likely it is. Likelihood goes in the text, where a reader can check it.
+
+- **High:** blocker-class harm by `ace-review/rubric.md`'s *Severity*. A service goes down, hangs or can't restart; data is lost or corrupted; a live table locks; an event that should alert is dropped; a failure is hidden from operators; a security hole opens.
+- **Medium:** a wrong result, a broken failure path or a performance regression, with limited blast radius, that a test, a log record or a monitor would show.
+- **Low:** extra work, noise or inconvenience, and no wrong result.
+
+List them high first. A high risk that is unguarded is the one a maintainer has to see, so never soften its level because it seems unlikely. Check the change against each of these, and write up only what applies:
 
 - **Running nodes.** A service's start, run or stop path, a lock, a wait, a worker's lifetime. During a deploy a cluster runs two versions at once, so an old node reads what a new node wrote: `data.json`, rows, CAS objects, encrypted files, node-to-node API calls.
 - **Stored data.** Saved alerts load through the new code, so a new `data.json` key is optional on read. A persisted name (an Analysis class's `MODULE_PATH`, an observable type, directive, disposition or analysis mode) is never renamed (`docs/ENGINE.md` §15).
@@ -63,12 +70,13 @@ Put the worst first, ranked by uptime, then logging, tests and performance. Chec
 - **Callers.** Integrations that call or subclass what changes (search `integrations/` explicitly, since `rg` skips it), API v2 clients, scripts that pass a CLI option.
 - **Rollback.** Whether reverting the PR undoes the change: a migration that can't be downgraded, or data written in a format the old code can't read.
 
-When nothing applies, say in one sentence why the change can't break anything ("Changes one log call's level and arguments; no behavior changes."), not "None".
+When nothing applies, say in one sentence why the change can't break anything, with the level **None** ("**None.** Changes one log call's level and arguments; no behavior changes."), not a bare "None".
 
 ```markdown
 ## Risks
 
-- **An engine that can't start takes longer to fail.** A site that raises the limit to 300 s waits five minutes before a stuck worker fails the engine's start (the behavior #978 added). The default stays 30 s, so nothing changes until a site sets it, and the setting's description says what a larger value costs.
+- **Medium.** An engine that can't start takes longer to fail. A site that raises the limit to 300 s waits five minutes before a stuck worker fails the engine's start (the behavior #978 added). It happens only at a site that raises the limit. *Guard:* the default stays 30 s, so nothing changes until a site sets it, and the setting's description says what a larger value costs.
+- **High, unguarded.** A site that sets the limit below its real start time keeps its engine from ever starting. It takes an operator lowering the limit below the default, and nothing checks the value against a measured start time. That is acceptable because the failure is loud: the engine exits at start, and its ERROR record names the worker and the limit.
 ```
 
 ## Detail

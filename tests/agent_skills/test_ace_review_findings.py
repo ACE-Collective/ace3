@@ -29,7 +29,7 @@ REAL_GH = findings.gh
 def finding(**fields):
     return {"dimension": "uptime", "severity": "fix-first", "origin": "new", "file": "saq/x.py", "line": 1,
             "title": "a claim", "evidence": "saq/x.py:1 does it", "impact": "it breaks", "fix": "do less",
-            "risks": ["doing less may skip a case"], **fields}
+            "risks": [{"level": "low", "risk": "doing less may skip a case", "guard": "the test of that case"}], **fields}
 
 
 def judged(bucket=None, **fields):
@@ -92,7 +92,9 @@ def test_collect_numbers_files_in_name_order(bundle):
 
 def test_collect_refuses_malformed_findings(bundle):
     write_json(bundle / "findings-logging.json", [finding(dimension="logging"), finding(severity="major", evidence=""),
-                                                  finding(risks=[]), finding(risks="one string")])
+                                                  finding(risks=[]), finding(risks="one string"),
+                                                  finding(risks=["a plain string", {"level": "severe", "risk": "x", "guard": None},
+                                                                 {"level": "low", "risk": "no guard key"}])])
 
     with pytest.raises(SystemExit) as exit_info:
         findings.collect(str(bundle))
@@ -103,6 +105,9 @@ def test_collect_refuses_malformed_findings(bundle):
     # a filed issue says what its fix could break, so every finding carries its risks as a list
     assert "findings-logging.json[2]: no risks" in str(exit_info.value)
     assert "findings-logging.json[3]: risks='one string'" in str(exit_info.value)
+    # each risk has a level and says what guards it, or null when nothing does
+    assert ("findings-logging.json[4]: risks[0]='a plain string', risks[1]={'level': 'severe', 'risk': 'x', 'guard': None}, "
+            "risks[2]={'level': 'low', 'risk': 'no guard key'}") in str(exit_info.value)
     assert not (bundle / "plan.json").exists()
 
 
@@ -494,7 +499,9 @@ def github(monkeypatch):
 def flaw(fid="F1", **fields):
     return {"dimension": "design", "title": "the tree has no hook for X", "flaw": "saq/analysis/root.py has no event for X",
             "area": "analysis tree", "workaround": "polls the root for X", "file": "saq/y.py", "line": 7, "fix_size": "large",
-            "fix": "add the hook", "risks": ["a hook that raises stops the analysis", "old roots have no hook state"],
+            "fix": "add the hook",
+            "risks": [{"level": "low", "risk": "old roots have no hook state", "guard": "the key is optional on read"},
+                      {"level": "high", "risk": "a hook that raises stops the analysis", "guard": None}],
             "recommendation": "keep going", "why": "contained", "fid": fid, **fields}
 
 
@@ -525,13 +532,13 @@ def test_collect_numbers_the_design_flaws_for_the_batch_verifier(bundle):
 
 
 def test_collect_refuses_malformed_flaws(bundle):
-    write_json(bundle / "flaws-design.json", [flaw(fix_size="huge", workaround=""), flaw(risks=["a risk", ""])])
+    write_json(bundle / "flaws-design.json", [flaw(fix_size="huge", workaround=""), flaw(risks=[{"level": "high", "risk": "", "guard": None}])])
 
     with pytest.raises(SystemExit) as exit_info:
         findings.collect(str(bundle))
 
     assert "flaws-design.json[0]: fix_size='huge', no workaround" in str(exit_info.value)
-    assert "flaws-design.json[1]: risks=['a risk', '']" in str(exit_info.value)
+    assert "flaws-design.json[1]: risks[0]={'level': 'high', 'risk': '', 'guard': None}" in str(exit_info.value)
 
 
 def test_tally_keeps_the_flaws_the_verifier_found_real_with_its_judgment(bundle):
@@ -623,7 +630,8 @@ def test_file_files_a_new_flaw_once(bundle, github):
     assert (issue["title"], issue["labels"], issue["state"]) == ("the tree has no hook for X", ["design flaw"], "OPEN")
     # the repo by name: the checkout's path is different on every machine
     assert issue["body"] == ("saq/analysis/root.py has no event for X\n\n**Real fix** (large): add the hook\n\n"
-                             "**Risks:**\n\n- a hook that raises stops the analysis\n- old roots have no hook state\n\n**Area:** analysis tree\n\n"
+                             "**Risks:**\n\n- **High, unguarded.** a hook that raises stops the analysis\n"
+                             "- **Low.** old roots have no hook state *Guard:* the key is optional on read\n\n**Area:** analysis tree\n\n"
                              "**Worked around** in `ace` branch `mw/topic`, `saq/y.py:7`:\n\npolls the root for X\n\n"
                              "<sub>Filed by /ace-review.</sub>\n")
 
@@ -642,6 +650,19 @@ def test_a_flaw_from_a_bundle_older_than_risks_is_filed_saying_they_were_not_ass
 
     [issue] = github.issues.values()
     assert "**Risks:** not assessed by the review\n\n" in issue["body"]
+
+
+@pytest.mark.parametrize("risks, expected", [
+    ([{"level": "none", "risk": "changes one log call; no behavior changes", "guard": None}],
+     "**Risks:**\n\n- **None.** changes one log call; no behavior changes\n\n"),
+    ([{"level": "low", "risk": "a", "guard": "g"}, {"level": "medium", "risk": "b", "guard": None}, {"level": "high", "risk": "c", "guard": "h"}],
+     "**Risks:**\n\n- **High.** c *Guard:* h\n- **Medium, unguarded.** b\n- **Low.** a *Guard:* g\n\n"),
+    # a bundle from before risks had levels lists plain strings, in the reviewer's order
+    (["the fix may drop X", "old rows lack Y"], "**Risks:**\n\n- the fix may drop X\n- old rows lack Y\n\n"),
+    (None, "**Risks:** not assessed by the review\n\n"),
+])
+def test_an_issue_lists_its_risks_worst_first_with_their_level_and_guard(risks, expected):
+    assert findings.risks_markdown(risks) == expected
 
 
 def test_file_never_files_a_flaw_that_has_an_issue(bundle, github):
