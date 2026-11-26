@@ -1114,9 +1114,12 @@ def test_backlog_from_a_round_older_than_risks_is_filed_saying_they_were_not_ass
     bundle = finished_round(tmp_path / "b", pre_existing=[("old bug", "correctness")], flaws=["new flaw"], risks=None)
     decide(bundle, [{"id": "P1-1"}, {"id": "F1"}])
 
-    factory.file_backlog(FakeContext(core, ticket_state(prs=[open_pr()])), "1", "ace3", str(bundle))
+    result = factory.file_backlog(FakeContext(core, ticket_state(prs=[open_pr()])), "1", "ace3", str(bundle))
 
-    assert all("**Risks:** not assessed by the review\n\n" in issue[-1] for issue in created(backlog_calls))
+    issues = created(backlog_calls)
+    assert result["refused"] == []
+    assert [c[c.index("--title") + 1] for c in issues] == ["old bug", "new flaw"]
+    assert all("**Risks:** not assessed by the review\n\n" in issue[-1] for issue in issues)
 
 
 def test_a_candidate_already_recorded_is_never_filed_again(core, tmp_path, backlog_calls):

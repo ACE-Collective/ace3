@@ -24,7 +24,7 @@ The tracker follows the code:
 
 Show the user the title, labels and body, and file once they approve, unless they told you to file it directly. To file:
 
-- **ace3:** write the body to a scratch file, check it with the title, `{ echo "<title>"; cat <file>; } | python3 .agents/skills/factory/scripts/public_text.py` (exit 0 means no internal term matched), then `gh issue create --title <title> --body-file <file> --label <label> ...`.
+- **ace3:** write the body to a scratch file, then `python3 .agents/skills/factory/scripts/factory.py issue-create --title <title> --body-file <file> --label <label> ...`. It checks the title and body against every internal repo's denylist, refuses when one is missing, and files the issue only when nothing matched. Never file with `gh issue create` directly, which skips the check. On a refusal, reword the text generically, never the denylist.
 - **Azure DevOps:** `az boards work-item create --project <project> --type <type> --title <title> --description <html>`. The description field is HTML, so convert the Markdown first; `/factory` files defects as `Bug`.
 - **In a `/factory` run:** `file-backlog` builds each body from the review's finding or flaw, with the reviewer's `risks` as its Risks (`ace-review/rubric.md`). An entry in `$B/backlog.json` may carry `title` and `body` to replace them (`factory/tasks/review.md`, *File the backlog*). Write those with this skill, Risks included.
 
@@ -79,6 +79,6 @@ The rules are the `pr-description` skill's *Detail sensitivity*. ace3 is public:
 
 The title names the defect or the behavior wanted, in sentence case with no prefix: "continue_analysis logs a failed execute_query without its traceback", "Make the engine's worker start timeout configurable".
 
-Labels are only those the repo has (`gh label list`): the kind (`bug`, `enhancement`, `refactoring`, `documentation`), each area it touches (`logging`, `performance`, `tests`, `GUI`, `security`, `DevEx`), `design flaw` for an issue that describes one, and `breaking change` when the proposed change removes or renames a config key, an API field or a CLI option. Never add a `factory:*` label. Those labels hold the ticket's state, and only a maintainer adds `factory:ready`.
+Labels are only those the repo has (`gh label list`): the kind (`bug`, `enhancement`, `refactoring`, `documentation`), each area it touches (`logging`, `performance`, `tests`, `GUI`, `security`, `DevEx`), `design flaw` for an issue that describes one, and `breaking change` when the proposed change removes or renames a config key, an API field or a CLI option. Never add a `factory:*` label. Those labels hold the ticket's state, and only a maintainer adds `factory:ready`. The one exception is the `factory:ready` that `/factory retro` puts on its own issue (`factory/tasks/retro.md`, *Propose*), which its next step claims.
 
 Apply the `unslop` skill to the title and body.
