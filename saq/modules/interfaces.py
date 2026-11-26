@@ -154,6 +154,10 @@ class AnalysisModuleInterface(Protocol):
         """Called after a cached analysis has been replayed for this module."""
         ...
 
+    def delayed_analysis_abandoned(self, observable: Observable, analysis: Analysis) -> None:
+        """Called when the engine drops this module's pending delayed analysis of observable."""
+        ...
+
     # Control methods
     def should_analyze(self, observable: Observable) -> bool:
         """Put your custom 'should I analyze this?' logic in this function."""

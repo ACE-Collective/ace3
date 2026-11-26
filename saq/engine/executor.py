@@ -424,6 +424,55 @@ class AnalysisExecutor:
         )
         return None
 
+    def notify_delayed_analysis_abandoned(self, context: EngineExecutionContext) -> None:
+        """Tells the module of each delayed analysis pending on the context's root that the engine is
+        dropping it. Never raises: it runs on the path that aborts the root's analysis."""
+        root = context.root
+        try:
+            # the analysis this work item resumes is no longer marked delayed, and its module is not
+            # called again for it unless it completed before the abort
+            resumed = context.delayed_analysis_request.analysis if context.delayed_analysis_request else None
+            for observable in root.all_observables:
+                for analysis in observable.all_analysis:
+                    if not (analysis.delayed or (analysis is resumed and not analysis.completed)):
+                        continue
+
+                    try:
+                        self._hand_over_abandoned_delay(root, observable, analysis)
+                    finally:
+                        # the delay is dropped whatever the module did, and a flag left set would hand
+                        # it over again on every later abort of the root
+                        analysis.delayed = False
+        except Exception:
+            logging.exception(
+                "unable to tell modules about the abandoned delayed analysis of %s", root,
+                extra={"root_uuid": root.uuid},
+            )
+
+    def _hand_over_abandoned_delay(self, root: RootAnalysis, observable: Observable, analysis: Analysis) -> None:
+        """Calls delayed_analysis_abandoned on the module of analysis. Never raises."""
+        analysis_module = self._get_analysis_module_by_generated_analysis(analysis.module_path)
+        if analysis_module is None:
+            # the module is no longer loaded, so nothing here can stop what it started
+            return
+
+        try:
+            # details this pass never loaded are still on disk (a loaded or new one is modified)
+            if not analysis.details_modified:
+                analysis.load_details()
+
+            analysis_module.delayed_analysis_abandoned(observable, analysis)
+        except Exception:
+            logging.exception(
+                "%s failed to handle the abandoned delayed analysis of %s in %s",
+                analysis_module, observable, root,
+                extra={
+                    "root_uuid": root.uuid,
+                    "observable_uuid": observable.uuid,
+                    "module_name": analysis_module.name,
+                },
+            )
+
     def _execute_post_analysis(self, context):
         """Execute post-analysis routines for all analysis modules."""
         logging.debug("executing post analysis routines for {}".format(context.root))

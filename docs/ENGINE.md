@@ -528,12 +528,18 @@ Times the executor call, then `root.save()`, then emits the per-root and per-mod
 with `outcome` `completed`, or `cancelled` when the context's cancel flag is set (a shutdown, a
 lost lock or a disposition stop, which all return normally from the executor).
 
-On any exception it saves whatever it has, emits the same metrics with `outcome` `timed_out`
-(an `AnalysisTimeoutError`) or `failed`, sets `analysis_aborted = True`, clears every
-outstanding `delayed_analysis` row for the root, and re-raises.
-`analysis_aborted` matters because abandoning the delayed rows leaves
-`root.delayed` stale — without forcing an index rebuild, the alert's observables
-would never reach `observable_mapping` and the alert would be unsearchable by
+On any exception it calls `AnalysisExecutor.notify_delayed_analysis_abandoned`, which calls
+`delayed_analysis_abandoned(observable, analysis)` on the module of each analysis still waiting
+on a delay (marked `delayed`, or the one this work item resumes, unless it completed), with its
+details loaded, and logs what a module raises. It clears each such analysis's `delayed`
+flag, so a later pass of the root that aborts too does not hand the same delay over again. Then
+it saves whatever it has, emits the same metrics with `outcome` `timed_out` (an
+`AnalysisTimeoutError`) or `failed`, sets `analysis_aborted = True`, clears every outstanding
+`delayed_analysis` row for the root, and re-raises. The hook is how a module whose delay waits on a job elsewhere (an API analyzer's
+asynchronous search) stops that job, since no module is called again for a cleared row.
+`analysis_aborted` matters because `root.delayed` can still be stale after the
+delayed rows are cleared (when walking the tree failed) — without forcing an index
+rebuild, the alert's observables would never reach `observable_mapping` and the alert would be unsearchable by
 them.
 
 ---
@@ -872,7 +878,9 @@ Back in `AnalysisModule.delay_analysis`:
 - returned `False` (deadline expired, or the request could not be recorded) →
   the analysis is closed out failed (`analysis.error` "timed out waiting for
   delayed analysis to complete", `completed = True`, `delayed = False`), return
-  `COMPLETED`. Like any failed analysis it is never cached (§12.4).
+  `COMPLETED`. Like any failed analysis it is never cached (§12.4). A module that polls a job
+  elsewhere checks for this result and stops the job (`BaseAPIAnalyzer` calls
+  `abandon_query("delay refused")`).
 
 `root.delayed` is *computed*: true if any analysis anywhere in the tree has
 `delayed` set. Its setter is a deliberate no-op (the serialized value is
@@ -1102,8 +1110,9 @@ checks `analysis.error` before trusting it.
 ### 12.5 `AnalysisTimeoutError` unwinding
 
 `AnalysisExecutor.execute` catches it, still runs `_execute_post_analysis`, and
-re-raises. `AnalysisOrchestrator._execute_analysis` saves the partial tree, sets
-`analysis_aborted`, deletes the root's `delayed_analysis` rows, and re-raises.
+re-raises. `AnalysisOrchestrator._execute_analysis` tells the modules of the pending delays
+(§6.4), saves the partial tree, sets `analysis_aborted`, deletes the root's `delayed_analysis`
+rows, and re-raises.
 `orchestrate_analysis` catches it, logs a warning, returns `False` — and the
 `finally` still runs the full post-analysis path.
 

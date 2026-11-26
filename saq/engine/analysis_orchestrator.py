@@ -263,6 +263,10 @@ class AnalysisOrchestrator:
             #else:
                 #logging.error(f"analysis failed on {execution_context.root}: {e}")
 
+            # the delayed requests are cleared below, so no module is called again for them. before
+            # the save, so that what a module records about it is kept
+            self.analysis_executor.notify_delayed_analysis_abandoned(execution_context)
+
             try:
                 # just try to save what we've got thus far
                 execution_context.root.save()

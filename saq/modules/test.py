@@ -32,6 +32,7 @@ KEY_COMPLETE_TIME = 'complete_time'
 KEY_INITIAL_REQUEST = 'initial_request'
 KEY_DELAYED_REQUEST = 'delayed_request'
 KEY_REQUEST_COUNT = 'request_count'
+KEY_ABANDONED = 'abandoned'
 KEY_SHUTDOWN = 'shutdown'
 KEY_CONTROLLED_SHUTDOWN = 'controlled_shutdown'
 
@@ -530,6 +531,9 @@ class DelayedAnalysisTestModule(AnalysisModule):
         analysis.details[KEY_REQUEST_COUNT] += 1
         analysis.details[KEY_COMPLETE_TIME] = datetime.datetime.now()
         return AnalysisExecutionResult.COMPLETED
+
+    def delayed_analysis_abandoned(self, observable: Observable, analysis: Analysis) -> None:
+        analysis.details[KEY_ABANDONED] = True
 
 class SlowDelayedAnalysisTestAnalysis(TestAnalysis):
     def __init__(self, *args, **kwargs):
