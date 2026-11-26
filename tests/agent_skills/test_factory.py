@@ -197,8 +197,8 @@ def comment(at: str, body: str, trusted: bool = True, author: str = "maintainer"
     return {"author": author, "trusted": trusted, "body": body, "at": at, "url": f"https://example.com/{at}"}
 
 
-def review(at: str, head: str, verdict: str, round_: int = 1) -> dict:
-    return comment(at, f"report\n{factory.marker('review', {'round': round_, 'head': head, 'verdict': verdict, 'open': []})}")
+def review(at: str, head: str, verdict: str, round_: int = 1, **extra) -> dict:
+    return comment(at, f"report\n{factory.marker('review', {'round': round_, 'head': head, 'verdict': verdict, 'open': [], **extra})}")
 
 
 def reply(at: str) -> dict:
@@ -255,6 +255,12 @@ def pr(head: str, comments: list[dict], draft: bool = True, state: str = "open",
     ("h3", [review("1", "h1", "fix-first"), review("2", "h2", "fix-first"), review("3", "h3", "fix-first")], True, "needs-human"),
     ("h4", [review("1", "h1", "fix-first"), review("2", "h2", "fix-first"), review("3", "h3", "fix-first")], True, "needs-human"),
     ("h3", [review("1", "h1", "fix-first"), review("2", "h2", "fix-first"), review("3", "h3", "ship")], True, "promote"),
+    # held only by rule changes, which rework cannot decide: a maintainer has to
+    ("h1", [review("1", "h1", "fix-first", held="rules")], True, "needs-human"),
+    ("h1", [review("1", "h1", "fix-first", held="rules", open=["R1-1"])], True, "rework"),
+    ("h1", [review("1", "h1", "fix-first", held="rules"), comment("2", "the rule changes are accepted")], True, "rework"),
+    # rework recorded the maintainer's decision, so the same head is reviewed again
+    ("h1", [review("1", "h1", "fix-first", held="rules"), reply("2")], True, "review"),
 ])
 def test_each_pr_s_next_step(head, comments, draft, step):
     assert factory.pr_step(pr(head, comments, draft)) == step
@@ -758,6 +764,17 @@ def test_a_review_is_posted_with_its_result_and_bundle_in_the_marker(core, calls
     assert "/Users/me" not in body
     assert factory.read_marker(body) == ("review", {"round": 2, "head": "h1", "verdict": "fix-first", "open": ["R2-1"],
                                                     "bundle": "factory-1-factory-1-x/round-2", "ticket": "1"})
+
+
+def test_a_review_held_by_its_rule_changes_says_so_in_the_marker(core, calls, tmp_path):
+    (tmp_path / "report.md").write_text("r")
+    (tmp_path / "factory.json").write_text(json.dumps({"round": 1, "head": "h1", "verdict": "fix-first", "open": [],
+                                                       "held": "rules", "bundle": "b/round-1"}))
+
+    factory.post_review(FakeContext(core, ticket_state(prs=[open_pr()])), "1", "ace3", str(tmp_path))
+
+    [body] = [c[-1] for c in calls if c[1:3] == ("pr", "comment")]
+    assert factory.read_marker(body)[1]["held"] == "rules"
 
 
 def test_a_review_of_another_head_is_not_posted(core, calls, tmp_path):

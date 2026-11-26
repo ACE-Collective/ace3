@@ -271,6 +271,9 @@ def pr_step(pr: dict) -> str:
         return "review"
     if last.get("verdict") == "ship":
         return "promote" if pr["draft"] else "shipped"
+    # only a maintainer can accept or reject a round's rule changes, so rework would have nothing to fix
+    if last.get("held") == "rules" and not last.get("open"):
+        return "needs-human"
     return "needs-human" if progress["cap_reached"] else "rework"
 
 
@@ -954,6 +957,8 @@ def post_review(ctx: Context, ref: str, repo_name: str, bundle: str) -> dict:
     if result.get("head") != pr["head"]:
         raise FactoryError(f"the review is of {str(result.get('head'))[:12]}, but the PR's head is {str(pr['head'])[:12]}; push, then review again")
     data = {key: result[key] for key in ("round", "head", "verdict", "open", "bundle")}
+    if result.get("held"):
+        data["held"] = result["held"]
     body = f"{report}\n\n{marker('review', {**data, 'ticket': parse_ticket(ref)['ref']})}"
     posted = post_comment(ctx, ref, "review", body, repo_name)
     return {**posted, "verdict": result["verdict"], "round": result["round"]}

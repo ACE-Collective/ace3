@@ -523,10 +523,13 @@ def factory_result(bundle: str, verdict: str) -> dict:
         sys.exit(f"the verdict is one of {', '.join(VERDICTS)}")
     target = load(os.path.join(bundle, "target.json"), {})
     floor, why = summary["verdict_floor"], "its findings"
+    passed = tests_passed(bundle)
+    # a round whose only hold is rule changes waiting for a maintainer gives rework nothing to do
+    held = floor == "ship" and passed and target.get("rule_changes_status") == "pending"
     # the rubric's two other reasons a round may not ship, which the findings alone don't count
     if floor == "ship" and target.get("rule_changes_status") in ("pending", "rejected"):
         floor, why = "fix-first", f"its rule changes are {target['rule_changes_status']}"
-    if floor == "ship" and not tests_passed(bundle):
+    if floor == "ship" and not passed:
         floor, why = "fix-first", "its tests did not run and pass"
     if VERDICTS.index(verdict) < VERDICTS.index(floor):
         sys.exit(f"the verdict {verdict} is better than this round's floor, {floor} ({why})")
@@ -540,6 +543,8 @@ def factory_result(bundle: str, verdict: str) -> dict:
               "open": [f["id"] for f in verified if f["origin"] == "new" and f.get("bucket") == "act on"] + still_open,
               # where rework finds the round: local/ace-review/<this>
               "bundle": f"{os.path.basename(os.path.dirname(os.path.abspath(bundle)))}/{os.path.basename(os.path.abspath(bundle))}"}
+    if held:
+        result["held"] = "rules"
     dump(os.path.join(bundle, "factory.json"), result)
     return result
 
