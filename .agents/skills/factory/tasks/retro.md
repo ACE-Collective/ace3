@@ -34,7 +34,7 @@ An edit to the Engineering values is proposed, never assumed: `/ace-review` judg
 
 ## 3. Propose
 
-1. Write the proposals into an issue body: one section per lesson, with its evidence (PR links, comment links), the change, and where it goes. `python3 $F issue-create --title "Factory retro: <date>" --body-file <file> --label factory:ready`.
+1. Write the proposals into an issue body with the `issue-authoring` skill: one section per lesson, with its evidence (PR links, comment links), the change, where it goes, and the risks of making it. `python3 $F issue-create --title "Factory retro: <date>" --body-file <file> --label factory:ready`.
 2. Make the edits on that issue's branch, as the implement task does from its step 3 (`$F claim`, `$F worktree`, commit, `$F push`, the `pr-description` skill, `$F pr-create`). Retro doesn't run review or promote. A human reads the draft PR, and may run `/factory <issue>` on it to have it reviewed.
 3. `python3 $F retro-data --mark`, so the next retro starts after the newest PR this one read.
 

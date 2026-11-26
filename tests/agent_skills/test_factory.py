@@ -1151,15 +1151,17 @@ def test_an_azure_devops_pr_is_labeled_through_its_labels_resource(core, label_c
 # ---------------------------------------------------------------- backlog
 
 
-def finished_round(path: Path, pre_existing=(), flaws=(), known_flaws=()) -> Path:
-    """A finished /ace-review bundle: its verified findings, flaws and summary, as findings.py writes them."""
+def finished_round(path: Path, pre_existing=(), flaws=(), known_flaws=(), risks=("the fix may drop X", "old rows lack Y")) -> Path:
+    """A finished /ace-review bundle: its verified findings, flaws and summary, as findings.py writes them.
+    risks=None leaves them out, as a bundle from before the review recorded them does."""
     path.mkdir(parents=True, exist_ok=True)
+    with_risks = {} if risks is None else {"risks": list(risks)}
     verified = [{"id": "R1-1", "origin": "new", "title": "new one", "file": "a.py", "line": 1}]
     verified += [{"id": f"P1-{n}", "origin": "pre-existing", "title": title, "file": "saq/x.py", "line": 10, "dimension": dimension,
-                  "severity": "fix-first", "evidence": "what it does", "impact": "what breaks", "fix": "the fix"}
+                  "severity": "fix-first", "evidence": "what it does", "impact": "what breaks", "fix": "the fix", **with_risks}
                  for n, (title, dimension) in enumerate(pre_existing, 1)]
     flaw_rows = [{"fid": f"F{n}", "title": title, "file": "saq/x.py", "line": 20, "area": "engine", "flaw": "the flaw",
-                  "workaround": "the workaround", "fix_size": "medium", "fix": "real fix"}
+                  "workaround": "the workaround", "fix_size": "medium", "fix": "real fix", **with_risks}
                  for n, title in enumerate([*flaws, *known_flaws], 1)]
     summary = {"flaws": [{"id": f["fid"], "new": f["title"] in flaws} for f in flaw_rows]}
     for name, data in (("verified.json", verified), ("flaws.json", flaw_rows), ("summary.json", summary)):
@@ -1235,10 +1237,24 @@ def test_new_backlog_is_filed_and_a_duplicate_is_only_recorded(core, tmp_path, b
         ("old bug", "bug"), ("noisy log", "logging"), ("new flaw", "design flaw")]
     assert "#3" in issues[0][-1] and "`saq/x.py:10`" in issues[0][-1]
     assert "in #3, `saq/x.py:20`" in issues[2][-1]
+    # each issue says what its fix could break
+    assert all("**Risks:**\n\n- the fix may drop X\n- old rows lack Y\n\n" in issue[-1] for issue in issues)
     assert result["recorded"]["P1-3"] == {"ref": "#12", "filed": False}
     assert result["refused"] == []
     # findings.py reads this, so the round's summary names the flaw's new issue once finish runs again
     assert json.loads((bundle / "filed-flaws.json").read_text())["F1"]["id"] == 102
+
+
+def test_backlog_from_a_round_older_than_risks_is_filed_saying_they_were_not_assessed(core, tmp_path, backlog_calls):
+    bundle = finished_round(tmp_path / "b", pre_existing=[("old bug", "correctness")], flaws=["new flaw"], risks=None)
+    decide(bundle, [{"id": "P1-1"}, {"id": "F1"}])
+
+    result = factory.file_backlog(FakeContext(core, ticket_state(prs=[open_pr()])), "1", "ace3", str(bundle))
+
+    issues = created(backlog_calls)
+    assert result["refused"] == []
+    assert [c[c.index("--title") + 1] for c in issues] == ["old bug", "new flaw"]
+    assert all("**Risks:** not assessed by the review\n\n" in issue[-1] for issue in issues)
 
 
 def test_a_candidate_already_recorded_is_never_filed_again(core, tmp_path, backlog_calls):
@@ -1305,6 +1321,7 @@ def test_a_flaw_in_an_internal_repo_s_own_code_is_its_work_item_with_the_detail(
     assert work_item[:4] == ("az", "boards", "work-item", "create")
     assert "System.Tags=factory:backlog; design flaw; internal" in work_item
     assert "saq/x.py:20" in work_item[work_item.index("--description") + 1]
+    assert "<p>- the fix may drop X<br>- old rows lack Y</p>" in work_item[work_item.index("--description") + 1]
     assert json.loads((bundle / "filed-flaws.json").read_text())["F1"]["url"] == result["recorded"]["F1"]["ref"]
 
 
