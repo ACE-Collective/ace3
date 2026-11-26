@@ -188,6 +188,7 @@ integrations/*
 !.agents/skills/ace-review/
 !.agents/skills/bug-fix/
 !.agents/skills/factory/
+!.agents/skills/issue-authoring/
 !.agents/skills/pr-description/
 !.agents/skills/tdd/
 !.agents/skills/unslop/
