@@ -44,15 +44,19 @@ things the command cannot undo:
 
 It exits with the command's exit status (128 + N for a command killed by signal N). When it killed
 the command itself, or could not start it, it says why on stderr and exits with a code that says
-which, so a caller can tell a node that cannot run sandboxed commands from a command that misbehaved
-without reading the message: EXIT_SANDBOX_FAILURE when the command never ran, EXIT_DEADLINE,
-EXIT_PROCESS_LIMIT or EXIT_MEMORY_LIMIT when it was killed for that, and EXIT_STOPPED when it was
-told to stop (EXIT_KILLED when, with --term-grace, the stop ended in killing the command or what it
-left running). A command can exit with any of those codes itself; the message on stderr, the last
-line the launcher writes, is what tells the two apart.
+which: EXIT_SANDBOX_FAILURE when the command never ran, EXIT_DEADLINE, EXIT_PROCESS_LIMIT or
+EXIT_MEMORY_LIMIT when it was killed for that, and EXIT_STOPPED when it was told to stop (EXIT_KILLED
+when, with --term-grace, the stop ended in killing the command or what it left running).
+
+A command can exit with any of those codes, and write any line on stderr, itself. So with
+--status-fd=N, an fd the caller passes it, the launcher also writes its verdict there as one JSON
+line, {"reason": ..., "exit_code": ...} and the values that go with the reason, whenever it ended
+the command itself or could not run it; a command that exits on its own gets no line. The command
+never inherits that fd, so only the launcher can write a verdict. runner.run_sandboxed() reads it.
 """
 
 import ctypes
+import json
 import os
 import signal
 import sys
@@ -264,6 +268,21 @@ def raise_oom_score():
         fp.write(str(_OOM_SCORE_ADJ_MAX))
 
 
+# where the verdict goes (--status-fd); None without one
+_status_fd: int | None = None
+
+
+def _verdict(reason: str, exit_code: int, **details):
+    """Write the launcher's verdict on --status-fd. Unbuffered, and a closed pipe is ignored, for the reasons _say gives."""
+    if _status_fd is None:
+        return
+
+    try:
+        os.write(_status_fd, (json.dumps({"reason": reason, "exit_code": exit_code, **details}) + "\n").encode())
+    except OSError:
+        pass  # nobody is reading any more
+
+
 def _say(message: str):
     """Write a sandbox: line to stderr. Unbuffered, and a closed pipe is ignored: a reader that is gone
     (an API worker that died, which is what sent the SIGTERM) must not stop the cleanup, and a buffered
@@ -342,7 +361,7 @@ def _exec_command(command: list[str], abi: int | None, tcp_ports: list[int] | No
         os.execv(command[0], command)
     except BaseException as e:
         try:
-            os.write(2, f"sandbox: cannot run {command[0]}: {e}\n".encode(errors="replace"))
+            _fail(f"cannot run {command[0]}: {e}")
         finally:
             os._exit(EXIT_SANDBOX_FAILURE)
 
@@ -382,7 +401,7 @@ def _terminate(command_pid: int, term_grace: float) -> bool:
     return command_exited
 
 
-def _abort(command_pid: int, reason: str, exit_code: int, term_grace: float = 0) -> int:
+def _abort(command_pid: int, verdict: str, message: str, exit_code: int, term_grace: float = 0, **details) -> int:
     stopped = term_grace <= 0 or _terminate(command_pid, term_grace)
     # kill first, report after: the cleanup must not wait on a message
     killed = kill_descendants(command_pid)
@@ -390,9 +409,10 @@ def _abort(command_pid: int, reason: str, exit_code: int, term_grace: float = 0)
         _say(f"the command did not stop within {term_grace:g} seconds of SIGTERM")
     elif term_grace > 0 and killed:
         _say(f"killed {killed} processes the command left running")
-    _say(reason)
+    _say(message)
     if term_grace > 0 and killed and exit_code == EXIT_STOPPED:
-        return EXIT_KILLED
+        exit_code = EXIT_KILLED
+    _verdict(verdict, exit_code, **details)
     return exit_code
 
 
@@ -412,27 +432,28 @@ def supervise(command_pid: int, max_processes: int | None, deadline: float, term
 
         remaining = deadline - time.monotonic()
         if remaining <= 0:
-            return _abort(command_pid, "the command ran past its deadline", EXIT_DEADLINE, term_grace)
+            return _abort(command_pid, "deadline", "the command ran past its deadline", EXIT_DEADLINE, term_grace)
 
         info = signal.sigtimedwait(_WAKE_SIGNALS, min(_POLL_SECONDS, remaining))
         if info is not None and info.si_signo in _STOP_SIGNALS:
-            return _abort(command_pid, "stopped", EXIT_STOPPED, term_grace)
+            return _abort(command_pid, "stopped", "stopped", EXIT_STOPPED, term_grace)
 
         if max_processes is None and memory_limit is None:
             continue
 
         live = _live_descendants()
         if max_processes is not None and len(live) > max_processes:
-            return _abort(command_pid, f"the command started more than {max_processes} processes", EXIT_PROCESS_LIMIT)
+            return _abort(command_pid, "process_limit", f"the command started more than {max_processes} processes",
+                          EXIT_PROCESS_LIMIT, max_processes=max_processes)
 
         if memory_limit is not None and (used := memory_used(live)) > memory_limit:
-            # runner.py reads the bytes used from this line
-            return _abort(command_pid, f"the command used {used} bytes of memory, more than its limit of {memory_limit} bytes",
-                          EXIT_MEMORY_LIMIT)
+            return _abort(command_pid, "memory_limit",
+                          f"the command used {used} bytes of memory, more than its limit of {memory_limit} bytes",
+                          EXIT_MEMORY_LIMIT, memory_used=used, memory_limit=memory_limit)
 
 
 _USAGE = ("[--max-processes=N] [--memory-limit=BYTES] --deadline=SECONDS [--tcp-ports=PORT,...] "
-          "[--term-grace=SECONDS] [--unconfined] -- command [args...]")
+          "[--term-grace=SECONDS] [--unconfined] [--status-fd=FD] -- command [args...]")
 
 
 def _parse_arguments(argv: list[str]) -> tuple[int | None, int | None, float, list[int] | None, float, bool, list[str]]:
@@ -451,8 +472,9 @@ def _parse_arguments(argv: list[str]) -> tuple[int | None, int | None, float, li
     if not command:
         raise ValueError("no command given")
 
+    # --status-fd is _open_status_fd's, which runs first
     unknown = set(options) - {"--max-processes", "--memory-limit", "--deadline", "--tcp-ports", "--term-grace",
-                              "--unconfined"}
+                              "--unconfined", "--status-fd"}
     if unknown:
         raise ValueError(f"unknown option(s) {sorted(unknown)}")
 
@@ -470,23 +492,46 @@ def _parse_arguments(argv: list[str]) -> tuple[int | None, int | None, float, li
             unconfined, command)
 
 
+def _open_status_fd(argv: list[str]):
+    """Take the --status-fd option, before the other options are parsed, so a usage error is reported
+    there too. The fd is made non-inheritable, so the command never gets it."""
+    global _status_fd
+    options = argv[:argv.index("--")] if "--" in argv else argv
+    for option in options:
+        name, _, value = option.partition("=")
+        if name == "--status-fd":
+            fd = int(value)
+            os.set_inheritable(fd, False)
+            _status_fd = fd
+
+
+def _fail(message: str) -> int:
+    """The command cannot be run: say why and return EXIT_SANDBOX_FAILURE."""
+    _say(message)
+    _verdict("sandbox_failure", EXIT_SANDBOX_FAILURE, message=message)
+    return EXIT_SANDBOX_FAILURE
+
+
 def main(argv: list[str]) -> int:
+    try:
+        _open_status_fd(argv)
+    except (ValueError, OSError) as e:
+        _say(f"usage: {_USAGE} (--status-fd: {e})")
+        return EXIT_SANDBOX_FAILURE
+
     try:
         max_processes, memory_limit, deadline_seconds, tcp_ports, term_grace, unconfined, command = _parse_arguments(argv)
     except (ValueError, KeyError) as e:
-        _say(f"usage: {_USAGE} ({e})")
-        return EXIT_SANDBOX_FAILURE
+        return _fail(f"usage: {_USAGE} ({e})")
 
     try:
         set_child_subreaper(True)
     except OSError as e:
-        _say(f"cannot become a child subreaper: {e}")
-        return EXIT_SANDBOX_FAILURE
+        return _fail(f"cannot become a child subreaper: {e}")
 
     abi = None if unconfined else landlock_abi()
     if tcp_ports is not None and abi < NET_ABI:
-        _say(f"landlock ABI {abi} cannot restrict TCP ports (ABI {NET_ABI}, Linux 6.7, is needed)")
-        return EXIT_SANDBOX_FAILURE
+        return _fail(f"landlock ABI {abi} cannot restrict TCP ports (ABI {NET_ABI}, Linux 6.7, is needed)")
 
     deadline = time.monotonic() + deadline_seconds
     own_group = term_grace > 0

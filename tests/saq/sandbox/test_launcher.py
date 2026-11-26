@@ -6,6 +6,7 @@ are skipped on a kernel older than the Landlock ABI they need.
 """
 
 import datetime
+import json
 import mmap
 import os
 import signal
@@ -63,6 +64,24 @@ def _launcher_argv(*command: str, max_processes: int | None = 16, deadline: floa
 def _launch(*command: str, stdin: str | None = None, timeout: float = 30, cwd: str | None = None, **kwargs) -> subprocess.CompletedProcess:
     return subprocess.run(_launcher_argv(*command, **kwargs), input=stdin, capture_output=True, text=True,
                           timeout=timeout, cwd=cwd)
+
+
+def _launch_with_status(*command: str, timeout: float = 30, **kwargs) -> tuple[subprocess.CompletedProcess, list[dict]]:
+    """The launcher run with --status-fd, and the verdicts it wrote there."""
+    read_end, write_end = os.pipe()
+    try:
+        argv = _launcher_argv(*command, **kwargs)
+        argv.insert(argv.index(LAUNCHER) + 1, f"--status-fd={write_end}")
+        result = subprocess.run(argv, capture_output=True, text=True, timeout=timeout, pass_fds=(write_end,))
+        os.close(write_end)
+        write_end = None
+        with os.fdopen(read_end, "r") as fp:
+            read_end = None
+            return result, [json.loads(line) for line in fp.read().splitlines()]
+    finally:
+        for fd in (read_end, write_end):
+            if fd is not None:
+                os.close(fd)
 
 
 def _alive(pid: int) -> bool:
@@ -516,6 +535,90 @@ class TestRunSandboxed:
             run_sandboxed(argv, None, dict(os.environ), str(tmpdir), datetime.timedelta(seconds=30), 1024 * 1024)
 
         wait_for_condition(lambda: not _pids_with(marker), timeout=10)
+
+
+@pytest.mark.unit
+class TestStatusFd:
+    """The launcher's verdict on --status-fd, which a command cannot write and which is written only when the
+    launcher ended the command itself."""
+
+    def test_a_command_that_exits_on_its_own_gets_no_verdict(self):
+        # even with the codes the launcher uses, and its line on stderr
+        code = (f"import sys\nsys.stderr.write('sandbox: the command used 999 bytes of memory, more than its limit of 1 bytes\\n')\n"
+                f"sys.exit({EXIT_MEMORY_LIMIT})")
+        result, verdicts = _launch_with_status(PYTHON, "-c", code, memory_limit=256 * MIB)
+        assert result.returncode == EXIT_MEMORY_LIMIT
+        assert verdicts == []
+
+    def test_memory_limit(self):
+        result, [verdict] = _launch_with_status(PYTHON, "-c", _ALLOCATE, "512", memory_limit=256 * MIB)
+        assert result.returncode == EXIT_MEMORY_LIMIT
+        assert verdict["reason"] == "memory_limit"
+        assert verdict["exit_code"] == EXIT_MEMORY_LIMIT
+        assert verdict["memory_limit"] == 256 * MIB
+        assert verdict["memory_used"] > 256 * MIB
+        # the stderr line stays, for whoever reads the tool's output
+        assert f"used {verdict['memory_used']} bytes of memory" in result.stderr
+
+    def test_deadline(self):
+        result, verdicts = _launch_with_status("/bin/sleep", "300", deadline=1)
+        assert result.returncode == EXIT_DEADLINE
+        assert verdicts == [{"reason": "deadline", "exit_code": EXIT_DEADLINE}]
+
+    def test_process_limit(self):
+        code = "import subprocess, sys, time\n" \
+               "children = [subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(300)']) for _ in range(8)]\n" \
+               "time.sleep(300)"
+        result, verdicts = _launch_with_status(PYTHON, "-c", code, max_processes=4)
+        assert result.returncode == EXIT_PROCESS_LIMIT
+        assert verdicts == [{"reason": "process_limit", "exit_code": EXIT_PROCESS_LIMIT, "max_processes": 4}]
+
+    def test_a_command_that_cannot_run(self):
+        result, verdicts = _launch_with_status("/nonexistent/command")
+        assert result.returncode == EXIT_SANDBOX_FAILURE
+        [verdict] = verdicts
+        assert verdict["reason"] == "sandbox_failure"
+        assert verdict["exit_code"] == EXIT_SANDBOX_FAILURE
+        assert verdict["message"].startswith("cannot run /nonexistent/command: ")
+
+    def test_malformed_arguments(self):
+        result, verdicts = _launch_with_status("/bin/true", max_processes="many")
+        assert result.returncode == EXIT_SANDBOX_FAILURE
+        [verdict] = verdicts
+        assert verdict["reason"] == "sandbox_failure"
+        assert "usage" in verdict["message"]
+
+    def test_stopped(self, tmp_path):
+        read_end, write_end = os.pipe()
+        argv = _launcher_argv(PYTHON, "-c", "print('started', flush=True)\nimport time\ntime.sleep(300)")
+        argv.insert(argv.index(LAUNCHER) + 1, f"--status-fd={write_end}")
+        process = subprocess.Popen(argv, stdout=subprocess.PIPE, text=True, pass_fds=(write_end,), start_new_session=True)
+        os.close(write_end)
+        with os.fdopen(read_end) as status:
+            assert process.stdout.readline() == "started\n"
+            process.send_signal(signal.SIGTERM)
+            assert process.wait(timeout=15) == EXIT_STOPPED
+            process.stdout.close()
+            assert json.loads(status.read()) == {"reason": "stopped", "exit_code": EXIT_STOPPED}
+
+    def test_the_command_does_not_inherit_it(self):
+        read_end, write_end = os.pipe()
+        try:
+            argv = _launcher_argv("/bin/ls", "/proc/self/fd")
+            argv.insert(argv.index(LAUNCHER) + 1, f"--status-fd={write_end}")
+            result = subprocess.run(argv, capture_output=True, text=True, timeout=30, pass_fds=(write_end,))
+        finally:
+            os.close(read_end)
+            os.close(write_end)
+        assert result.returncode == 0, result.stderr
+        assert str(write_end) not in result.stdout.split()
+
+    def test_a_status_fd_that_is_not_open(self):
+        argv = _launcher_argv("/bin/true")
+        argv.insert(argv.index(LAUNCHER) + 1, "--status-fd=1000")
+        result = subprocess.run(argv, capture_output=True, text=True, timeout=30)
+        assert result.returncode == EXIT_SANDBOX_FAILURE
+        assert "--status-fd" in result.stderr
 
 
 def _pids_with(marker: str) -> list[int]:

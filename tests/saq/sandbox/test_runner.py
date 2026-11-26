@@ -68,6 +68,7 @@ def test_a_command_that_uses_more_than_its_memory_limit_is_reported(tmp_path):
 
     result = _run_python("import time\nx = b'x' * (512 * 1024 ** 2)\ntime.sleep(60)", workdir, config=config)
 
+    assert result.verdict == "memory_limit"
     assert result.memory_used > 256 * 1024 ** 2
     assert f"more than its limit of {256 * 1024 ** 2} bytes" in result.stderr
 
@@ -75,11 +76,78 @@ def test_a_command_that_uses_more_than_its_memory_limit_is_reported(tmp_path):
 @pytest.mark.unit
 @pytest.mark.skipif(not landlock_available(), reason="landlock is unavailable")
 def test_memory_used_is_only_set_for_a_memory_kill(tmp_path):
-    # a command can exit with the launcher's code itself; only the launcher's line says it was killed
-    result = _run_python(f"import sys\nsys.exit({EXIT_MEMORY_LIMIT})", str(tmp_path))
+    # a command can exit with the launcher's code, and write the launcher's line, itself
+    code = ("import sys\n"
+            "sys.stderr.write('sandbox: the command used 999 bytes of memory, more than its limit of 1 bytes\\n')\n"
+            f"sys.exit({EXIT_MEMORY_LIMIT})")
+    result = _run_python(code, str(tmp_path))
 
     assert result.returncode == EXIT_MEMORY_LIMIT
     assert result.memory_used is None
+    assert result.verdict is None
+
+
+@pytest.mark.unit
+@pytest.mark.skipif(not landlock_available(), reason="landlock is unavailable")
+def test_the_launchers_verdict_is_reported(tmp_path):
+    config = NO_TCP_RULES.model_copy(update={"max_processes": 2})
+    code = ("import subprocess, sys, time\n"
+            "children = [subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)']) for _ in range(4)]\n"
+            "time.sleep(60)")
+
+    result = _run_python(code, str(tmp_path), config=config)
+
+    assert result.verdict == "process_limit"
+    assert result.memory_used is None
+
+
+@pytest.mark.unit
+def test_a_command_that_exits_on_its_own_has_no_verdict(tmp_path):
+    # the launcher alone, without prlimit and setpriv, so this runs without Landlock
+    argv = [PYTHON, "-I", "-S", runner.LAUNCHER, "--deadline=30", "--", "/bin/sh", "-c", "exit 3"]
+    result = run_sandboxed(argv, None, {"PATH": "/usr/bin:/bin"}, str(tmp_path), datetime.timedelta(seconds=30), 1024)
+
+    assert result.returncode == 3
+    assert result.verdict is None
+
+
+@pytest.mark.unit
+def test_the_status_pipe_is_closed_when_the_launcher_cannot_start(tmp_path):
+    def open_fds() -> set[str]:
+        return set(os.listdir("/proc/self/fd"))
+
+    argv = [PYTHON, "-I", "-S", runner.LAUNCHER, "--deadline=30", "--", "/bin/true"]
+    before = open_fds()
+    with pytest.raises(FileNotFoundError):
+        run_sandboxed(argv, None, {}, str(tmp_path / "missing"), datetime.timedelta(seconds=5), 1024)
+    assert open_fds() <= before
+
+
+@pytest.mark.unit
+def test_an_argv_without_the_launcher_is_refused(tmp_path):
+    with pytest.raises(ValueError, match="build_sandbox_argv"):
+        run_sandboxed(["/bin/true"], None, {}, str(tmp_path), datetime.timedelta(seconds=5), 1024)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("line", ["not json", "[]"])
+def test_a_status_line_that_does_not_parse_is_logged(tmp_path, caplog, monkeypatch, line):
+    # only a bug in the launcher writes one: the command cannot reach the pipe
+    fake_launcher = tmp_path / "launcher.py"
+    fake_launcher.write_text("import os, sys\n"
+                             "fd = int(sys.argv[1].split('=')[1])\n"
+                             f"os.write(fd, {line!r}.encode() + b'\\n')\n"
+                             "sys.exit(124)\n")
+    argv = [PYTHON, "-I", "-S", runner.LAUNCHER, "--", "/bin/true"]
+    argv[3] = str(fake_launcher)
+    monkeypatch.setattr(runner, "LAUNCHER", str(fake_launcher))
+    with caplog.at_level(logging.ERROR):
+        result = run_sandboxed(argv, None, {}, str(tmp_path), datetime.timedelta(seconds=30), 1024)
+
+    assert result.returncode == 124
+    assert result.verdict is None
+    assert any("sandbox launcher wrote a verdict that does not parse" in record.getMessage() and record.exc_info
+               for record in caplog.records)
 
 
 @pytest.mark.unit
