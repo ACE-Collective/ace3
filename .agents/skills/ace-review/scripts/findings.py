@@ -125,7 +125,18 @@ def problems(finding: dict) -> list[str]:
     found = [f"{field}={finding.get(field)!r}" for field, allowed in
              (("severity", SEVERITIES), ("origin", ORIGINS), ("dimension", DIMENSIONS)) if finding.get(field) not in allowed]
     found += [f"no {field}" for field in ("file", "title", "evidence") if not finding.get(field)]
-    return found
+    return found + risks_problems(finding)
+
+
+def risks_problems(item: dict) -> list[str]:
+    """A finding or flaw lists what its fix could break, one risk per string: the issue the backlog
+    files for it carries them as its Risks."""
+    risks = item.get("risks")
+    if not risks:
+        return ["no risks"]
+    if not isinstance(risks, list) or not all(isinstance(r, str) and r.strip() for r in risks):
+        return [f"risks={risks!r}"]
+    return []
 
 
 def judgment_problems(finding: dict, previous: dict[str, dict]) -> list[str]:
@@ -158,7 +169,7 @@ def chain_depth(answers: str | None, previous: dict[str, dict]) -> int:
 def flaw_problems(flaw: dict) -> list[str]:
     found = [f"{field}={flaw.get(field)!r}" for field, allowed in
              (("fix_size", FLAW_SIZES), ("recommendation", FLAW_RECOMMENDATIONS)) if flaw.get(field) not in allowed]
-    return found + [f"no {field}" for field in ("title", "flaw", "workaround", "file") if not flaw.get(field)]
+    return found + [f"no {field}" for field in ("title", "flaw", "workaround", "file") if not flaw.get(field)] + risks_problems(flaw)
 
 
 def dismissal_problems(dismissal: dict) -> list[str]:
@@ -381,7 +392,10 @@ def issue_body(target: dict, flaw: dict) -> str:
     # the repo by name: the checkout's path is different on every machine
     repo, branch = os.path.basename(target.get("repo", "")), target.get("branch", "")
     where = f"{flaw['file']}:{flaw['line']}" if flaw.get("line") else flaw["file"]
+    # a bundle from before reviewers recorded risks has none
+    risks = "\n\n" + "\n".join(f"- {r}" for r in flaw["risks"]) if flaw.get("risks") else " not assessed by the review"
     return (f"{flaw['flaw']}\n\n**Real fix** ({flaw['fix_size']}): {flaw.get('fix') or 'not sketched yet'}\n\n"
+            f"**Risks:**{risks}\n\n"
             f"**Area:** {flaw.get('area') or 'unknown'}\n\n"
             f"**Worked around** in `{repo}` branch `{branch}`, `{where}`:\n\n{flaw['workaround']}\n\n"
             "<sub>Filed by /ace-review.</sub>\n")
