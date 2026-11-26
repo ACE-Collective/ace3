@@ -439,6 +439,86 @@ def test_delay_analysis_refused(root):
     assert analysis.error == "timed out waiting for delayed analysis to complete"
 
 
+def _resumable(root, continue_analysis, delay_accepted=True):
+    """A module whose analysis of a new observable is delayed, as the engine finds it when it
+    resumes the delay, and whose continue_analysis is the given function."""
+    observable = root.add_observable_by_spec(F_TEST, "test")
+    delayed_analysis_interface = Mock()
+    delayed_analysis_interface.delay_analysis.return_value = delay_accepted
+    module = _module(root, delayed_analysis_interface=delayed_analysis_interface)
+    analysis = module.create_analysis(observable)
+    analysis.delayed = True
+    module.continue_analysis = lambda observable, analysis: continue_analysis(module, observable, analysis)
+    return module, observable, analysis
+
+
+@pytest.mark.unit
+def test_resumed_analysis_is_delayed_until_continue_analysis_returns(root):
+    seen = []
+
+    def continue_analysis(module, observable, analysis):
+        seen.append(analysis.delayed)
+        return AnalysisExecutionResult.COMPLETED
+
+    module, observable, analysis = _resumable(root, continue_analysis)
+    assert module.analyze(observable, delayed_analysis=True) == AnalysisExecutionResult.COMPLETED
+    assert seen == [True]
+    assert not analysis.delayed
+
+
+@pytest.mark.unit
+def test_resumed_analysis_delayed_again_stays_delayed(root, caplog):
+    def continue_analysis(module, observable, analysis):
+        return module.delay_analysis(observable, analysis, seconds=5)
+
+    module, observable, analysis = _resumable(root, continue_analysis)
+    with caplog.at_level(logging.WARNING):
+        assert module.analyze(observable, delayed_analysis=True) == AnalysisExecutionResult.INCOMPLETE
+
+    assert analysis.delayed
+    assert not any("already be scheduled" in r.getMessage() for r in caplog.records)
+
+
+@pytest.mark.unit
+def test_resumed_analysis_delay_refused_is_closed(root):
+    def continue_analysis(module, observable, analysis):
+        return module.delay_analysis(observable, analysis, seconds=5)
+
+    module, observable, analysis = _resumable(root, continue_analysis, delay_accepted=False)
+    assert module.analyze(observable, delayed_analysis=True) == AnalysisExecutionResult.COMPLETED
+    assert not analysis.delayed
+    assert analysis.completed
+
+
+@pytest.mark.unit
+def test_resumed_analysis_waiting_on_other_analysis_is_no_longer_delayed(root):
+    # the engine resolves the dependency this raises, which it does not while the source is delayed
+    def continue_analysis(module, observable, analysis):
+        module.wait_for_analysis(observable, _OtherAnalysis)
+
+    module, observable, analysis = _resumable(root, continue_analysis)
+    with pytest.raises(WaitForAnalysisException):
+        module.analyze(observable, delayed_analysis=True)
+
+    assert not analysis.delayed
+
+
+@pytest.mark.unit
+def test_delay_analysis_twice_in_one_call_warns(root, caplog):
+    def continue_analysis(module, observable, analysis):
+        module.delay_analysis(observable, analysis, seconds=5)
+        return module.delay_analysis(observable, analysis, seconds=5)
+
+    module, observable, analysis = _resumable(root, continue_analysis)
+    with caplog.at_level(logging.WARNING):
+        module.analyze(observable, delayed_analysis=True)
+
+    assert analysis.delayed
+    assert [r.getMessage() for r in caplog.records if "already be scheduled" in r.getMessage()] == [
+        f"analysis for {observable} by {module} seems to already be scheduled"
+    ]
+
+
 @pytest.mark.unit
 def test_wait_for_analysis(root):
     observable = root.add_observable_by_spec(F_TEST, "test")

@@ -497,8 +497,8 @@ The `work_dir` relocation exists so non-alert analysis can churn on a different
 - If the storage directory is missing → warn "already processed?" and bail.
 - `DelayedAnalysisRequest` → `load(configuration_manager)`: loads the root,
   resolves the observable, resolves the module by config name, resolves the
-  in-flight `Analysis`. Any missing piece fails the work item. Then
-  `work_item.analysis.delayed = False`.
+  in-flight `Analysis`. Any missing piece fails the work item. The analysis
+  stays delayed until its module answers (§10.2).
 - `RootAnalysis` → remember the mode from the workload row, `root.load()`, and if
   the loaded mode differs from the workload mode, `override_analysis_mode(workload
   mode)`. This is the disposition case: the alert on disk says `correlation`, the
@@ -710,7 +710,7 @@ execution order — this ordering is the contract:
 | 3 | module generates no analysis type | `generated_analysis_type is None` | return (pre/post-only modules) |
 | 4 | a failed analysis the module would retry, but this work item does not (already retried here, or final analysis mode; §12) | `_check_module_acceptance` (`_retry_used_up`) | return; fails any dependency |
 | 4a | `module.accepts(observable)` | `base_module.py::accepts` | return; fails any dependency |
-| 5 | this module's analysis is already delayed | `_check_module_acceptance` | return |
+| 5 | this module's analysis is already delayed, and is not the one this work item resumes (§10.2) | `_check_module_acceptance` | return |
 | 6 | declared dependencies unmet | `_seed_declared_dependencies` | seed dependency edges, defer |
 | 7 | `module.custom_requirement(observable)` | inline | return **without** a no-analysis sentinel, so the module is reconsidered later |
 | 8 | previous execution recorded a failure | `root.is_analysis_failed` | raise `AnalysisFailedException` |
@@ -857,18 +857,18 @@ return self.delay_analysis(observable, analysis, seconds=30, timeout_minutes=10)
 calls the delayed-analysis interface →
 `DelayedAnalysisAdapter` → `Worker.delay_analysis`, which:
 
-1. warns if `analysis.delayed` is already set;
-2. checks the *timeout* — `root.initialize_delayed_analysis_start_time(observable,
+1. checks the *timeout* — `root.initialize_delayed_analysis_start_time(observable,
    module)` records (once, keyed `<module name>:<observable uuid>`) when delaying
    started; if `start + timeout` has passed, it returns `False`;
-3. otherwise inserts the `delayed_analysis` row: `True` if the row was written,
+2. otherwise inserts the `delayed_analysis` row: `True` if the row was written,
    `False` if the insert failed (§19.4) — a delay nothing recorded is refused
    rather than reported as scheduled.
 
 Back in `AnalysisModule.delay_analysis`:
 
 - returned `True` → `analysis.completed = False`, `analysis.delayed = True`,
-  return `INCOMPLETE`;
+  return `INCOMPLETE` (with a warning if the module already delayed an analysis
+  in the same `analyze()` call);
 - returned `False` (deadline expired, or the request could not be recorded) →
   the analysis is closed out failed (`analysis.error` "timed out waiting for
   delayed analysis to complete", `completed = True`, `delayed = False`), return
@@ -882,9 +882,23 @@ discarded on load).
 
 The `delayed_until` timestamp comes due; a worker on the *same node* picks the
 row up (§5.3), locks the root uuid, and `DelayedAnalysisRequest.load()` rebuilds
-the (root, observable, module, analysis) tuple. `_process_work_item` clears
-`analysis.delayed`. The work stack contains exactly that one pinned target, and
-`analyze()` is called with `delayed_analysis=True` → `continue_analysis()`.
+the (root, observable, module, analysis) tuple. The work stack contains exactly
+that one pinned target, and `analyze()` is called with `delayed_analysis=True`
+→ `continue_analysis()`.
+
+The resumed analysis stays `delayed` until its module has answered, so during
+the pass the tree alone says what is pending (`root.delayed` is true while
+`continue_analysis()` runs). The executor keeps it in
+`context.resuming_analysis` until it calls the module on it, and gate 5 (§8)
+lets that one delayed analysis through. `AnalysisModule.analyze()` unmarks it
+when the call ends, by return or by exception, unless the module delayed it
+again. If the pinned work item ends without calling the module on it (the module
+no longer accepts the observable, the observable is excluded, a declared
+dependency defers it), `_release_unanswered_resume` unmarks it at the top of
+the next loop iteration and logs it at INFO: its row is deleted when the pass
+ends, so nothing would resume it. `AnalysisExecutor.execute()` does the same when
+the pass ends before the module was called on it (a cancel from shutdown or a lost
+lock, an `AnalysisTimeoutError`, an exception), before the root is saved.
 
 A module may delay again; each cycle inserts a new row.
 

@@ -12,6 +12,7 @@ from saq.util import local_time
 from saq.logging import UTF8SafeFluentSender
 
 if TYPE_CHECKING:
+    from saq.analysis.analysis import Analysis
     from saq.engine.work_stack import WorkStack, WorkTarget
 
 
@@ -87,6 +88,9 @@ class EngineExecutionContext:
         self.last_analyze_time_warning: Optional[datetime] = None
         # (observable uuid, module path) of every failed analysis this work item retried
         self.retried_analysis: set[tuple[str, str]] = set()
+        # the delayed analysis this work item resumes, until its module has been called on it.
+        # it stays delayed until then, and is the one delayed analysis the executor still runs
+        self.resuming_analysis: Optional["Analysis"] = None
 
     @property
     def root(self) -> Optional[RootAnalysis]:

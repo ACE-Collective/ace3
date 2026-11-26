@@ -194,13 +194,6 @@ class Worker:
         assert isinstance(analysis, Analysis)
         assert isinstance(analysis_module, AnalysisModuleInterface)
 
-        if analysis.delayed:
-            logging.warning(
-                "analysis for {} by {} seems to already be scheduled".format(
-                    observable, analysis_module
-                )
-            )
-
         if self.is_delayed_analysis_timed_out(root, observable, analysis_module, timeout_hours, timeout_minutes, timeout_seconds):
             logging.warning(f"delayed analysis for {observable} in {analysis_module} has timed out")
             return False

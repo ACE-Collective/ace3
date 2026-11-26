@@ -1553,11 +1553,9 @@ def _drive_phishkit_scan(monkeypatch, out_dir, *, interrupted=False,
 
     Phishkit is delayed: cycle 1 (execute_analysis) creates a delayed
     placeholder analysis and returns INCOMPLETE; the engine resumes it later and
-    cycle 2 (continue_analysis) harvests the scan and completes. Crucially we
-    reproduce the orchestrator resetting ``analysis.delayed = False`` *before*
-    the resuming cycle's before-snapshot (analysis_orchestrator.py) and pass
-    ``is_resuming_delayed_module=True`` to the resuming diff — the exact
-    conditions under which the completed analysis must still be captured. An
+    cycle 2 (continue_analysis) harvests the scan and completes. The resume goes
+    through AnalysisModule.analyze(), which keeps the analysis delayed until
+    continue_analysis returns, as the executor's before-snapshot sees it. An
     earlier version of this helper mocked delay_analysis to a no-op, which left
     delayed=False and hid the capture bug.
     """
@@ -1600,22 +1598,18 @@ def _drive_phishkit_scan(monkeypatch, out_dir, *, interrupted=False,
     before1 = ModuleExecutionSnapshot.narrow(root, obs, analyzer)
     assert analyzer.execute_analysis(obs) == AnalysisExecutionResult.INCOMPLETE
     after1 = ModuleExecutionSnapshot.narrow(root, obs, analyzer)
-    delta_a = ModuleExecutionSnapshot.diff(before1, after1, analyzer, obs,
-                                           is_resuming_delayed_module=False)
+    delta_a = ModuleExecutionSnapshot.diff(before1, after1, analyzer, obs)
     root.record_module_execution(delta_a.without_analysis_details())
     analysis = obs.get_and_load_analysis(PhishkitAnalysis)
     assert analysis is not None and analysis.delayed
 
-    # the orchestrator clears the delay flag before the resuming cycle's snapshot
-    analysis.delayed = False
-
-    # cycle 2 (resume): harvest + complete. The completed analysis must be
-    # captured even though delayed is already False (is_resuming_delayed_module).
+    # cycle 2 (resume): harvest + complete. The completed analysis is captured
+    # on its delayed→completed transition.
     before2 = ModuleExecutionSnapshot.narrow(root, obs, analyzer)
-    assert analyzer.continue_analysis(obs, analysis) == AnalysisExecutionResult.COMPLETED
+    assert analyzer.analyze(obs, delayed_analysis=True) == AnalysisExecutionResult.COMPLETED
+    assert not analysis.delayed
     after2 = ModuleExecutionSnapshot.narrow(root, obs, analyzer)
-    delta_b = ModuleExecutionSnapshot.diff(before2, after2, analyzer, obs,
-                                           is_resuming_delayed_module=True)
+    delta_b = ModuleExecutionSnapshot.diff(before2, after2, analyzer, obs)
 
     # merge prior delayed-cycle deltas exactly as the executor does
     prior = [d for d in root.module_executions

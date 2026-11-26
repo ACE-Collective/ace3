@@ -253,6 +253,11 @@ is written there, change the tag to point at it.
 - **A delay is marked only when `add_delayed_analysis_request` returned True.** See
   `saq/database/util/delayed_analysis.py::add_delayed_analysis_request` and
   `saq/engine/worker.py::Worker.delay_analysis`. [docs/ENGINE_DESIGN_NOTES.md §19.4]
+- **A resumed analysis stays delayed until its module has answered.** If the work item that
+  resumed it, or the pass itself (cancel, timeout, error), ends without calling its module on
+  it, the executor unmarks it, because its row is deleted when the pass ends, however it ends. The completing cycle's cache capture depends on the before-snapshot seeing it delayed.
+  See `saq/modules/base_module.py::AnalysisModule.analyze` and
+  `saq/engine/executor.py::AnalysisExecutor._release_unanswered_resume`. [docs/ENGINE.md §10.2; #1368]
 - **A transferred work item runs in the workload row's mode, not the mode saved in
   `data.json`.** See
   `saq/engine/workload_manager/database.py::DatabaseWorkloadManager.transfer_work_target`.
