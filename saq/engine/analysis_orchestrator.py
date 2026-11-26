@@ -132,10 +132,6 @@ class AnalysisOrchestrator:
                 logging.error(f"unable to load delayed analysis request {work_item}")
                 return False
 
-            # reset the delay flag for this analysis
-            if work_item.analysis:
-                work_item.analysis.delayed = False
-
         elif isinstance(work_item, RootAnalysis):
             # the analysis mode set in the workload may not match what is currently saved with this analysis
             # for example, when an analyst sets the disposition of the alert, it gets added back into the

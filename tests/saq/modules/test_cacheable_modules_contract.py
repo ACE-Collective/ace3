@@ -355,21 +355,16 @@ def _check_phishkit(monkeypatch):
     before1 = ModuleExecutionSnapshot.narrow(root, obs, analyzer)
     assert analyzer.execute_analysis(obs) == AnalysisExecutionResult.INCOMPLETE
     after1 = ModuleExecutionSnapshot.narrow(root, obs, analyzer)
-    delta_a = ModuleExecutionSnapshot.diff(before1, after1, analyzer, obs,
-                                           is_resuming_delayed_module=False)
+    delta_a = ModuleExecutionSnapshot.diff(before1, after1, analyzer, obs)
     root.record_module_execution(delta_a.without_analysis_details())
     analysis = obs.get_and_load_analysis(PhishkitAnalysis)
     assert analysis is not None
 
-    # orchestrator clears the delay flag before the resuming cycle's snapshot
-    analysis.delayed = False
-
-    # cycle 2 (resume): harvest + complete
+    # cycle 2 (resume): harvest + complete, through analyze() as the executor resumes it
     before2 = ModuleExecutionSnapshot.narrow(root, obs, analyzer)
-    assert analyzer.continue_analysis(obs, analysis) == AnalysisExecutionResult.COMPLETED
+    assert analyzer.analyze(obs, delayed_analysis=True) == AnalysisExecutionResult.COMPLETED
     after2 = ModuleExecutionSnapshot.narrow(root, obs, analyzer)
-    delta_b = ModuleExecutionSnapshot.diff(before2, after2, analyzer, obs,
-                                           is_resuming_delayed_module=True)
+    delta_b = ModuleExecutionSnapshot.diff(before2, after2, analyzer, obs)
 
     prior = [d for d in root.module_executions
              if d.module_path == delta_b.module_path

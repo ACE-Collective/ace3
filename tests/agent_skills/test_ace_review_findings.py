@@ -28,7 +28,8 @@ REAL_GH = findings.gh
 
 def finding(**fields):
     return {"dimension": "uptime", "severity": "fix-first", "origin": "new", "file": "saq/x.py", "line": 1,
-            "title": "a claim", "evidence": "saq/x.py:1 does it", "impact": "it breaks", "fix": "do less", **fields}
+            "title": "a claim", "evidence": "saq/x.py:1 does it", "impact": "it breaks", "fix": "do less",
+            "risks": ["doing less may skip a case"], **fields}
 
 
 def judged(bucket=None, **fields):
@@ -90,7 +91,8 @@ def test_collect_numbers_files_in_name_order(bundle):
 
 
 def test_collect_refuses_malformed_findings(bundle):
-    write_json(bundle / "findings-logging.json", [finding(dimension="logging"), finding(severity="major", evidence="")])
+    write_json(bundle / "findings-logging.json", [finding(dimension="logging"), finding(severity="major", evidence=""),
+                                                  finding(risks=[]), finding(risks="one string")])
 
     with pytest.raises(SystemExit) as exit_info:
         findings.collect(str(bundle))
@@ -98,6 +100,9 @@ def test_collect_refuses_malformed_findings(bundle):
     assert "findings-logging.json[1]" in str(exit_info.value)
     assert "severity='major'" in str(exit_info.value)
     assert "no evidence" in str(exit_info.value)
+    # a filed issue says what its fix could break, so every finding carries its risks as a list
+    assert "findings-logging.json[2]: no risks" in str(exit_info.value)
+    assert "findings-logging.json[3]: risks='one string'" in str(exit_info.value)
     assert not (bundle / "plan.json").exists()
 
 
@@ -489,7 +494,8 @@ def github(monkeypatch):
 def flaw(fid="F1", **fields):
     return {"dimension": "design", "title": "the tree has no hook for X", "flaw": "saq/analysis/root.py has no event for X",
             "area": "analysis tree", "workaround": "polls the root for X", "file": "saq/y.py", "line": 7, "fix_size": "large",
-            "fix": "add the hook", "recommendation": "keep going", "why": "contained", "fid": fid, **fields}
+            "fix": "add the hook", "risks": ["a hook that raises stops the analysis", "old roots have no hook state"],
+            "recommendation": "keep going", "why": "contained", "fid": fid, **fields}
 
 
 def flaws_through_tally(bundle, flaws, votes):
@@ -519,10 +525,13 @@ def test_collect_numbers_the_design_flaws_for_the_batch_verifier(bundle):
 
 
 def test_collect_refuses_malformed_flaws(bundle):
-    write_json(bundle / "flaws-design.json", [flaw(fix_size="huge", workaround="")])
+    write_json(bundle / "flaws-design.json", [flaw(fix_size="huge", workaround=""), flaw(risks=["a risk", ""])])
 
-    with pytest.raises(SystemExit, match=r"flaws-design.json\[0\]: fix_size='huge', no workaround"):
+    with pytest.raises(SystemExit) as exit_info:
         findings.collect(str(bundle))
+
+    assert "flaws-design.json[0]: fix_size='huge', no workaround" in str(exit_info.value)
+    assert "flaws-design.json[1]: risks=['a risk', '']" in str(exit_info.value)
 
 
 def test_tally_keeps_the_flaws_the_verifier_found_real_with_its_judgment(bundle):
@@ -613,7 +622,8 @@ def test_file_files_a_new_flaw_once(bundle, github):
     issue = github.issues[number]
     assert (issue["title"], issue["labels"], issue["state"]) == ("the tree has no hook for X", ["design flaw"], "OPEN")
     # the repo by name: the checkout's path is different on every machine
-    assert issue["body"] == ("saq/analysis/root.py has no event for X\n\n**Real fix** (large): add the hook\n\n**Area:** analysis tree\n\n"
+    assert issue["body"] == ("saq/analysis/root.py has no event for X\n\n**Real fix** (large): add the hook\n\n"
+                             "**Risks:**\n\n- a hook that raises stops the analysis\n- old roots have no hook state\n\n**Area:** analysis tree\n\n"
                              "**Worked around** in `ace` branch `mw/topic`, `saq/y.py:7`:\n\npolls the root for X\n\n"
                              "<sub>Filed by /ace-review.</sub>\n")
 
@@ -622,6 +632,16 @@ def test_file_files_a_new_flaw_once(bundle, github):
     assert list(github.issues) == [number]
     summary = finish_with_flaws(bundle, [flaw()])
     assert [(f["issue"], f["new"], f["status"]) for f in summary["flaws"]] == [(number, False, "open")]
+
+
+def test_a_flaw_from_a_bundle_older_than_risks_is_filed_saying_they_were_not_assessed(bundle, github):
+    findings.known(str(bundle))
+    finish_with_flaws(bundle, [{k: v for k, v in flaw().items() if k != "risks"}])
+
+    findings.file_flaw(str(bundle), "F1")
+
+    [issue] = github.issues.values()
+    assert "**Risks:** not assessed by the review\n\n" in issue["body"]
 
 
 def test_file_never_files_a_flaw_that_has_an_issue(bundle, github):

@@ -24,10 +24,10 @@ support Landlock, a caller must not run the command at all (landlock_available()
 """
 
 import datetime
+import json
 import logging
 import math
 import os
-import re
 import shutil
 import signal
 import subprocess
@@ -39,7 +39,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 
 from saq.configuration.schema import SandboxConfig
-from saq.sandbox.launcher import EXIT_MEMORY_LIMIT, EXIT_SANDBOX_FAILURE
+from saq.sandbox.launcher import EXIT_SANDBOX_FAILURE
 
 SETPRIV = "/usr/bin/setpriv"
 PRLIMIT = "/usr/bin/prlimit"
@@ -83,9 +83,6 @@ SANDBOX_READ_FILES = (
 # (EXIT_SANDBOX_FAILURE), or prlimit or setpriv could not execute the program (126: not executable or
 # not readable in the sandbox, 127: not found)
 NODE_FAILURE_EXIT_CODES = (EXIT_SANDBOX_FAILURE, 126, 127)
-
-# the last line the launcher writes on stderr when it kills the command for its memory (launcher.supervise)
-_MEMORY_LIMIT_LINE = re.compile(r"sandbox: the command used (?P<used>\d+) bytes of memory, more than its limit of \d+ bytes")
 
 # how much of stderr is kept in the error raised for a failed command
 STDERR_TAIL_BYTES = 16 * 1024
@@ -217,6 +214,10 @@ class SandboxResult:
     output_exceeded: bool = False
     # the launcher killed the command for using more than its memory limit: the bytes it was using then
     memory_used: int | None = None
+    # why the launcher ended the command itself, from the verdict it wrote on its status fd: "deadline",
+    # "process_limit", "memory_limit", "stopped" or "sandbox_failure" (it never ran); None when the command
+    # exited on its own, whatever its exit code
+    verdict: str | None = None
 
     def failure_reason(self, tool: str) -> str:
         return tool_failure_reason(tool, self.returncode, self.stderr)
@@ -304,15 +305,28 @@ def run_sandboxed(
     secrets). cancel is polled while the command runs (an Event's is_set, or an analysis module's
     should_stop); once it returns True the command is stopped and SandboxCancelled is raised.
     """
-    process = subprocess.Popen(
-        argv,
-        cwd=workdir,
-        env=env,
-        stdin=subprocess.PIPE if stdin_data is not None else subprocess.DEVNULL,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        start_new_session=True,
-    )
+    if LAUNCHER not in argv:
+        raise ValueError(f"run_sandboxed runs an argv build_sandbox_argv made, not {argv[0]}")
+
+    # the launcher's verdict comes back on a pipe of its own, which the command never inherits
+    options = argv.index(LAUNCHER) + 1
+    status_read, status_write = os.pipe()
+    try:
+        process = subprocess.Popen(
+            [*argv[:options], f"--status-fd={status_write}", *argv[options:]],
+            cwd=workdir,
+            env=env,
+            stdin=subprocess.PIPE if stdin_data is not None else subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            start_new_session=True,
+            pass_fds=(status_write,),
+        )
+    except BaseException:
+        os.close(status_read)
+        raise
+    finally:
+        os.close(status_write)
 
     output_exceeded = threading.Event()
     buffers = {"stdout": bytearray(), "stderr": bytearray()}
@@ -370,6 +384,8 @@ def run_sandboxed(
             _kill_session(process.pid)
             process.wait()
 
+        verdict = _read_verdict(status_read, argv[-1])
+
     for thread in threads:
         thread.join(timeout=_READER_JOIN_SECONDS)
         if thread.is_alive():
@@ -393,7 +409,8 @@ def run_sandboxed(
         stdout=buffers["stdout"].decode("utf-8", errors="replace"),
         stderr=stderr,
         output_exceeded=output_exceeded.is_set(),
-        memory_used=_memory_used(process.returncode, stderr),
+        memory_used=verdict.get("memory_used") if verdict.get("reason") == "memory_limit" else None,
+        verdict=verdict.get("reason"),
     )
     if result.output_exceeded:
         raise SandboxOutputExceeded(f"command wrote more than {max_output_bytes} bytes of output", result)
@@ -401,15 +418,34 @@ def run_sandboxed(
     return result
 
 
-def _memory_used(returncode: int, stderr: str) -> int | None:
-    """The memory the launcher says it killed the command for using, or None if it did not. A command
-    can exit with EXIT_MEMORY_LIMIT itself; the launcher's line, the last on stderr, tells the two apart."""
-    if returncode != EXIT_MEMORY_LIMIT:
-        return None
+def _read_verdict(status_read: int, command: str) -> dict:
+    """The verdict the launcher wrote on its status fd, which it has closed by exiting; {} when it wrote none
+    (the command exited on its own). Closes status_read. Never blocks: a launcher that had to be killed
+    may have left its forked child holding the pipe for the moment before that child's exec closes it."""
+    data = bytearray()
+    try:
+        os.set_blocking(status_read, False)
+        while chunk := os.read(status_read, 65536):
+            data.extend(chunk)
+    except BlockingIOError:
+        pass  # what is there is all there will be
+    finally:
+        os.close(status_read)
 
-    lines = stderr.strip().splitlines()
-    match = _MEMORY_LIMIT_LINE.fullmatch(lines[-1]) if lines else None
-    return int(match["used"]) if match else None
+    lines = data.decode(errors="replace").strip().splitlines()
+    if not lines:
+        return {}
+
+    try:
+        verdict = json.loads(lines[-1])
+        if not isinstance(verdict, dict):
+            raise ValueError(f"not an object: {verdict!r}")
+        return verdict
+    except ValueError:
+        # only a bug in the launcher writes one: the command cannot reach the pipe
+        logging.error("sandbox launcher wrote a verdict that does not parse for %s: %r", command, lines[-1],
+                      exc_info=True, extra={"command": command})
+        return {}
 
 
 def create_workdir(root: str) -> tempfile.TemporaryDirectory:

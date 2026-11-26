@@ -1091,10 +1091,10 @@ def backlog_candidates(bundle: str) -> list[dict]:
     if summary is None:
         raise FactoryError(f"{bundle} is not finished: run findings.py finish first")
     flaws = {f["fid"]: f for f in load_bundle_json(bundle, "flaws.json", [])}
-    keys = ("title", "file", "line", "dimension", "severity", "evidence", "impact", "fix")
+    keys = ("title", "file", "line", "dimension", "severity", "evidence", "impact", "fix", "risks")
     found = [{"id": f["id"], "kind": "finding", **{k: f.get(k) for k in keys}}
              for f in load_bundle_json(bundle, "verified.json", []) if f.get("origin") == "pre-existing"]
-    keys = ("title", "file", "line", "area", "flaw", "workaround", "fix_size", "fix")
+    keys = ("title", "file", "line", "area", "flaw", "workaround", "fix_size", "fix", "risks")
     found += [{"id": s["id"], "kind": "flaw", **{k: flaws[s["id"]].get(k) for k in keys}}
               for s in summary.get("flaws", []) if s.get("new") and s["id"] in flaws]
     return found
@@ -1151,16 +1151,22 @@ def backlog(ctx: Context, ref: str, repo_name: str, bundle: str) -> dict:
     return {"candidates": candidates}
 
 
+def risks_section(candidate: dict) -> str:
+    # a round from before reviewers recorded risks has none
+    risks = "\n\n" + "\n".join(f"- {r}" for r in candidate["risks"]) if candidate.get("risks") else " not assessed by the review"
+    return f"**Risks:**{risks}\n\n"
+
+
 def finding_body(candidate: dict, found_in: str) -> str:
     where = f"`{candidate['file']}:{candidate['line']}`" if candidate.get("line") else f"`{candidate['file']}`"
     return (f"{candidate['evidence']}\n\n**Impact:** {candidate['impact']}\n\n**Fix:** {candidate['fix']}\n\n"
-            f"**Where:** {where}\n\n<sub>Found by /ace-review as pre-existing ({candidate['dimension']}, {candidate['severity']}) "
+            f"{risks_section(candidate)}**Where:** {where}\n\n<sub>Found by /ace-review as pre-existing ({candidate['dimension']}, {candidate['severity']}) "
             f"in code {found_in} touches; filed by /factory.</sub>")
 
 
 def flaw_body(candidate: dict, worked_around: str) -> str:
     return (f"{candidate['flaw']}\n\n**Real fix** ({candidate['fix_size']}): {candidate.get('fix') or 'not sketched yet'}\n\n"
-            f"**Area:** {candidate.get('area') or 'unknown'}\n\n**Worked around** {worked_around}:\n\n{candidate['workaround']}\n\n"
+            f"{risks_section(candidate)}**Area:** {candidate.get('area') or 'unknown'}\n\n**Worked around** {worked_around}:\n\n{candidate['workaround']}\n\n"
             "<sub>Found by /ace-review; filed by /factory.</sub>")
 
 

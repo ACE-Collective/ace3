@@ -253,6 +253,11 @@ is written there, change the tag to point at it.
 - **A delay is marked only when `add_delayed_analysis_request` returned True.** See
   `saq/database/util/delayed_analysis.py::add_delayed_analysis_request` and
   `saq/engine/worker.py::Worker.delay_analysis`. [docs/ENGINE_DESIGN_NOTES.md §19.4]
+- **A resumed analysis stays delayed until its module has answered.** If the work item that
+  resumed it, or the pass itself (cancel, timeout, error), ends without calling its module on
+  it, the executor unmarks it, because its row is deleted when the pass ends, however it ends. The completing cycle's cache capture depends on the before-snapshot seeing it delayed.
+  See `saq/modules/base_module.py::AnalysisModule.analyze` and
+  `saq/engine/executor.py::AnalysisExecutor._release_unanswered_resume`. [docs/ENGINE.md §10.2; #1368]
 - **A transferred work item runs in the workload row's mode, not the mode saved in
   `data.json`.** See
   `saq/engine/workload_manager/database.py::DatabaseWorkloadManager.transfer_work_target`.
@@ -568,10 +573,13 @@ is written there, change the tag to point at it.
   [docs/TOOL_SANDBOX.md]
 - **A sandboxed command's memory limit is on the memory its processes use, measured by the
   launcher, never an rlimit on address space.** Runtimes reserve far more than they use, and the
-  tools run with their default settings because of it. The launcher's last stderr line on a memory
-  kill is what `run_sandboxed()` reads the memory used from, since a command can exit with
-  `EXIT_MEMORY_LIMIT` itself. See `saq/sandbox/launcher.py::supervise` and
-  `saq/sandbox/runner.py::_MEMORY_LIMIT_LINE`. [docs/TOOL_SANDBOX.md; #1161]
+  tools run with their default settings because of it. See `saq/sandbox/launcher.py::supervise`.
+  [docs/TOOL_SANDBOX.md; #1161]
+- **Why the launcher ended a command is read from its status fd, never from the exit code or
+  stderr.** A command can exit with the launcher's codes and write its `sandbox:` lines itself;
+  it never inherits the fd `run_sandboxed()` passes as `--status-fd`, so a verdict there is the
+  launcher's. See `saq/sandbox/launcher.py::_verdict` and
+  `saq/sandbox/runner.py::_read_verdict`. [docs/TOOL_SANDBOX.md; #1345]
 - **A sandboxed program located in a directory that holds `SAQ_HOME` or the data dir is
   refused.** See `saq/modules/base_module.py::_NEVER_TOOL_DIRS` and
   `saq/modules/base_module.py::_tool_dirs`. [docs/TOOL_SANDBOX.md]

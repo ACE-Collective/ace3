@@ -102,6 +102,7 @@ def finish_round(target, ranked=()):
 def finding(title, severity="fix-first", origin="new", bucket=None):
     return {"dimension": "logging", "severity": severity, "origin": origin, "file": "saq/worker.py", "line": 3,
             "title": title, "evidence": "saq/worker.py:3", "impact": "hidden failure", "fix": "log it",
+            "risks": ["changes one log call; no behavior changes"],
             "bucket": bucket or ("noted" if severity == "nit" else "act on"), "judgment": "the lead's reason"}
 
 
