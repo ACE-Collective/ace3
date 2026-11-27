@@ -53,6 +53,43 @@ class RemediationAction(Enum):
     REMOVE = 'remove'
     RESTORE = 'restore'
 
+# The values of the alert manage page's Remediation filter are [source, state] pairs. The state is
+# one of the states the Remediation column shows (saq/remediation/coverage.py), with the label the
+# filter editor gives it. Saved filters and share links store the values, so a state is never
+# renamed; a label can change.
+ALERT_REMEDIATION_FILTER_OPTIONS = {
+    "remediated": "Remediated",
+    "partial": "Partially Remediated",
+    "failed": "Remediation Failed",
+    "remediating": "Remediating",
+    "watching": "Watching",
+    "not_remediated": "Not Remediated",
+    "not_in_mailbox": "Not In Mailbox",
+    "none": "None",
+}
+
+# The source of a Remediation filter value that counts every remediator and probe, as the column
+# does. Any other source is the name of one remediator (remediation.name) or one probe
+# (external_remediation_check.probe_name), and the state is then read from its rows alone.
+REMEDIATION_SOURCE_ANY = "Any"
+
+def normalize_alert_remediation_value(value) -> list[str]:
+    """A [source, state] value of the Remediation filter as it is stored: Any in any case becomes
+    Any, and the state is lowercased. Raises ValueError for anything that is not one."""
+    if not (isinstance(value, (list, tuple)) and len(value) == 2 and all(isinstance(v, str) for v in value)):
+        raise ValueError(f"remediation values must be [source, state] pairs, got {value!r}")
+
+    source, state = value[0].strip(), value[1].lower()
+    if not source:
+        raise ValueError(f"remediation value {value!r} names no source (use {REMEDIATION_SOURCE_ANY} for every source)")
+    if state not in ALERT_REMEDIATION_FILTER_OPTIONS:
+        raise ValueError(
+            f"remediation states must be one of {', '.join(ALERT_REMEDIATION_FILTER_OPTIONS)}, got {value[1]!r}")
+
+    if source.casefold() == REMEDIATION_SOURCE_ANY.casefold():
+        source = REMEDIATION_SOURCE_ANY
+    return [source, state]
+
 class RemediatorResult(BaseModel):
     status: RemediatorStatus = Field(..., description="The status of the remediation result.")
     message: Optional[str] = Field(default=None, description="The message of the remediation result.")

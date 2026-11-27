@@ -125,6 +125,15 @@ def test_unconfirmed_detections_takes_true_or_false():
         ALERTS_SCREEN.validate_entries([{"name": "Unconfirmed Detections", "values": ["yes"]}])
 
 
+def test_remediation_values_are_source_state_pairs():
+    (entry,) = ALERTS_SCREEN.validate_entries([{"name": "Remediation", "values": [
+        ["any", "Failed"], ["defender_probe", "not_in_mailbox"]]}])
+    assert entry.values == [["Any", "failed"], ["defender_probe", "not_in_mailbox"]]
+    for values in (["failed"], [["Any", "gone"]], [["", "failed"]], [["Any", "failed", "x"]]):
+        with pytest.raises(ValidationError):
+            ALERTS_SCREEN.validate_entries([{"name": "Remediation", "values": values}])
+
+
 def test_screens_default_to_the_alert_permission():
     assert ALERTS_SCREEN.permission == ("alert", "read")
     assert DETECTION_POINTS_SCREEN.permission == ("alert", "read")

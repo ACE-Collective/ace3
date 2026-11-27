@@ -104,6 +104,16 @@ def test_new_filter_option(web_client):
 
 
 @pytest.mark.integration
+def test_the_remediation_filter_is_a_source_and_a_state(web_client):
+    response = web_client.get(url_for("analysis.new_filter_option"))
+
+    html = response.data.decode()
+    source, state = html[html.index('_value_container_Remediation"'):].split("</select>")[:2]
+    assert '<option value="Any" SELECTED>Any</option>' in source
+    assert '<option value="not_in_mailbox" >Not In Mailbox</option>' in state
+
+
+@pytest.mark.integration
 def test_new_filter_option_post_rejected(web_client):
     """new_filter_option is read-only, so it is GET-only."""
     response = web_client.post(url_for("analysis.new_filter_option"))
@@ -154,7 +164,8 @@ def test_apply_sets_dirty_but_does_not_persist_a_named_filter(web_client):
     BAD_DATE,
     [{"name": "Analysis", "inverted": False, "values": ["QRCodeAnalysis"]}],
     [{"name": "Nonexistent", "inverted": False, "values": ["x"]}],
-], ids=["unparseable-date", "analysis-value-not-a-module-path", "unknown-filter-name"])
+    [{"name": "Remediation", "inverted": False, "values": [["Any", "gone"]]}],
+], ids=["unparseable-date", "analysis-value-not-a-module-path", "unknown-filter-name", "unknown-remediation-state"])
 def test_apply_rejects_an_invalid_filter(web_client, filters):
     """A bad filter must not reach storage. An unparseable date used to, and then raised on EVERY
     subsequent /manage load -- the analyst's queue stayed broken until someone reset it by hand."""

@@ -1,6 +1,7 @@
 import html as html_lib
 import json
 import re
+from types import SimpleNamespace
 
 import pytest
 from flask import url_for
@@ -8,11 +9,13 @@ from flask import url_for
 from aceapi_v2.saved_filters import service as saved_filters_service
 from aceapi_v2.saved_filters.schemas import SavedFilterCreate
 from aceapi_v2.sync import run_async_with_session
-from saq.constants import DISPOSITION_OPEN, QUEUE_DEFAULT
+from saq.configuration.config import get_config
+from saq.configuration.schema import ExternalRemediationProbeConfig, RemediatorConfig
+from saq.constants import DISPOSITION_OPEN, F_EMAIL_DELIVERY, QUEUE_DEFAULT
 from saq.database.model import Alert
 from saq.database.pool import get_db
 from saq.gui import filter_query
-from tests.saq.helpers import attach_observable
+from tests.saq.helpers import attach_observable, insert_alert_with_email_targets
 
 
 def _insert_alert(uuid, description):
@@ -530,6 +533,47 @@ def test_analysis_filter_on_the_manage_page(web_client, analyst):
     assert '>QR Code Analysis</span>' in body
     assert f'>{module_path}</span>' not in body
     assert re.search(rf'<option value="{re.escape(module_path)}"[^>]*SELECTED[^>]*>QR Code Analysis</option>', body)
+
+
+@pytest.mark.integration
+def test_remediation_filter_on_the_manage_page(web_client, analyst):
+    """The list shows the alerts the stored [source, state] pairs match; the editor offers Any and
+    the email remediators and probes configured, the remediator by its display name, and shows
+    each stored row selected, a source that is no longer configured included."""
+    config = get_config()
+    for name, observable_type in (("email_remediator", F_EMAIL_DELIVERY), ("url_remediator", "url")):
+        config.add_remediator_config(name, RemediatorConfig(
+            name=name, display_name=f"{name} display", description="unused", observable_type=observable_type,
+            python_module="unused", python_class="Unused"))
+    config.add_external_remediation_probe_config("email_probe", ExternalRemediationProbeConfig(
+        name="email_probe", observable_type=F_EMAIL_DELIVERY, python_module="unused", python_class="Unused"))
+
+    def watched_by(probe: str):
+        target = f"<m@x>|{probe}@example.com"
+        return insert_alert_with_email_targets((target,), checks=[SimpleNamespace(
+            observable_value=target, status="NEW", result=None, probe_name=probe, result_message=None,
+            events_json=None)])
+
+    watched = watched_by("email_probe")
+    watched_by_another = watched_by("another_probe")
+
+    stored = [["email_probe", "watching"], ["retired_probe", "failed"]]
+    response = web_client.post(url_for("analysis.set_filters"), data={
+        "filters": json.dumps([{"name": "Remediation", "inverted": False, "values": stored}])})
+    assert response.status_code == 204
+
+    body = web_client.get(url_for("analysis.manage")).data.decode()
+
+    assert f'alert_row_{watched.uuid}' in body
+    assert f'alert_row_{watched_by_another.uuid}' not in body
+
+    rows = re.findall(r'display:block" name="[^"]+" id="filter_[^"]+_value_container_Remediation">'
+                      r'(.*?</select>.*?</select>)', body, re.DOTALL)
+    selected = [re.findall(r'<option value="([^"]*)"[^>]*SELECTED[^>]*>', row) for row in rows]
+    assert selected == stored
+
+    offered = dict(re.findall(r'<option value="([^"]*)"[^>]*>([^<]*)</option>', rows[0].split("</select>")[0]))
+    assert offered == {"Any": "Any", "email_remediator": "email_remediator display", "email_probe": "email_probe"}
 
 
 @pytest.mark.integration

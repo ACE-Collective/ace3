@@ -27,7 +27,12 @@ from saq.gui.filter_names import (
     SVS_VALIDATION_FILTER_SLUGS,
     SVS_WORKLIST_FILTER_SLUGS,
 )
-from saq.remediation.types import RemediationAction, RemediationStatus, RemediatorStatus
+from saq.remediation.types import (
+    RemediationAction,
+    RemediationStatus,
+    RemediatorStatus,
+    normalize_alert_remediation_value,
+)
 from saq.signatures.model import SIGNATURE_UUID_PATTERN, SignatureType
 from saq.svs.attack import TechniqueStatus, get_attack_catalog, normalize_platform
 from saq.svs.constants import (
@@ -94,6 +99,10 @@ class FilterEntry(FilterEntryBase):
                 if value not in UNCONFIRMED_DETECTIONS_OPTIONS:
                     raise ValueError(f"unconfirmed detections values must be True or False, got {value!r}")
             return values
+
+        if info.data.get("name") == "Remediation":
+            # normalize_alert_remediation_value raises ValueError, which pydantic reports
+            return [normalize_alert_remediation_value(value) for value in values]
 
         if info.data.get("name") == "Observable Pattern":
             pairs = []

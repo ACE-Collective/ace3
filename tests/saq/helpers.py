@@ -32,9 +32,20 @@ from saq.configuration.schema import ACEConfig
 from saq.constants import (
     ANALYSIS_MODE_ANALYSIS,
     DISPOSITION_SIMULATED,
+    F_EMAIL_DELIVERY,
     F_FQDN,
 )
-from saq.database.model import Alert, Observable, ObservableMapping, Workload, load_alert
+from saq.database.database_observable import upsert_observable
+from saq.database.model import (
+    Alert,
+    ExternalRemediationCheck,
+    Observable,
+    ObservableMapping,
+    ObservableRemediationMapping,
+    Remediation,
+    Workload,
+    load_alert,
+)
 from saq.database.pool import get_db
 from saq.database.util.alert import ALERT, set_dispositions
 from saq.engine.analysis_orchestrator import AnalysisOrchestrator
@@ -43,6 +54,8 @@ from saq.engine.engine_configuration import EngineConfiguration
 from saq.engine.node_manager.node_manager_factory import create_node_manager
 from saq.engine.worker import Worker
 from saq.environment import ACE_MP_CONTEXT, get_base_dir, get_global_runtime_settings
+from saq.modules.email.constants import DELIVERY_TAGS
+from saq.observables.generator import create_observable
 from saq.sandbox.launcher import set_child_subreaper
 from tests import unittest_session
 from saq.util.uuid import get_storage_dir, workload_storage_dir
@@ -691,6 +704,55 @@ def insert_alert_with_detections(detections: list[dict], disposition: Union[str,
         db.expire_all()
         alert = load_alert(root.uuid)
 
+    return alert
+
+def insert_alert_with_email_targets(targets=(), *, ace=None, checks=None, undelivered=None) -> Alert:
+    """Creates and syncs an alert with the given email_delivery targets and the remediation rows
+    behind its Remediation column, in the shapes assemble_coverage() reads:
+
+    - ace: target value -> its remediation rows, oldest first, each with status, result, action and
+      name (the remediator's)
+    - checks: this alert's external remediation checks, each with observable_value, status,
+      result, probe_name, result_message and events_json
+    - undelivered: target value -> the journal reason (a DELIVERY_* value) for its delivery tag
+
+    ACE rows belong to the observable, not the alert, so they show on every alert that maps it."""
+    undelivered = undelivered or {}
+    root = create_root_analysis()
+    root.initialize_storage()
+    for value in targets:
+        observable = root.add_observable_by_spec(F_EMAIL_DELIVERY, value)
+        if value in undelivered:
+            observable.add_tag(DELIVERY_TAGS[undelivered[value]])
+    root.save()
+    alert = ALERT(root)
+
+    db = get_db()
+    for value, rows in (ace or {}).items():
+        observable_id = upsert_observable(create_observable(F_EMAIL_DELIVERY, value))
+        for row in rows:
+            remediation = Remediation(type=F_EMAIL_DELIVERY, name=row.name, key=value, action=row.action,
+                                      status=row.status, result=row.result,
+                                      user_id=get_config().global_settings.automation_user_id)
+            db.add(remediation)
+            db.flush()
+            db.add(ObservableRemediationMapping(observable_id=observable_id, remediation_id=remediation.id))
+
+    for check in checks or []:
+        db.add(ExternalRemediationCheck(
+            probe_name=check.probe_name,
+            observable_type=F_EMAIL_DELIVERY,
+            observable_value=check.observable_value,
+            alert_uuid=alert.uuid,
+            status=check.status,
+            result=check.result,
+            result_message=check.result_message,
+            events_json=check.events_json,
+            max_retries=3,
+            deadline=datetime.now() + timedelta(hours=1),
+        ))
+
+    db.commit()
     return alert
 
 def wait_for_process(process: Process):

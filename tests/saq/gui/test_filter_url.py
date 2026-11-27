@@ -93,6 +93,13 @@ def test_every_slug_round_trips():
 
 
 @pytest.mark.unit
+def test_remediation_values_are_source_state_pairs():
+    filters = [{"name": "Remediation", "inverted": True, "values": [["Any", "not_in_mailbox"], ["defender_probe", "partial"]]}]
+    assert encode_filter_query(filters) == ["!remediation:Any:not_in_mailbox,defender_probe:partial"]
+    assert _roundtrip(filters) == filters
+
+
+@pytest.mark.unit
 def test_multiple_filters_round_trip_in_order():
     filters = [
         {"name": "Queue", "inverted": False, "values": ["default"]},
@@ -234,6 +241,7 @@ SHIPPED_FILTER_SLUGS = {
     "Observable": "observable",
     "Owner": "owner",
     "Queue": "queue",
+    "Remediation": "remediation",
     "Reviewed": "reviewed",
     "Tag": "tag",
     "Unconfirmed Detections": "unconfirmed_detections",

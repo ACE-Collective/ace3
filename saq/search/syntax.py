@@ -11,6 +11,8 @@ by a field term; everything else is free text for the semantic lanes.
     uuid:1f2e3d4c-…                  an alert uuid (a prefix of one also works)
     queue:default                    a narrowing filter
     detection_point:<sig uuid>[:<v>] alerts with a detection point from that signature (version)
+    remediation:failed               the Remediation column's state (remediation:<source>:<state> for one
+                                     remediator or probe)
     analysis:<module>:<Class>[:<i>]  alerts containing that analysis type (the dropdown's value)
     disposition:DELIVERY,IGNORE      one term, values ORed
     alert_date:-7d                   a relative window
@@ -50,12 +52,14 @@ from saq.gui.detection_point_value import normalize_detection_point_value
 from saq.gui.filter_names import DATE_RANGE_FILTER_NAMES, FILTER_NAMES_BY_SLUG
 from saq.gui.observable_pattern import ANY_OBSERVABLE_TYPE, ObservablePatternError, check_observable_pattern
 from saq.observables.type_hierarchy import get_all_valid_types
+from saq.remediation.types import REMEDIATION_SOURCE_ANY, normalize_alert_remediation_value
 from saq.util.relative_time import RelativeTimeError, parse_date_range
 
 # canonical field names that produce exact lookups rather than narrowing filters
 FIELD_OBSERVABLE = "observable"
 # not an exact lookup: the Observable Pattern filter, a SQL narrowing filter like any other
 FIELD_OBSERVABLE_PATTERN = "observable_pattern"
+FIELD_REMEDIATION = "remediation"
 FIELD_TAG = "tag"
 FIELD_ALERT_UUID = "uuid"
 
@@ -235,6 +239,9 @@ def _parse_term(token: str, quoted: list[str], errors: list[str]) -> tuple[bool,
     if field == FIELD_OBSERVABLE_PATTERN:
         return True, _observable_pattern_term(_split_values(raw_value, quoted), inverted, errors)
 
+    if field == FIELD_REMEDIATION:
+        return True, _remediation_term(_split_values(raw_value, quoted), inverted, errors)
+
     if _is_observable_type(field):
         return True, _observable_term(
             [(field, value) for value in _split_values(raw_value, quoted)], inverted, errors)
@@ -298,6 +305,20 @@ def _observable_pattern_term(values: list[str], inverted: bool, errors: list[str
     return FieldTerm(FIELD_OBSERVABLE_PATTERN, tuple(pairs), inverted) if pairs else None
 
 
+def _remediation_term(values: list[str], inverted: bool, errors: list[str]) -> Optional[FieldTerm]:
+    """remediation:<state> for every source, or remediation:<source>:<state> for one. Split at the
+    last colon: a state never has one."""
+    pairs = []
+    for value in values:
+        source, separator, state = value.rpartition(":")
+        try:
+            pairs.append(tuple(normalize_alert_remediation_value([source if separator else REMEDIATION_SOURCE_ANY, state])))
+        except ValueError as e:
+            errors.append(f"{FIELD_REMEDIATION}:{value!r} is not a remediation state: {e}")
+
+    return FieldTerm(FIELD_REMEDIATION, tuple(pairs), inverted) if pairs else None
+
+
 def _filter_term(field: str, values: list[str], inverted: bool, errors: list[str]) -> Optional[FieldTerm]:
     name = FILTER_NAMES_BY_SLUG[field]
     if name == "Detection Point":
@@ -358,7 +379,7 @@ def _to_filter_entry(term: FieldTerm) -> dict:
     so it must never reach here. _parse_term rejects an inverted `uuid:` outright, which is the
     only way one could.
     """
-    pair_fields = (FIELD_OBSERVABLE, FIELD_OBSERVABLE_PATTERN)
+    pair_fields = (FIELD_OBSERVABLE, FIELD_OBSERVABLE_PATTERN, FIELD_REMEDIATION)
     values = [list(value) for value in term.values] if term.field in pair_fields else list(term.values)
     return {
         "name": FILTER_NAMES_BY_SLUG[term.field],

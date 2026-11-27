@@ -28,7 +28,8 @@ import pytz
 from sqlalchemy import LABEL_STYLE_TABLENAME_PLUS_COL, String, and_, exists, false, func, not_, or_, distinct, select, true, type_coerce
 from sqlalchemy.exc import OperationalError
 
-from saq.constants import VALID_DISPOSITION_REVIEWS
+from saq.configuration.config import get_config
+from saq.constants import F_EMAIL_DELIVERY, VALID_DISPOSITION_REVIEWS
 from saq.database.model import (
     OBSERVABLE_VALUE_REV_LENGTH,
     Alert,
@@ -38,10 +39,8 @@ from saq.database.model import (
     DispositionBy,
     Observable,
     ObservableMapping,
-    ObservableRemediationMapping,
     Owner,
     RemediatedBy,
-    Remediation,
     Tag,
     TagMapping,
 )
@@ -57,6 +56,8 @@ from saq.gui.filter_entry import UNCONFIRMED_DETECTIONS_OPTIONS
 from saq.gui.detection_point_value import parse_detection_point_value
 from saq.gui.observable_pattern import ANY_OBSERVABLE_TYPE, WILDCARD, ObservablePatternError, check_observable_pattern
 from saq.observables.type_hierarchy import get_all_valid_types
+from saq.remediation.coverage import has_remediation_activity, remediation_filter_value
+from saq.remediation.types import ALERT_REMEDIATION_FILTER_OPTIONS, REMEDIATION_SOURCE_ANY
 from saq.util.relative_time import parse_date_range
 
 # sentinel distinguishing "scope to this node" (the default) from an explicit "do not scope"
@@ -539,6 +540,47 @@ class UnconfirmedDetectionsFilter(SelectFilter):
         return query.filter(or_(*conditions))
 
 
+# the state of the alert's email remediation, as the manage page's Remediation column shows it,
+# over every remediator and probe or over one of them: values are [source, state] pairs
+class RemediationFilter(Filter):
+    def __init__(self, inverted=False, entity=None):
+        super().__init__(None, inverted=inverted, entity=entity)
+
+    @cached_property
+    def source_options(self) -> list[tuple[str, str]]:
+        """(source, label) for the editor: Any, then the email remediators and probes configured.
+        Lazy, as AnalysisFilter.options is: only the editor needs it."""
+        config = get_config()
+        return ([(REMEDIATION_SOURCE_ANY, REMEDIATION_SOURCE_ANY)]
+                + sorted((remediator.name, remediator.display_name) for remediator in config.remediators
+                         if remediator.observable_type == F_EMAIL_DELIVERY)
+                + sorted((probe.name, probe.name) for probe in config.external_remediation_probes
+                         if probe.observable_type == F_EMAIL_DELIVERY))
+
+    @property
+    def state_options(self) -> list[tuple[str, str]]:
+        return list(ALERT_REMEDIATION_FILTER_OPTIONS.items())
+
+    def apply(self, query, values):
+        states_by_source: dict[str, list[str]] = {}
+        for value in values:
+            # a stored filter or pasted share link can carry anything; an impossible value matches
+            # nothing rather than raising on every /manage load
+            if isinstance(value, (list, tuple)) and len(value) == 2:
+                states_by_source.setdefault(value[0], []).append(value[1])
+
+        matched = or_(*(remediation_filter_value(self.entity, source).in_(states)
+                        for source, states in states_by_source.items())) if states_by_source else false()
+
+        # the state is never NULL, so NOT keeps every other alert, those with no email included
+        condition = not_(matched) if self.inverted else matched
+        if states_by_source and all(("none" in states) == self.inverted for states in states_by_source.values()):
+            # "none" cannot match, so only an alert with remediation activity can: saying so outside
+            # the CASE spares MySQL the CASE for every other alert
+            condition = and_(has_remediation_activity(self.entity), condition)
+        return query.filter(condition)
+
+
 def create_filter(filter_name: str, inverted: bool = False, *, tz=None, entity=None):
     """Builds the filter that applies `filter_name` to a query.
 
@@ -565,6 +607,7 @@ def create_filter(filter_name: str, inverted: bool = False, *, tz=None, entity=N
         'Observable Pattern': lambda: ObservablePatternFilter(Observable.type, Observable.value, options=sorted(get_all_valid_types()), inverted=inverted, entity=entity),
         'Owner': lambda: SelectFilter(Owner.display_name, nullable=True, inverted=inverted),
         'Queue': lambda: SelectFilter(entity.queue, inverted=inverted),
+        'Remediation': lambda: RemediationFilter(inverted=inverted, entity=entity),
         'Reviewed': lambda: MultiSelectFilter(entity.disposition_review, nullable=False, options=list(VALID_DISPOSITION_REVIEWS), inverted=inverted),
         'Tag': lambda: AutoTextFilter(Tag.name, case_sensitive=False, wildcardable=True, inverted=inverted, entity=entity),
         'Unconfirmed Detections': lambda: UnconfirmedDetectionsFilter(inverted=inverted, entity=entity),
@@ -649,15 +692,8 @@ def build_alert_query(filters: list, *, entity=None, tz=None, locations=_DEFAULT
     if has_filter(filters, 'Remediated By'):
         query = query.outerjoin(RemediatedBy, entity.removal_user_id == RemediatedBy.id)
 
-    # The Observable and Tag filters are self-contained EXISTS subqueries, so they need no
-    # join here -- and without the join there is no row fan-out to collapse. Remediation
-    # Status still would, but it is not in the registry (see create_filter); this branch is
-    # kept for the day it comes back.
-    if has_filter(filters, 'Remediation Status'):
-        query = query.outerjoin(ObservableMapping)\
-            .outerjoin(Observable)\
-            .outerjoin(ObservableRemediationMapping)\
-            .outerjoin(Remediation)
+    # The Observable, Tag and Remediation filters are self-contained subqueries, so they need no
+    # join here -- and without the join there is no row fan-out to collapse.
 
     # apply filters
     for filter_dict in filters or []:

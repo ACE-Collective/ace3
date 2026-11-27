@@ -236,6 +236,20 @@ class TestAnalysisTerms:
         assert parsed.errors and "analysis module path" in parsed.errors[0]
 
 
+class TestRemediationTerms:
+    def test_a_state_alone_is_every_source(self):
+        parsed = parse_search_query("remediation:Failed,defender_probe:watching")
+        assert parsed.errors == ()
+        assert _filter(parsed, "Remediation") == [{"name": "Remediation", "inverted": False,
+                                                   "values": [["Any", "failed"], ["defender_probe", "watching"]]}]
+
+    @pytest.mark.parametrize("query", ["remediation:gone", "remediation::failed"])
+    def test_bad_value_is_an_error_not_a_dropped_filter(self, query):
+        parsed = parse_search_query(query)
+        assert parsed.filters == ()
+        assert parsed.errors and "remediation state" in parsed.errors[0]
+
+
 class TestQuoting:
     def test_quoted_value_with_a_space(self):
         parsed = parse_search_query('tag:"vendor mailer"')

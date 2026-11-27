@@ -22,6 +22,7 @@ from saq.gui.filter_query import (
     Filter,
     MultiSelectFilter,
     ObservablePatternFilter,
+    RemediationFilter,
     SelectFilter,
     TextFilter,
     TypeValueFilter,
